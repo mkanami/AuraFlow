@@ -74,8 +74,35 @@ func bringMainWindowToFront() {
         window.deminiaturize(nil)
     }
 
+    ensureWindowIsVisibleOnScreen(window)
     window.makeKeyAndOrderFront(nil)
     window.orderFrontRegardless()
+}
+
+func ensureWindowIsVisibleOnScreen(_ window: NSWindow) {
+    let currentFrame = window.frame
+    let screens = NSScreen.screens
+
+    let intersectsVisibleScreen = screens.contains { screen in
+        currentFrame.intersects(screen.visibleFrame.insetBy(dx: -40, dy: -40))
+    }
+
+    guard !intersectsVisibleScreen else { return }
+
+    let targetScreen = window.screen ?? NSScreen.main ?? screens.first
+    guard let targetScreen else { return }
+
+    let visible = targetScreen.visibleFrame
+    var targetSize = currentFrame.size
+    targetSize.width = min(max(targetSize.width, 760), visible.width)
+    targetSize.height = min(max(targetSize.height, 480), visible.height)
+
+    let origin = CGPoint(
+        x: visible.midX - (targetSize.width * 0.5),
+        y: visible.midY - (targetSize.height * 0.5)
+    )
+    let targetFrame = NSRect(origin: origin, size: targetSize).integral
+    window.setFrame(targetFrame, display: false)
 }
 
 func toggleFastWindowZoom(_ window: NSWindow) {

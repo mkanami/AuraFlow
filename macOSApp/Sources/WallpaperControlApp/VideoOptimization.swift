@@ -88,14 +88,23 @@ func auraFlowBundledToolExecutable(
     resourcesURL: URL? = Bundle.main.resourceURL
 ) -> String? {
     guard let resourcesURL else { return nil }
-    let candidate = resourcesURL
-        .appendingPathComponent("bin", isDirectory: true)
-        .appendingPathComponent(name)
-        .path
-    guard FileManager.default.isExecutableFile(atPath: candidate) else {
-        return nil
+
+    let candidates = [
+        resourcesURL
+            .appendingPathComponent("BundledTools", isDirectory: true)
+            .appendingPathComponent(name)
+            .path,
+        resourcesURL
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent(name)
+            .path
+    ]
+
+    for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
+        return candidate
     }
-    return candidate
+
+    return nil
 }
 
 enum VideoOptimizerError: LocalizedError {

@@ -1,103 +1,26 @@
 import AppKit
+@_exported import AuraWallpaperCore
 import AVKit
 import Combine
 import Foundation
-import PythonBridgeKit
 import UniformTypeIdentifiers
 
-struct ControlConfig: Codable {
-    var video_path: String
-    var playback_speed: Double
-    var volume: Double?
-    var autostart: Bool?
-    var blend_interpolation: Bool? = nil
-    var pause_on_fullscreen: Bool? = nil
-    var scale_mode: String? = nil
-}
+struct AdaptiveGlassAppearance: Equatable {
+    var topGlassAlpha: CGFloat
+    var bottomGlassAlpha: CGFloat
+    var topProtectionOverlayOpacity: CGFloat
+    var bottomProtectionOverlayOpacity: CGFloat
+    var bottomButtonProtectionOpacity: CGFloat
+    var bottomButtonHighlightOpacity: CGFloat
 
-struct ControlStatus: Codable {
-    var contract_version: Int? = nil
-    var running: Bool
-    var config: ControlConfig
-    var pid: Int?
-    var autostart: Bool?
-    var paused: Bool? = nil
-    var wallpaper_restored: Bool? = nil
-    var wallpaper: String? = nil
-    var health: DaemonHealth? = nil
-}
-
-struct DaemonHealth: Codable {
-    var contract_version: Int? = nil
-    var available: Bool? = nil
-    var fresh: Bool? = nil
-    var suspicious: Bool? = nil
-    var reason: String? = nil
-    var updated_at: Double? = nil
-    var lag_seconds: Double? = nil
-    var screens: Int? = nil
-    var windows: Int? = nil
-    var player_rate: Double? = nil
-    var stall_events: Int? = nil
-    var recovery_events: Int? = nil
-    var consecutive_stall_polls: Int? = nil
-    var paused: Bool? = nil
-    var manual_paused: Bool? = nil
-    var low_power_mode: Bool? = nil
-    var auto_paused_for_low_power: Bool? = nil
-    var pause_on_fullscreen: Bool? = nil
-    var fullscreen_app_detected: Bool? = nil
-    var auto_paused_for_fullscreen: Bool? = nil
-    var blend_interpolation_enabled: Bool? = nil
-    var blend_interpolation_active: Bool? = nil
-    var scale_mode: String? = nil
-}
-
-enum WallpaperScaleMode: String, Codable, CaseIterable, Identifiable {
-    case fill
-    case fit
-    case stretch
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .fill:
-            return "Fill"
-        case .fit:
-            return "Fit"
-        case .stretch:
-            return "Stretch"
-        }
-    }
-
-    var commandValue: String { rawValue }
-
-    var previewGravity: AVLayerVideoGravity {
-        switch self {
-        case .fill:
-            return .resizeAspectFill
-        case .fit:
-            return .resizeAspect
-        case .stretch:
-            return .resize
-        }
-    }
-}
-
-struct DaemonMetrics: Codable {
-    var contract_version: Int? = nil
-    var updated_at: Double? = nil
-    var running: Bool
-    var paused: Bool? = nil
-    var pid: Int? = nil
-    var daemon_pids: [Int]? = nil
-    var process_count: Int? = nil
-    var cpu_percent: Double? = nil
-    var memory_mb: Double? = nil
-    var virtual_memory_mb: Double? = nil
-    var thread_count: Int? = nil
-    var health: DaemonHealth? = nil
+    static let `default` = AdaptiveGlassAppearance(
+        topGlassAlpha: 1.0,
+        bottomGlassAlpha: 1.0,
+        topProtectionOverlayOpacity: 0.0,
+        bottomProtectionOverlayOpacity: 0.0,
+        bottomButtonProtectionOpacity: 0.0,
+        bottomButtonHighlightOpacity: 0.055
+    )
 }
 
 struct CatalogVideoSource: Hashable, Codable {
@@ -262,7 +185,7 @@ func catalogOriginHeaderValue(for url: URL) -> String? {
     return components.string
 }
 
-protocol PythonControlling {
+protocol WallpaperControlling {
     func status() throws -> ControlStatus
     func start(videoURL: URL?, speed: Double?) throws -> ControlStatus
     func stop() throws -> ControlStatus
@@ -276,7 +199,7 @@ protocol PythonControlling {
     func metrics() throws -> DaemonMetrics
 }
 
-enum PythonControllerError: LocalizedError {
+enum NativeWallpaperControllerError: LocalizedError {
     case unavailable(String)
 
     var errorDescription: String? {
@@ -287,89 +210,175 @@ enum PythonControllerError: LocalizedError {
     }
 }
 
-final class PythonController: PythonControlling {
-    private let bridge: PythonBridge
+final class NativeWallpaperController: WallpaperControlling {
+    private let store: WallpaperRuntimeStore
+    private let helperURL: URL
 
-    init() throws {
-        guard let bridge = PythonBridge(bundleResource: "control") else {
-            let message = PythonBridge.lastError?.localizedDescription ?? "Python bridge unavailable. Ensure Python 3 with PyObjC is installed."
-            throw PythonControllerError.unavailable(message)
-        }
-        self.bridge = bridge
+    init(store: WallpaperRuntimeStore = WallpaperRuntimeStore(), helperURL: URL? = nil) throws {
+        self.store = store
+        self.helperURL = try helperURL ?? Self.resolveHelperURL()
     }
 
-    private func run(command: String, arguments: [String] = []) throws -> ControlStatus {
-        do {
-            let output = try bridge.runCommand(command, arguments: arguments)
-            let data = Data(output.utf8)
-            return try JSONDecoder().decode(ControlStatus.self, from: data)
-        } catch {
-            throw PythonControllerError.unavailable(error.localizedDescription)
+    private static func resolveHelperURL() throws -> URL {
+        let environment = ProcessInfo.processInfo.environment
+        if let override = environment["AURAFLOW_AGENT_PATH"], FileManager.default.isExecutableFile(atPath: override) {
+            return URL(fileURLWithPath: override)
         }
+
+        let candidates = [
+            Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/AuraWallpaperAgent"),
+            Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("AuraWallpaperAgent")
+        ].compactMap { $0 }
+
+        for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate.path) {
+            return candidate
+        }
+
+        throw NativeWallpaperControllerError.unavailable("Native wallpaper agent is not bundled with AuraFlow.")
     }
 
-    private func runMetrics(command: String, arguments: [String] = []) throws -> DaemonMetrics {
-        do {
-            let output = try bridge.runCommand(command, arguments: arguments)
-            let data = Data(output.utf8)
-            return try JSONDecoder().decode(DaemonMetrics.self, from: data)
-        } catch {
-            throw PythonControllerError.unavailable(error.localizedDescription)
+    private func updateConfig(_ block: (inout ControlConfig) -> Void) throws -> ControlConfig {
+        var config = store.loadConfig()
+        block(&config)
+        let normalized = store.normalized(config)
+        try store.saveConfig(normalized)
+        return normalized
+    }
+
+    private func send(_ action: WallpaperRuntimeCommandAction, config: ControlConfig? = nil) throws {
+        try store.saveCommand(WallpaperRuntimeCommand(action: action, config: config))
+    }
+
+    private func launchAgentIfNeeded() throws {
+        if store.processIsAlive(pid: store.loadPID()) {
+            return
         }
+
+        store.removeCommand()
+        store.removeHealth()
+        let task = Process()
+        task.executableURL = helperURL
+        task.arguments = ["--config", store.configURL.path]
+        try task.run()
+        try store.savePID(task.processIdentifier)
     }
 
     func status() throws -> ControlStatus {
-        try run(command: "status")
+        store.status()
     }
 
     func start(videoURL: URL?, speed: Double?) throws -> ControlStatus {
-        var args: [String] = []
-        if let videoURL {
-            args.append(contentsOf: ["--video", videoURL.path])
+        let config = try updateConfig { config in
+            if let videoURL {
+                config.video_path = videoURL.path
+            }
+            if let speed {
+                config.playback_speed = speed
+            }
         }
-        if let speed {
-            args.append(contentsOf: ["--speed", String(speed)])
+        guard !config.video_path.isEmpty else {
+            throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
         }
-        return try run(command: "start", arguments: args)
+        guard FileManager.default.fileExists(atPath: config.video_path) else {
+            throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
+        }
+        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(appSupportPath: store.appSupportURL.path)
+        store.markPaused(false)
+        try launchAgentIfNeeded()
+        try send(.reload, config: config)
+        return store.status()
     }
 
     func stop() throws -> ControlStatus {
-        try run(command: "stop")
+        let config = store.loadConfig()
+        store.markPaused(true)
+        if store.processIsAlive(pid: store.loadPID()) {
+            try send(.pause, config: config)
+        }
+        return store.status()
     }
 
     func clearWallpaper() throws -> ControlStatus {
-        try run(command: "clear-wallpaper")
+        if store.processIsAlive(pid: store.loadPID()) {
+            try? send(.terminate, config: store.loadConfig())
+        }
+        _ = store.terminateDaemon(timeout: 1.0)
+        store.removeCommand()
+        store.removeHealth()
+        let restored = store.restoreWallpaperBackup()
+        return store.status(wallpaperRestored: restored)
     }
 
     func setVideo(_ url: URL) throws -> ControlStatus {
-        try run(command: "set-video", arguments: [url.path])
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw NativeWallpaperControllerError.unavailable("Video file not found: \(url.path)")
+        }
+        let config = try updateConfig { config in
+            config.video_path = url.path
+        }
+        if store.processIsAlive(pid: store.loadPID()) {
+            try send(.reload, config: config)
+        }
+        return store.status()
     }
 
     func setSpeed(_ speed: Double) throws -> ControlStatus {
-        try run(command: "set-speed", arguments: [String(speed)])
+        let config = try updateConfig { config in
+            config.playback_speed = speed
+        }
+        if store.processIsAlive(pid: store.loadPID()) {
+            try send(.update, config: config)
+        }
+        return store.status()
     }
 
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus {
-        let state = enabled ? "on" : "off"
-        return try run(command: "set-interpolation", arguments: [state])
+        let config = try updateConfig { config in
+            config.blend_interpolation = enabled
+        }
+        if store.processIsAlive(pid: store.loadPID()) {
+            try send(.update, config: config)
+        }
+        return store.status()
     }
 
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus {
-        let state = enabled ? "on" : "off"
-        return try run(command: "set-fullscreen-pause", arguments: [state])
+        let config = try updateConfig { config in
+            config.pause_on_fullscreen = enabled
+        }
+        if store.processIsAlive(pid: store.loadPID()) {
+            try send(.update, config: config)
+        }
+        return store.status()
     }
 
     func setScaleMode(_ mode: WallpaperScaleMode) throws -> ControlStatus {
-        try run(command: "set-scale", arguments: [mode.commandValue])
+        let config = try updateConfig { config in
+            config.scale_mode = mode.commandValue
+        }
+        if store.processIsAlive(pid: store.loadPID()) {
+            try send(.update, config: config)
+        }
+        return store.status()
     }
 
     func setAutostart(_ enabled: Bool) throws -> ControlStatus {
-        let state = enabled ? "on" : "off"
-        return try run(command: "set-autostart", arguments: [state])
+        let config = try updateConfig { config in
+            config.autostart = enabled
+        }
+        if enabled {
+            guard !config.video_path.isEmpty else {
+                throw NativeWallpaperControllerError.unavailable("Choose a video before enabling launch at login.")
+            }
+            try store.enableLaunchAgent(helperPath: helperURL.path)
+        } else {
+            store.disableLaunchAgent()
+        }
+        return store.status()
     }
 
     func metrics() throws -> DaemonMetrics {
-        try runMetrics(command: "metrics")
+        store.metrics()
     }
 }
 
@@ -414,8 +423,9 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var catalogIsRefreshing: Bool = false
     @Published private(set) var downloadedCatalogWallpapers: [DownloadedCatalogWallpaper] = []
     @Published private(set) var controllerAvailable: Bool = false
+    @Published private(set) var adaptiveGlassAppearance: AdaptiveGlassAppearance = .default
 
-    private var controller: PythonControlling?
+    private var controller: WallpaperControlling?
     private let catalogProvider: WallpaperCatalogProviding
     private let optimizer = VideoOptimizer()
     private let optimizationStore: VideoOptimizationStore
@@ -439,6 +449,7 @@ final class AppViewModel: ObservableObject {
     private var isControllerBootstrapInProgress = false
     private var previewRenderingSuspended = false
     private var suspendedPreviewRate: Float?
+    private var glassAnalysisTask: Task<Void, Never>?
 
     private let expectedStatusContractVersion = 2
     private let bridgeFailureThreshold = 3
@@ -456,19 +467,19 @@ final class AppViewModel: ObservableObject {
     }
 
     var isStartButtonHighlighted: Bool {
-        selectedVideoURL != nil && !isPlaybackPaused
+        selectedVideoURL != nil && !isRunning && !isPlaybackPaused
     }
 
     var isStopButtonHighlighted: Bool {
-        appliedVideoURL != nil && isPlaybackPaused && !isPlaybackActive
+        appliedVideoURL != nil && isPlaybackPaused
     }
 
     var canStart: Bool {
-        isControllerAvailable && !isBusy && !isPlaybackActive && selectedVideoURL != nil
+        isControllerAvailable && !isBusy && !isRunning && selectedVideoURL != nil
     }
 
     var canStop: Bool {
-        isControllerAvailable && !isBusy && isPlaybackActive
+        isControllerAvailable && !isBusy && isRunning
     }
 
     var canClearWallpaper: Bool {
@@ -521,7 +532,7 @@ final class AppViewModel: ObservableObject {
     }
 
     init(
-        controller: PythonControlling? = nil,
+        controller: WallpaperControlling? = nil,
         optimizationStore: VideoOptimizationStore = VideoOptimizationStore(),
         catalogProvider: WallpaperCatalogProviding = MoeWallsSource()
     ) {
@@ -562,6 +573,7 @@ final class AppViewModel: ObservableObject {
         monitoringTask?.cancel()
         catalogRefreshTask?.cancel()
         controllerBootstrapTask?.cancel()
+        glassAnalysisTask?.cancel()
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver)
         }
@@ -574,7 +586,7 @@ final class AppViewModel: ObservableObject {
     func loadStatus() async {
         guard let controller else {
             if !isControllerBootstrapInProgress {
-                alertMessage = "Python bridge unavailable."
+                alertMessage = "Native wallpaper runtime unavailable."
             }
             return
         }
@@ -629,8 +641,8 @@ final class AppViewModel: ObservableObject {
 
         controllerBootstrapTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
-                let controller = try PythonController()
-                await MainActor.run {
+                let controller = try NativeWallpaperController()
+                await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.controller = controller
                     self.controllerAvailable = true
@@ -641,7 +653,7 @@ final class AppViewModel: ObservableObject {
                     }
                 }
             } catch {
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.controller = nil
                     self.controllerAvailable = false
@@ -796,7 +808,7 @@ final class AppViewModel: ObservableObject {
 
     func start() {
         guard !isBusy else { return }
-        guard !isPlaybackActive else { return }
+        guard !isRunning else { return }
         guard let selectedVideoURL else {
             alertMessage = "Choose a video before starting."
             return
@@ -846,12 +858,11 @@ final class AppViewModel: ObservableObject {
             do {
                 let status = try await runAsync { try controller.clearWallpaper() }
                 apply(status: status)
-                let restored = status.wallpaper_restored ?? false
                 recordBridgeSuccess()
-                if restored {
-                    statusMessage = "Original wallpaper restored."
+                if let restored = status.wallpaper_restored {
+                    statusMessage = restored ? "Original wallpaper restored." : "Wallpaper backup not found."
                 } else {
-                    statusMessage = "Wallpaper backup not found."
+                    statusMessage = "Removing live wallpaper."
                 }
                 alertMessage = nil
             } catch {
@@ -1336,7 +1347,7 @@ final class AppViewModel: ObservableObject {
         guard !isShuttingDown else { return }
         guard isMonitoringOpen else { return }
         guard let controller else {
-            monitoringErrorMessage = "Python bridge unavailable."
+            monitoringErrorMessage = "Native wallpaper runtime unavailable."
             return
         }
         if isMonitoringRefreshing {
@@ -2116,6 +2127,7 @@ final class AppViewModel: ObservableObject {
 
         guard let url else {
             previewPlayer = nil
+            adaptiveGlassAppearance = .default
             return
         }
 
@@ -2139,6 +2151,160 @@ final class AppViewModel: ObservableObject {
         }
 
         previewPlayer = player
+        scheduleAdaptiveGlassRefresh(for: url)
+    }
+
+    private func scheduleAdaptiveGlassRefresh(for url: URL) {
+        glassAnalysisTask?.cancel()
+        let requestedURL = url.standardizedFileURL
+        let requestedScaleMode = scaleMode
+
+        glassAnalysisTask = Task.detached(priority: .utility) { [requestedURL, requestedScaleMode] in
+            let appearance = Self.adaptiveGlassAppearance(for: requestedURL, scaleMode: requestedScaleMode)
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                let currentURL = self.selectedVideoURL?.standardizedFileURL
+                let appliedURL = self.appliedVideoURL?.standardizedFileURL
+                let pendingURL = self.pendingPreviewVideoURL?.standardizedFileURL
+                guard currentURL == requestedURL || appliedURL == requestedURL || pendingURL == requestedURL else {
+                    return
+                }
+                self.adaptiveGlassAppearance = appearance
+            }
+        }
+    }
+
+    nonisolated static func adaptiveGlassAppearance(for url: URL, scaleMode: WallpaperScaleMode) -> AdaptiveGlassAppearance {
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = NSSize(width: 240, height: 135)
+
+        let sampleTime: Double
+        switch scaleMode {
+        case .fill:
+            sampleTime = 0.5
+        case .fit, .stretch:
+            sampleTime = 0.2
+        }
+
+        let time = CMTime(seconds: sampleTime, preferredTimescale: 600)
+        guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else {
+            return .default
+        }
+        return adaptiveGlassAppearance(for: cgImage)
+    }
+
+    nonisolated static func adaptiveGlassAppearance(for cgImage: CGImage) -> AdaptiveGlassAppearance {
+        let width = 120
+        let height = 68
+        guard let pixels = rgbaPixels(from: cgImage, width: width, height: height) else {
+            return .default
+        }
+
+        let topStats = luminanceStats(
+            pixels: pixels,
+            width: width,
+            height: height,
+            region: CGRect(x: 0.26, y: 0.04, width: 0.48, height: 0.10)
+        )
+        let bottomStats = luminanceStats(
+            pixels: pixels,
+            width: width,
+            height: height,
+            region: CGRect(x: 0.08, y: 0.80, width: 0.84, height: 0.16)
+        )
+
+        let topProtection = protectionLevel(for: topStats)
+        let bottomProtection = protectionLevel(for: bottomStats)
+
+        return AdaptiveGlassAppearance(
+            topGlassAlpha: 1.0 - (0.08 * topProtection),
+            bottomGlassAlpha: 1.0 - (0.10 * bottomProtection),
+            topProtectionOverlayOpacity: 0.016 * topProtection,
+            bottomProtectionOverlayOpacity: 0.020 * bottomProtection,
+            bottomButtonProtectionOpacity: 0.014 * bottomProtection,
+            bottomButtonHighlightOpacity: max(0.018, 0.055 - (0.040 * bottomProtection))
+        )
+    }
+
+    nonisolated private static func protectionLevel(for stats: LuminanceStats) -> CGFloat {
+        let bright = normalized(stats.mean, lower: 0.72, upper: 0.96)
+        let flat = 1.0 - normalized(stats.standardDeviation, lower: 0.07, upper: 0.24)
+        let protection = bright * (0.35 + (flat * 0.65))
+        return min(max(protection, 0.0), 1.0)
+    }
+
+    nonisolated private static func normalized(_ value: CGFloat, lower: CGFloat, upper: CGFloat) -> CGFloat {
+        guard upper > lower else { return 0 }
+        return min(max((value - lower) / (upper - lower), 0.0), 1.0)
+    }
+
+    nonisolated private static func rgbaPixels(from cgImage: CGImage, width: Int, height: Int) -> [UInt8]? {
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                data: &pixels,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            return nil
+        }
+
+        context.interpolationQuality = .medium
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return pixels
+    }
+
+    nonisolated private static func luminanceStats(
+        pixels: [UInt8],
+        width: Int,
+        height: Int,
+        region: CGRect
+    ) -> LuminanceStats {
+        let minX = max(Int(CGFloat(width) * region.minX), 0)
+        let maxX = min(Int(CGFloat(width) * region.maxX), width)
+        let minY = max(Int(CGFloat(height) * region.minY), 0)
+        let maxY = min(Int(CGFloat(height) * region.maxY), height)
+
+        var luminanceValues: [CGFloat] = []
+        luminanceValues.reserveCapacity(max((maxX - minX) * (maxY - minY), 1))
+
+        for y in minY..<maxY {
+            for x in minX..<maxX {
+                let offset = ((y * width) + x) * 4
+                let red = CGFloat(pixels[offset]) / 255.0
+                let green = CGFloat(pixels[offset + 1]) / 255.0
+                let blue = CGFloat(pixels[offset + 2]) / 255.0
+                let luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+                luminanceValues.append(luminance)
+            }
+        }
+
+        guard !luminanceValues.isEmpty else {
+            return LuminanceStats(mean: 0.0, standardDeviation: 0.0)
+        }
+
+        let mean = luminanceValues.reduce(0, +) / CGFloat(luminanceValues.count)
+        let variance = luminanceValues.reduce(0) { partialResult, value in
+            let delta = value - mean
+            return partialResult + (delta * delta)
+        } / CGFloat(luminanceValues.count)
+
+        return LuminanceStats(mean: mean, standardDeviation: sqrt(variance))
+    }
+
+    private struct LuminanceStats {
+        let mean: CGFloat
+        let standardDeviation: CGFloat
     }
 
     private func previewPlaybackRate() -> Float {
@@ -2309,7 +2475,7 @@ final class AppViewModel: ObservableObject {
 
     private func recordBridgeSuccess() {
         if bridgeFailureCount >= bridgeFailureThreshold {
-            statusMessage = "Python bridge recovered."
+            statusMessage = "Native wallpaper runtime recovered."
         }
         bridgeFailureCount = 0
     }
@@ -2323,7 +2489,7 @@ final class AppViewModel: ObservableObject {
         let description = error.localizedDescription
 
         if bridgeFailureCount >= bridgeFailureThreshold {
-            alertMessage = "Python bridge unstable (\(context)): \(description)"
+            alertMessage = "Native wallpaper runtime unstable (\(context)): \(description)"
             statusMessage = "Bridge health warning."
             return
         }
