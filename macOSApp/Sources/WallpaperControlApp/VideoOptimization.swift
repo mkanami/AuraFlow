@@ -657,6 +657,9 @@ final class VideoOptimizer {
         if !env.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             candidates.append(env)
         }
+        if let bundled = bundledToolExecutable(named: "ffmpeg") {
+            candidates.append(bundled.path)
+        }
         candidates.append(contentsOf: [
             "/opt/homebrew/bin/ffmpeg",
             "/usr/local/bin/ffmpeg",
@@ -681,6 +684,23 @@ final class VideoOptimizer {
             }
             return candidate
         }
+        return nil
+    }
+
+    private func bundledToolExecutable(named name: String) -> URL? {
+        let bundle = Bundle.main
+
+        if let direct = bundle.resourceURL?.appendingPathComponent("BundledTools/\(name)"),
+           FileManager.default.isExecutableFile(atPath: direct.path) {
+            return direct
+        }
+
+        if let bundledBundle = bundle.resourceURL?.appendingPathComponent("WallpaperControlApp.bundle"),
+           let nested = bundledBundle.appendingPathComponent("Contents/Resources/BundledTools/\(name)") as URL?,
+           FileManager.default.isExecutableFile(atPath: nested.path) {
+            return nested
+        }
+
         return nil
     }
 

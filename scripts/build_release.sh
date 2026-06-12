@@ -4,23 +4,44 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SWIFT_DIR="$ROOT_DIR/macOSApp"
-PYTHON_DIR="$ROOT_DIR/python"
 DIST_DIR="$ROOT_DIR/dist"
 APP_TARGET="WallpaperControlApp"
+HELPER_TARGET="AuraWallpaperAgent"
 APP_DISPLAY_NAME="AuraFlow"
-APP_VERSION="${AURAFLOW_VERSION:-1.2.0}"
-APP_BUILD="${AURAFLOW_BUILD:-2}"
+APP_VERSION="${AURAFLOW_VERSION:-1.2.2}"
+APP_BUILD="${AURAFLOW_BUILD:-4}"
 APP_BUNDLE="$DIST_DIR/${APP_DISPLAY_NAME}.app"
 APP_ZIP="$DIST_DIR/${APP_DISPLAY_NAME}.zip"
 APP_DMG="$DIST_DIR/${APP_DISPLAY_NAME}.dmg"
 ICON_PNG="$ROOT_DIR/Resources/AppIcon.png"
 ICON_ICNS="$ROOT_DIR/Resources/AppIcon.icns"
-PYTHON_BIN="${PYTHON_BUILD_PYTHON:-/usr/bin/python3}"
 BUILD_UNIVERSAL="${BUILD_UNIVERSAL:-1}"
 LOCK_DIR="$ROOT_DIR/.build-lock"
+BUNDLED_TOOLS_DIR="$APP_BUNDLE/Contents/Resources/BundledTools"
 
 log() {
   printf '[build] %s\n' "$1"
+}
+
+ensure_xcode_toolchain() {
+  local current_dev_dir=""
+  current_dev_dir="$(xcode-select -p 2>/dev/null || true)"
+
+  if [[ -n "${DEVELOPER_DIR:-}" ]]; then
+    log "Using DEVELOPER_DIR=$DEVELOPER_DIR"
+    return
+  fi
+
+  if [[ "$current_dev_dir" == "/Library/Developer/CommandLineTools" ]] && [[ -d "/Applications/Xcode.app/Contents/Developer" ]]; then
+    export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+    log "Switched build toolchain to Xcode SDK at $DEVELOPER_DIR"
+    return
+  fi
+
+  if [[ -d "/Applications/Xcode.app/Contents/Developer" ]]; then
+    export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+    log "Using Xcode SDK at $DEVELOPER_DIR"
+  fi
 }
 
 cleanup_lock() {
@@ -91,13 +112,45 @@ prepare_environment() {
   mkdir -p "$DIST_DIR"
 }
 
+resolve_tool_path() {
+  local env_var_name="$1"
+  local tool_name="$2"
+  local env_value="${!env_var_name:-}"
+
+  if [[ -n "$env_value" && -x "$env_value" ]]; then
+    printf '%s\n' "$env_value"
+    return 0
+  fi
+
+  local candidate
+  for candidate in \
+    "/opt/homebrew/bin/${tool_name}" \
+    "/usr/local/bin/${tool_name}" \
+    "/usr/bin/${tool_name}"
+  do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  if command -v "$tool_name" >/dev/null 2>&1; then
+    command -v "$tool_name"
+    return 0
+  fi
+
+  return 1
+}
+
 build_swift_app() {
   log "Building Swift target"
   pushd "$SWIFT_DIR" >/dev/null
   swift build -c release
 
   local arm_binary="$SWIFT_DIR/.build/arm64-apple-macosx/release/${APP_TARGET}"
+  local arm_helper="$SWIFT_DIR/.build/arm64-apple-macosx/release/${HELPER_TARGET}"
   local x86_binary="$SWIFT_DIR/.build/x86_64-apple-macosx/release/${APP_TARGET}"
+  local x86_helper="$SWIFT_DIR/.build/x86_64-apple-macosx/release/${HELPER_TARGET}"
   local universal_dir="$SWIFT_DIR/.build/universal"
   local built_x86="0"
 
@@ -116,15 +169,20 @@ build_swift_app() {
   fi
 
   local bin_path
-  if [[ "$built_x86" == "1" && -f "$arm_binary" && -f "$x86_binary" ]]; then
+  local helper_path
+  if [[ "$built_x86" == "1" && -f "$arm_binary" && -f "$x86_binary" && -f "$arm_helper" && -f "$x86_helper" ]]; then
     mkdir -p "$universal_dir"
     lipo -create -output "$universal_dir/${APP_TARGET}" "$arm_binary" "$x86_binary"
+    lipo -create -output "$universal_dir/${HELPER_TARGET}" "$arm_helper" "$x86_helper"
     bin_path="$universal_dir"
+    helper_path="$universal_dir/${HELPER_TARGET}"
     log "Created universal binary"
   elif [[ -f "$arm_binary" ]]; then
     bin_path="$(dirname "$arm_binary")"
+    helper_path="$bin_path/${HELPER_TARGET}"
   else
     bin_path=$(swift build -c release --show-bin-path)
+    helper_path="$bin_path/${HELPER_TARGET}"
   fi
   popd >/dev/null
 
@@ -135,13 +193,19 @@ build_swift_app() {
     log "Не найден бинарник ($binary)"
     exit 1
   fi
+  if [[ ! -x "$helper_path" ]]; then
+    log "Не найден helper binary ($helper_path)"
+    exit 1
+  fi
 
   rm -rf "$APP_BUNDLE"
   mkdir -p "$APP_BUNDLE/Contents/MacOS"
   mkdir -p "$APP_BUNDLE/Contents/Resources"
 
   cp "$binary" "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
+  cp "$helper_path" "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
+  chmod +x "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
 
   if [[ -d "$resources_bundle" ]]; then
     cp -R "$resources_bundle" "$APP_BUNDLE/Contents/Resources/${APP_TARGET}.bundle"
@@ -170,30 +234,9 @@ build_swift_app() {
   <string>1</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
-  <key>LSUIElement</key>
-  <true/>
 </dict>
 </plist>
 EOF
-}
-
-sync_python_payload() {
-  local resources_dir="$APP_BUNDLE/Contents/Resources"
-  local py_dir="$resources_dir/Python"
-  mkdir -p "$py_dir"
-  rsync -a --delete "$PYTHON_DIR/" "$py_dir/"
-
-  if [[ -f "$PYTHON_DIR/requirements.txt" ]]; then
-    log "Vendoring Python dependencies"
-    local venv="$ROOT_DIR/.build-venv-$$"
-    rm -rf "$venv"
-    "$PYTHON_BIN" -m venv "$venv"
-    source "$venv/bin/activate"
-    python -m pip install --upgrade pip
-    python -m pip install --prefer-binary -r "$PYTHON_DIR/requirements.txt" --target "$py_dir/site-packages"
-    deactivate
-    rm -rf "$venv"
-  fi
 }
 
 apply_plist_customizations() {
@@ -203,11 +246,36 @@ apply_plist_customizations() {
   plist_set_string "$plist" CFBundleIdentifier "com.andrijvergeles.auraflow"
   plist_set_string "$plist" CFBundleShortVersionString "$APP_VERSION"
   plist_set_string "$plist" CFBundleVersion "$APP_BUILD"
-  plist_set_bool "$plist" LSUIElement true
-
   ensure_icon
   cp "$ICON_ICNS" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
   plist_set_string "$plist" CFBundleIconFile "AppIcon"
+}
+
+bundle_runtime_tools() {
+  mkdir -p "$BUNDLED_TOOLS_DIR"
+
+  local ffmpeg_path=""
+  local ffprobe_path=""
+
+  if ffmpeg_path="$(resolve_tool_path AURAFLOW_FFMPEG_PATH ffmpeg 2>/dev/null)"; then
+    cp "$ffmpeg_path" "$BUNDLED_TOOLS_DIR/ffmpeg"
+    chmod +x "$BUNDLED_TOOLS_DIR/ffmpeg"
+    log "Bundled ffmpeg from $ffmpeg_path"
+  else
+    log "ffmpeg not found; compatibility transcodes will use system ffmpeg only."
+  fi
+
+  if ffprobe_path="$(resolve_tool_path AURAFLOW_FFPROBE_PATH ffprobe 2>/dev/null)"; then
+    cp "$ffprobe_path" "$BUNDLED_TOOLS_DIR/ffprobe"
+    chmod +x "$BUNDLED_TOOLS_DIR/ffprobe"
+    log "Bundled ffprobe from $ffprobe_path"
+  else
+    log "ffprobe not found; continuing without bundled ffprobe."
+  fi
+
+  if [[ -z "$(ls -A "$BUNDLED_TOOLS_DIR" 2>/dev/null)" ]]; then
+    rmdir "$BUNDLED_TOOLS_DIR" 2>/dev/null || true
+  fi
 }
 
 package_distribution() {
@@ -233,10 +301,11 @@ package_distribution() {
 
 main() {
   acquire_lock
+  ensure_xcode_toolchain
   prepare_environment
   build_swift_app
-  sync_python_payload
   apply_plist_customizations
+  bundle_runtime_tools
   package_distribution
   log "Готово: $APP_BUNDLE"
   log "Архивы: $APP_ZIP и $APP_DMG"
