@@ -28,6 +28,10 @@ AuraFlow runs a desktop wallpaper daemon built with Python and PyObjC. It create
 ### Built-In Wallpaper Catalog
 AuraFlow includes an integrated catalog for browsing live wallpapers. Users can open a wallpaper detail view, preview it, download it, apply it, and reopen the source page when needed.
 
+<p align="center">
+  <img src="docs/catalog-detail-view.png" width="900" alt="AuraFlow wallpaper catalog detail view" />
+</p>
+
 ### Downloaded Wallpapers Library
 Downloaded wallpapers are stored locally and shown inside the app, so users can quickly switch between previously downloaded wallpapers without repeating the download flow.
 

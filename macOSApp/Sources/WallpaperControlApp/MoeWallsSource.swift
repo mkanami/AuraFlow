@@ -145,9 +145,6 @@ actor MoeWallsSource: WallpaperCatalogProviding {
         if let downloadURL = details.downloadURL {
             return downloadURL
         }
-        if let previewVideoURL = details.previewVideoURL {
-            return previewVideoURL
-        }
         throw MoeWallsSourceError.missingDownloadURL
     }
 

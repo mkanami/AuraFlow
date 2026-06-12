@@ -184,7 +184,7 @@ enum MoeWallsParser {
             pattern: #"\!\[[^\]]*\]\((https?://[^)\s]*wp-content/uploads/[^)\s]*?(?:thumb|thumb-\d+x\d+)\.(?:jpg|jpeg|png|webp))\)"#
         ))
         let explicitPlayableURL = firstPlayableURL(in: normalized, relativeTo: canonicalURL)
-        let explicitDownloadURL = bestDownloadURL(in: normalized, relativeTo: canonicalURL)
+        let explicitDownloadURL = firstDownloadURL(in: normalized, relativeTo: canonicalURL)
         let previewVideoURL = explicitPlayableURL
             ?? derivedPreviewVideoURL(from: previewImageURL, slug: slug)
         let categorySlug = firstMatch(in: normalized, pattern: #"https?://moewalls\.com/category/([^/"']+)/"#)
@@ -319,12 +319,26 @@ enum MoeWallsParser {
         playableURLs(in: html, relativeTo: baseURL).first
     }
 
-    private static func bestDownloadURL(in html: String, relativeTo baseURL: URL) -> URL? {
-        let urls = playableURLs(in: html, relativeTo: baseURL)
-        if let mp4 = urls.first(where: { $0.pathExtension.lowercased() == "mp4" }) {
-            return mp4
+    private static func firstDownloadURL(in html: String, relativeTo baseURL: URL) -> URL? {
+        let tokenPatterns = [
+            #"<a[^>]+id=["']moe-download["'][^>]+data-url=["']([^"']+)["']"#,
+            #"<a[^>]+data-url=["']([^"']+)["'][^>]+id=["']moe-download["']"#,
+            #"<a[^>]+id=["']moe-download["'][^>]+href=["']([^"']+)["']"#,
+            #"<a[^>]+href=["']([^"']+)["'][^>]+id=["']moe-download["']"#
+        ]
+
+        for pattern in tokenPatterns {
+            if let rawValue = firstMatch(in: html, pattern: pattern),
+               let resolvedURL = try? MoeWallsBrowserResolver.resolvedDownloadURL(from: rawValue, pageURL: baseURL) {
+                return resolvedURL
+            }
         }
-        return urls.first
+
+        let urls = playableURLs(in: html, relativeTo: baseURL)
+        if let nativeAsset = urls.first(where: { isDirectDownloadAsset($0) && isNativePlaybackContainer($0) }) {
+            return nativeAsset
+        }
+        return urls.first(where: isDirectDownloadAsset)
     }
 
     private static func playableURLs(in html: String, relativeTo baseURL: URL) -> [URL] {
@@ -338,6 +352,19 @@ enum MoeWallsParser {
             url(from: rawURL, relativeTo: baseURL)
         }.filter { url in
             seen.insert(url.absoluteString).inserted
+        }
+    }
+
+    private static func isDirectDownloadAsset(_ url: URL) -> Bool {
+        !url.path.lowercased().contains("/wp-content/uploads/preview/")
+    }
+
+    private static func isNativePlaybackContainer(_ url: URL) -> Bool {
+        switch url.pathExtension.lowercased() {
+        case "mp4", "mov", "m4v":
+            return true
+        default:
+            return false
         }
     }
 
