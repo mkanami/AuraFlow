@@ -33,6 +33,10 @@ Control and agent state are stored in `~/Library/Application Support/AuraFlow`.
 - downloaded wallpaper library
 - optional video optimization paths
 
+<p align="center">
+  <img src="docs/catalog-detail-view.png" width="900" alt="AuraFlow wallpaper catalog detail view" />
+</p>
+
 ## UI
 
 - native Liquid Glass path on macOS 26+

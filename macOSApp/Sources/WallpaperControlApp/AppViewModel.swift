@@ -1535,23 +1535,22 @@ final class AppViewModel: ObservableObject {
         guard let moeWallsSource = catalogProvider as? MoeWallsSource else { return nil }
 
         let details = try await moeWallsSource.fetchDetails(pageURL: pageURL)
-        guard details.hasExplicitPlayableSource == true else {
+        guard details.hasExplicitPlayableSource == true,
+              let downloadURL = details.downloadURL else {
             return nil
         }
-        if let downloadURL = details.downloadURL {
-            let width = details.resolution?.width ?? 0
-            let height = details.resolution?.height ?? 0
-            return CatalogVideoSource(url: downloadURL, width: width, height: height)
-        }
-        if let previewVideoURL = details.previewVideoURL {
-            let width = details.resolution?.width ?? 0
-            let height = details.resolution?.height ?? 0
-            return CatalogVideoSource(url: previewVideoURL, width: width, height: height)
-        }
-        return nil
+        let width = details.resolution?.width ?? 0
+        let height = details.resolution?.height ?? 0
+        return CatalogVideoSource(url: downloadURL, width: width, height: height)
     }
 
     private func downloadCatalogSource(_ source: CatalogVideoSource, for wallpaper: CatalogWallpaper) async throws -> URL {
+        if isMoeWallsWallpaper(wallpaper),
+           source.url.host?.lowercased() == "go.moewalls.com",
+           let sourcePageURL = wallpaper.sourcePageURL {
+            return try await downloadMoeWallsVideo(for: wallpaper, pageURL: sourcePageURL)
+        }
+
         let widthLabel = source.width > 0 ? String(source.width) : "auto"
         let heightLabel = source.height > 0 ? String(source.height) : "auto"
         let destination = try catalogDirectoryURL().appendingPathComponent(

@@ -47,30 +47,44 @@ final class MoeWallsBrowserResolver: NSObject {
     func downloadWallpaper(from pageURL: URL, to destinationURL: URL) async throws -> URL {
         try await load(pageURL: pageURL)
         try await prepareDownloadState()
-
-        if let playableSourceURL = try? await waitForPlayableSourceURL(pageURL: pageURL) {
-            let cookies = await currentCookies()
-            return try await downloadWithBrowserContext(
-                from: playableSourceURL,
-                pageURL: pageURL,
-                cookies: cookies,
-                destinationURL: destinationURL
-            )
-        }
+        var lastError: Error?
 
         do {
             return try await startBrowserManagedDownload(to: destinationURL)
         } catch {
-            let token = try await waitForDownloadToken()
-            let downloadURL = try resolvedDownloadURL(from: token, pageURL: pageURL)
-            let cookies = await currentCookies()
-            return try await downloadWithBrowserContext(
-                from: downloadURL,
-                pageURL: pageURL,
-                cookies: cookies,
-                destinationURL: destinationURL
-            )
+            lastError = error
         }
+
+        let cookies = await currentCookies()
+
+        if let token = try? await waitForDownloadToken() {
+            do {
+                let downloadURL = try Self.resolvedDownloadURL(from: token, pageURL: pageURL)
+                return try await downloadWithBrowserContext(
+                    from: downloadURL,
+                    pageURL: pageURL,
+                    cookies: cookies,
+                    destinationURL: destinationURL
+                )
+            } catch {
+                lastError = error
+            }
+        }
+
+        if let playableSourceURL = try? await waitForPlayableSourceURL(pageURL: pageURL) {
+            do {
+                return try await downloadWithBrowserContext(
+                    from: playableSourceURL,
+                    pageURL: pageURL,
+                    cookies: cookies,
+                    destinationURL: destinationURL
+                )
+            } catch {
+                lastError = error
+            }
+        }
+
+        throw lastError ?? MoeWallsBrowserResolverError.downloadDidNotStart
     }
 
     func resolvePlayableSourceURL(from pageURL: URL) async throws -> URL {
@@ -130,7 +144,7 @@ final class MoeWallsBrowserResolver: NSObject {
 
         for _ in 0..<80 {
             if let rawValue = try await webView.evaluateJavaScript(script) as? String,
-               let url = try? resolvedDownloadURL(from: rawValue, pageURL: pageURL) {
+               let url = try? Self.resolvedDownloadURL(from: rawValue, pageURL: pageURL) {
                 return url
             }
             try await Task.sleep(nanoseconds: 250_000_000)
@@ -211,10 +225,16 @@ final class MoeWallsBrowserResolver: NSObject {
         }
     }
 
-    private func resolvedDownloadURL(from token: String, pageURL: URL) throws -> URL {
+    nonisolated static func resolvedDownloadURL(from token: String, pageURL: URL) throws -> URL {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw MoeWallsBrowserResolverError.tokenNotFound
+        }
+        if isDownloadToken(trimmed) {
+            guard let downloadURL = URL(string: "https://go.moewalls.com/download.php?video=\(trimmed)") else {
+                throw MoeWallsBrowserResolverError.tokenNotFound
+            }
+            return downloadURL
         }
         if trimmed.hasPrefix("//"),
            let schemeRelative = URL(string: "https:\(trimmed)") {
@@ -227,6 +247,15 @@ final class MoeWallsBrowserResolver: NSObject {
             return relative
         }
         throw MoeWallsBrowserResolverError.tokenNotFound
+    }
+
+    private nonisolated static func isDownloadToken(_ value: String) -> Bool {
+        guard !value.contains("://"), !value.contains("/") else {
+            return false
+        }
+
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789%=_-+")
+        return value.unicodeScalars.allSatisfy { allowed.contains($0) }
     }
 
     private func downloadWithBrowserContext(

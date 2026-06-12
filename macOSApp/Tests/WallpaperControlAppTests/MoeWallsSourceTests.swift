@@ -79,7 +79,41 @@ import Testing
     )
 
     #expect(wallpaper.previewVideoURL?.absoluteString == "https://moewalls.com/wp-content/uploads/preview/2026/makima-chainsaw-man-preview.webm")
-    #expect(wallpaper.downloadURL?.absoluteString == "https://moewalls.com/wp-content/uploads/preview/2026/makima-chainsaw-man-preview.webm")
+    #expect(wallpaper.downloadURL == nil)
+}
+
+@Test func moewallsDetailPageResolvesTokenDownloadURL() {
+    let html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://moewalls.com/anime/lucyna-wuthering-waves-x-cyberpunk-edgerunners-live-wallpaper/">
+        <meta property="og:title" content="Lucyna Wuthering Waves x Cyberpunk Edgerunners Live Wallpaper">
+        <meta property="og:image" content="https://moewalls.com/wp-content/uploads/2026/06/lucyna-wuthering-waves-cyberpunk-edgerunners-thumb.jpg">
+      </head>
+      <body>
+        <video>
+          <source src="/wp-content/uploads/preview/2026/lucyna-wuthering-waves-×-cyberpunk-edgerunners-preview.webm" type="video/webm" />
+        </video>
+        <a
+          id="moe-download"
+          data-id="20474"
+          data-url="skfkzJydxVqF%2BAZdOvcfgYzTM4FJj6eRMccDNoYpT909suPXMqFJ04mKmAQnMbrGAaIdrCkWuwjvAWqrynxQLrWKp9Q6XLhIS7RM7A%3D%3D"
+          href="#">
+          Download Wallpaper
+        </a>
+      </body>
+    </html>
+    """
+
+    let wallpaper = MoeWallsParser.parseWallpaperDetail(
+        html: html,
+        pageURL: URL(string: "https://moewalls.com/anime/lucyna-wuthering-waves-x-cyberpunk-edgerunners-live-wallpaper/")!
+    )
+
+    #expect(
+        wallpaper.downloadURL?.absoluteString ==
+        "https://go.moewalls.com/download.php?video=skfkzJydxVqF%2BAZdOvcfgYzTM4FJj6eRMccDNoYpT909suPXMqFJ04mKmAQnMbrGAaIdrCkWuwjvAWqrynxQLrWKp9Q6XLhIS7RM7A%3D%3D"
+    )
 }
 
 @Test func moewallsDerivesPreviewVideoFromThumbnail() {
@@ -115,6 +149,29 @@ import Testing
     #expect(candidates.count == 2)
     #expect(candidates.first?.absoluteString == "https://moewalls.com/wp-content/uploads/preview/2026/musashi-soul-of-the-katana-vagabond-preview.mp4")
     #expect(candidates.last?.absoluteString == "https://moewalls.com/wp-content/uploads/preview/2026/musashi-soul-of-the-katana-vagabond-preview.webm")
+}
+
+@MainActor
+@Test func moewallsDownloadTokenResolvesToGoEndpoint() throws {
+    let pageURL = URL(string: "https://moewalls.com/anime/lucyna-wuthering-waves-x-cyberpunk-edgerunners-live-wallpaper/")!
+    let token = "skfkzJydxVqF%2BAZdOvcfgYzTM4FJj6eRMccDNoYpT909suPXMqFJ04mKmAQnMbrGAaIdrCkWuwjvAWqrynxQLrWKp9Q6XLhIS7RM7A%3D%3D"
+
+    let resolved = try MoeWallsBrowserResolver.resolvedDownloadURL(from: token, pageURL: pageURL)
+
+    #expect(
+        resolved.absoluteString ==
+        "https://go.moewalls.com/download.php?video=skfkzJydxVqF%2BAZdOvcfgYzTM4FJj6eRMccDNoYpT909suPXMqFJ04mKmAQnMbrGAaIdrCkWuwjvAWqrynxQLrWKp9Q6XLhIS7RM7A%3D%3D"
+    )
+}
+
+@MainActor
+@Test func moewallsExplicitURLStillPassesThroughResolver() throws {
+    let pageURL = URL(string: "https://moewalls.com/anime/example-live-wallpaper/")!
+    let url = "https://media.moewalls.com/videos/example.mp4"
+
+    let resolved = try MoeWallsBrowserResolver.resolvedDownloadURL(from: url, pageURL: pageURL)
+
+    #expect(resolved.absoluteString == url)
 }
 
 @Test func moewallsSitemapIndexIsParsed() throws {
