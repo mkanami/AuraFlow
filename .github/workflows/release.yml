@@ -22,11 +22,6 @@ jobs:
           echo "AURAFLOW_VERSION=${version}" >> "${GITHUB_ENV}"
           echo "AURAFLOW_BUILD=${GITHUB_RUN_NUMBER}" >> "${GITHUB_ENV}"
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Build app bundle and archives
         shell: bash
         run: ./build_app.sh
