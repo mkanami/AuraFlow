@@ -48,19 +48,16 @@ final class MoeWallsBrowserResolver: NSObject {
         try await load(pageURL: pageURL)
         try await prepareDownloadState()
 
-        if let playableSourceURL = try? await waitForPlayableSourceURL(pageURL: pageURL) {
-            let cookies = await currentCookies()
-            return try await downloadWithBrowserContext(
-                from: playableSourceURL,
-                pageURL: pageURL,
-                cookies: cookies,
-                destinationURL: destinationURL
-            )
-        }
+        let playableSourceURL = try? await waitForPlayableSourceURL(pageURL: pageURL)
+        var lastError: Error?
 
         do {
             return try await startBrowserManagedDownload(to: destinationURL)
         } catch {
+            lastError = error
+        }
+
+        do {
             let token = try await waitForDownloadToken()
             let downloadURL = try resolvedDownloadURL(from: token, pageURL: pageURL)
             let cookies = await currentCookies()
@@ -70,7 +67,25 @@ final class MoeWallsBrowserResolver: NSObject {
                 cookies: cookies,
                 destinationURL: destinationURL
             )
+        } catch {
+            lastError = error
         }
+
+        if let playableSourceURL {
+            let cookies = await currentCookies()
+            do {
+                return try await downloadWithBrowserContext(
+                    from: playableSourceURL,
+                    pageURL: pageURL,
+                    cookies: cookies,
+                    destinationURL: destinationURL
+                )
+            } catch {
+                lastError = error
+            }
+        }
+
+        throw lastError ?? MoeWallsBrowserResolverError.downloadDidNotStart
     }
 
     func resolvePlayableSourceURL(from pageURL: URL) async throws -> URL {
