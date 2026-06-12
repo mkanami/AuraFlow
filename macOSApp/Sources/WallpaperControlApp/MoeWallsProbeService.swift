@@ -52,7 +52,7 @@ final class MoeWallsHTTPClient {
     init(
         session: URLSession = .shared,
         timeout: TimeInterval = 20,
-        userAgent: String = "AuraFlow/1.1 (macOS; MoeWallsSource)",
+        userAgent: String = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
         maxRetries: Int = 2
     ) {
         self.session = session
@@ -92,6 +92,9 @@ final class MoeWallsHTTPClient {
         request.timeoutInterval = timeout
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(accept, forHTTPHeaderField: "Accept")
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
 
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {

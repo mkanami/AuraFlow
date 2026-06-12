@@ -145,6 +145,33 @@ struct DownloadedCatalogWallpaper: Identifiable, Hashable, Codable {
     }
 }
 
+enum CatalogDownloadError: LocalizedError {
+    case badStatus(url: URL, statusCode: Int)
+    case htmlResponse(url: URL)
+
+    var errorDescription: String? {
+        switch self {
+        case .badStatus(let url, let statusCode):
+            let host = url.host ?? "server"
+            switch statusCode {
+            case 401, 403:
+                return "\(host) blocked the download request (\(statusCode))."
+            case 404:
+                return "The wallpaper file is no longer available on \(host)."
+            case 429:
+                return "\(host) is rate-limiting download requests (\(statusCode))."
+            case 500...599:
+                return "\(host) returned a server error (\(statusCode))."
+            default:
+                return "\(host) returned HTTP \(statusCode)."
+            }
+        case .htmlResponse(let url):
+            let host = url.host ?? "server"
+            return "\(host) returned an HTML page instead of a video file."
+        }
+    }
+}
+
 func catalogOriginHeaderValue(for url: URL) -> String? {
     guard let scheme = url.scheme,
           let host = url.host else {
@@ -1471,6 +1498,16 @@ final class AppViewModel: ObservableObject {
 
         var lastError: Error?
 
+        if isMoeWallsWallpaper(wallpaper) {
+            do {
+                if let detailSource = try await moeWallsDetailDownloadSource(for: wallpaper) {
+                    return try await downloadCatalogSource(detailSource, for: wallpaper)
+                }
+            } catch {
+                lastError = error
+            }
+        }
+
         if isMoeWallsWallpaper(wallpaper),
            let pageURL = wallpaper.sourcePageURL {
             do {
@@ -1490,23 +1527,6 @@ final class AppViewModel: ObservableObject {
             }
         }
 
-        if isMoeWallsWallpaper(wallpaper) {
-            do {
-                if let detailSource = try await moeWallsDetailDownloadSource(for: wallpaper) {
-                    return try await downloadCatalogSource(detailSource, for: wallpaper)
-                }
-            } catch {
-                lastError = error
-            }
-            if let pageURL = wallpaper.sourcePageURL {
-                do {
-                    return try await downloadMoeWallsVideo(for: wallpaper, pageURL: pageURL)
-                } catch {
-                    lastError = error
-                }
-            }
-        }
-
         throw lastError ?? URLError(.badURL)
     }
 
@@ -1515,6 +1535,9 @@ final class AppViewModel: ObservableObject {
         guard let moeWallsSource = catalogProvider as? MoeWallsSource else { return nil }
 
         let details = try await moeWallsSource.fetchDetails(pageURL: pageURL)
+        guard details.hasExplicitPlayableSource == true else {
+            return nil
+        }
         if let downloadURL = details.downloadURL {
             let width = details.resolution?.width ?? 0
             let height = details.resolution?.height ?? 0
@@ -1542,10 +1565,21 @@ final class AppViewModel: ObservableObject {
             try? FileManager.default.removeItem(at: destination)
         }
 
+        let useBrowserStyleHeaders = shouldUseBrowserStyleHeaders(for: source.url, wallpaper: wallpaper)
         var request = URLRequest(url: source.url)
         request.timeoutInterval = 45
-        request.setValue("AuraFlow/1.1", forHTTPHeaderField: "User-Agent")
+        request.setValue(
+            useBrowserStyleHeaders
+                ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15"
+                : "AuraFlow/1.1",
+            forHTTPHeaderField: "User-Agent"
+        )
         request.setValue("*/*", forHTTPHeaderField: "Accept")
+        if useBrowserStyleHeaders {
+            request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+            request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+        }
         if let sourcePageURL = wallpaper.sourcePageURL {
             request.setValue(sourcePageURL.absoluteString, forHTTPHeaderField: "Referer")
             if source.url.host?.contains("moewalls.com") == true,
@@ -1554,10 +1588,24 @@ final class AppViewModel: ObservableObject {
             }
         }
 
-        let (temporaryURL, response) = try await URLSession.shared.download(for: request)
+        let session: URLSession
+        if useBrowserStyleHeaders {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.httpCookieAcceptPolicy = .always
+            configuration.httpShouldSetCookies = true
+            session = URLSession(configuration: configuration)
+        } else {
+            session = .shared
+        }
+
+        let (temporaryURL, response) = try await session.download(for: request)
         if let httpResponse = response as? HTTPURLResponse,
            !(200...299).contains(httpResponse.statusCode) {
-            throw URLError(.badServerResponse)
+            throw CatalogDownloadError.badStatus(url: source.url, statusCode: httpResponse.statusCode)
+        }
+        if let mimeType = response.mimeType?.lowercased(),
+           mimeType.hasPrefix("text/") || mimeType.contains("html") {
+            throw CatalogDownloadError.htmlResponse(url: source.url)
         }
 
         try? FileManager.default.removeItem(at: destination)
@@ -1626,11 +1674,16 @@ final class AppViewModel: ObservableObject {
         guard !wallpaper.sources.isEmpty else { return nil }
         guard wallpaper.sources.count > 1 else { return wallpaper.sources.first }
 
+        let nativeSources = wallpaper.sources.filter { source in
+            isNativePlaybackContainer(source.url)
+        }
+        let candidateSources = nativeSources.isEmpty ? wallpaper.sources : nativeSources
+
         let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
         let targetWidth = Int(screenFrame.width)
         let targetHeight = Int(screenFrame.height)
 
-        let largerOrEqual = wallpaper.sources.filter { source in
+        let largerOrEqual = candidateSources.filter { source in
             source.width >= targetWidth && source.height >= targetHeight
         }
 
@@ -1640,9 +1693,32 @@ final class AppViewModel: ObservableObject {
             return best
         }
 
-        return wallpaper.sources.max(by: { lhs, rhs in
+        return candidateSources.max(by: { lhs, rhs in
             (lhs.width * lhs.height) < (rhs.width * rhs.height)
         })
+    }
+
+    private func isNativePlaybackContainer(_ url: URL) -> Bool {
+        switch url.pathExtension.lowercased() {
+        case "mp4", "mov", "m4v":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func shouldUseBrowserStyleHeaders(for sourceURL: URL, wallpaper: CatalogWallpaper) -> Bool {
+        guard isMoeWallsWallpaper(wallpaper) else {
+            return false
+        }
+
+        guard let host = sourceURL.host?.lowercased() else {
+            return false
+        }
+
+        return host.contains("moewalls.com")
+            || host.contains("media.moewalls.com")
+            || host.contains("cdn.moewalls.com")
     }
 
     private func catalogDirectoryURL() throws -> URL {

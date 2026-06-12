@@ -44,6 +44,7 @@ struct MoeWallsWallpaper: Codable, Hashable {
     let sourceName: String?
     let publishedAt: Date?
     let downloadURL: URL?
+    let hasExplicitPlayableSource: Bool?
 
     var asCatalogWallpaper: CatalogWallpaper {
         let dimensions = (resolution?.width ?? 0, resolution?.height ?? 0)
@@ -69,6 +70,11 @@ struct MoeWallsWallpaper: Codable, Hashable {
         }
         if let previewVideoURL {
             candidates.append(previewVideoURL)
+            if previewVideoURL.pathExtension.lowercased() == "webm" {
+                candidates.append(
+                    previewVideoURL.deletingPathExtension().appendingPathExtension("mp4")
+                )
+            }
         } else if let derivedPreviewURL = MoeWallsParser.derivedPreviewVideoURL(from: previewImageURL, slug: slug) {
             candidates.append(derivedPreviewURL)
             if derivedPreviewURL.pathExtension.lowercased() == "webm" {
@@ -77,7 +83,26 @@ struct MoeWallsWallpaper: Codable, Hashable {
             }
         }
         var seen = Set<String>()
-        return candidates.filter { seen.insert($0.absoluteString).inserted }
+        let uniqueCandidates = candidates.filter { seen.insert($0.absoluteString).inserted }
+        return uniqueCandidates.enumerated().sorted { lhs, rhs in
+            let lhsRank = sourceCompatibilityRank(for: lhs.element)
+            let rhsRank = sourceCompatibilityRank(for: rhs.element)
+            if lhsRank == rhsRank {
+                return lhs.offset < rhs.offset
+            }
+            return lhsRank < rhsRank
+        }.map(\.element)
+    }
+
+    private func sourceCompatibilityRank(for url: URL) -> Int {
+        switch url.pathExtension.lowercased() {
+        case "mp4", "mov", "m4v":
+            return 0
+        case "webm", "mkv":
+            return 2
+        default:
+            return 1
+        }
     }
 }
 
@@ -158,7 +183,9 @@ enum MoeWallsParser {
             in: normalized,
             pattern: #"\!\[[^\]]*\]\((https?://[^)\s]*wp-content/uploads/[^)\s]*?(?:thumb|thumb-\d+x\d+)\.(?:jpg|jpeg|png|webp))\)"#
         ))
-        let previewVideoURL = url(from: firstPlayableURL(in: normalized))
+        let explicitPlayableURL = firstPlayableURL(in: normalized, relativeTo: canonicalURL)
+        let explicitDownloadURL = bestDownloadURL(in: normalized, relativeTo: canonicalURL)
+        let previewVideoURL = explicitPlayableURL
             ?? derivedPreviewVideoURL(from: previewImageURL, slug: slug)
         let categorySlug = firstMatch(in: normalized, pattern: #"https?://moewalls\.com/category/([^/"']+)/"#)
         let tagMatches = regexMatches(
@@ -183,7 +210,7 @@ enum MoeWallsParser {
                 ?? firstMatch(in: normalized, pattern: #"<time[^>]+datetime=["']([^"']+)["']"#)
         )
 
-        let downloadURL = url(from: bestDownloadURL(in: normalized))
+        let downloadURL = explicitDownloadURL
 
         return MoeWallsWallpaper(
             id: "moewalls-\(slug)",
@@ -198,7 +225,8 @@ enum MoeWallsParser {
             fileSizeMB: fileSizeMB,
             sourceName: sourceName?.nonEmpty,
             publishedAt: publishedAt,
-            downloadURL: downloadURL
+            downloadURL: downloadURL,
+            hasExplicitPlayableSource: explicitPlayableURL != nil || explicitDownloadURL != nil
         )
     }
 
@@ -281,25 +309,36 @@ enum MoeWallsParser {
                 fileSizeMB: nil,
                 sourceName: "MoeWalls",
                 publishedAt: nil,
-                downloadURL: nil
+                downloadURL: nil,
+                hasExplicitPlayableSource: nil
             )
         )
     }
 
-    private static func firstPlayableURL(in html: String) -> String? {
-        let pattern = #"https?://[^"'<>\s]+?\.(?:mp4|webm|mov|m4v)(?:\?[^"'<>\s]*)?"#
-        return firstMatch(in: html, pattern: pattern)
+    private static func firstPlayableURL(in html: String, relativeTo baseURL: URL) -> URL? {
+        playableURLs(in: html, relativeTo: baseURL).first
     }
 
-    private static func bestDownloadURL(in html: String) -> String? {
-        let urls = regexMatches(
-            pattern: #"https?://[^"'<>\s]+?\.(?:mp4|webm|mov|m4v)(?:\?[^"'<>\s]*)?"#,
-            in: html
-        ).compactMap(\.first)
-        if let mp4 = urls.first(where: { $0.lowercased().contains(".mp4") }) {
+    private static func bestDownloadURL(in html: String, relativeTo baseURL: URL) -> URL? {
+        let urls = playableURLs(in: html, relativeTo: baseURL)
+        if let mp4 = urls.first(where: { $0.pathExtension.lowercased() == "mp4" }) {
             return mp4
         }
         return urls.first
+    }
+
+    private static func playableURLs(in html: String, relativeTo baseURL: URL) -> [URL] {
+        let matches = regexMatches(
+            pattern: #"((?:https?:)?//[^"'<>\s]+?\.(?:mp4|webm|mov|m4v)(?:\?[^"'<>\s]*)?|/[^"'<>\s]+?\.(?:mp4|webm|mov|m4v)(?:\?[^"'<>\s]*)?)"#,
+            in: html
+        ).compactMap(\.first)
+
+        var seen = Set<String>()
+        return matches.compactMap { rawURL in
+            url(from: rawURL, relativeTo: baseURL)
+        }.filter { url in
+            seen.insert(url.absoluteString).inserted
+        }
     }
 
     private static func firstMatch(in input: String, pattern: String) -> String? {
@@ -350,7 +389,17 @@ enum MoeWallsParser {
     }
 
     private static func url(from raw: String?) -> URL? {
+        url(from: raw, relativeTo: nil)
+    }
+
+    private static func url(from raw: String?, relativeTo baseURL: URL?) -> URL? {
         guard let raw = raw?.nonEmpty else { return nil }
+        if raw.hasPrefix("//") {
+            return URL(string: "https:\(raw)")
+        }
+        if raw.hasPrefix("/") {
+            return URL(string: raw, relativeTo: baseURL)?.absoluteURL
+        }
         return URL(string: raw)
     }
 

@@ -545,7 +545,8 @@ actor MoeWallsSource: WallpaperCatalogProviding {
             fileSizeMB: nil,
             sourceName: "MoeWalls",
             publishedAt: publishedAt,
-            downloadURL: nil
+            downloadURL: nil,
+            hasExplicitPlayableSource: nil
         )
     }
 

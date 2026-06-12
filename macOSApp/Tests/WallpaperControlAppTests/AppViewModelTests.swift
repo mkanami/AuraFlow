@@ -46,6 +46,20 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(catalogOriginHeaderValue(for: url) == "http://localhost:8080")
 }
 
+@Test func bundledToolExecutableResolvesFromResourcesBin() throws {
+    let tempRoot = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("auraflow-bundled-bin-\(UUID().uuidString)", isDirectory: true)
+    let binDirectory = tempRoot.appendingPathComponent("bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: binDirectory, withIntermediateDirectories: true)
+
+    let ffmpegURL = binDirectory.appendingPathComponent("ffmpeg")
+    try "#!/bin/sh\nexit 0\n".data(using: .utf8)!.write(to: ffmpegURL, options: .atomic)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ffmpegURL.path)
+    defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+    #expect(auraFlowBundledToolExecutable(named: "ffmpeg", resourcesURL: tempRoot) == ffmpegURL.path)
+}
+
 @MainActor
 @Test func previewSetsPlayerWhenVideoSelected() throws {
     let controller = MockNativeWallpaperController()

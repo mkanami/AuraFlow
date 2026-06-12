@@ -45,6 +45,7 @@ Control and agent state are stored in `~/Library/Application Support/AuraFlow`.
 - macOS 13 or later
 - Apple Silicon or Intel Mac
 - internet connection for catalog downloads
+- `ffmpeg` only for some WebM/AV1 compatibility conversions when a release build was made without bundled tools
 
 ## Release Package
 

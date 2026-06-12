@@ -6,6 +6,7 @@ enum MoeWallsBrowserResolverError: LocalizedError {
     case downloadDidNotStart
     case downloadDestinationMissing
     case invalidResponse
+    case playableSourceNotFound
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +18,8 @@ enum MoeWallsBrowserResolverError: LocalizedError {
             return "MoeWalls browser flow has no destination for the downloaded file."
         case .invalidResponse:
             return "MoeWalls browser flow returned an invalid download response."
+        case .playableSourceNotFound:
+            return "MoeWalls browser flow could not resolve a playable video source."
         }
     }
 }
@@ -45,49 +48,35 @@ final class MoeWallsBrowserResolver: NSObject {
         try await load(pageURL: pageURL)
         try await prepareDownloadState()
 
+        if let playableSourceURL = try? await waitForPlayableSourceURL(pageURL: pageURL) {
+            let cookies = await currentCookies()
+            return try await downloadWithBrowserContext(
+                from: playableSourceURL,
+                pageURL: pageURL,
+                cookies: cookies,
+                destinationURL: destinationURL
+            )
+        }
+
         do {
             return try await startBrowserManagedDownload(to: destinationURL)
         } catch {
             let token = try await waitForDownloadToken()
             let downloadURL = try resolvedDownloadURL(from: token, pageURL: pageURL)
             let cookies = await currentCookies()
-
-            var request = URLRequest(url: downloadURL)
-            request.timeoutInterval = 45
-            request.setValue(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
-                forHTTPHeaderField: "User-Agent"
+            return try await downloadWithBrowserContext(
+                from: downloadURL,
+                pageURL: pageURL,
+                cookies: cookies,
+                destinationURL: destinationURL
             )
-            request.setValue("*/*", forHTTPHeaderField: "Accept")
-            request.setValue(pageURL.absoluteString, forHTTPHeaderField: "Referer")
-            request.setValue("\(pageURL.scheme ?? "https")://\(pageURL.host ?? "moewalls.com")", forHTTPHeaderField: "Origin")
-            if !cookies.isEmpty {
-                request.setValue(
-                    HTTPCookie.requestHeaderFields(with: cookies)["Cookie"],
-                    forHTTPHeaderField: "Cookie"
-                )
-            }
-
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.httpShouldSetCookies = true
-            configuration.httpCookieStorage = HTTPCookieStorage()
-            cookies.forEach { configuration.httpCookieStorage?.setCookie($0) }
-
-            let session = URLSession(configuration: configuration)
-            let (temporaryURL, response) = try await session.download(for: request)
-            if let httpResponse = response as? HTTPURLResponse,
-               !(200...299).contains(httpResponse.statusCode) {
-                throw URLError(.badServerResponse)
-            }
-            if let mimeType = response.mimeType?.lowercased(),
-               mimeType.hasPrefix("text/") || mimeType.contains("html") {
-                throw MoeWallsBrowserResolverError.invalidResponse
-            }
-
-            try? FileManager.default.removeItem(at: destinationURL)
-            try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
-            return destinationURL
         }
+    }
+
+    func resolvePlayableSourceURL(from pageURL: URL) async throws -> URL {
+        try await load(pageURL: pageURL)
+        try await prepareDownloadState()
+        return try await waitForPlayableSourceURL(pageURL: pageURL)
     }
 
     private func load(pageURL: URL) async throws {
@@ -124,6 +113,30 @@ final class MoeWallsBrowserResolver: NSObject {
         }
 
         throw MoeWallsBrowserResolverError.tokenNotFound
+    }
+
+    private func waitForPlayableSourceURL(pageURL: URL) async throws -> URL {
+        let script = """
+        (() => {
+            const source = document.querySelector('video source[src]');
+            if (source) {
+                return source.currentSrc || source.src || source.getAttribute('src');
+            }
+            const video = document.querySelector('video');
+            if (!video) { return null; }
+            return video.currentSrc || video.src || video.getAttribute('src');
+        })();
+        """
+
+        for _ in 0..<80 {
+            if let rawValue = try await webView.evaluateJavaScript(script) as? String,
+               let url = try? resolvedDownloadURL(from: rawValue, pageURL: pageURL) {
+                return url
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        throw MoeWallsBrowserResolverError.playableSourceNotFound
     }
 
     private func prepareDownloadState() async throws {
@@ -203,6 +216,10 @@ final class MoeWallsBrowserResolver: NSObject {
         guard !trimmed.isEmpty else {
             throw MoeWallsBrowserResolverError.tokenNotFound
         }
+        if trimmed.hasPrefix("//"),
+           let schemeRelative = URL(string: "https:\(trimmed)") {
+            return schemeRelative
+        }
         if let absolute = URL(string: trimmed), absolute.scheme != nil {
             return absolute
         }
@@ -210,6 +227,49 @@ final class MoeWallsBrowserResolver: NSObject {
             return relative
         }
         throw MoeWallsBrowserResolverError.tokenNotFound
+    }
+
+    private func downloadWithBrowserContext(
+        from downloadURL: URL,
+        pageURL: URL,
+        cookies: [HTTPCookie],
+        destinationURL: URL
+    ) async throws -> URL {
+        var request = URLRequest(url: downloadURL)
+        request.timeoutInterval = 45
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue(pageURL.absoluteString, forHTTPHeaderField: "Referer")
+        request.setValue("\(pageURL.scheme ?? "https")://\(pageURL.host ?? "moewalls.com")", forHTTPHeaderField: "Origin")
+        if !cookies.isEmpty {
+            request.setValue(
+                HTTPCookie.requestHeaderFields(with: cookies)["Cookie"],
+                forHTTPHeaderField: "Cookie"
+            )
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = true
+        configuration.httpCookieStorage = HTTPCookieStorage()
+        cookies.forEach { configuration.httpCookieStorage?.setCookie($0) }
+
+        let session = URLSession(configuration: configuration)
+        let (temporaryURL, response) = try await session.download(for: request)
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200...299).contains(httpResponse.statusCode) {
+            throw CatalogDownloadError.badStatus(url: downloadURL, statusCode: httpResponse.statusCode)
+        }
+        if let mimeType = response.mimeType?.lowercased(),
+           mimeType.hasPrefix("text/") || mimeType.contains("html") {
+            throw CatalogDownloadError.htmlResponse(url: downloadURL)
+        }
+
+        try? FileManager.default.removeItem(at: destinationURL)
+        try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+        return destinationURL
     }
 
 }

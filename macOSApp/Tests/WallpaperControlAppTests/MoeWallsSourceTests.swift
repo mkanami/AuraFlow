@@ -57,6 +57,31 @@ import Testing
     #expect(wallpaper.downloadURL?.absoluteString == "https://media.moewalls.com/videos/neon-ruins-3840x2160.mp4")
 }
 
+@Test func moewallsDetailPageResolvesRelativePreviewVideoURLs() {
+    let html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://moewalls.com/anime/makima-chainsaw-man-6-live-wallpaper/">
+        <meta property="og:title" content="Makima Chainsaw Man Live Wallpaper">
+        <meta property="og:image" content="https://moewalls.com/wp-content/uploads/2026/04/makima-chainsaw-man-thumb.jpg">
+      </head>
+      <body>
+        <video poster="/wp-content/uploads/2026/04/makima-chainsaw-man-thumb-728x410.jpg">
+          <source src="/wp-content/uploads/preview/2026/makima-chainsaw-man-preview.webm" type="video/mp4" />
+        </video>
+      </body>
+    </html>
+    """
+
+    let wallpaper = MoeWallsParser.parseWallpaperDetail(
+        html: html,
+        pageURL: URL(string: "https://moewalls.com/anime/makima-chainsaw-man-6-live-wallpaper/")!
+    )
+
+    #expect(wallpaper.previewVideoURL?.absoluteString == "https://moewalls.com/wp-content/uploads/preview/2026/makima-chainsaw-man-preview.webm")
+    #expect(wallpaper.downloadURL?.absoluteString == "https://moewalls.com/wp-content/uploads/preview/2026/makima-chainsaw-man-preview.webm")
+}
+
 @Test func moewallsDerivesPreviewVideoFromThumbnail() {
     let previewImageURL = URL(string: "https://moewalls.com/wp-content/uploads/2026/03/musashi-soul-of-the-katana-vagabond-thumb.jpg")
     let previewURL = MoeWallsParser.derivedPreviewVideoURL(
@@ -65,6 +90,31 @@ import Testing
     )
 
     #expect(previewURL?.absoluteString == "https://moewalls.com/wp-content/uploads/preview/2026/musashi-soul-of-the-katana-vagabond-preview.webm")
+}
+
+@Test func moewallsPreviewCandidatesPreferNativeMP4Fallback() {
+    let wallpaper = MoeWallsWallpaper(
+        id: "moewalls-musashi",
+        slug: "musashi-soul-of-the-katana-vagabond-live-wallpaper",
+        title: "Musashi",
+        pageURL: URL(string: "https://moewalls.com/anime/musashi-soul-of-the-katana-vagabond-live-wallpaper/")!,
+        previewImageURL: nil,
+        previewVideoURL: URL(string: "https://moewalls.com/wp-content/uploads/preview/2026/musashi-soul-of-the-katana-vagabond-preview.webm"),
+        category: "Anime",
+        tags: [],
+        resolution: nil,
+        fileSizeMB: nil,
+        sourceName: "MoeWalls",
+        publishedAt: nil,
+        downloadURL: nil,
+        hasExplicitPlayableSource: nil
+    )
+
+    let candidates = wallpaper.previewCandidateURLs
+
+    #expect(candidates.count == 2)
+    #expect(candidates.first?.absoluteString == "https://moewalls.com/wp-content/uploads/preview/2026/musashi-soul-of-the-katana-vagabond-preview.mp4")
+    #expect(candidates.last?.absoluteString == "https://moewalls.com/wp-content/uploads/preview/2026/musashi-soul-of-the-katana-vagabond-preview.webm")
 }
 
 @Test func moewallsSitemapIndexIsParsed() throws {

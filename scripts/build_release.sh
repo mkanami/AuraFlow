@@ -7,7 +7,7 @@ SWIFT_DIR="$ROOT_DIR/macOSApp"
 DIST_DIR="$ROOT_DIR/dist"
 APP_TARGET="WallpaperControlApp"
 HELPER_TARGET="AuraWallpaperAgent"
-APP_DISPLAY_NAME="AuraFlow"
+APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-AuraFlow}"
 APP_VERSION="${AURAFLOW_VERSION:-1.2.2}"
 APP_BUILD="${AURAFLOW_BUILD:-4}"
 APP_BUNDLE="$DIST_DIR/${APP_DISPLAY_NAME}.app"
@@ -16,11 +16,26 @@ APP_DMG="$DIST_DIR/${APP_DISPLAY_NAME}.dmg"
 ICON_PNG="$ROOT_DIR/Resources/AppIcon.png"
 ICON_ICNS="$ROOT_DIR/Resources/AppIcon.icns"
 BUILD_UNIVERSAL="${BUILD_UNIVERSAL:-1}"
+REQUIRE_UNIVERSAL="${REQUIRE_UNIVERSAL:-0}"
+FFMPEG_RUNTIME_BUNDLING="${FFMPEG_RUNTIME_BUNDLING:-1}"
+REQUIRE_FFMPEG_RUNTIME="${REQUIRE_FFMPEG_RUNTIME:-0}"
+FFMPEG_BIN="${AURAFLOW_FFMPEG_BIN:-}"
+FFPROBE_BIN="${AURAFLOW_FFPROBE_BIN:-}"
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
+CODESIGN_KEYCHAIN_PATH="${CODESIGN_KEYCHAIN_PATH:-}"
+REQUIRE_CODESIGN="${REQUIRE_CODESIGN:-0}"
 LOCK_DIR="$ROOT_DIR/.build-lock"
 BUNDLED_TOOLS_DIR="$APP_BUNDLE/Contents/Resources/BundledTools"
 
 log() {
   printf '[build] %s\n' "$1"
+}
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    log "Required command not found: $1"
+    exit 1
+  fi
 }
 
 ensure_xcode_toolchain() {
@@ -64,14 +79,6 @@ plist_set_string() {
     /usr/libexec/PlistBuddy -c "Add :${key} string ${value}" "$plist"
 }
 
-plist_set_bool() {
-  local plist="$1"
-  local key="$2"
-  local value="$3"
-  /usr/libexec/PlistBuddy -c "Set :${key} ${value}" "$plist" 2>/dev/null || \
-    /usr/libexec/PlistBuddy -c "Add :${key} bool ${value}" "$plist"
-}
-
 ensure_icon() {
   if [[ -f "$ICON_ICNS" ]]; then
     return
@@ -82,19 +89,17 @@ ensure_icon() {
     exit 1
   fi
 
-  if ! command -v iconutil >/dev/null 2>&1; then
-    log "iconutil not available. Install Xcode command line tools."
-    exit 1
-  fi
+  require_command iconutil
 
+  local tmpdir
   tmpdir="$(mktemp -d)"
-  iconset="$tmpdir/AppIcon.iconset"
+  local iconset="$tmpdir/AppIcon.iconset"
   mkdir -p "$iconset"
 
   for size in 16 32 64 128 256 512; do
     for scale in 1 2; do
-      scaled=$((size * scale))
-      name="icon_${size}x${size}"
+      local scaled=$((size * scale))
+      local name="icon_${size}x${size}"
       if [[ "$scale" -eq 2 ]]; then
         name+="@2x"
       fi
@@ -113,16 +118,15 @@ prepare_environment() {
 }
 
 resolve_tool_path() {
-  local env_var_name="$1"
+  local env_override="$1"
   local tool_name="$2"
-  local env_value="${!env_var_name:-}"
 
-  if [[ -n "$env_value" && -x "$env_value" ]]; then
-    printf '%s\n' "$env_value"
+  if [[ -n "$env_override" && -x "$env_override" ]]; then
+    printf '%s\n' "$env_override"
     return 0
   fi
 
-  local candidate
+  local candidate=""
   for candidate in \
     "/opt/homebrew/bin/${tool_name}" \
     "/usr/local/bin/${tool_name}" \
@@ -160,16 +164,24 @@ build_swift_app() {
       log "Built x86_64 slice"
       built_x86="1"
     else
+      if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
+        log "Failed to build x86_64 slice and REQUIRE_UNIVERSAL=1 is set."
+        exit 1
+      fi
       log "[warn] Failed to build x86_64 slice. Using arm64 only."
     fi
   elif [[ "$BUILD_UNIVERSAL" != "1" ]]; then
     log "Skipping x86_64 build (BUILD_UNIVERSAL=$BUILD_UNIVERSAL)"
   else
+    if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
+      log "'arch' command not found and REQUIRE_UNIVERSAL=1 is set."
+      exit 1
+    fi
     log "[warn] 'arch' command not found; building arm64 slice only."
   fi
 
-  local bin_path
-  local helper_path
+  local bin_path=""
+  local helper_path=""
   if [[ "$built_x86" == "1" && -f "$arm_binary" && -f "$x86_binary" && -f "$arm_helper" && -f "$x86_helper" ]]; then
     mkdir -p "$universal_dir"
     lipo -create -output "$universal_dir/${APP_TARGET}" "$arm_binary" "$x86_binary"
@@ -177,11 +189,11 @@ build_swift_app() {
     bin_path="$universal_dir"
     helper_path="$universal_dir/${HELPER_TARGET}"
     log "Created universal binary"
-  elif [[ -f "$arm_binary" ]]; then
+  elif [[ -f "$arm_binary" && -f "$arm_helper" ]]; then
     bin_path="$(dirname "$arm_binary")"
-    helper_path="$bin_path/${HELPER_TARGET}"
+    helper_path="$arm_helper"
   else
-    bin_path=$(swift build -c release --show-bin-path)
+    bin_path="$(swift build -c release --show-bin-path)"
     helper_path="$bin_path/${HELPER_TARGET}"
   fi
   popd >/dev/null
@@ -190,11 +202,11 @@ build_swift_app() {
   local resources_bundle="$bin_path/${APP_TARGET}_${APP_TARGET}.bundle"
 
   if [[ ! -x "$binary" ]]; then
-    log "Не найден бинарник ($binary)"
+    log "Binary not found: $binary"
     exit 1
   fi
   if [[ ! -x "$helper_path" ]]; then
-    log "Не найден helper binary ($helper_path)"
+    log "Helper binary not found: $helper_path"
     exit 1
   fi
 
@@ -206,6 +218,20 @@ build_swift_app() {
   cp "$helper_path" "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
+
+  if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
+    local app_archs helper_archs
+    app_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}" 2>/dev/null || true)"
+    helper_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}" 2>/dev/null || true)"
+    if [[ "$app_archs" != *"arm64"* || "$app_archs" != *"x86_64"* ]]; then
+      log "Universal app binary required, produced: ${app_archs:-unknown}"
+      exit 1
+    fi
+    if [[ "$helper_archs" != *"arm64"* || "$helper_archs" != *"x86_64"* ]]; then
+      log "Universal helper binary required, produced: ${helper_archs:-unknown}"
+      exit 1
+    fi
+  fi
 
   if [[ -d "$resources_bundle" ]]; then
     cp -R "$resources_bundle" "$APP_BUNDLE/Contents/Resources/${APP_TARGET}.bundle"
@@ -252,51 +278,139 @@ apply_plist_customizations() {
 }
 
 bundle_runtime_tools() {
+  if [[ "$FFMPEG_RUNTIME_BUNDLING" != "1" ]]; then
+    log "Skipping bundled ffmpeg runtime (FFMPEG_RUNTIME_BUNDLING=$FFMPEG_RUNTIME_BUNDLING)"
+    return
+  fi
+
   mkdir -p "$BUNDLED_TOOLS_DIR"
 
   local ffmpeg_path=""
   local ffprobe_path=""
 
-  if ffmpeg_path="$(resolve_tool_path AURAFLOW_FFMPEG_PATH ffmpeg 2>/dev/null)"; then
-    cp "$ffmpeg_path" "$BUNDLED_TOOLS_DIR/ffmpeg"
-    chmod +x "$BUNDLED_TOOLS_DIR/ffmpeg"
-    log "Bundled ffmpeg from $ffmpeg_path"
-  else
-    log "ffmpeg not found; compatibility transcodes will use system ffmpeg only."
-  fi
+  ffmpeg_path="$(resolve_tool_path "$FFMPEG_BIN" ffmpeg 2>/dev/null || true)"
+  ffprobe_path="$(resolve_tool_path "$FFPROBE_BIN" ffprobe 2>/dev/null || true)"
 
-  if ffprobe_path="$(resolve_tool_path AURAFLOW_FFPROBE_PATH ffprobe 2>/dev/null)"; then
-    cp "$ffprobe_path" "$BUNDLED_TOOLS_DIR/ffprobe"
-    chmod +x "$BUNDLED_TOOLS_DIR/ffprobe"
-    log "Bundled ffprobe from $ffprobe_path"
-  else
-    log "ffprobe not found; continuing without bundled ffprobe."
-  fi
-
-  if [[ -z "$(ls -A "$BUNDLED_TOOLS_DIR" 2>/dev/null)" ]]; then
+  if [[ -z "$ffmpeg_path" || -z "$ffprobe_path" ]]; then
+    if [[ "$REQUIRE_FFMPEG_RUNTIME" == "1" ]]; then
+      log "Bundled ffmpeg runtime not found."
+      log "Set AURAFLOW_FFMPEG_BIN and AURAFLOW_FFPROBE_BIN or install ffmpeg locally."
+      exit 1
+    fi
+    log "[warn] Bundled ffmpeg runtime not found. Build will fall back to system ffmpeg if available on the user's Mac."
     rmdir "$BUNDLED_TOOLS_DIR" 2>/dev/null || true
+    return
   fi
+
+  cp "$ffmpeg_path" "$BUNDLED_TOOLS_DIR/ffmpeg"
+  cp "$ffprobe_path" "$BUNDLED_TOOLS_DIR/ffprobe"
+  chmod +x "$BUNDLED_TOOLS_DIR/ffmpeg" "$BUNDLED_TOOLS_DIR/ffprobe"
+  log "Bundled ffmpeg from $ffmpeg_path"
+  log "Bundled ffprobe from $ffprobe_path"
+}
+
+codesign_args() {
+  local args=(
+    --force
+    --sign "$CODESIGN_IDENTITY"
+    --timestamp
+  )
+  if [[ -n "$CODESIGN_KEYCHAIN_PATH" ]]; then
+    args+=(--keychain "$CODESIGN_KEYCHAIN_PATH")
+  fi
+  printf '%s\n' "${args[@]}"
+}
+
+prepare_bundle_for_codesign() {
+  if [[ -z "$CODESIGN_IDENTITY" ]]; then
+    if [[ "$REQUIRE_CODESIGN" == "1" ]]; then
+      log "REQUIRE_CODESIGN=1 but CODESIGN_IDENTITY is not set."
+      exit 1
+    fi
+    return 0
+  fi
+
+  require_command codesign
+  if command -v xattr >/dev/null 2>&1; then
+    xattr -cr "$APP_BUNDLE" || true
+  fi
+  find "$APP_BUNDLE" -type d -name "_CodeSignature" -prune -exec rm -rf {} +
+}
+
+find_macho_files() {
+  while IFS= read -r -d '' candidate; do
+    if /usr/bin/file -b "$candidate" 2>/dev/null | grep -q "Mach-O"; then
+      printf '%s\n' "$candidate"
+    fi
+  done < <(find "$APP_BUNDLE" -type f -print0)
+}
+
+codesign_target() {
+  local target="$1"
+  shift || true
+  local args=()
+  while IFS= read -r arg; do
+    args+=("$arg")
+  done < <(codesign_args)
+  if [[ "$#" -gt 0 ]]; then
+    args+=("$@")
+  fi
+  codesign "${args[@]}" "$target"
+}
+
+sign_app_bundle() {
+  prepare_bundle_for_codesign
+  if [[ -z "$CODESIGN_IDENTITY" ]]; then
+    return 0
+  fi
+
+  log "Signing app bundle"
+  while IFS= read -r target; do
+    codesign_target "$target"
+  done < <(find_macho_files)
+
+  if [[ -d "$APP_BUNDLE/Contents/Frameworks" ]]; then
+    while IFS= read -r framework; do
+      codesign_target "$framework"
+    done < <(find "$APP_BUNDLE/Contents/Frameworks" -mindepth 1 -maxdepth 1 -type d \( -name "*.framework" -o -name "*.bundle" \) | sort)
+  fi
+
+  codesign_target "$APP_BUNDLE" --options runtime
+  codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+}
+
+sign_disk_image() {
+  if [[ -z "$CODESIGN_IDENTITY" ]]; then
+    return 0
+  fi
+
+  log "Signing DMG"
+  codesign_target "$APP_DMG"
 }
 
 package_distribution() {
-  log "Создание ZIP архива"
+  log "Creating ZIP archive"
   pushd "$DIST_DIR" >/dev/null
   ditto -c -k --keepParent "${APP_DISPLAY_NAME}.app" "$(basename "$APP_ZIP")"
   popd >/dev/null
 
-  log "Создание DMG"
+  log "Creating DMG"
   local dmg_stage="$DIST_DIR/.dmg-stage"
   rm -rf "$dmg_stage"
   mkdir -p "$dmg_stage"
   cp -R "$APP_BUNDLE" "$dmg_stage/${APP_DISPLAY_NAME}.app"
   ln -s /Applications "$dmg_stage/Applications"
 
-  hdiutil create -volname "$APP_DISPLAY_NAME" \
+  hdiutil create \
+    -volname "$APP_DISPLAY_NAME" \
     -srcfolder "$dmg_stage" \
-    -ov -format UDZO "$APP_DMG" >/dev/null
+    -ov \
+    -format UDZO \
+    "$APP_DMG" >/dev/null
 
   rm -rf "$dmg_stage"
-  log "DMG готов: $APP_DMG"
+  sign_disk_image
+  log "DMG ready: $APP_DMG"
 }
 
 main() {
@@ -306,9 +420,10 @@ main() {
   build_swift_app
   apply_plist_customizations
   bundle_runtime_tools
+  sign_app_bundle
   package_distribution
-  log "Готово: $APP_BUNDLE"
-  log "Архивы: $APP_ZIP и $APP_DMG"
+  log "Done: $APP_BUNDLE"
+  log "Artifacts: $APP_ZIP and $APP_DMG"
 }
 
 main "$@"

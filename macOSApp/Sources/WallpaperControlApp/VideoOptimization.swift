@@ -83,6 +83,30 @@ struct VideoOptimizationResult {
     let fromCache: Bool
 }
 
+func auraFlowBundledToolExecutable(
+    named name: String,
+    resourcesURL: URL? = Bundle.main.resourceURL
+) -> String? {
+    guard let resourcesURL else { return nil }
+
+    let candidates = [
+        resourcesURL
+            .appendingPathComponent("BundledTools", isDirectory: true)
+            .appendingPathComponent(name)
+            .path,
+        resourcesURL
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent(name)
+            .path
+    ]
+
+    for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
+        return candidate
+    }
+
+    return nil
+}
+
 enum VideoOptimizerError: LocalizedError {
     case exportUnavailable
     case exportFailed(String)
@@ -657,8 +681,8 @@ final class VideoOptimizer {
         if !env.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             candidates.append(env)
         }
-        if let bundled = bundledToolExecutable(named: "ffmpeg") {
-            candidates.append(bundled.path)
+        if let bundled = auraFlowBundledToolExecutable(named: "ffmpeg") {
+            candidates.append(bundled)
         }
         candidates.append(contentsOf: [
             "/opt/homebrew/bin/ffmpeg",
@@ -684,23 +708,6 @@ final class VideoOptimizer {
             }
             return candidate
         }
-        return nil
-    }
-
-    private func bundledToolExecutable(named name: String) -> URL? {
-        let bundle = Bundle.main
-
-        if let direct = bundle.resourceURL?.appendingPathComponent("BundledTools/\(name)"),
-           FileManager.default.isExecutableFile(atPath: direct.path) {
-            return direct
-        }
-
-        if let bundledBundle = bundle.resourceURL?.appendingPathComponent("WallpaperControlApp.bundle"),
-           let nested = bundledBundle.appendingPathComponent("Contents/Resources/BundledTools/\(name)") as URL?,
-           FileManager.default.isExecutableFile(atPath: nested.path) {
-            return nested
-        }
-
         return nil
     }
 
