@@ -14,6 +14,28 @@ private func writeTinyGIF(to url: URL) throws {
     try Data(bytes).write(to: url, options: .atomic)
 }
 
+private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
+    let bytesPerPixel = 4
+    let bytesPerRow = width * bytesPerPixel
+    var pixels = [UInt8](repeating: value, count: width * height * bytesPerPixel)
+
+    for index in stride(from: 3, to: pixels.count, by: 4) {
+        pixels[index] = 255
+    }
+
+    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+    let context = CGContext(
+        data: &pixels,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: bytesPerRow,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    return context.makeImage()!
+}
+
 @Test func catalogOriginHeaderValueIncludesSchemeAndHost() {
     let url = URL(string: "https://moewalls.com/anime/neon-ruins-live-wallpaper/")!
     #expect(catalogOriginHeaderValue(for: url) == "https://moewalls.com")
@@ -40,7 +62,7 @@ private func writeTinyGIF(to url: URL) throws {
 
 @MainActor
 @Test func previewSetsPlayerWhenVideoSelected() throws {
-    let controller = MockPythonController()
+    let controller = MockNativeWallpaperController()
     let viewModel = AppViewModel(controller: controller)
 
     let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("preview-test.mp4")
@@ -48,20 +70,7 @@ private func writeTinyGIF(to url: URL) throws {
     defer {
         try? FileManager.default.removeItem(at: tempURL)
     }
-
-    let wallpaper = DownloadedCatalogWallpaper(
-        id: "preview-test",
-        wallpaperID: "preview-test",
-        title: "Preview Test",
-        category: "Anime",
-        attribution: "Fixture",
-        previewImageURL: nil,
-        localPreviewPath: nil,
-        sourcePageURL: nil,
-        localPath: tempURL.path,
-        downloadedAt: Date()
-    )
-    viewModel.applyDownloadedCatalogWallpaper(wallpaper)
+    viewModel.selectLocalVideoForPreview(tempURL)
 
     #expect(viewModel.previewPlayer != nil)
     #expect(viewModel.previewPlayer?.currentItem != nil)
@@ -69,7 +78,7 @@ private func writeTinyGIF(to url: URL) throws {
 
 @MainActor
 @Test func localVideoSelectionStaysInPreviewUntilStart() throws {
-    let controller = MockPythonController()
+    let controller = MockNativeWallpaperController()
     let viewModel = AppViewModel(controller: controller)
 
     let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("local-preview-only.mp4")
@@ -89,7 +98,7 @@ private func writeTinyGIF(to url: URL) throws {
 
 @MainActor
 @Test func localPreviewVideoStartsAfterStopAndStart() async throws {
-    let controller = MockPythonController()
+    let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.local-preview-start")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.local-preview-start")
     let optimizationStore = VideoOptimizationStore(defaults: defaults)
@@ -153,7 +162,7 @@ private func writeTinyGIF(to url: URL) throws {
 
 @MainActor
 @Test func catalogDownloadStagesPreviewUntilStart() throws {
-    let controller = MockPythonController()
+    let controller = MockNativeWallpaperController()
     let viewModel = AppViewModel(controller: controller)
 
     let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("catalog-preview-only.mp4")
@@ -184,7 +193,7 @@ private func writeTinyGIF(to url: URL) throws {
 
 @MainActor
 @Test func speedUpdateKeepsPreviewPlayerWhenWallpaperIsOnlyInPreview() async throws {
-    let controller = MockPythonController()
+    let controller = MockNativeWallpaperController()
     let viewModel = AppViewModel(controller: controller)
 
     let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("preview-speed-keepalive.mp4")
@@ -227,9 +236,28 @@ private func writeTinyGIF(to url: URL) throws {
     )
 }
 
+@Test func adaptiveGlassAppearanceKeepsDarkWallpaperFullyTransparent() {
+    let image = solidImage(width: 120, height: 68, value: 36)
+    let appearance = AppViewModel.adaptiveGlassAppearance(for: image)
+
+    #expect(appearance.topGlassAlpha == 1.0)
+    #expect(appearance.bottomGlassAlpha == 1.0)
+    #expect(appearance.bottomButtonProtectionOpacity == 0.0)
+}
+
+@Test func adaptiveGlassAppearanceProtectsBrightFlatWallpaper() {
+    let image = solidImage(width: 120, height: 68, value: 248)
+    let appearance = AppViewModel.adaptiveGlassAppearance(for: image)
+
+    #expect(appearance.topGlassAlpha < 0.97)
+    #expect(appearance.bottomGlassAlpha < 0.95)
+    #expect(appearance.bottomButtonProtectionOpacity > 0.005)
+    #expect(appearance.bottomButtonHighlightOpacity < 0.04)
+}
+
 @MainActor
 @Test func downloadedWallpaperAppliesImmediately() async throws {
-    let controller = MockPythonController()
+    let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.downloaded-immediate")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.downloaded-immediate")
     let optimizationStore = VideoOptimizationStore(defaults: defaults)
@@ -279,7 +307,7 @@ private func writeTinyGIF(to url: URL) throws {
 
 @MainActor
 @Test func catalogBackNavigatesDetailThenExitsCatalog() async throws {
-    let controller = MockPythonController()
+    let controller = MockNativeWallpaperController()
     let expectedWallpaper = CatalogWallpaper(
         id: "test-wallpaper",
         title: "Test Wallpaper",
@@ -314,7 +342,7 @@ private func writeTinyGIF(to url: URL) throws {
 
 @MainActor
 @Test func startIgnoresRequestsWhileWallpaperIsAlreadyRunning() async throws {
-    let controller = MockPythonController()
+    let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.start-preview")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.start-preview")
     let optimizationStore = VideoOptimizationStore(defaults: defaults)
@@ -367,7 +395,7 @@ private func writeTinyGIF(to url: URL) throws {
 
 @MainActor
 @Test func startAndStopButtonsTrackRunningAndPausedWallpaperState() async throws {
-    let controller = MockPythonController()
+    let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.button-state")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.button-state")
     let optimizationStore = VideoOptimizationStore(defaults: defaults)
@@ -404,7 +432,7 @@ private func writeTinyGIF(to url: URL) throws {
 
     #expect(viewModel.isRunning)
     #expect(viewModel.isPlaybackPaused == false)
-    #expect(viewModel.isStartButtonHighlighted)
+    #expect(viewModel.isStartButtonHighlighted == false)
     #expect(viewModel.isStopButtonHighlighted == false)
     #expect(viewModel.canStart == false)
     #expect(viewModel.canStop)
@@ -426,8 +454,8 @@ private func writeTinyGIF(to url: URL) throws {
 }
 
 @MainActor
-@Test func suspiciousRunningDaemonKeepsStartAvailable() async throws {
-    let controller = MockPythonController()
+@Test func suspiciousRunningDaemonKeepsStopAvailable() async throws {
+    let controller = MockNativeWallpaperController()
     let viewModel = AppViewModel(controller: controller)
 
     let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("suspicious-running-test.mp4")
@@ -470,15 +498,15 @@ private func writeTinyGIF(to url: URL) throws {
     #expect(viewModel.isRunning)
     #expect(viewModel.isPlaybackActive == false)
     #expect(viewModel.isPlaybackPaused == false)
-    #expect(viewModel.canStart)
-    #expect(viewModel.canStop == false)
-    #expect(viewModel.isStartButtonHighlighted)
+    #expect(viewModel.canStart == false)
+    #expect(viewModel.canStop)
+    #expect(viewModel.isStartButtonHighlighted == false)
     #expect(viewModel.isStopButtonHighlighted == false)
 }
 
 @MainActor
 @Test func startForcesPlaybackWhenSetVideoReturnsSuspiciousRunningState() async throws {
-    let controller = MockPythonController()
+    let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.suspicious-start")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.suspicious-start")
     let optimizationStore = VideoOptimizationStore(defaults: defaults)
@@ -553,7 +581,7 @@ private func writeTinyGIF(to url: URL) throws {
     #expect(viewModel.canStop)
 }
 
-final class MockPythonController: PythonControlling {
+final class MockNativeWallpaperController: WallpaperControlling {
     var configuredVideoURL: URL?
     var lastConfiguredVideoURL: URL?
     var startCallCount = 0

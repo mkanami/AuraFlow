@@ -17,7 +17,6 @@ jobs:
       BUILD_UNIVERSAL: "1"
       REQUIRE_UNIVERSAL: "1"
       REQUIRE_CODESIGN: "1"
-      PYTHON_BUILD_PYTHON: /usr/bin/python3
       APP_DISPLAY_NAME: AuraFlow
     steps:
       - name: Checkout
@@ -190,29 +189,20 @@ jobs:
           mkdir -p smoke
           ditto -x -k dist/AuraFlow.zip smoke
           APP_PATH="$PWD/smoke/AuraFlow.app"
-          PYTHON_HOME="$APP_PATH/Contents/Frameworks/Python3.framework/Versions/Current"
-          PYTHON_PATH="$APP_PATH/Contents/Resources/Python:$APP_PATH/Contents/Resources/Python/site-packages"
-          PYTHON_BIN="$PYTHON_HOME/bin/python3"
+          APP_BIN="$APP_PATH/Contents/MacOS/WallpaperControlApp"
+          HELPER_BIN="$APP_PATH/Contents/MacOS/AuraWallpaperAgent"
+
+          test -x "$APP_BIN"
+          test -x "$HELPER_BIN"
 
           uname -m
-          lipo -archs "$APP_PATH/Contents/MacOS/WallpaperControlApp"
+          lipo -archs "$APP_BIN"
+          lipo -archs "$HELPER_BIN"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           spctl -a -vv "$APP_PATH"
           spctl -a -vv -t open dist/AuraFlow.dmg
-
-          PYTHONHOME="$PYTHON_HOME" \
-          PYTHONPATH="$PYTHON_PATH" \
-          PYTHON_EXECUTABLE="$PYTHON_BIN" \
-          PYTHONNOUSERSITE=1 \
-          PYTHONDONTWRITEBYTECODE=1 \
-          "$PYTHON_BIN" -c 'import objc, AppKit, sys; print(sys.executable); print(objc.__file__); print(AppKit.__file__)'
-
-          PYTHONHOME="$PYTHON_HOME" \
-          PYTHONPATH="$PYTHON_PATH" \
-          PYTHON_EXECUTABLE="$PYTHON_BIN" \
-          PYTHONNOUSERSITE=1 \
-          PYTHONDONTWRITEBYTECODE=1 \
-          "$PYTHON_BIN" "$APP_PATH/Contents/Resources/Python/control.py" status >/dev/null
+          ls -lah "$APP_PATH/Contents/Resources" || true
+          ls -lah "$APP_PATH/Contents/Resources/BundledTools" || true
 
   publish-release:
     needs:

@@ -8,16 +8,29 @@ let package = Package(
     ],
     products: [
         .executable(name: "WallpaperControlApp", targets: ["WallpaperControlApp"]),
+        .executable(name: "AuraWallpaperAgent", targets: ["AuraWallpaperAgent"]),
     ],
     targets: [
         .target(
-            name: "PythonBridgeKit",
-            path: "Sources/PythonBridgeKit",
+            name: "AuraGlassBridgeKit",
+            path: "Sources/AuraGlassBridgeKit",
             publicHeadersPath: "include"
+        ),
+        .target(
+            name: "AuraWallpaperCore",
+            path: "Sources/AuraWallpaperCore"
+        ),
+        .executableTarget(
+            name: "AuraWallpaperAgent",
+            dependencies: ["AuraWallpaperCore"],
+            path: "Sources/AuraWallpaperAgent"
         ),
         .executableTarget(
             name: "WallpaperControlApp",
-            dependencies: ["PythonBridgeKit"],
+            dependencies: [
+                "AuraGlassBridgeKit",
+                "AuraWallpaperCore",
+            ],
             resources: [
                 .process("Resources")
             ]

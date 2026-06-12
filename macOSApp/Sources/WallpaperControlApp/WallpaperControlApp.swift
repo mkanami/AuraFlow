@@ -11,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false
+        true
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -28,7 +28,7 @@ struct WallpaperControlApp: App {
     @StateObject private var viewModel = AppViewModel()
 
     var body: some Scene {
-        Window("AuraFlow", id: Self.mainWindowID) {
+        WindowGroup("AuraFlow", id: Self.mainWindowID) {
             ContentView(viewModel: viewModel)
         }
         .defaultSize(width: preferredWindowSize().width, height: preferredWindowSize().height)

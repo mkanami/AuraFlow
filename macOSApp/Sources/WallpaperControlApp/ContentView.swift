@@ -1,10 +1,20 @@
 import SwiftUI
 import AVKit
 import AppKit
-import CoreImage
+import AuraGlassBridgeKit
 import ImageIO
 import QuartzCore
-import PythonBridgeKit
+
+private struct AdaptiveGlassAppearanceEnvironmentKey: EnvironmentKey {
+    static let defaultValue = AdaptiveGlassAppearance.default
+}
+
+extension EnvironmentValues {
+    var adaptiveGlassAppearance: AdaptiveGlassAppearance {
+        get { self[AdaptiveGlassAppearanceEnvironmentKey.self] }
+        set { self[AdaptiveGlassAppearanceEnvironmentKey.self] = newValue }
+    }
+}
 
 struct ContentView: View {
     @StateObject var viewModel: AppViewModel
@@ -15,8 +25,6 @@ struct ContentView: View {
     @State private var globalMonitor: Any?
     @State private var window: NSWindow?
     @State private var lastActivityRefreshAt: Date = .distantPast
-    @State private var isWindowDragging: Bool = false
-    @State private var dragSnapshotImage: NSImage?
     @State private var isHoveringTopOverlay: Bool = false
     @State private var isHoveringBottomOverlay: Bool = false
 
@@ -40,24 +48,16 @@ struct ContentView: View {
             let bottomOverlayPadding = resolvedBottomOverlayPadding()
 
             ZStack {
-                if let dragSnapshotImage, isWindowDragging {
-                    Image(nsImage: dragSnapshotImage)
-                        .resizable()
-                        .interpolation(.high)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .allowsHitTesting(false)
-                } else {
-                    mainContent(
-                        proxy: proxy,
-                        availableWidth: availableWidth,
-                        overlayWidth: overlayWidth,
-                        controlPanelWidth: controlPanelWidth,
-                        horizontalPadding: horizontalPadding,
-                        bottomOverlayPadding: bottomOverlayPadding,
-                        isCompactBySize: isCompactBySize,
-                        isVeryCompactByHeight: isVeryCompactByHeight
-                    )
-                }
+                mainContent(
+                    proxy: proxy,
+                    availableWidth: availableWidth,
+                    overlayWidth: overlayWidth,
+                    controlPanelWidth: controlPanelWidth,
+                    horizontalPadding: horizontalPadding,
+                    bottomOverlayPadding: bottomOverlayPadding,
+                    isCompactBySize: isCompactBySize,
+                    isVeryCompactByHeight: isVeryCompactByHeight
+                )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
@@ -93,7 +93,14 @@ struct ContentView: View {
         }
         .frame(minWidth: 760, minHeight: 480)
         .background(Color.clear)
-        .overlay(WindowAccessor(window: $window).allowsHitTesting(false))
+        .overlay(
+            WindowAccessor(
+                window: $window,
+                onInteractionStart: beginWindowDrag,
+                onInteractionEnd: endWindowDrag
+            )
+            .allowsHitTesting(false)
+        )
         .task {
             await viewModel.loadStatus()
         }
@@ -104,6 +111,7 @@ struct ContentView: View {
         .onDisappear {
             teardownActivityMonitoring()
         }
+        .environment(\.adaptiveGlassAppearance, viewModel.adaptiveGlassAppearance)
     }
 
     @ViewBuilder
@@ -284,7 +292,9 @@ final class TitlebarInteractionNSView: NSView {
             return
         }
 
-        super.mouseDown(with: event)
+        onDragStateChange?(true)
+        targetWindow.performDrag(with: event)
+        onDragStateChange?(false)
     }
 }
 
@@ -308,6 +318,7 @@ struct ControlPanel: View {
     let isCompactBySize: Bool
     let isVeryCompactByHeight: Bool
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     private var widthScale: CGFloat {
         max(0.82, min(1.0, panelWidth / 1180))
@@ -500,7 +511,9 @@ struct ControlPanel: View {
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 14,
-                material: .clear
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.bottomGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity
             )
         )
         .overlay(
@@ -1451,6 +1464,7 @@ struct SpeedOverlay: View {
     @Binding var isAdjustingSpeed: Bool
     let availableWidth: CGFloat
     var onHoverChanged: ((Bool) -> Void)? = nil
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     private var pillWidth: CGFloat {
         min(max(availableWidth * 0.46, 420), 720)
@@ -1496,7 +1510,9 @@ struct SpeedOverlay: View {
         .frame(width: pillWidth)
         .background(
             AuraGlassCapsuleSurface(
-                material: .clear
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.topGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.topProtectionOverlayOpacity
             )
         )
         .overlay(
@@ -1614,21 +1630,55 @@ struct VideoPreview: NSViewRepresentable {
     let player: AVPlayer?
     let videoGravity: AVLayerVideoGravity
 
-    func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
-        view.controlsStyle = .none
-        view.videoGravity = videoGravity
-        view.allowsPictureInPicturePlayback = false
-        view.updatesNowPlayingInfoCenter = false
-        view.showsFullScreenToggleButton = false
-        view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.clear.cgColor
+    func makeNSView(context: Context) -> AuraPreviewPlayerView {
+        let view = AuraPreviewPlayerView()
+        view.update(player: player, videoGravity: videoGravity)
         return view
     }
 
-    func updateNSView(_ nsView: AVPlayerView, context: Context) {
-        nsView.player = player
-        nsView.videoGravity = videoGravity
+    func updateNSView(_ nsView: AuraPreviewPlayerView, context: Context) {
+        nsView.update(player: player, videoGravity: videoGravity)
+    }
+}
+
+final class AuraPreviewPlayerView: NSView {
+    override var isOpaque: Bool {
+        false
+    }
+
+    private var playerLayer: AVPlayerLayer {
+        guard let layer = self.layer as? AVPlayerLayer else {
+            let fallback = AVPlayerLayer()
+            self.layer = fallback
+            return fallback
+        }
+        return layer
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        commonInit()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        commonInit()
+    }
+
+    override func makeBackingLayer() -> CALayer {
+        AVPlayerLayer()
+    }
+
+    private func commonInit() {
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+        playerLayer.backgroundColor = NSColor.clear.cgColor
+        playerLayer.needsDisplayOnBoundsChange = true
+    }
+
+    func update(player: AVPlayer?, videoGravity: AVLayerVideoGravity) {
+        playerLayer.player = player
+        playerLayer.videoGravity = videoGravity
     }
 }
 
@@ -1661,7 +1711,7 @@ struct DisabledOverlay: View {
                 VStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.title3.weight(.semibold))
-                    Text("Python bridge unavailable")
+                    Text("Native wallpaper runtime unavailable")
                         .font(.callout)
                         .foregroundColor(.white.opacity(0.92))
                 }
@@ -1830,6 +1880,7 @@ private struct AuraNativeGlassPillButton: View {
     let fillWidth: Bool
 
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     private var shape: Capsule {
         Capsule()
@@ -1847,35 +1898,37 @@ private struct AuraNativeGlassPillButton: View {
     private var strokeColor: Color {
         switch tone {
         case .secondary:
-            return Color.white.opacity(isEnabled ? 0.32 : 0.16)
+            return Color.white.opacity(isEnabled ? 0.28 : 0.13)
         case .accent:
-            return Color.accentColor.opacity(isEnabled ? 0.30 : 0.16)
+            return Color.accentColor.opacity(isEnabled ? 0.24 : 0.11)
         case .destructive:
-            return Color.red.opacity(isEnabled ? 0.30 : 0.16)
+            return Color.red.opacity(isEnabled ? 0.24 : 0.11)
         }
     }
 
     private var edgeSeparationColor: Color {
-        Color.black.opacity(isEnabled ? 0.10 : 0.05)
+        Color.black.opacity(isEnabled ? 0.070 : 0.032)
     }
 
     private var pressedOverlayColor: Color {
         Color.black.opacity(isEnabled ? 0.018 : 0.008)
     }
 
-    private var separationWashColor: Color {
-        Color.white.opacity(isEnabled ? 0.018 : 0.008)
+    private var contrastWashColor: Color {
+        let opacity = adaptiveGlassAppearance.bottomButtonProtectionOpacity
+        return Color.black.opacity(isEnabled ? opacity : opacity * 0.55)
     }
 
-    private var contrastWashColor: Color {
-        Color.black.opacity(isEnabled ? 0.028 : 0.014)
+    private var separationWashColor: Color {
+        let base = adaptiveGlassAppearance.bottomButtonHighlightOpacity * 0.34
+        return Color.white.opacity(isEnabled ? base : base * 0.42)
     }
 
     private var highlightGradient: LinearGradient {
         LinearGradient(
             colors: [
-                Color.white.opacity(isEnabled ? 0.12 : 0.05),
-                Color.white.opacity(isEnabled ? 0.035 : 0.015),
+                Color.white.opacity(isEnabled ? adaptiveGlassAppearance.bottomButtonHighlightOpacity : adaptiveGlassAppearance.bottomButtonHighlightOpacity * 0.42),
+                Color.white.opacity(isEnabled ? adaptiveGlassAppearance.bottomButtonHighlightOpacity * 0.32 : adaptiveGlassAppearance.bottomButtonHighlightOpacity * 0.14),
                 Color.clear,
             ],
             startPoint: .top,
@@ -1990,70 +2043,6 @@ private struct AuraNativeGlassPillSurface: View {
     }
 }
 
-@available(macOS 26.0, *)
-private final class AuraNativeGlassPillHostView: NSView {
-    private let glassView = AuraGlassBridgeView(frame: .zero)
-
-    override var isOpaque: Bool {
-        false
-    }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        commonInit()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        commonInit()
-    }
-
-    private func commonInit() {
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.clear.cgColor
-        layer?.masksToBounds = false
-
-        glassView.frame = bounds
-        glassView.autoresizingMask = [.width, .height]
-        glassView.containerSpacing = 0
-        addSubview(glassView)
-
-        updateCornerRadius()
-    }
-
-    override func layout() {
-        super.layout()
-        glassView.frame = bounds
-        updateCornerRadius()
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-
-    func update(tone: AuraGlassButtonStyle.Tone, isEnabled: Bool) {
-        glassView.style = .regular
-        glassView.tintColor = tintColor(for: tone, isEnabled: isEnabled)
-    }
-
-    private func updateCornerRadius() {
-        glassView.cornerRadius = max(bounds.height * 0.5, 0)
-    }
-
-    private func tintColor(for tone: AuraGlassButtonStyle.Tone, isEnabled: Bool) -> NSColor? {
-        let alpha = isEnabled ? 0.12 : 0.06
-
-        switch tone {
-        case .secondary:
-            return nil
-        case .accent:
-            return NSColor.controlAccentColor.withAlphaComponent(alpha)
-        case .destructive:
-            return NSColor.systemRed.withAlphaComponent(alpha)
-        }
-    }
-}
-
 private struct AuraPlainPressButton: View {
     let configuration: ButtonStyle.Configuration
     @Environment(\.isEnabled) private var isEnabled
@@ -2077,6 +2066,8 @@ private struct AuraGlassRoundedSurface: View {
     let cornerRadius: CGFloat
     var material: LiquidGlassView.MaterialStyle = .clear
     var washColor: Color = .clear
+    var alphaMultiplier: CGFloat = 1.0
+    var protectionOverlayOpacity: CGFloat = 0.0
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -2088,12 +2079,28 @@ private struct AuraGlassRoundedSurface: View {
                 .fill(Color.clear)
                 .glassEffect(material.systemGlass, in: shape)
                 .overlay {
-                    shape.fill(washColor)
+                    if washColor != .clear {
+                        shape.fill(washColor)
+                    }
+                }
+                .overlay {
+                    if protectionOverlayOpacity > 0.001 {
+                        shape.fill(Color.black.opacity(protectionOverlayOpacity))
+                    }
                 }
         } else {
             ZStack {
-                LiquidGlassView(material: material, cornerStyle: .fixed(cornerRadius))
-                shape.fill(washColor)
+                LiquidGlassView(
+                    material: material,
+                    cornerStyle: .fixed(cornerRadius),
+                    alphaMultiplier: alphaMultiplier
+                )
+                if washColor != .clear {
+                    shape.fill(washColor)
+                }
+                if protectionOverlayOpacity > 0.001 {
+                    shape.fill(Color.black.opacity(protectionOverlayOpacity))
+                }
             }
             .clipShape(shape)
         }
@@ -2103,6 +2110,8 @@ private struct AuraGlassRoundedSurface: View {
 private struct AuraGlassCapsuleSurface: View {
     var material: LiquidGlassView.MaterialStyle = .clear
     var washColor: Color = .clear
+    var alphaMultiplier: CGFloat = 1.0
+    var protectionOverlayOpacity: CGFloat = 0.0
 
     var body: some View {
         let shape = Capsule()
@@ -2112,12 +2121,28 @@ private struct AuraGlassCapsuleSurface: View {
                 .fill(Color.clear)
                 .glassEffect(material.systemGlass, in: shape)
                 .overlay {
-                    shape.fill(washColor)
+                    if washColor != .clear {
+                        shape.fill(washColor)
+                    }
+                }
+                .overlay {
+                    if protectionOverlayOpacity > 0.001 {
+                        shape.fill(Color.black.opacity(protectionOverlayOpacity))
+                    }
                 }
         } else {
             ZStack {
-                LiquidGlassView(material: material, cornerStyle: .capsule)
-                shape.fill(washColor)
+                LiquidGlassView(
+                    material: material,
+                    cornerStyle: .capsule,
+                    alphaMultiplier: alphaMultiplier
+                )
+                if washColor != .clear {
+                    shape.fill(washColor)
+                }
+                if protectionOverlayOpacity > 0.001 {
+                    shape.fill(Color.black.opacity(protectionOverlayOpacity))
+                }
             }
             .clipShape(shape)
         }
@@ -2187,6 +2212,8 @@ struct ErrorBanner: View {
 
 struct WindowAccessor: NSViewRepresentable {
     @Binding var window: NSWindow?
+    var onInteractionStart: () -> Void = {}
+    var onInteractionEnd: () -> Void = {}
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -2196,7 +2223,11 @@ struct WindowAccessor: NSViewRepresentable {
         let view = WindowAccessorView()
         view.onWindowChange = { currentWindow in
             guard let currentWindow else { return }
-            context.coordinator.attachIfNeeded(currentWindow)
+            context.coordinator.attachIfNeeded(
+                currentWindow,
+                onInteractionStart: onInteractionStart,
+                onInteractionEnd: onInteractionEnd
+            )
             if window !== currentWindow {
                 window = currentWindow
             }
@@ -2208,13 +2239,21 @@ struct WindowAccessor: NSViewRepresentable {
         guard let accessorView = nsView as? WindowAccessorView else { return }
         accessorView.onWindowChange = { currentWindow in
             guard let currentWindow else { return }
-            context.coordinator.attachIfNeeded(currentWindow)
+            context.coordinator.attachIfNeeded(
+                currentWindow,
+                onInteractionStart: onInteractionStart,
+                onInteractionEnd: onInteractionEnd
+            )
             if window !== currentWindow {
                 window = currentWindow
             }
         }
         if let currentWindow = nsView.window {
-            context.coordinator.attachIfNeeded(currentWindow)
+            context.coordinator.attachIfNeeded(
+                currentWindow,
+                onInteractionStart: onInteractionStart,
+                onInteractionEnd: onInteractionEnd
+            )
             if window !== currentWindow {
                 window = currentWindow
             }
@@ -2224,8 +2263,17 @@ struct WindowAccessor: NSViewRepresentable {
     final class Coordinator {
         private weak var configuredWindow: NSWindow?
         private var observers: [NSObjectProtocol] = []
+        private var interactionEndWorkItem: DispatchWorkItem?
+        private var onInteractionStart: () -> Void = {}
+        private var onInteractionEnd: () -> Void = {}
 
-        func attachIfNeeded(_ window: NSWindow) {
+        func attachIfNeeded(
+            _ window: NSWindow,
+            onInteractionStart: @escaping () -> Void,
+            onInteractionEnd: @escaping () -> Void
+        ) {
+            self.onInteractionStart = onInteractionStart
+            self.onInteractionEnd = onInteractionEnd
             if configuredWindow !== window {
                 detachObservers()
                 configuredWindow = window
@@ -2241,6 +2289,26 @@ struct WindowAccessor: NSViewRepresentable {
                         applyStandardWindowButtonAppearance(for: window)
                     }
                 }
+                observers.append(
+                    center.addObserver(forName: NSWindow.willMoveNotification, object: window, queue: .main) { [weak self] _ in
+                        self?.beginWindowInteraction()
+                    }
+                )
+                observers.append(
+                    center.addObserver(forName: NSWindow.didMoveNotification, object: window, queue: .main) { [weak self] _ in
+                        self?.scheduleWindowInteractionEnd()
+                    }
+                )
+                observers.append(
+                    center.addObserver(forName: NSWindow.willStartLiveResizeNotification, object: window, queue: .main) { [weak self] _ in
+                        self?.beginWindowInteraction()
+                    }
+                )
+                observers.append(
+                    center.addObserver(forName: NSWindow.didEndLiveResizeNotification, object: window, queue: .main) { [weak self] _ in
+                        self?.scheduleWindowInteractionEnd()
+                    }
+                )
             }
             configureWindowForClientDecorations(window)
         }
@@ -2253,6 +2321,23 @@ struct WindowAccessor: NSViewRepresentable {
             let center = NotificationCenter.default
             observers.forEach(center.removeObserver)
             observers.removeAll()
+            interactionEndWorkItem?.cancel()
+            interactionEndWorkItem = nil
+        }
+
+        private func beginWindowInteraction() {
+            interactionEndWorkItem?.cancel()
+            interactionEndWorkItem = nil
+            onInteractionStart()
+        }
+
+        private func scheduleWindowInteractionEnd() {
+            interactionEndWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.onInteractionEnd()
+            }
+            interactionEndWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
         }
     }
 }
@@ -2279,36 +2364,11 @@ private extension ContentView {
     }
 
     func beginWindowDrag() {
-        guard !isWindowDragging else { return }
-        dragSnapshotImage = makeWindowSnapshot()
-        isWindowDragging = dragSnapshotImage != nil
-        if isWindowDragging {
-            viewModel.suspendPreviewRenderingForWindowDrag()
-        }
+        viewModel.suspendPreviewRenderingForWindowDrag()
     }
 
     func endWindowDrag() {
-        guard isWindowDragging || dragSnapshotImage != nil else { return }
-        isWindowDragging = false
         viewModel.resumePreviewRenderingAfterWindowDrag()
-        DispatchQueue.main.async {
-            if !self.isWindowDragging {
-                self.dragSnapshotImage = nil
-            }
-        }
-    }
-
-    func makeWindowSnapshot() -> NSImage? {
-        guard let window, let contentView = window.contentView else { return nil }
-        let bounds = contentView.bounds
-        guard bounds.width > 0, bounds.height > 0 else { return nil }
-        guard let representation = contentView.bitmapImageRepForCachingDisplay(in: bounds) else {
-            return nil
-        }
-        contentView.cacheDisplay(in: bounds, to: representation)
-        let image = NSImage(size: bounds.size)
-        image.addRepresentation(representation)
-        return image
     }
 
     func setupActivityMonitoring() {
@@ -2414,18 +2474,21 @@ struct LiquidGlassView: NSViewRepresentable {
 
     var material: MaterialStyle = .regular
     var cornerStyle: CornerStyle = .fixed(14)
+    var alphaMultiplier: CGFloat = 1.0
 
     func makeNSView(context: Context) -> NSView {
         if #available(macOS 26.0, *) {
             let nativeView = LiquidGlassNativeView()
             nativeView.glassStyle = material
             nativeView.cornerStyle = cornerStyle
+            nativeView.alphaMultiplier = alphaMultiplier
             return nativeView
         }
 
         let fallback = LiquidGlassFallbackView()
         fallback.glassStyle = material
         fallback.cornerStyle = cornerStyle
+        fallback.alphaMultiplier = alphaMultiplier
         return fallback
     }
 
@@ -2434,6 +2497,7 @@ struct LiquidGlassView: NSViewRepresentable {
             if let nativeView = nsView as? LiquidGlassNativeView {
                 nativeView.glassStyle = material
                 nativeView.cornerStyle = cornerStyle
+                nativeView.alphaMultiplier = alphaMultiplier
                 return
             }
         }
@@ -2441,6 +2505,7 @@ struct LiquidGlassView: NSViewRepresentable {
         guard let fallback = nsView as? LiquidGlassFallbackView else { return }
         fallback.glassStyle = material
         fallback.cornerStyle = cornerStyle
+        fallback.alphaMultiplier = alphaMultiplier
     }
 }
 
@@ -2451,6 +2516,10 @@ private final class LiquidGlassNativeView: NSView {
     }
 
     var cornerStyle: LiquidGlassView.CornerStyle = .fixed(14) {
+        didSet { updateAppearance() }
+    }
+
+    var alphaMultiplier: CGFloat = 1.0 {
         didSet { updateAppearance() }
     }
 
@@ -2491,6 +2560,7 @@ private final class LiquidGlassNativeView: NSView {
     private func updateAppearance() {
         glassView.style = glassStyle == .clear ? .clear : .regular
         glassView.tintColor = nil
+        glassView.alphaValue = 1.0
         updateCornerRadius()
     }
 
@@ -2510,6 +2580,10 @@ private final class LiquidGlassFallbackView: NSVisualEffectView {
     }
 
     var cornerStyle: LiquidGlassView.CornerStyle = .fixed(14) {
+        didSet { updateAppearance() }
+    }
+
+    var alphaMultiplier: CGFloat = 1.0 {
         didSet { updateAppearance() }
     }
 
@@ -2559,16 +2633,19 @@ private final class LiquidGlassFallbackView: NSVisualEffectView {
         guard let layer = self.layer else { return }
         material = glassStyle == .clear ? .underWindowBackground : .hudWindow
         state = .active
+        isEmphasized = true
+        alphaValue = alphaMultiplier
         layer.cornerRadius = resolvedCornerRadius
         layer.backgroundColor = baseBackgroundColor.cgColor
-        layer.backgroundFilters = LiquidGlassFallbackView.backgroundFilters
+        layer.backgroundFilters = Self.backgroundFilters
         layer.shadowColor = NSColor.black.cgColor
-        layer.shadowOpacity = glassStyle == .clear ? 0.16 : 0.24
+        layer.shadowOpacity = Float((glassStyle == .clear ? 0.16 : 0.24) * alphaMultiplier)
         layer.shadowRadius = glassStyle == .clear ? 12 : 20
         layer.shadowOffset = CGSize(width: 0, height: glassStyle == .clear ? 4 : 8)
         Self.applyOverlays(
             to: layer,
             style: glassStyle,
+            alphaMultiplier: alphaMultiplier,
             noiseLayer: &noiseLayer,
             highlightLayer: &highlightLayer,
             glossLayer: &glossLayer,
@@ -2586,26 +2663,10 @@ private final class LiquidGlassFallbackView: NSVisualEffectView {
         }
     }
 
-    static func applyOverlays(to layer: CALayer, style: LiquidGlassView.MaterialStyle) {
-        var noise: CALayer?
-        var highlight: CAGradientLayer?
-        var gloss: CAGradientLayer?
-        var shadow: CAGradientLayer?
-        var rim: CAShapeLayer?
-        applyOverlays(
-            to: layer,
-            style: style,
-            noiseLayer: &noise,
-            highlightLayer: &highlight,
-            glossLayer: &gloss,
-            shadowLayer: &shadow,
-            rimLayer: &rim
-        )
-    }
-
-    static func applyOverlays(
+    private static func applyOverlays(
         to layer: CALayer,
         style: LiquidGlassView.MaterialStyle,
+        alphaMultiplier: CGFloat,
         noiseLayer: inout CALayer?,
         highlightLayer: inout CAGradientLayer?,
         glossLayer: inout CAGradientLayer?,
@@ -2615,7 +2676,6 @@ private final class LiquidGlassFallbackView: NSVisualEffectView {
         if noiseLayer == nil {
             let noise = CALayer()
             noise.contents = noiseImage
-            noise.opacity = style == .clear ? 0.012 : 0.020
             noise.compositingFilter = "softLightBlendMode"
             noise.contentsGravity = .resizeAspectFill
             noise.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
@@ -2623,7 +2683,7 @@ private final class LiquidGlassFallbackView: NSVisualEffectView {
             noiseLayer = noise
         }
         noiseLayer?.frame = layer.bounds
-        noiseLayer?.opacity = style == .clear ? 0.012 : 0.020
+        noiseLayer?.opacity = Float((style == .clear ? 0.012 : 0.020) * alphaMultiplier)
 
         if highlightLayer == nil {
             let gradient = CAGradientLayer()
@@ -2642,7 +2702,7 @@ private final class LiquidGlassFallbackView: NSVisualEffectView {
             highlightLayer = gradient
         }
         highlightLayer?.frame = layer.bounds
-        highlightLayer?.opacity = style == .clear ? 0.18 : 0.28
+        highlightLayer?.opacity = Float((style == .clear ? 0.18 : 0.28) * alphaMultiplier)
 
         if glossLayer == nil {
             let gradient = CAGradientLayer()
@@ -2661,7 +2721,7 @@ private final class LiquidGlassFallbackView: NSVisualEffectView {
             glossLayer = gradient
         }
         glossLayer?.frame = layer.bounds
-        glossLayer?.opacity = style == .clear ? 0.12 : 0.18
+        glossLayer?.opacity = Float((style == .clear ? 0.12 : 0.18) * alphaMultiplier)
 
         if shadowLayer == nil {
             let gradient = CAGradientLayer()
@@ -2679,7 +2739,7 @@ private final class LiquidGlassFallbackView: NSVisualEffectView {
             shadowLayer = gradient
         }
         shadowLayer?.frame = layer.bounds
-        shadowLayer?.opacity = style == .clear ? 0.28 : 0.42
+        shadowLayer?.opacity = Float((style == .clear ? 0.28 : 0.42) * alphaMultiplier)
 
         if rimLayer == nil {
             let rim = CAShapeLayer()
@@ -2695,15 +2755,15 @@ private final class LiquidGlassFallbackView: NSVisualEffectView {
             cornerHeight: 14,
             transform: nil
         )
-        rimLayer?.strokeColor = NSColor.white.withAlphaComponent(style == .clear ? 0.10 : 0.14).cgColor
+        rimLayer?.strokeColor = NSColor.white.withAlphaComponent((style == .clear ? 0.10 : 0.14) * alphaMultiplier).cgColor
     }
 
     private var baseBackgroundColor: NSColor {
         if glassStyle == .clear {
-            return NSColor(calibratedWhite: 0.10, alpha: 0.18)
+            return NSColor(calibratedWhite: 0.10, alpha: 0.18 * alphaMultiplier)
         }
 
-        return NSColor(calibratedWhite: 0.12, alpha: 0.24)
+        return NSColor(calibratedWhite: 0.12, alpha: 0.24 * alphaMultiplier)
     }
 
     private static let backgroundFilters: [CIFilter] = {
