@@ -10,9 +10,8 @@ permissions:
 
 jobs:
   build-sign-notarize:
-    runs-on: macos-14
+    runs-on: macos-latest
     env:
-      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       CLANG_MODULE_CACHE_PATH: /tmp/auraflow-clang-module-cache
       BUILD_UNIVERSAL: "1"
       REQUIRE_UNIVERSAL: "1"
@@ -21,6 +20,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          selected_app="$(ls -td /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+          if [[ -n "$selected_app" && -d "$selected_app/Contents/Developer" ]]; then
+            export DEVELOPER_DIR="$selected_app/Contents/Developer"
+            echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "${GITHUB_ENV}"
+          fi
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
 
       - name: Resolve release version
         shell: bash
