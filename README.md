@@ -1,66 +1,65 @@
 # AuraFlow
 
-AuraFlow is a macOS live wallpaper app built on a native Swift runtime.
+AuraFlow is a native macOS live wallpaper app. It uses a Swift control app, a separate AppKit + AVFoundation wallpaper agent, and a small Objective-C bridge for the Liquid Glass layer.
 
 <p align="center">
   <img src="docs/aura-ui.png" width="900" alt="AuraFlow interface preview" />
 </p>
 
-The app no longer depends on Python or PyObjC for wallpaper playback. The release build contains:
+## Current Runtime
 
-- `WallpaperControlApp` — the SwiftUI control application
-- `AuraWallpaperAgent` — the AppKit + AVFoundation wallpaper helper
-- bundled app resources
-- bundled `ffmpeg` and `ffprobe` when they are available on the build machine
+AuraFlow uses a native split runtime built from these macOS targets:
 
-## Runtime
+- `WallpaperControlApp`: SwiftUI control app for preview, catalog, downloads, settings, and playback controls.
+- `AuraWallpaperAgent`: helper executable that owns desktop wallpaper windows and AVFoundation playback.
+- `AuraWallpaperCore`: shared Swift models, JSON runtime state, command files, metrics, and wallpaper backup/restore logic.
+- `AuraGlassBridgeKit`: small Objective-C/AppKit bridge used only for the glass visual layer.
 
-AuraFlow uses a split native runtime:
+Runtime state is stored in:
 
-- `WallpaperControlApp` manages UI, settings, catalog, downloads, preview, and control commands.
-- `AuraWallpaperAgent` runs as a separate executable and renders looping desktop wallpaper windows per display.
-- `AuraWallpaperCore` stores shared models, JSON state, metrics, commands, and wallpaper backup data.
-
-Control and agent state are stored in `~/Library/Application Support/AuraFlow`.
+```text
+~/Library/Application Support/AuraFlow
+```
 
 ## Features
 
 - local video wallpaper preview and playback
-- multi-display wallpaper playback
+- one wallpaper window per display
 - start, stop, and remove wallpaper actions
-- restore the latest non-AuraFlow wallpaper on remove
+- restore the latest non-AuraFlow wallpaper when live wallpaper is removed
 - playback speed control
 - fill, fit, and stretch scale modes
-- auto-pause when fullscreen apps are active
-- launch at login
+- auto-pause while fullscreen apps are active
+- launch at login through a LaunchAgent
 - built-in wallpaper catalog
 - downloaded wallpaper library
-- optional video optimization paths
+- optional video compatibility optimization
+
 ## UI
 
-- native Liquid Glass path on macOS 26+
-- fallback blur-based UI path on older supported macOS versions
+- native Liquid Glass path on macOS 26 and newer
+- blur-based fallback UI on older supported macOS versions
 - native window controls
-- native window drag and resize handling
+- optimized window drag and resize handling
+- preview playback handled independently from wallpaper playback
 
 ## System Requirements
 
 - macOS 13 or later
 - Apple Silicon or Intel Mac
 - internet connection for catalog downloads
-- `ffmpeg` only for some WebM/AV1 compatibility conversions when a release build was made without bundled tools
 
-## Release Package
+For release builds, `ffmpeg` and `ffprobe` are bundled when available on the build machine. They are used only for compatibility conversion paths, not for normal AVFoundation playback.
 
-Release builds are produced by `./build_app.sh` and exported to `dist/`:
+## Install
 
-- `AuraFlow.app`
-- `AuraFlow.zip`
-- `AuraFlow.dmg`
+Download `AuraFlow.dmg` from GitHub Releases, open it, and drag `AuraFlow.app` into `/Applications`.
 
-The app bundle includes the native wallpaper helper. If `ffmpeg` and `ffprobe` are present on the build machine, they are copied into the app bundle so users do not need to install them separately for compatibility transcode paths.
+If the release is not Developer ID notarized, macOS may block the first launch with a security warning. In that case, open System Settings, go to Privacy & Security, and allow AuraFlow from the blocked app section.
 
-## Build From Source
+## Build
+
+Build the app and release artifacts:
 
 ```bash
 ./build_app.sh
@@ -72,25 +71,38 @@ Universal build:
 BUILD_UNIVERSAL=1 ./build_app.sh
 ```
 
-Tests:
+The build output is written to:
+
+```text
+dist/AuraFlow.app
+dist/AuraFlow.zip
+dist/AuraFlow.dmg
+```
+
+## Test
 
 ```bash
 cd macOSApp
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
+## Release Packaging
+
+`scripts/build_release.sh` builds the Swift targets, stages the app bundle, signs nested Mach-O binaries, signs the app bundle, and packages ZIP and DMG artifacts.
+
+When `CODESIGN_IDENTITY` is set to a Developer ID Application certificate, release builds can be notarized by the GitHub Actions release workflow. Without Developer ID credentials, the build falls back to valid ad-hoc signing so the bundle is structurally valid, but macOS will still show an unknown-developer warning.
+
 ## Project Layout
 
-- `macOSApp/` — app, helper, shared core, tests
-- `scripts/build_release.sh` — release build and packaging
-- `Resources/` — app icon and packaging assets
-- `docs/` — screenshots and documentation assets
-
-## Notes
-
-- Wallpaper restore is based on the user's latest non-AuraFlow wallpaper snapshot.
-- Liquid Glass availability depends on the macOS runtime version.
-- Video optimization can run without external tools for common paths; bundled or system `ffmpeg` is used only when needed.
+- `macOSApp/Package.swift`: SwiftPM package definition
+- `macOSApp/Sources/WallpaperControlApp`: SwiftUI control app
+- `macOSApp/Sources/AuraWallpaperAgent`: native wallpaper helper process
+- `macOSApp/Sources/AuraWallpaperCore`: shared runtime models and storage
+- `macOSApp/Sources/AuraGlassBridgeKit`: Objective-C glass bridge
+- `macOSApp/Tests`: Swift tests
+- `scripts/build_release.sh`: build, signing, and packaging script
+- `Resources`: app icon assets
+- `docs`: README images
 
 ## License
 
