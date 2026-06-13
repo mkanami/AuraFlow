@@ -2,6 +2,10 @@
 
 AuraFlow is a macOS live wallpaper app built on a native Swift runtime.
 
+<p align="center">
+  <img src="docs/aura-ui.png" width="900" alt="AuraFlow interface preview" />
+</p>
+
 The app no longer depends on Python or PyObjC for wallpaper playback. The release build contains:
 
 - `WallpaperControlApp` — the SwiftUI control application
@@ -32,11 +36,6 @@ Control and agent state are stored in `~/Library/Application Support/AuraFlow`.
 - built-in wallpaper catalog
 - downloaded wallpaper library
 - optional video optimization paths
-
-<p align="center">
-  <img src="docs/aura-ui.png" width="900" alt="AuraFlow interface preview" />
-</p>
-
 ## UI
 
 - native Liquid Glass path on macOS 26+
