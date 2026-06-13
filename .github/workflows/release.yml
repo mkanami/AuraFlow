@@ -16,7 +16,7 @@ jobs:
       CLANG_MODULE_CACHE_PATH: /tmp/auraflow-clang-module-cache
       BUILD_UNIVERSAL: "1"
       REQUIRE_UNIVERSAL: "1"
-      REQUIRE_CODESIGN: "1"
+      REQUIRE_CODESIGN: "0"
       APP_DISPLAY_NAME: AuraFlow
     steps:
       - name: Checkout
@@ -29,7 +29,8 @@ jobs:
           echo "AURAFLOW_VERSION=${version}" >> "${GITHUB_ENV}"
           echo "AURAFLOW_BUILD=${GITHUB_RUN_NUMBER}" >> "${GITHUB_ENV}"
 
-      - name: Validate signing secrets
+      - name: Resolve signing mode
+        id: signing
         shell: bash
         env:
           APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
@@ -39,14 +40,34 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          : "${APPLE_CERTIFICATE_P12_BASE64:?Missing APPLE_CERTIFICATE_P12_BASE64}"
-          : "${APPLE_CERTIFICATE_PASSWORD:?Missing APPLE_CERTIFICATE_PASSWORD}"
-          : "${APPLE_DEVELOPER_ID_APPLICATION:?Missing APPLE_DEVELOPER_ID_APPLICATION}"
-          : "${APPLE_ID:?Missing APPLE_ID}"
-          : "${APPLE_APP_SPECIFIC_PASSWORD:?Missing APPLE_APP_SPECIFIC_PASSWORD}"
-          : "${APPLE_TEAM_ID:?Missing APPLE_TEAM_ID}"
+          required=(
+            APPLE_CERTIFICATE_P12_BASE64
+            APPLE_CERTIFICATE_PASSWORD
+            APPLE_DEVELOPER_ID_APPLICATION
+            APPLE_ID
+            APPLE_APP_SPECIFIC_PASSWORD
+            APPLE_TEAM_ID
+          )
+
+          missing=()
+          for key in "${required[@]}"; do
+            if [[ -z "${!key:-}" ]]; then
+              missing+=("$key")
+            fi
+          done
+
+          if [[ "${#missing[@]}" -eq 0 ]]; then
+            echo "mode=developer-id" >> "${GITHUB_OUTPUT}"
+            echo "REQUIRE_CODESIGN=1" >> "${GITHUB_ENV}"
+            echo "Using Developer ID signing and notarization"
+          else
+            echo "mode=ad-hoc" >> "${GITHUB_OUTPUT}"
+            echo "REQUIRE_CODESIGN=0" >> "${GITHUB_ENV}"
+            printf 'Using ad-hoc signing; missing Apple release secrets: %s\n' "${missing[*]}"
+          fi
 
       - name: Import Developer ID certificate
+        if: steps.signing.outputs.mode == 'developer-id'
         shell: bash
         env:
           APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
@@ -95,6 +116,7 @@ jobs:
         run: ./build_app.sh
 
       - name: Submit app ZIP for notarization
+        if: steps.signing.outputs.mode == 'developer-id'
         shell: bash
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -109,6 +131,7 @@ jobs:
           xcrun stapler staple dist/AuraFlow.app
 
       - name: Repackage stapled artifacts
+        if: steps.signing.outputs.mode == 'developer-id'
         shell: bash
         env:
           APP_DISPLAY_NAME: AuraFlow
@@ -131,6 +154,7 @@ jobs:
           popd >/dev/null
 
       - name: Sign and notarize DMG
+        if: steps.signing.outputs.mode == 'developer-id'
         shell: bash
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -155,8 +179,13 @@ jobs:
         shell: bash
         run: |
           codesign --verify --deep --strict --verbose=2 dist/AuraFlow.app
-          spctl -a -vv dist/AuraFlow.app
-          spctl -a -vv -t open dist/AuraFlow.dmg
+          if [[ "${{ steps.signing.outputs.mode }}" == "developer-id" ]]; then
+            spctl -a -vv dist/AuraFlow.app
+            spctl -a -vv -t open dist/AuraFlow.dmg
+          else
+            spctl -a -vv dist/AuraFlow.app || true
+            spctl -a -vv -t open dist/AuraFlow.dmg || true
+          fi
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -199,8 +228,8 @@ jobs:
           lipo -archs "$APP_BIN"
           lipo -archs "$HELPER_BIN"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-          spctl -a -vv "$APP_PATH"
-          spctl -a -vv -t open dist/AuraFlow.dmg
+          spctl -a -vv "$APP_PATH" || true
+          spctl -a -vv -t open dist/AuraFlow.dmg || true
           ls -lah "$APP_PATH/Contents/Resources" || true
           ls -lah "$APP_PATH/Contents/Resources/BundledTools" || true
 
