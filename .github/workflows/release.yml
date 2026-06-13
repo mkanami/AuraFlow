@@ -59,10 +59,12 @@ jobs:
           if [[ "${#missing[@]}" -eq 0 ]]; then
             echo "mode=developer-id" >> "${GITHUB_OUTPUT}"
             echo "REQUIRE_CODESIGN=1" >> "${GITHUB_ENV}"
+            echo "REQUIRE_UNIVERSAL=1" >> "${GITHUB_ENV}"
             echo "Using Developer ID signing and notarization"
           else
             echo "mode=ad-hoc" >> "${GITHUB_OUTPUT}"
             echo "REQUIRE_CODESIGN=0" >> "${GITHUB_ENV}"
+            echo "REQUIRE_UNIVERSAL=0" >> "${GITHUB_ENV}"
             printf 'Using ad-hoc signing; missing Apple release secrets: %s\n' "${missing[*]}"
           fi
 
