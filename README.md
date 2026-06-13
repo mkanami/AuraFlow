@@ -34,7 +34,7 @@ Control and agent state are stored in `~/Library/Application Support/AuraFlow`.
 - optional video optimization paths
 
 <p align="center">
-  <img src="docs/catalog-detail-view.png" width="900" alt="AuraFlow wallpaper catalog detail view" />
+  <img src="docs/aura-ui.png" width="900" alt="AuraFlow interface preview" />
 </p>
 
 ## UI

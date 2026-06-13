@@ -310,11 +310,14 @@ bundle_runtime_tools() {
 }
 
 codesign_args() {
+  local identity="${CODESIGN_IDENTITY:--}"
   local args=(
     --force
-    --sign "$CODESIGN_IDENTITY"
-    --timestamp
+    --sign "$identity"
   )
+  if [[ "$identity" != "-" ]]; then
+    args+=(--timestamp)
+  fi
   if [[ -n "$CODESIGN_KEYCHAIN_PATH" ]]; then
     args+=(--keychain "$CODESIGN_KEYCHAIN_PATH")
   fi
@@ -322,17 +325,14 @@ codesign_args() {
 }
 
 prepare_bundle_for_codesign() {
-  if [[ -z "$CODESIGN_IDENTITY" ]]; then
-    if [[ "$REQUIRE_CODESIGN" == "1" ]]; then
-      log "REQUIRE_CODESIGN=1 but CODESIGN_IDENTITY is not set."
-      exit 1
-    fi
-    return 0
+  if [[ -z "$CODESIGN_IDENTITY" && "$REQUIRE_CODESIGN" == "1" ]]; then
+    log "REQUIRE_CODESIGN=1 but CODESIGN_IDENTITY is not set."
+    exit 1
   fi
 
   require_command codesign
   if command -v xattr >/dev/null 2>&1; then
-    xattr -cr "$APP_BUNDLE" || true
+    xattr -cr "$APP_BUNDLE" >/dev/null 2>&1 || true
   fi
   find "$APP_BUNDLE" -type d -name "_CodeSignature" -prune -exec rm -rf {} +
 }
@@ -360,9 +360,6 @@ codesign_target() {
 
 sign_app_bundle() {
   prepare_bundle_for_codesign
-  if [[ -z "$CODESIGN_IDENTITY" ]]; then
-    return 0
-  fi
 
   log "Signing app bundle"
   while IFS= read -r target; do
@@ -375,7 +372,11 @@ sign_app_bundle() {
     done < <(find "$APP_BUNDLE/Contents/Frameworks" -mindepth 1 -maxdepth 1 -type d \( -name "*.framework" -o -name "*.bundle" \) | sort)
   fi
 
-  codesign_target "$APP_BUNDLE" --options runtime
+  if [[ -n "$CODESIGN_IDENTITY" ]]; then
+    codesign_target "$APP_BUNDLE" --options runtime
+  else
+    codesign_target "$APP_BUNDLE"
+  fi
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 }
 
@@ -389,6 +390,10 @@ sign_disk_image() {
 }
 
 package_distribution() {
+  if command -v xattr >/dev/null 2>&1; then
+    xattr -cr "$APP_BUNDLE" >/dev/null 2>&1 || true
+  fi
+
   log "Creating ZIP archive"
   pushd "$DIST_DIR" >/dev/null
   ditto -c -k --keepParent "${APP_DISPLAY_NAME}.app" "$(basename "$APP_ZIP")"
@@ -399,6 +404,9 @@ package_distribution() {
   rm -rf "$dmg_stage"
   mkdir -p "$dmg_stage"
   cp -R "$APP_BUNDLE" "$dmg_stage/${APP_DISPLAY_NAME}.app"
+  if command -v xattr >/dev/null 2>&1; then
+    xattr -cr "$dmg_stage/${APP_DISPLAY_NAME}.app" >/dev/null 2>&1 || true
+  fi
   ln -s /Applications "$dmg_stage/Applications"
 
   hdiutil create \
