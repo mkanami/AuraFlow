@@ -340,6 +340,69 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(viewModel.isCatalogOpen == false)
 }
 
+@Test func managedCatalogPrioritizesCuratedWallpapersBeforeLiveCatalog() async throws {
+    let liveWallpaper = CatalogWallpaper(
+        id: "live-wallpaper",
+        title: "Live Wallpaper",
+        category: "Anime",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://example.com/live"),
+        sources: [CatalogVideoSource(url: URL(string: "https://example.com/live.mp4")!, width: 1920, height: 1080)]
+    )
+    let curatedWallpaper = CatalogWallpaper(
+        id: "curated-wallpaper",
+        title: "Curated Wallpaper",
+        category: "Stable",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://example.com/curated"),
+        sources: [CatalogVideoSource(url: URL(string: "https://example.com/curated.mp4")!, width: 1920, height: 1080)]
+    )
+    let provider = ManagedWallpaperCatalogProvider(
+        liveProvider: MockCatalogProvider(wallpapers: [liveWallpaper]),
+        curatedCatalog: [curatedWallpaper]
+    )
+
+    let catalog = try await provider.fetchCatalog()
+
+    #expect(catalog.map(\.id) == ["curated-wallpaper", "live-wallpaper"])
+}
+
+@Test func managedCatalogUsesCuratedFallbackWhenLiveProviderFails() async throws {
+    let curatedWallpaper = CatalogWallpaper(
+        id: "curated-wallpaper",
+        title: "Curated Wallpaper",
+        category: "Stable",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://example.com/curated"),
+        sources: [CatalogVideoSource(url: URL(string: "https://example.com/curated.mp4")!, width: 1920, height: 1080)]
+    )
+    let provider = ManagedWallpaperCatalogProvider(
+        liveProvider: FailingCatalogProvider(),
+        curatedCatalog: [curatedWallpaper]
+    )
+
+    let catalog = try await provider.fetchCatalog()
+
+    #expect(catalog.map(\.id) == ["curated-wallpaper"])
+}
+
+@Test func defaultCatalogStartsWithNonAnimeScenicWallpapers() {
+    let leadingWallpapers = CatalogWallpaper.defaultCatalog.prefix(5)
+    let leadingCategories = Set(leadingWallpapers.map(\.category))
+    let sourceExtensions = CatalogWallpaper.defaultCatalog
+        .flatMap(\.sources)
+        .map { $0.url.pathExtension.lowercased() }
+
+    #expect(leadingWallpapers.allSatisfy { $0.category != "Anime" })
+    #expect(leadingCategories.isSuperset(of: Set(["Nature", "Leaves", "Lava", "Abstract"])))
+    #expect(CatalogWallpaper.defaultCatalog.contains { $0.id == "waterfall-in-forest" })
+    #expect(CatalogWallpaper.defaultCatalog.contains { $0.id == "burning-lava-particles" })
+    #expect(sourceExtensions.allSatisfy { $0 == "mp4" })
+}
+
 @MainActor
 @Test func startIgnoresRequestsWhileWallpaperIsAlreadyRunning() async throws {
     let controller = MockNativeWallpaperController()
@@ -696,5 +759,19 @@ actor MockCatalogProvider: WallpaperCatalogProviding {
 
     func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
         wallpaper.sources.first?.url ?? URL(string: "https://example.com/fallback.mp4")!
+    }
+}
+
+actor FailingCatalogProvider: WallpaperCatalogProviding {
+    func loadCachedCatalog() async -> [CatalogWallpaper]? {
+        nil
+    }
+
+    func fetchCatalog() async throws -> [CatalogWallpaper] {
+        throw URLError(.notConnectedToInternet)
+    }
+
+    func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
+        throw URLError(.badURL)
     }
 }

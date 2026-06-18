@@ -39,84 +39,116 @@ struct CatalogWallpaper: Identifiable, Hashable, Codable {
     let sources: [CatalogVideoSource]
 
     static let defaultCatalog: [CatalogWallpaper] = [
-        CatalogWallpaper(
+        mixkitWallpaper(
+            id: "waterfall-in-forest",
+            title: "Waterfall in Forest",
+            category: "Nature",
+            sourcePageURL: "https://mixkit.co/free-stock-video/waterfall-in-forest-2213/",
+            previewImageURL: "https://assets.mixkit.co/videos/2213/2213-thumb-720-0.jpg",
+            sources: [
+                ("https://assets.mixkit.co/videos/2213/2213-2160.mp4", 4096, 2160),
+                ("https://assets.mixkit.co/videos/2213/2213-1080.mp4", 1920, 1080),
+                ("https://assets.mixkit.co/videos/2213/2213-720.mp4", 1280, 720)
+            ]
+        ),
+        mixkitWallpaper(
+            id: "branches-swaying-in-the-wind",
+            title: "Branches Swaying in the Wind",
+            category: "Nature",
+            sourcePageURL: "https://mixkit.co/free-stock-video/branches-swaying-in-the-wind-95/",
+            previewImageURL: "https://assets.mixkit.co/videos/95/95-thumb-720-0.jpg",
+            sources: [
+                ("https://assets.mixkit.co/videos/95/95-2160.mp4", 4096, 2160),
+                ("https://assets.mixkit.co/videos/95/95-1080.mp4", 1920, 1080),
+                ("https://assets.mixkit.co/videos/95/95-720.mp4", 1280, 720)
+            ]
+        ),
+        mixkitWallpaper(
+            id: "autumn-maple-leaves",
+            title: "Autumn Maple Leaves",
+            category: "Leaves",
+            sourcePageURL: "https://mixkit.co/free-stock-video/autumn-maple-leaves-being-moved-by-the-wind-1611/",
+            previewImageURL: "https://assets.mixkit.co/videos/1611/1611-thumb-720-0.jpg",
+            sources: [
+                ("https://assets.mixkit.co/videos/1611/1611-1080.mp4", 1920, 1080),
+                ("https://assets.mixkit.co/videos/1611/1611-720.mp4", 1280, 720)
+            ]
+        ),
+        mixkitWallpaper(
+            id: "burning-lava-particles",
+            title: "Burning Lava Particles",
+            category: "Lava",
+            sourcePageURL: "https://mixkit.co/free-stock-video/burning-lava-particles-leaping-through-the-air-4426/",
+            previewImageURL: "https://assets.mixkit.co/videos/4426/4426-thumb-720-0.jpg",
+            sources: [
+                ("https://assets.mixkit.co/videos/4426/4426-1080.mp4", 1920, 1080),
+                ("https://assets.mixkit.co/videos/4426/4426-720.mp4", 1280, 720)
+            ]
+        ),
+        mixkitWallpaper(
+            id: "abstract-smoke-texture",
+            title: "Abstract Smoke Texture",
+            category: "Abstract",
+            sourcePageURL: "https://mixkit.co/free-stock-video/abstract-smoke-background-with-texture-1963/",
+            previewImageURL: "https://assets.mixkit.co/videos/1963/1963-thumb-720-4.jpg",
+            sources: [
+                ("https://assets.mixkit.co/videos/1963/1963-2160.mp4", 4096, 2160),
+                ("https://assets.mixkit.co/videos/1963/1963-1080.mp4", 1920, 1080),
+                ("https://assets.mixkit.co/videos/1963/1963-720.mp4", 1280, 720)
+            ]
+        ),
+        mixkitWallpaper(
             id: "anime-sky-city",
             title: "Anime Sky City",
             category: "Anime",
-            attribution: "Mixkit",
-            previewImageURL: URL(string: "https://assets.mixkit.co/videos/39767/39767-thumb-360-0.jpg"),
-            sourcePageURL: URL(string: "https://mixkit.co"),
+            sourcePageURL: "https://mixkit.co",
+            previewImageURL: "https://assets.mixkit.co/videos/39767/39767-thumb-360-0.jpg",
             sources: [
-                CatalogVideoSource(url: URL(string: "https://assets.mixkit.co/videos/39767/39767-720.mp4")!, width: 1280, height: 720)
+                ("https://assets.mixkit.co/videos/39767/39767-720.mp4", 1280, 720)
             ]
         ),
-        CatalogWallpaper(
+        mixkitWallpaper(
             id: "anime-neon-street",
             title: "Neon Street Drift",
             category: "Anime",
-            attribution: "Mixkit",
-            previewImageURL: URL(string: "https://assets.mixkit.co/videos/34487/34487-thumb-360-0.jpg"),
-            sourcePageURL: URL(string: "https://mixkit.co"),
+            sourcePageURL: "https://mixkit.co",
+            previewImageURL: "https://assets.mixkit.co/videos/34487/34487-thumb-360-0.jpg",
             sources: [
-                CatalogVideoSource(url: URL(string: "https://assets.mixkit.co/videos/34487/34487-720.mp4")!, width: 1280, height: 720)
+                ("https://assets.mixkit.co/videos/34487/34487-720.mp4", 1280, 720)
             ]
         ),
-        CatalogWallpaper(
+        mixkitWallpaper(
             id: "anime-cloud-night",
             title: "Dreamy Cloud Night",
             category: "Anime",
-            attribution: "Mixkit",
-            previewImageURL: URL(string: "https://assets.mixkit.co/videos/34404/34404-thumb-360-0.jpg"),
-            sourcePageURL: URL(string: "https://mixkit.co"),
+            sourcePageURL: "https://mixkit.co",
+            previewImageURL: "https://assets.mixkit.co/videos/34404/34404-thumb-360-0.jpg",
             sources: [
-                CatalogVideoSource(url: URL(string: "https://assets.mixkit.co/videos/34404/34404-720.mp4")!, width: 1280, height: 720)
-            ]
-        ),
-        CatalogWallpaper(
-            id: "yellow-flowers-tree",
-            title: "Yellow Flower Tree",
-            category: "Nature",
-            attribution: "Mixkit",
-            previewImageURL: nil,
-            sourcePageURL: URL(string: "https://mixkit.co"),
-            sources: [
-                CatalogVideoSource(url: URL(string: "https://assets.mixkit.co/videos/preview/mixkit-tree-with-yellow-flowers-1173-large.mp4")!, width: 1920, height: 1080)
-            ]
-        ),
-        CatalogWallpaper(
-            id: "beach-walk",
-            title: "Beach Walk",
-            category: "Nature",
-            attribution: "Mixkit",
-            previewImageURL: nil,
-            sourcePageURL: URL(string: "https://mixkit.co"),
-            sources: [
-                CatalogVideoSource(url: URL(string: "https://assets.mixkit.co/videos/preview/mixkit-woman-walking-on-the-beach-1111-large.mp4")!, width: 1920, height: 1080)
-            ]
-        ),
-        CatalogWallpaper(
-            id: "space-stars",
-            title: "Stars in Space",
-            category: "Space",
-            attribution: "Mixkit",
-            previewImageURL: nil,
-            sourcePageURL: URL(string: "https://mixkit.co"),
-            sources: [
-                CatalogVideoSource(url: URL(string: "https://assets.mixkit.co/videos/preview/mixkit-stars-in-space-1610-large.mp4")!, width: 1920, height: 1080)
-            ]
-        ),
-        CatalogWallpaper(
-            id: "night-phone",
-            title: "Night Lights",
-            category: "Urban",
-            attribution: "Mixkit",
-            previewImageURL: nil,
-            sourcePageURL: URL(string: "https://mixkit.co"),
-            sources: [
-                CatalogVideoSource(url: URL(string: "https://assets.mixkit.co/videos/preview/mixkit-woman-at-night-lying-down-using-her-cell-phone-43381-large.mp4")!, width: 1920, height: 1080)
+                ("https://assets.mixkit.co/videos/34404/34404-720.mp4", 1280, 720)
             ]
         )
     ]
+
+    private static func mixkitWallpaper(
+        id: String,
+        title: String,
+        category: String,
+        sourcePageURL: String,
+        previewImageURL: String?,
+        sources: [(url: String, width: Int, height: Int)]
+    ) -> CatalogWallpaper {
+        CatalogWallpaper(
+            id: id,
+            title: title,
+            category: category,
+            attribution: "Mixkit",
+            previewImageURL: previewImageURL.flatMap(URL.init(string:)),
+            sourcePageURL: URL(string: sourcePageURL),
+            sources: sources.map { source in
+                CatalogVideoSource(url: URL(string: source.url)!, width: source.width, height: source.height)
+            }
+        )
+    }
 }
 
 struct DownloadedCatalogWallpaper: Identifiable, Hashable, Codable {
@@ -466,6 +498,10 @@ final class AppViewModel: ObservableObject {
         selectedVideoURL?.lastPathComponent ?? "Not selected"
     }
 
+    var currentVideoURL: URL? {
+        selectedVideoURL
+    }
+
     var isStartButtonHighlighted: Bool {
         selectedVideoURL != nil && !isRunning && !isPlaybackPaused
     }
@@ -534,7 +570,7 @@ final class AppViewModel: ObservableObject {
     init(
         controller: WallpaperControlling? = nil,
         optimizationStore: VideoOptimizationStore = VideoOptimizationStore(),
-        catalogProvider: WallpaperCatalogProviding = MoeWallsSource()
+        catalogProvider: WallpaperCatalogProviding = ManagedWallpaperCatalogProvider()
     ) {
         self.optimizationStore = optimizationStore
         self.catalogProvider = catalogProvider
@@ -1096,8 +1132,8 @@ final class AppViewModel: ObservableObject {
                 try clearOptimizedVideoCache(preserving: preservedPaths)
                 CatalogPreviewImageLoader.clearCache()
 
-                if let moeWallsSource = catalogProvider as? MoeWallsSource {
-                    await moeWallsSource.clearCache()
+                if let cacheClearingProvider = catalogProvider as? CatalogCacheClearing {
+                    await cacheClearingProvider.clearCache()
                 }
 
                 downloadedCatalogWallpapers = []

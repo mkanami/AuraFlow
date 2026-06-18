@@ -38,24 +38,36 @@ require_command() {
   fi
 }
 
-ensure_xcode_toolchain() {
-  local current_dev_dir=""
-  current_dev_dir="$(xcode-select -p 2>/dev/null || true)"
-
+configure_developer_dir() {
   if [[ -n "${DEVELOPER_DIR:-}" ]]; then
     log "Using DEVELOPER_DIR=$DEVELOPER_DIR"
     return
   fi
 
-  if [[ "$current_dev_dir" == "/Library/Developer/CommandLineTools" ]] && [[ -d "/Applications/Xcode.app/Contents/Developer" ]]; then
-    export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
-    log "Switched build toolchain to Xcode SDK at $DEVELOPER_DIR"
-    return
+  local bundled_xcode="/Applications/Xcode.app/Contents/Developer"
+  if [[ -d "$bundled_xcode" ]]; then
+    local xcode_sdk_version=""
+    xcode_sdk_version="$(DEVELOPER_DIR="$bundled_xcode" xcrun --sdk macosx --show-sdk-version 2>/dev/null || true)"
+    local xcode_sdk_major="${xcode_sdk_version%%.*}"
+    if [[ "$xcode_sdk_major" =~ ^[0-9]+$ && "$xcode_sdk_major" -ge 26 ]]; then
+      export DEVELOPER_DIR="$bundled_xcode"
+      log "Using Xcode SDK $xcode_sdk_version from $DEVELOPER_DIR"
+      return
+    fi
   fi
+}
 
-  if [[ -d "/Applications/Xcode.app/Contents/Developer" ]]; then
-    export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
-    log "Using Xcode SDK at $DEVELOPER_DIR"
+require_macos_sdk() {
+  require_command xcrun
+  require_command swift
+
+  local sdk_version
+  sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+  local sdk_major="${sdk_version%%.*}"
+  if [[ ! "$sdk_major" =~ ^[0-9]+$ || "$sdk_major" -lt 26 ]]; then
+    log "macOS SDK 26+ is required for native Liquid Glass. Current SDK: $sdk_version ($(xcrun --show-sdk-path --sdk macosx))"
+    log "Install/use Xcode 26+ or set DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer"
+    exit 1
   fi
 }
 
@@ -423,7 +435,8 @@ package_distribution() {
 
 main() {
   acquire_lock
-  ensure_xcode_toolchain
+  configure_developer_dir
+  require_macos_sdk
   prepare_environment
   build_swift_app
   apply_plist_customizations
