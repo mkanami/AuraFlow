@@ -1133,6 +1133,13 @@ struct WallpaperCatalogView: View {
         viewModel.selectedCatalogWallpaper != nil
     }
 
+    private var catalogCountText: String {
+        let filteredCount = viewModel.filteredCatalogWallpapers.count
+        let totalCount = viewModel.catalogWallpapers.count
+        guard filteredCount != totalCount else { return "\(totalCount)" }
+        return "\(filteredCount)/\(totalCount)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
@@ -1158,9 +1165,27 @@ struct WallpaperCatalogView: View {
                         ProgressView()
                             .controlSize(.small)
                     }
-                    Text("\(viewModel.catalogWallpapers.count)")
+                    Text(catalogCountText)
                         .font(.caption2)
                         .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.78) : Color.black.opacity(0.64))
+                }
+            }
+            .zIndex(10)
+
+            if viewModel.selectedCatalogWallpaper == nil {
+                HStack(spacing: 10) {
+                    ForEach(CatalogWallpaperGroup.allCases) { group in
+                        CatalogGroupFilterButton(
+                            group: group,
+                            count: viewModel.catalogWallpaperCount(in: group),
+                            isSelected: viewModel.selectedCatalogGroup == group
+                        ) {
+                            viewModel.toggleCatalogGroup(group)
+                        }
+                    }
+
+                    Spacer(minLength: 8)
+
                     TextField("Search catalog", text: $viewModel.catalogSearchText)
                         .textFieldStyle(.plain)
                         .font(.body.weight(.medium))
@@ -1174,8 +1199,8 @@ struct WallpaperCatalogView: View {
                         )
                         .frame(maxWidth: 260)
                 }
+                .zIndex(9)
             }
-            .zIndex(10)
 
             if let wallpaper = viewModel.selectedCatalogWallpaper {
                 WallpaperCatalogDetailView(viewModel: viewModel, wallpaper: wallpaper)
@@ -1201,6 +1226,51 @@ struct WallpaperCatalogView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: Color.black.opacity(0.30), radius: 20, x: 0, y: 12)
         .environment(\.colorScheme, .dark)
+    }
+}
+
+struct CatalogGroupFilterButton: View {
+    let group: CatalogWallpaperGroup
+    let count: Int
+    let isSelected: Bool
+    let action: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: group.systemImage)
+                    .font(.caption.weight(.semibold))
+                Text(group.title)
+                    .lineLimit(1)
+                Text("\(count)")
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.80) : Color.black.opacity(0.62))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(isSelected ? 0.14 : 0.07))
+                    )
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.82))
+            .padding(.vertical, 8)
+            .padding(.horizontal, 10)
+            .frame(minWidth: 92)
+            .background(AuraGlassInsetCard(cornerRadius: 10, emphasized: isSelected))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(
+                        isSelected ? Color.accentColor.opacity(0.55) : Color.white.opacity(0.10),
+                        lineWidth: isSelected ? 1.1 : 0.9
+                    )
+            )
+        }
+        .buttonStyle(AuraPlainPressButtonStyle())
+        .accessibilityLabel("\(group.title) wallpapers")
+        .accessibilityValue(isSelected ? "Selected" : "\(count)")
     }
 }
 

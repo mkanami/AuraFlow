@@ -80,9 +80,15 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
     ) -> [CatalogWallpaper] {
         var seen = Set<String>()
         var merged: [CatalogWallpaper] = []
+        let maxCount = max(curated.count, live.count)
 
-        for wallpaper in curated + live where seen.insert(wallpaper.id).inserted {
-            merged.append(wallpaper)
+        for index in 0..<maxCount {
+            if index < curated.count, seen.insert(curated[index].id).inserted {
+                merged.append(curated[index])
+            }
+            if index < live.count, seen.insert(live[index].id).inserted {
+                merged.append(live[index])
+            }
         }
 
         return merged

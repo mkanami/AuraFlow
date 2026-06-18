@@ -340,7 +340,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(viewModel.isCatalogOpen == false)
 }
 
-@Test func managedCatalogPrioritizesCuratedWallpapersBeforeLiveCatalog() async throws {
+@Test func managedCatalogInterleavesCuratedAndLiveWallpapers() async throws {
     let liveWallpaper = CatalogWallpaper(
         id: "live-wallpaper",
         title: "Live Wallpaper",
@@ -349,6 +349,15 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
         previewImageURL: nil,
         sourcePageURL: URL(string: "https://example.com/live"),
         sources: [CatalogVideoSource(url: URL(string: "https://example.com/live.mp4")!, width: 1920, height: 1080)]
+    )
+    let secondLiveWallpaper = CatalogWallpaper(
+        id: "second-live-wallpaper",
+        title: "Second Live Wallpaper",
+        category: "Anime",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://example.com/second-live"),
+        sources: [CatalogVideoSource(url: URL(string: "https://example.com/second-live.mp4")!, width: 1920, height: 1080)]
     )
     let curatedWallpaper = CatalogWallpaper(
         id: "curated-wallpaper",
@@ -359,14 +368,28 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
         sourcePageURL: URL(string: "https://example.com/curated"),
         sources: [CatalogVideoSource(url: URL(string: "https://example.com/curated.mp4")!, width: 1920, height: 1080)]
     )
+    let secondCuratedWallpaper = CatalogWallpaper(
+        id: "second-curated-wallpaper",
+        title: "Second Curated Wallpaper",
+        category: "Stable",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://example.com/second-curated"),
+        sources: [CatalogVideoSource(url: URL(string: "https://example.com/second-curated.mp4")!, width: 1920, height: 1080)]
+    )
     let provider = ManagedWallpaperCatalogProvider(
-        liveProvider: MockCatalogProvider(wallpapers: [liveWallpaper]),
-        curatedCatalog: [curatedWallpaper]
+        liveProvider: MockCatalogProvider(wallpapers: [liveWallpaper, secondLiveWallpaper]),
+        curatedCatalog: [curatedWallpaper, secondCuratedWallpaper]
     )
 
     let catalog = try await provider.fetchCatalog()
 
-    #expect(catalog.map(\.id) == ["curated-wallpaper", "live-wallpaper"])
+    #expect(catalog.map(\.id) == [
+        "curated-wallpaper",
+        "live-wallpaper",
+        "second-curated-wallpaper",
+        "second-live-wallpaper"
+    ])
 }
 
 @Test func managedCatalogUsesCuratedFallbackWhenLiveProviderFails() async throws {
@@ -390,17 +413,68 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @Test func defaultCatalogStartsWithNonAnimeScenicWallpapers() {
-    let leadingWallpapers = CatalogWallpaper.defaultCatalog.prefix(5)
-    let leadingCategories = Set(leadingWallpapers.map(\.category))
+    let leadingWallpapers = CatalogWallpaper.defaultCatalog.prefix(6)
+    let catalogCategories = Set(CatalogWallpaper.defaultCatalog.map(\.category))
     let sourceExtensions = CatalogWallpaper.defaultCatalog
         .flatMap(\.sources)
         .map { $0.url.pathExtension.lowercased() }
 
-    #expect(leadingWallpapers.allSatisfy { $0.category != "Anime" })
-    #expect(leadingCategories.isSuperset(of: Set(["Nature", "Leaves", "Lava", "Abstract"])))
+    #expect(leadingWallpapers.contains { $0.catalogGroup == .anime })
+    #expect(leadingWallpapers.contains { $0.catalogGroup == .scenic })
+    #expect(catalogCategories.isSuperset(of: Set(["Nature", "Leaves", "Lava", "Abstract"])))
     #expect(CatalogWallpaper.defaultCatalog.contains { $0.id == "waterfall-in-forest" })
     #expect(CatalogWallpaper.defaultCatalog.contains { $0.id == "burning-lava-particles" })
     #expect(sourceExtensions.allSatisfy { $0 == "mp4" })
+}
+
+@MainActor
+@Test func catalogGroupFilterConstrainsSearchResults() async throws {
+    let animeWallpaper = CatalogWallpaper(
+        id: "anime-rain",
+        title: "Anime Rain",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://moewalls.com/anime/anime-rain-live-wallpaper/"),
+        sources: [CatalogVideoSource(url: URL(string: "https://example.com/anime-rain.mp4")!, width: 1920, height: 1080)]
+    )
+    let scenicWallpaper = CatalogWallpaper(
+        id: "forest-rain",
+        title: "Forest Rain",
+        category: "Nature",
+        attribution: "Mixkit",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://mixkit.co/free-stock-video/forest-rain/"),
+        sources: [CatalogVideoSource(url: URL(string: "https://example.com/forest-rain.mp4")!, width: 1920, height: 1080)]
+    )
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        catalogProvider: MockCatalogProvider(wallpapers: [animeWallpaper, scenicWallpaper])
+    )
+
+    viewModel.openCatalog()
+    for _ in 0..<20 {
+        if viewModel.catalogWallpapers.count == 2 {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(viewModel.filteredCatalogWallpapers.map(\.id) == ["anime-rain", "forest-rain"])
+
+    viewModel.toggleCatalogGroup(.anime)
+    viewModel.catalogSearchText = "rain"
+    #expect(viewModel.filteredCatalogWallpapers.map(\.id) == ["anime-rain"])
+
+    viewModel.catalogSearchText = "forest"
+    #expect(viewModel.filteredCatalogWallpapers.isEmpty)
+
+    viewModel.toggleCatalogGroup(.scenic)
+    #expect(viewModel.filteredCatalogWallpapers.map(\.id) == ["forest-rain"])
+
+    viewModel.toggleCatalogGroup(.scenic)
+    #expect(viewModel.selectedCatalogGroup == nil)
+    #expect(viewModel.filteredCatalogWallpapers.map(\.id) == ["forest-rain"])
 }
 
 @MainActor

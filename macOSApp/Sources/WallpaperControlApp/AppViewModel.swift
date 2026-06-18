@@ -52,6 +52,16 @@ struct CatalogWallpaper: Identifiable, Hashable, Codable {
             ]
         ),
         mixkitWallpaper(
+            id: "anime-sky-city",
+            title: "Anime Sky City",
+            category: "Anime",
+            sourcePageURL: "https://mixkit.co",
+            previewImageURL: "https://assets.mixkit.co/videos/39767/39767-thumb-360-0.jpg",
+            sources: [
+                ("https://assets.mixkit.co/videos/39767/39767-720.mp4", 1280, 720)
+            ]
+        ),
+        mixkitWallpaper(
             id: "branches-swaying-in-the-wind",
             title: "Branches Swaying in the Wind",
             category: "Nature",
@@ -64,6 +74,16 @@ struct CatalogWallpaper: Identifiable, Hashable, Codable {
             ]
         ),
         mixkitWallpaper(
+            id: "anime-neon-street",
+            title: "Neon Street Drift",
+            category: "Anime",
+            sourcePageURL: "https://mixkit.co",
+            previewImageURL: "https://assets.mixkit.co/videos/34487/34487-thumb-360-0.jpg",
+            sources: [
+                ("https://assets.mixkit.co/videos/34487/34487-720.mp4", 1280, 720)
+            ]
+        ),
+        mixkitWallpaper(
             id: "autumn-maple-leaves",
             title: "Autumn Maple Leaves",
             category: "Leaves",
@@ -72,6 +92,16 @@ struct CatalogWallpaper: Identifiable, Hashable, Codable {
             sources: [
                 ("https://assets.mixkit.co/videos/1611/1611-1080.mp4", 1920, 1080),
                 ("https://assets.mixkit.co/videos/1611/1611-720.mp4", 1280, 720)
+            ]
+        ),
+        mixkitWallpaper(
+            id: "anime-cloud-night",
+            title: "Dreamy Cloud Night",
+            category: "Anime",
+            sourcePageURL: "https://mixkit.co",
+            previewImageURL: "https://assets.mixkit.co/videos/34404/34404-thumb-360-0.jpg",
+            sources: [
+                ("https://assets.mixkit.co/videos/34404/34404-720.mp4", 1280, 720)
             ]
         ),
         mixkitWallpaper(
@@ -96,36 +126,6 @@ struct CatalogWallpaper: Identifiable, Hashable, Codable {
                 ("https://assets.mixkit.co/videos/1963/1963-1080.mp4", 1920, 1080),
                 ("https://assets.mixkit.co/videos/1963/1963-720.mp4", 1280, 720)
             ]
-        ),
-        mixkitWallpaper(
-            id: "anime-sky-city",
-            title: "Anime Sky City",
-            category: "Anime",
-            sourcePageURL: "https://mixkit.co",
-            previewImageURL: "https://assets.mixkit.co/videos/39767/39767-thumb-360-0.jpg",
-            sources: [
-                ("https://assets.mixkit.co/videos/39767/39767-720.mp4", 1280, 720)
-            ]
-        ),
-        mixkitWallpaper(
-            id: "anime-neon-street",
-            title: "Neon Street Drift",
-            category: "Anime",
-            sourcePageURL: "https://mixkit.co",
-            previewImageURL: "https://assets.mixkit.co/videos/34487/34487-thumb-360-0.jpg",
-            sources: [
-                ("https://assets.mixkit.co/videos/34487/34487-720.mp4", 1280, 720)
-            ]
-        ),
-        mixkitWallpaper(
-            id: "anime-cloud-night",
-            title: "Dreamy Cloud Night",
-            category: "Anime",
-            sourcePageURL: "https://mixkit.co",
-            previewImageURL: "https://assets.mixkit.co/videos/34404/34404-thumb-360-0.jpg",
-            sources: [
-                ("https://assets.mixkit.co/videos/34404/34404-720.mp4", 1280, 720)
-            ]
         )
     ]
 
@@ -148,6 +148,42 @@ struct CatalogWallpaper: Identifiable, Hashable, Codable {
                 CatalogVideoSource(url: URL(string: source.url)!, width: source.width, height: source.height)
             }
         )
+    }
+}
+
+enum CatalogWallpaperGroup: String, CaseIterable, Identifiable {
+    case anime
+    case scenic
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .anime:
+            return "Anime"
+        case .scenic:
+            return "Scenic"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .anime:
+            return "sparkles"
+        case .scenic:
+            return "leaf"
+        }
+    }
+}
+
+extension CatalogWallpaper {
+    var catalogGroup: CatalogWallpaperGroup {
+        if category.localizedCaseInsensitiveCompare("Anime") == .orderedSame ||
+            attribution.localizedCaseInsensitiveCompare("MoeWalls") == .orderedSame ||
+            sourcePageURL?.host?.localizedCaseInsensitiveContains("moewalls.com") == true {
+            return .anime
+        }
+        return .scenic
     }
 }
 
@@ -450,6 +486,7 @@ final class AppViewModel: ObservableObject {
     @Published var selectedCatalogWallpaper: CatalogWallpaper?
     @Published var catalogScrollTargetID: String?
     @Published var catalogSearchText: String = ""
+    @Published var selectedCatalogGroup: CatalogWallpaperGroup?
     @Published var catalogDownloadID: String?
     @Published private(set) var catalogWallpapers: [CatalogWallpaper] = []
     @Published private(set) var catalogIsRefreshing: Bool = false
@@ -559,9 +596,13 @@ final class AppViewModel: ObservableObject {
     }
 
     var filteredCatalogWallpapers: [CatalogWallpaper] {
+        let groupFiltered = catalogWallpapers.filter { wallpaper in
+            guard let selectedCatalogGroup else { return true }
+            return wallpaper.catalogGroup == selectedCatalogGroup
+        }
         let query = catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return catalogWallpapers }
-        return catalogWallpapers.filter { wallpaper in
+        guard !query.isEmpty else { return groupFiltered }
+        return groupFiltered.filter { wallpaper in
             wallpaper.title.localizedCaseInsensitiveContains(query)
                 || wallpaper.category.localizedCaseInsensitiveContains(query)
         }
@@ -732,6 +773,7 @@ final class AppViewModel: ObservableObject {
         closeDownloadedWallpapers()
         selectedCatalogWallpaper = nil
         catalogScrollTargetID = nil
+        selectedCatalogGroup = nil
         isCatalogOpen = true
         refreshCatalogIfNeeded()
     }
@@ -742,6 +784,7 @@ final class AppViewModel: ObservableObject {
         closeDownloadedWallpapers()
         selectedCatalogWallpaper = nil
         catalogScrollTargetID = nil
+        selectedCatalogGroup = nil
         isCatalogOpen = true
         refreshCatalogIfNeeded()
     }
@@ -799,6 +842,15 @@ final class AppViewModel: ObservableObject {
 
     func isDownloading(_ wallpaper: CatalogWallpaper) -> Bool {
         catalogDownloadID == wallpaper.id
+    }
+
+    func toggleCatalogGroup(_ group: CatalogWallpaperGroup) {
+        selectedCatalogGroup = selectedCatalogGroup == group ? nil : group
+        catalogScrollTargetID = filteredCatalogWallpapers.first?.id
+    }
+
+    func catalogWallpaperCount(in group: CatalogWallpaperGroup) -> Int {
+        catalogWallpapers.filter { $0.catalogGroup == group }.count
     }
 
     func applyCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
