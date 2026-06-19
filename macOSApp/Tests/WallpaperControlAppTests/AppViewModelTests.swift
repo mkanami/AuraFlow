@@ -412,19 +412,8 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(catalog.map(\.id) == ["curated-wallpaper"])
 }
 
-@Test func defaultCatalogStartsWithNonAnimeScenicWallpapers() {
-    let leadingWallpapers = CatalogWallpaper.defaultCatalog.prefix(6)
-    let catalogCategories = Set(CatalogWallpaper.defaultCatalog.map(\.category))
-    let sourceExtensions = CatalogWallpaper.defaultCatalog
-        .flatMap(\.sources)
-        .map { $0.url.pathExtension.lowercased() }
-
-    #expect(leadingWallpapers.contains { $0.catalogGroup == .anime })
-    #expect(leadingWallpapers.contains { $0.catalogGroup == .scenic })
-    #expect(catalogCategories.isSuperset(of: Set(["Nature", "Leaves", "Lava", "Abstract"])))
-    #expect(CatalogWallpaper.defaultCatalog.contains { $0.id == "waterfall-in-forest" })
-    #expect(CatalogWallpaper.defaultCatalog.contains { $0.id == "burning-lava-particles" })
-    #expect(sourceExtensions.allSatisfy { $0 == "mp4" })
+@Test func defaultCatalogDoesNotBundleThirdPartyWallpapers() {
+    #expect(CatalogWallpaper.defaultCatalog.isEmpty)
 }
 
 @MainActor

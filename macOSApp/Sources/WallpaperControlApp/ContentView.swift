@@ -1241,27 +1241,17 @@ struct CatalogGroupFilterButton: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 Image(systemName: group.systemImage)
-                    .font(.caption.weight(.semibold))
+                    .font(.caption2.weight(.semibold))
                 Text(group.title)
                     .lineLimit(1)
-                Text("\(count)")
-                    .font(.caption2.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.80) : Color.black.opacity(0.62))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(
-                        Capsule()
-                            .fill(Color.white.opacity(isSelected ? 0.14 : 0.07))
-                    )
             }
-            .font(.caption.weight(.semibold))
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.82))
-            .padding(.vertical, 8)
-            .padding(.horizontal, 10)
-            .frame(minWidth: 92)
-            .background(AuraGlassInsetCard(cornerRadius: 10, emphasized: isSelected))
+            .padding(.vertical, 6)
+            .padding(.horizontal, 9)
+            .background(AuraGlassInsetCard(cornerRadius: 9, emphasized: isSelected))
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .stroke(
                         isSelected ? Color.accentColor.opacity(0.55) : Color.white.opacity(0.10),
                         lineWidth: isSelected ? 1.1 : 0.9
@@ -1270,7 +1260,7 @@ struct CatalogGroupFilterButton: View {
         }
         .buttonStyle(AuraPlainPressButtonStyle())
         .accessibilityLabel("\(group.title) wallpapers")
-        .accessibilityValue(isSelected ? "Selected" : "\(count)")
+        .accessibilityValue(isSelected ? "Selected, \(count)" : "\(count)")
     }
 }
 
