@@ -42,6 +42,42 @@ import Testing
     ])
 }
 
+@Test func pixabayAPIHitBuildsDownloadableScenicWallpaper() {
+    let hit = PixabayVideoHit(
+        id: 125,
+        pageURL: URL(string: "https://pixabay.com/videos/id-125/")!,
+        tags: "waterfall, forest, nature",
+        duration: 12,
+        videos: [
+            "large": PixabayVideoRendition(
+                url: URL(string: "https://cdn.pixabay.com/video/2015/08/08/125-135736646_large.mp4")!,
+                width: 3840,
+                height: 2160,
+                size: 6_615_235,
+                thumbnail: URL(string: "https://cdn.pixabay.com/video/2015/08/08/125-135736646_large.jpg")!
+            ),
+            "medium": PixabayVideoRendition(
+                url: URL(string: "https://cdn.pixabay.com/video/2015/08/08/125-135736646_medium.mp4")!,
+                width: 1920,
+                height: 1080,
+                size: 3_562_083,
+                thumbnail: URL(string: "https://cdn.pixabay.com/video/2015/08/08/125-135736646_medium.jpg")!
+            ),
+        ],
+        user: "Coverr-Free-Footage"
+    )
+
+    let wallpaper = PixabayParser.makeCatalogWallpaper(fromAPIHit: hit)
+
+    #expect(wallpaper?.id == "pixabay-125")
+    #expect(wallpaper?.title == "Waterfall, Forest, Nature")
+    #expect(wallpaper?.sources.map(\.url.absoluteString) == [
+        "https://cdn.pixabay.com/video/2015/08/08/125-135736646_medium.mp4",
+        "https://cdn.pixabay.com/video/2015/08/08/125-135736646_large.mp4",
+    ])
+    #expect(wallpaper?.catalogGroup == .scenic)
+}
+
 @Test func pixabayChallengePageIsDetected() {
     let html = """
     <html><head><title>Just a moment...</title></head>

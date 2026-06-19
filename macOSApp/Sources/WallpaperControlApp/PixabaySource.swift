@@ -3,16 +3,29 @@ import Foundation
 actor PixabaySource: WallpaperCatalogProviding, CatalogCacheClearing {
     private let baseURL = URL(string: "https://pixabay.com/")!
     private let searchQueries = [
+        "scenery",
+        "waterfalls",
+        "mountain waterfall",
+        "river trees",
+        "forest misty",
+        "falling leaves",
         "waterfall loop",
         "leaves wind",
+        "lava lamp",
         "lava abstract",
+        "abstract waves",
         "abstract loop",
+        "motion graphics",
         "galaxy universe",
     ]
+    private let apiPageSize = 200
+    private let maxAPIPagesPerQuery = 3
     private let session: URLSession
+    private let apiKey: String?
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = .shared, apiKey: String? = PixabaySource.defaultAPIKey()) {
         self.session = session
+        self.apiKey = Self.nonEmpty(apiKey)
     }
 
     func clearCache() async {
@@ -38,6 +51,14 @@ actor PixabaySource: WallpaperCatalogProviding, CatalogCacheClearing {
     }
 
     func fetchCatalog(progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
+        if let apiKey {
+            let apiCatalog = try await fetchAPICatalog(apiKey: apiKey, progress: progress)
+            if !apiCatalog.isEmpty {
+                try persistCatalog(apiCatalog)
+                return apiCatalog
+            }
+        }
+
         var aggregated: [CatalogWallpaper] = []
 
         for query in searchQueries {
@@ -65,6 +86,81 @@ actor PixabaySource: WallpaperCatalogProviding, CatalogCacheClearing {
             return source.url
         }
         throw URLError(.badURL)
+    }
+
+    private func fetchAPICatalog(
+        apiKey: String,
+        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
+    ) async throws -> [CatalogWallpaper] {
+        var aggregated: [CatalogWallpaper] = []
+        var firstError: Error?
+
+        for query in searchQueries {
+            do {
+                let firstPage = try await fetchAPIPage(apiKey: apiKey, query: query, page: 1)
+                aggregated.append(contentsOf: firstPage.wallpapers)
+                await progress(Self.deduplicate(aggregated))
+
+                let totalPages = min(
+                    maxAPIPagesPerQuery,
+                    max(1, Int(ceil(Double(firstPage.totalHits) / Double(apiPageSize))))
+                )
+                if totalPages > 1 {
+                    for page in 2...totalPages {
+                        let pageResult = try await fetchAPIPage(apiKey: apiKey, query: query, page: page)
+                        aggregated.append(contentsOf: pageResult.wallpapers)
+                        await progress(Self.deduplicate(aggregated))
+                    }
+                }
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+
+        let deduplicated = Self.deduplicate(aggregated)
+        if deduplicated.isEmpty, let firstError {
+            throw firstError
+        }
+        return deduplicated
+    }
+
+    private func fetchAPIPage(
+        apiKey: String,
+        query: String,
+        page: Int
+    ) async throws -> (wallpapers: [CatalogWallpaper], totalHits: Int) {
+        var components = URLComponents(url: baseURL.appending(path: "api/videos/"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "key", value: apiKey),
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "video_type", value: "all"),
+            URLQueryItem(name: "category", value: query.contains("abstract") || query.contains("motion") || query.contains("lava") ? "backgrounds" : "nature"),
+            URLQueryItem(name: "min_width", value: "1920"),
+            URLQueryItem(name: "min_height", value: "1080"),
+            URLQueryItem(name: "safesearch", value: "true"),
+            URLQueryItem(name: "order", value: "popular"),
+            URLQueryItem(name: "per_page", value: String(apiPageSize)),
+            URLQueryItem(name: "page", value: String(page)),
+        ]
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        request.setValue("AuraFlow/1.2", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await session.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200...299).contains(httpResponse.statusCode) {
+            let message = Self.nonEmpty(String(data: data, encoding: .utf8)) ?? "Pixabay API returned HTTP \(httpResponse.statusCode)."
+            throw PixabaySourceError.unavailable(message)
+        }
+
+        let payload = try JSONDecoder().decode(PixabayVideoAPIResponse.self, from: data)
+        let wallpapers = payload.hits.compactMap(PixabayParser.makeCatalogWallpaper(fromAPIHit:))
+        return (wallpapers, payload.totalHits)
     }
 
     private func fetchSearchPage(url: URL) async throws -> [CatalogWallpaper] {
@@ -127,13 +223,53 @@ actor PixabaySource: WallpaperCatalogProviding, CatalogCacheClearing {
         live: [CatalogWallpaper],
         fallback: [CatalogWallpaper]
     ) -> [CatalogWallpaper] {
+        deduplicate(live + fallback)
+    }
+
+    private static func deduplicate(_ wallpapers: [CatalogWallpaper]) -> [CatalogWallpaper] {
         var seen = Set<String>()
         var merged: [CatalogWallpaper] = []
-        for wallpaper in live + fallback where seen.insert(wallpaper.id).inserted {
+        for wallpaper in wallpapers where seen.insert(wallpaper.id).inserted {
             merged.append(wallpaper)
         }
         return merged
     }
+
+    private static func defaultAPIKey() -> String? {
+        let environment = ProcessInfo.processInfo.environment
+        if let value = environment["AURAFLOW_PIXABAY_API_KEY"] ?? environment["PIXABAY_API_KEY"] {
+            return value
+        }
+        return Bundle.main.object(forInfoDictionaryKey: "PixabayAPIKey") as? String
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+struct PixabayVideoAPIResponse: Decodable {
+    let totalHits: Int
+    let hits: [PixabayVideoHit]
+}
+
+struct PixabayVideoHit: Decodable {
+    let id: Int
+    let pageURL: URL
+    let tags: String
+    let duration: Int?
+    let videos: [String: PixabayVideoRendition]
+    let user: String?
+}
+
+struct PixabayVideoRendition: Decodable {
+    let url: URL?
+    let width: Int
+    let height: Int
+    let size: Int?
+    let thumbnail: URL?
 }
 
 enum PixabayParser {
@@ -169,7 +305,7 @@ enum PixabayParser {
 
             let assetID = String(normalized[assetRange])
             let title = titleNear(range: matchRange, in: normalized) ?? titleFromAssetID(assetID)
-            guard isScenicTitle(title) else { continue }
+            guard isScenicText(title) else { continue }
 
             let catalogID = "pixabay-\(assetID)"
             guard seen.insert(catalogID).inserted else { continue }
@@ -207,6 +343,32 @@ enum PixabayParser {
         )
     }
 
+    static func makeCatalogWallpaper(fromAPIHit hit: PixabayVideoHit) -> CatalogWallpaper? {
+        guard isScenicText(hit.tags) else { return nil }
+        let orderedKeys = ["medium", "large", "small", "tiny"]
+        let sources = orderedKeys.compactMap { key -> CatalogVideoSource? in
+            guard let video = hit.videos[key],
+                  let url = video.url,
+                  video.width >= 960,
+                  video.height >= 540 else {
+                return nil
+            }
+            return CatalogVideoSource(url: url, width: video.width, height: video.height)
+        }
+        guard !sources.isEmpty else { return nil }
+
+        let previewImageURL = orderedKeys.compactMap { hit.videos[$0]?.thumbnail }.first
+        return CatalogWallpaper(
+            id: "pixabay-\(hit.id)",
+            title: titleFromTags(hit.tags),
+            category: "Scenic",
+            attribution: "Pixabay",
+            previewImageURL: previewImageURL,
+            sourcePageURL: hit.pageURL,
+            sources: sources
+        )
+    }
+
     static func videoCandidates(from thumbnailURL: URL) -> [URL] {
         let raw = thumbnailURL.absoluteString
         let pattern = #"_tiny\.(?:jpg|jpeg|webp)$"#
@@ -230,18 +392,31 @@ enum PixabayParser {
         let lowerBound = html.index(range.lowerBound, offsetBy: -900, limitedBy: html.startIndex) ?? html.startIndex
         let upperBound = html.index(range.upperBound, offsetBy: 900, limitedBy: html.endIndex) ?? html.endIndex
         let window = String(html[lowerBound..<upperBound])
+        let targetOffset = html.distance(from: lowerBound, to: range.lowerBound)
         let patterns = [
             #"alt=["']Image:\s*([^"']+)["']"#,
             #"aria-label=["']Image:\s*([^"']+)["']"#,
             #"title=["']Image:\s*([^"']+)["']"#,
         ]
 
+        var candidates: [(distance: Int, title: String)] = []
         for pattern in patterns {
-            if let match = firstMatch(in: window, pattern: pattern) {
-                return cleanupTitle(match)
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else {
+                continue
+            }
+            let nsRange = NSRange(window.startIndex..<window.endIndex, in: window)
+            for match in regex.matches(in: window, range: nsRange) {
+                guard match.numberOfRanges > 1,
+                      let titleRange = Range(match.range(at: 1), in: window) else {
+                    continue
+                }
+                let title = cleanupTitle(String(window[titleRange]))
+                guard !title.isEmpty else { continue }
+                let matchOffset = match.range.location + match.range.length
+                candidates.append((abs(targetOffset - matchOffset), title))
             }
         }
-        return nil
+        return candidates.min(by: { $0.distance < $1.distance })?.title
     }
 
     private static func sourcePageURLNear(
@@ -281,19 +456,41 @@ enum PixabayParser {
         return String(text[range])
     }
 
-    private static func isScenicTitle(_ title: String) -> Bool {
-        let lowercased = title.lowercased()
+    static func isScenicText(_ value: String) -> Bool {
+        let lowercased = value.lowercased()
         let allowedTerms = [
             "abstract", "autumn", "cascade", "cloud", "forest", "galaxy", "grass", "green",
             "geothermal", "lake", "lava", "leaf", "leaves", "loop", "mountain", "nature",
             "nebula", "ocean", "plant", "rain", "river", "space", "stars", "stream", "sunset",
-            "tree", "tunnel", "volcano", "water", "waterfall", "wind",
+            "tree", "tunnel", "volcano", "water", "waterfall", "waves", "wind",
         ]
         let blockedTerms = [
-            "anime", "cartoon", "emoji", "icon", "portrait", "selfie",
+            "anime", "cartoon", "emoji", "flag", "icon", "man", "people", "portrait", "selfie", "woman",
         ]
         return allowedTerms.contains { lowercased.contains($0) } &&
             !blockedTerms.contains { lowercased.contains($0) }
+    }
+
+    private static func titleFromTags(_ tags: String) -> String {
+        let title = tags
+            .split(separator: ",")
+            .map { part in
+                part.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .filter { !$0.isEmpty }
+            .prefix(5)
+            .map { tag in
+                tag
+                    .split(separator: " ")
+                    .map { word in
+                        let value = String(word)
+                        guard let first = value.first else { return value }
+                        return first.uppercased() + value.dropFirst()
+                    }
+                    .joined(separator: " ")
+            }
+            .joined(separator: ", ")
+        return cleanupTitle(title).isEmpty ? "Pixabay Scenic" : cleanupTitle(title)
     }
 
     private static func titleFromAssetID(_ assetID: String) -> String {

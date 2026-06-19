@@ -1135,6 +1135,12 @@ struct WallpaperCatalogView: View {
 
     private var catalogCountText: String {
         let filteredCount = viewModel.filteredCatalogWallpapers.count
+        if let selectedGroup = viewModel.selectedCatalogGroup {
+            let groupCount = viewModel.catalogWallpaperCount(in: selectedGroup)
+            guard filteredCount != groupCount else { return "\(groupCount) \(selectedGroup.title)" }
+            return "\(filteredCount)/\(groupCount) \(selectedGroup.title)"
+        }
+
         let totalCount = viewModel.catalogWallpapers.count
         guard filteredCount != totalCount else { return "\(totalCount)" }
         return "\(filteredCount)/\(totalCount)"
