@@ -5,89 +5,133 @@ protocol CatalogCacheClearing {
 }
 
 actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing {
-    private let liveProvider: WallpaperCatalogProviding
+    private let animeProvider: WallpaperCatalogProviding
+    private let scenicProvider: WallpaperCatalogProviding
     private let curatedCatalog: [CatalogWallpaper]
 
     init(
-        liveProvider: WallpaperCatalogProviding = MoeWallsSource(),
+        animeProvider: WallpaperCatalogProviding = MoeWallsSource(),
+        scenicProvider: WallpaperCatalogProviding = PixabaySource(),
         curatedCatalog: [CatalogWallpaper] = CatalogWallpaper.defaultCatalog
     ) {
-        self.liveProvider = liveProvider
+        self.animeProvider = animeProvider
+        self.scenicProvider = scenicProvider
         self.curatedCatalog = curatedCatalog
     }
 
     func loadCachedCatalog() async -> [CatalogWallpaper]? {
-        let cached = await liveProvider.loadCachedCatalog() ?? []
-        let merged = Self.mergeCatalogs(curated: curatedCatalog, live: cached)
+        let cachedAnime = await animeProvider.loadCachedCatalog() ?? []
+        let cachedScenic = await scenicProvider.loadCachedCatalog() ?? []
+        let merged = Self.mergeCatalogs(curated: curatedCatalog, catalogs: [cachedAnime, cachedScenic])
         return merged.isEmpty ? nil : merged
     }
 
     func fetchCatalog() async throws -> [CatalogWallpaper] {
+        var firstError: Error?
+
+        let animeCatalog: [CatalogWallpaper]
         do {
-            let liveCatalog = try await liveProvider.fetchCatalog()
-            return Self.mergeCatalogs(curated: curatedCatalog, live: liveCatalog)
+            animeCatalog = try await animeProvider.fetchCatalog()
         } catch {
-            if let cached = await liveProvider.loadCachedCatalog(), !cached.isEmpty {
-                return Self.mergeCatalogs(curated: curatedCatalog, live: cached)
-            }
-            if !curatedCatalog.isEmpty {
-                return curatedCatalog
-            }
-            throw error
+            firstError = error
+            animeCatalog = await animeProvider.loadCachedCatalog() ?? []
         }
+
+        let scenicCatalog: [CatalogWallpaper]
+        do {
+            scenicCatalog = try await scenicProvider.fetchCatalog()
+        } catch {
+            firstError = firstError ?? error
+            scenicCatalog = await scenicProvider.loadCachedCatalog() ?? []
+        }
+
+        let merged = Self.mergeCatalogs(curated: curatedCatalog, catalogs: [animeCatalog, scenicCatalog])
+        if !merged.isEmpty {
+            return merged
+        }
+        throw firstError ?? MoeWallsSourceError.unavailable("Wallpaper catalog is unavailable.")
     }
 
     func fetchCatalog(progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
         let curatedCatalog = curatedCatalog
+        var firstError: Error?
+        var scenicCatalog = await scenicProvider.loadCachedCatalog() ?? []
+        if !scenicCatalog.isEmpty {
+            await progress(Self.mergeCatalogs(curated: curatedCatalog, catalogs: [scenicCatalog]))
+        }
+
+        let animeCatalog: [CatalogWallpaper]
         do {
-            let liveCatalog = try await liveProvider.fetchCatalog { partial in
-                let merged = Self.mergeCatalogs(curated: curatedCatalog, live: partial)
+            let cachedScenicForAnimeProgress = scenicCatalog
+            animeCatalog = try await animeProvider.fetchCatalog { partial in
+                let merged = Self.mergeCatalogs(curated: curatedCatalog, catalogs: [partial, cachedScenicForAnimeProgress])
                 if !merged.isEmpty {
                     await progress(merged)
                 }
             }
-            return Self.mergeCatalogs(curated: curatedCatalog, live: liveCatalog)
         } catch {
-            if let cached = await liveProvider.loadCachedCatalog(), !cached.isEmpty {
-                let merged = Self.mergeCatalogs(curated: curatedCatalog, live: cached)
-                await progress(merged)
-                return merged
-            }
-            if !curatedCatalog.isEmpty {
-                await progress(curatedCatalog)
-                return curatedCatalog
-            }
-            throw error
+            firstError = error
+            animeCatalog = await animeProvider.loadCachedCatalog() ?? []
         }
+
+        let partialMerged = Self.mergeCatalogs(curated: curatedCatalog, catalogs: [animeCatalog, scenicCatalog])
+        if !partialMerged.isEmpty {
+            await progress(partialMerged)
+        }
+
+        do {
+            scenicCatalog = try await scenicProvider.fetchCatalog { partial in
+                let merged = Self.mergeCatalogs(curated: curatedCatalog, catalogs: [animeCatalog, partial])
+                if !merged.isEmpty {
+                    await progress(merged)
+                }
+            }
+        } catch {
+            firstError = firstError ?? error
+            scenicCatalog = await scenicProvider.loadCachedCatalog() ?? scenicCatalog
+        }
+
+        let merged = Self.mergeCatalogs(curated: curatedCatalog, catalogs: [animeCatalog, scenicCatalog])
+        if !merged.isEmpty {
+            return merged
+        }
+        throw firstError ?? MoeWallsSourceError.unavailable("Wallpaper catalog is unavailable.")
     }
 
     func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
         if let source = wallpaper.sources.first {
             return source.url
         }
-        return try await liveProvider.resolveDownloadURL(for: wallpaper)
+        if wallpaper.catalogGroup == .scenic {
+            return try await scenicProvider.resolveDownloadURL(for: wallpaper)
+        }
+        return try await animeProvider.resolveDownloadURL(for: wallpaper)
     }
 
     func clearCache() async {
-        if let cacheClearingProvider = liveProvider as? CatalogCacheClearing {
+        if let cacheClearingProvider = animeProvider as? CatalogCacheClearing {
+            await cacheClearingProvider.clearCache()
+        }
+        if let cacheClearingProvider = scenicProvider as? CatalogCacheClearing {
             await cacheClearingProvider.clearCache()
         }
     }
 
     private static func mergeCatalogs(
         curated: [CatalogWallpaper],
-        live: [CatalogWallpaper]
+        catalogs: [[CatalogWallpaper]]
     ) -> [CatalogWallpaper] {
         var seen = Set<String>()
         var merged: [CatalogWallpaper] = []
-        let maxCount = max(curated.count, live.count)
+        let allCatalogs = [curated] + catalogs
+        let maxCount = allCatalogs.map(\.count).max() ?? 0
 
         for index in 0..<maxCount {
-            if index < curated.count, seen.insert(curated[index].id).inserted {
-                merged.append(curated[index])
-            }
-            if index < live.count, seen.insert(live[index].id).inserted {
-                merged.append(live[index])
+            for catalog in allCatalogs where index < catalog.count {
+                let wallpaper = catalog[index]
+                if seen.insert(wallpaper.id).inserted {
+                    merged.append(wallpaper)
+                }
             }
         }
 

@@ -1446,7 +1446,7 @@ final class AppViewModel: ObservableObject {
                 guard !fetched.isEmpty else {
                     catalogWallpapers = []
                     selectedCatalogWallpaper = nil
-                    statusMessage = "MoeWalls returned no wallpapers."
+                    statusMessage = "Wallpaper catalog returned no wallpapers."
                     lastCatalogRefreshAt = Date()
                     return
                 }
@@ -1460,7 +1460,7 @@ final class AppViewModel: ObservableObject {
                 if catalogWallpapers.isEmpty {
                     selectedCatalogWallpaper = nil
                 }
-                statusMessage = "MoeWalls unavailable: \(error.localizedDescription)"
+                statusMessage = "Wallpaper catalog unavailable: \(error.localizedDescription)"
             }
         }
     }

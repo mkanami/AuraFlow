@@ -378,7 +378,8 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
         sources: [CatalogVideoSource(url: URL(string: "https://example.com/second-curated.mp4")!, width: 1920, height: 1080)]
     )
     let provider = ManagedWallpaperCatalogProvider(
-        liveProvider: MockCatalogProvider(wallpapers: [liveWallpaper, secondLiveWallpaper]),
+        animeProvider: MockCatalogProvider(wallpapers: [liveWallpaper, secondLiveWallpaper]),
+        scenicProvider: MockCatalogProvider(wallpapers: []),
         curatedCatalog: [curatedWallpaper, secondCuratedWallpaper]
     )
 
@@ -403,7 +404,8 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
         sources: [CatalogVideoSource(url: URL(string: "https://example.com/curated.mp4")!, width: 1920, height: 1080)]
     )
     let provider = ManagedWallpaperCatalogProvider(
-        liveProvider: FailingCatalogProvider(),
+        animeProvider: FailingCatalogProvider(),
+        scenicProvider: MockCatalogProvider(wallpapers: []),
         curatedCatalog: [curatedWallpaper]
     )
 
