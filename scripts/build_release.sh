@@ -13,6 +13,9 @@ APP_BUILD="${AURAFLOW_BUILD:-4}"
 APP_BUNDLE="$DIST_DIR/${APP_DISPLAY_NAME}.app"
 APP_ZIP="$DIST_DIR/${APP_DISPLAY_NAME}.zip"
 APP_DMG="$DIST_DIR/${APP_DISPLAY_NAME}.dmg"
+SWIFT_BIN="${AURAFLOW_SWIFT_BIN:-swift}"
+SDKROOT="${SDKROOT:-}"
+SWIFT_SDK_ARGS=()
 ICON_PNG="$ROOT_DIR/Resources/AppIcon.png"
 ICON_ICNS="$ROOT_DIR/Resources/AppIcon.icns"
 BUILD_UNIVERSAL="${BUILD_UNIVERSAL:-1}"
@@ -46,29 +49,49 @@ configure_developer_dir() {
 
   local bundled_xcode="/Applications/Xcode.app/Contents/Developer"
   if [[ -d "$bundled_xcode" ]]; then
+    local bundled_sdk="$bundled_xcode/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+    local bundled_swift="$bundled_xcode/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"
     local xcode_sdk_version=""
-    xcode_sdk_version="$(DEVELOPER_DIR="$bundled_xcode" xcrun --sdk macosx --show-sdk-version 2>/dev/null || true)"
+    if [[ -f "$bundled_sdk/SDKSettings.plist" ]]; then
+      xcode_sdk_version="$(plutil -extract Version raw "$bundled_sdk/SDKSettings.plist" 2>/dev/null || true)"
+    fi
     local xcode_sdk_major="${xcode_sdk_version%%.*}"
     if [[ "$xcode_sdk_major" =~ ^[0-9]+$ && "$xcode_sdk_major" -ge 26 ]]; then
-      export DEVELOPER_DIR="$bundled_xcode"
-      log "Using Xcode SDK $xcode_sdk_version from $DEVELOPER_DIR"
+      export SDKROOT="$bundled_sdk"
+      if [[ -x "$bundled_swift" && "$SWIFT_BIN" == "swift" ]]; then
+        SWIFT_BIN="$bundled_swift"
+      fi
+      log "Using Xcode SDK $xcode_sdk_version from $SDKROOT"
       return
     fi
   fi
 }
 
 require_macos_sdk() {
-  require_command xcrun
-  require_command swift
+  local sdk_version=""
+  local sdk_path=""
 
-  local sdk_version
-  sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+  if [[ -n "$SDKROOT" && -f "$SDKROOT/SDKSettings.plist" ]]; then
+    sdk_path="$SDKROOT"
+    sdk_version="$(plutil -extract Version raw "$SDKROOT/SDKSettings.plist" 2>/dev/null || true)"
+    SWIFT_SDK_ARGS=(--sdk "$SDKROOT")
+  else
+    require_command xcrun
+    sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+    sdk_path="$(xcrun --show-sdk-path --sdk macosx)"
+  fi
+
+  if [[ ! -x "$SWIFT_BIN" ]]; then
+    require_command "$SWIFT_BIN"
+  fi
+
   local sdk_major="${sdk_version%%.*}"
   if [[ ! "$sdk_major" =~ ^[0-9]+$ || "$sdk_major" -lt 26 ]]; then
-    log "macOS SDK 26+ is required for native Liquid Glass. Current SDK: $sdk_version ($(xcrun --show-sdk-path --sdk macosx))"
+    log "macOS SDK 26+ is required for native Liquid Glass. Current SDK: $sdk_version ($sdk_path)"
     log "Install/use Xcode 26+ or set DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer"
     exit 1
   fi
+  log "Using Swift: $SWIFT_BIN"
 }
 
 cleanup_lock() {
@@ -161,7 +184,7 @@ resolve_tool_path() {
 build_swift_app() {
   log "Building Swift target"
   pushd "$SWIFT_DIR" >/dev/null
-  swift build -c release
+  "$SWIFT_BIN" build -c release "${SWIFT_SDK_ARGS[@]}"
 
   local arm_binary="$SWIFT_DIR/.build/arm64-apple-macosx/release/${APP_TARGET}"
   local arm_helper="$SWIFT_DIR/.build/arm64-apple-macosx/release/${HELPER_TARGET}"
@@ -172,7 +195,7 @@ build_swift_app() {
 
   if [[ "$BUILD_UNIVERSAL" == "1" ]] && command -v arch >/dev/null 2>&1; then
     log "Building x86_64 slice (Rosetta may be required)"
-    if arch -x86_64 swift build -c release; then
+    if arch -x86_64 "$SWIFT_BIN" build -c release "${SWIFT_SDK_ARGS[@]}"; then
       log "Built x86_64 slice"
       built_x86="1"
     else
@@ -205,7 +228,7 @@ build_swift_app() {
     bin_path="$(dirname "$arm_binary")"
     helper_path="$arm_helper"
   else
-    bin_path="$(swift build -c release --show-bin-path)"
+    bin_path="$("$SWIFT_BIN" build -c release "${SWIFT_SDK_ARGS[@]}" --show-bin-path)"
     helper_path="$bin_path/${HELPER_TARGET}"
   fi
   popd >/dev/null
@@ -408,14 +431,14 @@ package_distribution() {
 
   log "Creating ZIP archive"
   pushd "$DIST_DIR" >/dev/null
-  ditto -c -k --keepParent "${APP_DISPLAY_NAME}.app" "$(basename "$APP_ZIP")"
+  COPYFILE_DISABLE=1 ditto -c -k --norsrc --keepParent "${APP_DISPLAY_NAME}.app" "$(basename "$APP_ZIP")"
   popd >/dev/null
 
   log "Creating DMG"
   local dmg_stage="$DIST_DIR/.dmg-stage"
   rm -rf "$dmg_stage"
   mkdir -p "$dmg_stage"
-  cp -R "$APP_BUNDLE" "$dmg_stage/${APP_DISPLAY_NAME}.app"
+  COPYFILE_DISABLE=1 cp -R "$APP_BUNDLE" "$dmg_stage/${APP_DISPLAY_NAME}.app"
   if command -v xattr >/dev/null 2>&1; then
     xattr -cr "$dmg_stage/${APP_DISPLAY_NAME}.app" >/dev/null 2>&1 || true
   fi
