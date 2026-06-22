@@ -78,6 +78,20 @@ import Testing
     #expect(darefulWallpaper(title: "Modern Office Desk", tags: ["business"]) == nil)
 }
 
+@Test func darefulPostPrioritizationInterleavesTags() {
+    let posts = [
+        darefulPost(id: 1, tags: [3], title: "Nature 1"),
+        darefulPost(id: 2, tags: [3], title: "Nature 2"),
+        darefulPost(id: 3, tags: [55], title: "Ocean 1"),
+        darefulPost(id: 4, tags: [55], title: "Ocean 2"),
+        darefulPost(id: 5, tags: [3], title: "Nature 3"),
+    ]
+
+    let prioritized = DarefulSource.prioritizePosts(posts, preferredTagIDs: [3, 55])
+
+    #expect(prioritized.map(\.id) == [1, 3, 2, 4, 5])
+}
+
 private func darefulWallpaper(
     title: String,
     tags: [String],
@@ -99,5 +113,16 @@ private func darefulWallpaper(
         postID: 99,
         fallbackTitle: title,
         pageURL: URL(string: "https://dareful.com/test/")!
+    )
+}
+
+private func darefulPost(id: Int, tags: [Int], title: String) -> DarefulPost {
+    DarefulPost(
+        id: id,
+        slug: "post-\(id)",
+        link: URL(string: "https://dareful.com/post-\(id)/")!,
+        title: DarefulPost.RenderedText(rendered: title),
+        tags: tags,
+        featuredMedia: nil
     )
 }

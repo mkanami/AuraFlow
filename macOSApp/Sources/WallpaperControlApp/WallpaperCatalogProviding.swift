@@ -1,6 +1,6 @@
 import Foundation
 
-protocol WallpaperCatalogProviding {
+protocol WallpaperCatalogProviding: Sendable {
     func loadCachedCatalog() async -> [CatalogWallpaper]?
     func fetchCatalog() async throws -> [CatalogWallpaper]
     func fetchCatalog(progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper]

@@ -20,9 +20,10 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
     ]
     private let pageSize = 50
     private let maxPagesPerTag = 4
+    private let maxConcurrentDetailFetches = 10
     private let session: URLSession
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = DarefulSource.makeSession()) {
         self.session = session
     }
 
@@ -51,34 +52,10 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
             throw DarefulSourceError.unavailable("Dareful nature tags are unavailable.")
         }
 
-        var posts: [DarefulPost] = []
-        for tagID in tagIDs {
-            let firstPage = try await fetchPosts(tagID: tagID, page: 1)
-            posts.append(contentsOf: firstPage.posts)
-
-            let pageCount = min(maxPagesPerTag, max(1, firstPage.totalPages))
-            if pageCount > 1 {
-                for page in 2...pageCount {
-                    let pageResult = try await fetchPosts(tagID: tagID, page: page)
-                    posts.append(contentsOf: pageResult.posts)
-                }
-            }
-        }
-
+        let posts = try await fetchPosts(tagIDs: tagIDs)
         let uniquePosts = Self.deduplicatePosts(posts)
-        var wallpapers: [CatalogWallpaper] = []
-        for post in uniquePosts {
-            guard let wallpaper = try? await fetchWallpaperDetails(for: post) else {
-                continue
-            }
-            wallpapers.append(wallpaper)
-            let deduplicated = Self.deduplicateWallpapers(wallpapers)
-            if !deduplicated.isEmpty {
-                await progress(deduplicated)
-            }
-        }
-
-        let deduplicated = Self.deduplicateWallpapers(wallpapers)
+        let prioritizedPosts = Self.prioritizePosts(uniquePosts, preferredTagIDs: tagIDs)
+        let deduplicated = try await fetchWallpapers(from: prioritizedPosts, progress: progress)
         guard !deduplicated.isEmpty else {
             throw DarefulSourceError.unavailable("Dareful returned no supported scenic MP4 videos.")
         }
@@ -136,6 +113,48 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
         return (posts, totalPages)
     }
 
+    private func fetchPosts(tagIDs: [Int]) async throws -> [DarefulPost] {
+        try await withThrowingTaskGroup(of: [DarefulPost].self) { group in
+            for tagID in tagIDs {
+                group.addTask { [self] in
+                    try await fetchPosts(tagID: tagID)
+                }
+            }
+
+            var posts: [DarefulPost] = []
+            for try await tagPosts in group {
+                posts.append(contentsOf: tagPosts)
+            }
+            return posts
+        }
+    }
+
+    private func fetchPosts(tagID: Int) async throws -> [DarefulPost] {
+        let firstPage = try await fetchPosts(tagID: tagID, page: 1)
+        var posts = firstPage.posts
+        let pageCount = min(maxPagesPerTag, max(1, firstPage.totalPages))
+        guard pageCount > 1 else {
+            return posts
+        }
+
+        let remainingPosts = try await withThrowingTaskGroup(of: [DarefulPost].self) { group in
+            for page in 2...pageCount {
+                group.addTask { [self] in
+                    try await fetchPosts(tagID: tagID, page: page).posts
+                }
+            }
+
+            var remaining: [DarefulPost] = []
+            for try await pagePosts in group {
+                remaining.append(contentsOf: pagePosts)
+            }
+            return remaining
+        }
+
+        posts.append(contentsOf: remainingPosts)
+        return posts
+    }
+
     private func fetchWallpaperDetails(for post: DarefulPost) async throws -> CatalogWallpaper? {
         let data = try await fetchData(post.link)
         guard let html = String(data: data, encoding: .utf8) else {
@@ -147,6 +166,49 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
             fallbackTitle: post.title.rendered,
             pageURL: post.link
         )
+    }
+
+    private func fetchWallpapers(
+        from posts: [DarefulPost],
+        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
+    ) async throws -> [CatalogWallpaper] {
+        guard !posts.isEmpty else { return [] }
+
+        var iterator = posts.makeIterator()
+        var collected: [CatalogWallpaper] = []
+        var emittedCount = 0
+
+        return try await withThrowingTaskGroup(of: CatalogWallpaper?.self) { group in
+            for _ in 0..<min(maxConcurrentDetailFetches, posts.count) {
+                guard let post = iterator.next() else { break }
+                group.addTask { [self] in
+                    try await fetchWallpaperDetails(for: post)
+                }
+            }
+
+            while let wallpaper = try await group.next() {
+                if let wallpaper {
+                    collected.append(wallpaper)
+                    let deduplicated = Self.deduplicateWallpapers(collected)
+                    if Self.shouldEmitProgress(foundCount: deduplicated.count, previousCount: emittedCount) {
+                        emittedCount = deduplicated.count
+                        await progress(deduplicated)
+                    }
+                }
+
+                if let nextPost = iterator.next() {
+                    group.addTask { [self] in
+                        try await fetchWallpaperDetails(for: nextPost)
+                    }
+                }
+            }
+
+            let deduplicated = Self.deduplicateWallpapers(collected)
+            if !deduplicated.isEmpty && emittedCount != deduplicated.count {
+                await progress(deduplicated)
+            }
+            return deduplicated
+        }
     }
 
     private func fetchData(_ url: URL) async throws -> Data {
@@ -202,6 +264,57 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
     private static func deduplicateWallpapers(_ wallpapers: [CatalogWallpaper]) -> [CatalogWallpaper] {
         var seen = Set<String>()
         return wallpapers.filter { seen.insert($0.id).inserted }
+    }
+
+    private static func shouldEmitProgress(foundCount: Int, previousCount: Int) -> Bool {
+        guard foundCount > previousCount else { return false }
+        return foundCount <= 8 || foundCount - previousCount >= 4
+    }
+
+    static func prioritizePosts(_ posts: [DarefulPost], preferredTagIDs: [Int]) -> [DarefulPost] {
+        guard posts.count > 1 else { return posts }
+
+        var grouped: [Int: [DarefulPost]] = [:]
+        var fallbackOrder: [Int] = []
+        for post in posts {
+            let key = preferredTagIDs.first(where: { post.tags.contains($0) }) ?? post.tags.first ?? post.id
+            if grouped[key] == nil {
+                fallbackOrder.append(key)
+            }
+            grouped[key, default: []].append(post)
+        }
+
+        let orderedKeys = preferredTagIDs.filter { grouped[$0] != nil } +
+            fallbackOrder.filter { !preferredTagIDs.contains($0) }
+        var offsets = Dictionary(uniqueKeysWithValues: orderedKeys.map { ($0, 0) })
+        var prioritized: [DarefulPost] = []
+        prioritized.reserveCapacity(posts.count)
+
+        while prioritized.count < posts.count {
+            var advanced = false
+            for key in orderedKeys {
+                guard let bucket = grouped[key] else { continue }
+                let offset = offsets[key, default: 0]
+                guard offset < bucket.count else { continue }
+                prioritized.append(bucket[offset])
+                offsets[key] = offset + 1
+                advanced = true
+            }
+            if !advanced {
+                break
+            }
+        }
+
+        return prioritized
+    }
+
+    private static func makeSession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 60
+        configuration.httpMaximumConnectionsPerHost = 12
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
     }
 }
 
