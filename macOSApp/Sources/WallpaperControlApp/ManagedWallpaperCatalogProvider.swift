@@ -11,7 +11,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
 
     init(
         animeProvider: WallpaperCatalogProviding = MoeWallsSource(),
-        scenicProvider: WallpaperCatalogProviding = PixabaySource(),
+        scenicProvider: WallpaperCatalogProviding = CoverrSource(),
         curatedCatalog: [CatalogWallpaper] = CatalogWallpaper.defaultCatalog
     ) {
         self.animeProvider = animeProvider

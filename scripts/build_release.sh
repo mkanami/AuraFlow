@@ -10,7 +10,7 @@ HELPER_TARGET="AuraWallpaperAgent"
 APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-AuraFlow}"
 APP_VERSION="${AURAFLOW_VERSION:-1.2.2}"
 APP_BUILD="${AURAFLOW_BUILD:-4}"
-PIXABAY_API_KEY="${AURAFLOW_PIXABAY_API_KEY:-${PIXABAY_API_KEY:-}}"
+COVERR_API_KEY="${AURAFLOW_COVERR_API_KEY:-${COVERR_API_KEY:-}}"
 APP_BUNDLE="$DIST_DIR/${APP_DISPLAY_NAME}.app"
 APP_ZIP="$DIST_DIR/${APP_DISPLAY_NAME}.zip"
 APP_DMG="$DIST_DIR/${APP_DISPLAY_NAME}.dmg"
@@ -285,8 +285,8 @@ apply_plist_customizations() {
   plist_set_string "$plist" CFBundleIdentifier "com.andrijvergeles.auraflow"
   plist_set_string "$plist" CFBundleShortVersionString "$APP_VERSION"
   plist_set_string "$plist" CFBundleVersion "$APP_BUILD"
-  if [[ -n "$PIXABAY_API_KEY" ]]; then
-    plist_set_string "$plist" PixabayAPIKey "$PIXABAY_API_KEY"
+  if [[ -n "$COVERR_API_KEY" ]]; then
+    plist_set_string "$plist" CoverrAPIKey "$COVERR_API_KEY"
   fi
   ensure_icon
   cp "$ICON_ICNS" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
