@@ -14,7 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -42,13 +42,10 @@ struct WallpaperControlApp: App {
     static let mainWindowID = "main-window"
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @Environment(\.openWindow) private var openWindow
     @StateObject private var viewModel = AppViewModel()
 
     var body: some Scene {
-        let _ = registerMainWindowOpenAction()
-
-        WindowGroup("AuraFlow", id: Self.mainWindowID) {
+        Window("AuraFlow", id: Self.mainWindowID) {
             ContentView(viewModel: viewModel)
         }
         .defaultSize(width: preferredWindowSize().width, height: preferredWindowSize().height)
@@ -61,12 +58,26 @@ struct WallpaperControlApp: App {
             MenuBarControls(viewModel: viewModel)
         } label: {
             MenuBarIcon()
+                .background(MainWindowOpenActionInstaller())
         }
     }
+}
 
-    private func registerMainWindowOpenAction() {
+private struct MainWindowOpenActionInstaller: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear(perform: install)
+            .onChange(of: NSApp.isActive) { _ in
+                install()
+            }
+    }
+
+    private func install() {
         auraFlowOpenMainWindowAction = {
-            openWindow(id: Self.mainWindowID)
+            openWindow(id: WallpaperControlApp.mainWindowID)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 _ = bringMainWindowToFront()
             }
@@ -126,6 +137,7 @@ private struct MenuBarControls: View {
         }
         .onAppear {
             menuOpenedAt = Date()
+            installMainWindowOpenAction()
         }
     }
 
@@ -134,11 +146,21 @@ private struct MenuBarControls: View {
     }
 
     private func openMainWindow() {
+        installMainWindowOpenAction()
         if NSApp.windows.first(where: { $0.identifier == auraFlowMainWindowIdentifier }) == nil {
             openWindow(id: WallpaperControlApp.mainWindowID)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             bringMainWindowToFront()
+        }
+    }
+
+    private func installMainWindowOpenAction() {
+        auraFlowOpenMainWindowAction = {
+            openWindow(id: WallpaperControlApp.mainWindowID)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                _ = bringMainWindowToFront()
+            }
         }
     }
 
