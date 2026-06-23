@@ -2,6 +2,7 @@ import AppKit
 
 let auraFlowMainWindowIdentifier = NSUserInterfaceItemIdentifier("AuraFlowMainWindow")
 private var auraFlowStoredWindowFrames: [ObjectIdentifier: NSRect] = [:]
+var auraFlowOpenMainWindowAction: (() -> Void)?
 
 func configureWindowForClientDecorations(_ window: NSWindow) {
     window.identifier = auraFlowMainWindowIdentifier
@@ -79,6 +80,12 @@ func bringMainWindowToFront() -> Bool {
     window.makeKeyAndOrderFront(nil)
     window.orderFrontRegardless()
     return true
+}
+
+func hasVisibleAuraFlowMainWindow() -> Bool {
+    NSApp.windows.contains { window in
+        window.identifier == auraFlowMainWindowIdentifier && window.isVisible
+    }
 }
 
 func ensureWindowIsVisibleOnScreen(_ window: NSWindow) {

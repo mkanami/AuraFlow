@@ -8,6 +8,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         scheduleMainWindowReveal()
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard !hasVisibleAuraFlowMainWindow() else { return }
+        scheduleMainWindowReveal()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
@@ -23,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if bringMainWindowToFront() {
                 return
             }
+            auraFlowOpenMainWindowAction?()
             guard attempt < 20 else {
                 return
             }
@@ -36,9 +42,12 @@ struct WallpaperControlApp: App {
     static let mainWindowID = "main-window"
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var viewModel = AppViewModel()
 
     var body: some Scene {
+        let _ = registerMainWindowOpenAction()
+
         WindowGroup("AuraFlow", id: Self.mainWindowID) {
             ContentView(viewModel: viewModel)
         }
@@ -52,6 +61,15 @@ struct WallpaperControlApp: App {
             MenuBarControls(viewModel: viewModel)
         } label: {
             MenuBarIcon()
+        }
+    }
+
+    private func registerMainWindowOpenAction() {
+        auraFlowOpenMainWindowAction = {
+            openWindow(id: Self.mainWindowID)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                _ = bringMainWindowToFront()
+            }
         }
     }
 }
