@@ -3,7 +3,6 @@ import Foundation
 actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearing {
     private let baseURL = URL(string: "https://motionbgs.com/")!
     private let startPath = "tag:anime-nature/"
-    private let maxConcurrentDetailFetches = 10
     private let session: URLSession
 
     init(session: URLSession = MotionBGSAnimeNatureSource.makeSession()) {
@@ -30,8 +29,10 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
     }
 
     func fetchCatalog(progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
-        let items = try await fetchListingItems()
-        let wallpapers = try await fetchWallpapers(from: items, progress: progress)
+        let items = try await fetchListingItems { partialItems in
+            await progress(Self.placeholderWallpapers(from: partialItems))
+        }
+        let wallpapers = Self.placeholderWallpapers(from: items)
         guard !wallpapers.isEmpty else {
             throw MotionBGSSourceError.unavailable("MotionBGS returned no Anime Nature wallpapers.")
         }
@@ -40,13 +41,35 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
     }
 
     func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
-        guard let source = wallpaper.sources.first else {
+        if let source = wallpaper.sources.first {
+            return source.url
+        }
+        guard let pageURL = wallpaper.sourcePageURL else {
             throw URLError(.badURL)
+        }
+        let data = try await fetchData(pageURL)
+        guard let html = String(data: data, encoding: .utf8) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        let item = MotionBGSListItem(
+            title: wallpaper.title,
+            pageURL: pageURL,
+            previewImageURL: wallpaper.previewImageURL
+        )
+        guard let resolvedWallpaper = MotionBGSParser.parseDetailPage(
+            html: html,
+            item: item,
+            baseURL: baseURL
+        ),
+        let source = resolvedWallpaper.sources.first else {
+            throw URLError(.fileDoesNotExist)
         }
         return source.url
     }
 
-    private func fetchListingItems() async throws -> [MotionBGSListItem] {
+    private func fetchListingItems(
+        progress: @escaping @Sendable ([MotionBGSListItem]) async -> Void
+    ) async throws -> [MotionBGSListItem] {
         var currentPath: String? = startPath
         var items: [MotionBGSListItem] = []
 
@@ -57,65 +80,11 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
             }
             let page = MotionBGSParser.parseListingPage(html: html, baseURL: baseURL)
             items.append(contentsOf: page.items)
+            await progress(Self.deduplicateItems(items))
             currentPath = page.nextPath
         }
 
         return Self.deduplicateItems(items)
-    }
-
-    private func fetchWallpapers(
-        from items: [MotionBGSListItem],
-        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
-    ) async throws -> [CatalogWallpaper] {
-        guard !items.isEmpty else { return [] }
-
-        var iterator = items.makeIterator()
-        var collected: [CatalogWallpaper] = []
-        var emittedCount = 0
-
-        return try await withThrowingTaskGroup(of: CatalogWallpaper?.self) { group in
-            for _ in 0..<min(maxConcurrentDetailFetches, items.count) {
-                guard let item = iterator.next() else { break }
-                group.addTask { [self] in
-                    try await fetchWallpaperDetail(for: item)
-                }
-            }
-
-            while let wallpaper = try await group.next() {
-                if let wallpaper {
-                    collected.append(wallpaper)
-                    let deduplicated = Self.deduplicateWallpapers(collected)
-                    if Self.shouldEmitProgress(foundCount: deduplicated.count, previousCount: emittedCount) {
-                        emittedCount = deduplicated.count
-                        await progress(deduplicated)
-                    }
-                }
-
-                if let nextItem = iterator.next() {
-                    group.addTask { [self] in
-                        try await fetchWallpaperDetail(for: nextItem)
-                    }
-                }
-            }
-
-            let deduplicated = Self.deduplicateWallpapers(collected)
-            if !deduplicated.isEmpty && emittedCount != deduplicated.count {
-                await progress(deduplicated)
-            }
-            return deduplicated
-        }
-    }
-
-    private func fetchWallpaperDetail(for item: MotionBGSListItem) async throws -> CatalogWallpaper? {
-        let data = try await fetchData(item.pageURL)
-        guard let html = String(data: data, encoding: .utf8) else {
-            return nil
-        }
-        return MotionBGSParser.parseDetailPage(
-            html: html,
-            item: item,
-            baseURL: baseURL
-        )
     }
 
     private func fetchData(_ url: URL) async throws -> Data {
@@ -163,9 +132,18 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
         return items.filter { seen.insert($0.pageURL.absoluteString).inserted }
     }
 
-    private static func deduplicateWallpapers(_ wallpapers: [CatalogWallpaper]) -> [CatalogWallpaper] {
-        var seen = Set<String>()
-        return wallpapers.filter { seen.insert($0.id).inserted }
+    private static func placeholderWallpapers(from items: [MotionBGSListItem]) -> [CatalogWallpaper] {
+        deduplicateItems(items).map { item in
+            CatalogWallpaper(
+                id: "motionbgs-anime-nature-\(item.pageURL.lastPathComponent)",
+                title: item.title,
+                category: "Anime Nature",
+                attribution: "MotionBGS",
+                previewImageURL: item.previewImageURL,
+                sourcePageURL: item.pageURL,
+                sources: []
+            )
+        }
     }
 
     private static func shouldEmitProgress(foundCount: Int, previousCount: Int) -> Bool {

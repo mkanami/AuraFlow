@@ -20,7 +20,7 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
     ]
     private let pageSize = 50
     private let maxPagesPerTag = 4
-    private let maxConcurrentDetailFetches = 10
+    private let mediaBatchSize = 50
     private let session: URLSession
 
     init(session: URLSession = DarefulSource.makeSession()) {
@@ -47,30 +47,53 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
     }
 
     func fetchCatalog(progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
-        let tagIDs = try await fetchTagIDs()
-        guard !tagIDs.isEmpty else {
+        let tags = try await fetchTags()
+        guard !tags.isEmpty else {
             throw DarefulSourceError.unavailable("Dareful nature tags are unavailable.")
         }
+        let tagIDs = tags.map(\.id)
+        let tagSlugByID = Dictionary(uniqueKeysWithValues: tags.map { ($0.id, $0.slug) })
 
-        let posts = try await fetchPosts(tagIDs: tagIDs)
+        let posts = try await fetchPosts(tagIDs: tagIDs) { partialPosts in
+            let uniquePosts = Self.deduplicatePosts(partialPosts)
+            let prioritizedPosts = Self.prioritizePosts(uniquePosts, preferredTagIDs: tagIDs)
+            let placeholders = Self.placeholderWallpapers(
+                from: prioritizedPosts,
+                mediaByID: [:],
+                tagSlugByID: tagSlugByID
+            )
+            if !placeholders.isEmpty {
+                await progress(placeholders)
+            }
+        }
         let uniquePosts = Self.deduplicatePosts(posts)
         let prioritizedPosts = Self.prioritizePosts(uniquePosts, preferredTagIDs: tagIDs)
-        let deduplicated = try await fetchWallpapers(from: prioritizedPosts, progress: progress)
-        guard !deduplicated.isEmpty else {
+        let mediaByID = try await fetchMediaByID(for: prioritizedPosts)
+        let wallpapers = Self.placeholderWallpapers(
+            from: prioritizedPosts,
+            mediaByID: mediaByID,
+            tagSlugByID: tagSlugByID
+        )
+        guard !wallpapers.isEmpty else {
             throw DarefulSourceError.unavailable("Dareful returned no supported scenic MP4 videos.")
         }
-        try persistCatalog(deduplicated)
-        return deduplicated
+        await progress(wallpapers)
+        try persistCatalog(wallpapers)
+        return wallpapers
     }
 
     func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
         if let source = wallpaper.sources.first {
             return source.url
         }
-        throw URLError(.badURL)
+        guard let resolvedWallpaper = try await fetchWallpaperDetails(for: wallpaper),
+              let source = resolvedWallpaper.sources.first else {
+            throw URLError(.fileDoesNotExist)
+        }
+        return source.url
     }
 
-    private func fetchTagIDs() async throws -> [Int] {
+    private func fetchTags() async throws -> [DarefulTag] {
         var components = URLComponents(url: baseURL.appending(path: "wp-json/wp/v2/tags"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
             URLQueryItem(name: "slug", value: tagSlugs.joined(separator: ",")),
@@ -90,7 +113,6 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
                 let rhsIndex = tagSlugs.firstIndex(of: rhs.slug) ?? .max
                 return lhsIndex < rhsIndex
             }
-            .map(\.id)
     }
 
     private func fetchPosts(tagID: Int, page: Int) async throws -> (posts: [DarefulPost], totalPages: Int) {
@@ -113,7 +135,10 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
         return (posts, totalPages)
     }
 
-    private func fetchPosts(tagIDs: [Int]) async throws -> [DarefulPost] {
+    private func fetchPosts(
+        tagIDs: [Int],
+        progress: @escaping @Sendable ([DarefulPost]) async -> Void
+    ) async throws -> [DarefulPost] {
         try await withThrowingTaskGroup(of: [DarefulPost].self) { group in
             for tagID in tagIDs {
                 group.addTask { [self] in
@@ -122,8 +147,15 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
             }
 
             var posts: [DarefulPost] = []
+            var emittedCount = 0
             for try await tagPosts in group {
                 posts.append(contentsOf: tagPosts)
+                let deduplicated = Self.deduplicatePosts(posts)
+                guard Self.shouldEmitProgress(foundCount: deduplicated.count, previousCount: emittedCount) else {
+                    continue
+                }
+                emittedCount = deduplicated.count
+                await progress(deduplicated)
             }
             return posts
         }
@@ -168,47 +200,63 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
         )
     }
 
-    private func fetchWallpapers(
-        from posts: [DarefulPost],
-        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
-    ) async throws -> [CatalogWallpaper] {
-        guard !posts.isEmpty else { return [] }
-
-        var iterator = posts.makeIterator()
-        var collected: [CatalogWallpaper] = []
-        var emittedCount = 0
-
-        return try await withThrowingTaskGroup(of: CatalogWallpaper?.self) { group in
-            for _ in 0..<min(maxConcurrentDetailFetches, posts.count) {
-                guard let post = iterator.next() else { break }
-                group.addTask { [self] in
-                    try await fetchWallpaperDetails(for: post)
-                }
-            }
-
-            while let wallpaper = try await group.next() {
-                if let wallpaper {
-                    collected.append(wallpaper)
-                    let deduplicated = Self.deduplicateWallpapers(collected)
-                    if Self.shouldEmitProgress(foundCount: deduplicated.count, previousCount: emittedCount) {
-                        emittedCount = deduplicated.count
-                        await progress(deduplicated)
-                    }
-                }
-
-                if let nextPost = iterator.next() {
-                    group.addTask { [self] in
-                        try await fetchWallpaperDetails(for: nextPost)
-                    }
-                }
-            }
-
-            let deduplicated = Self.deduplicateWallpapers(collected)
-            if !deduplicated.isEmpty && emittedCount != deduplicated.count {
-                await progress(deduplicated)
-            }
-            return deduplicated
+    private func fetchWallpaperDetails(for wallpaper: CatalogWallpaper) async throws -> CatalogWallpaper? {
+        guard let pageURL = wallpaper.sourcePageURL else {
+            return nil
         }
+        let data = try await fetchData(pageURL)
+        guard let html = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return DarefulParser.parseDetailPage(
+            html: html,
+            postID: Self.postID(from: wallpaper.id) ?? 0,
+            fallbackTitle: wallpaper.title,
+            pageURL: pageURL
+        )
+    }
+
+    private func fetchMediaByID(for posts: [DarefulPost]) async throws -> [Int: DarefulMedia] {
+        let mediaIDs = Array(Set(posts.compactMap(\.featuredMedia))).sorted()
+        guard !mediaIDs.isEmpty else {
+            return [:]
+        }
+
+        let batches = stride(from: 0, to: mediaIDs.count, by: mediaBatchSize).map { start in
+            Array(mediaIDs[start..<min(start + mediaBatchSize, mediaIDs.count)])
+        }
+
+        return try await withThrowingTaskGroup(of: [Int: DarefulMedia].self) { group in
+            for batch in batches {
+                group.addTask { [self] in
+                    try await fetchMediaBatch(ids: batch)
+                }
+            }
+
+            var merged: [Int: DarefulMedia] = [:]
+            for try await batch in group {
+                merged.merge(batch) { current, _ in current }
+            }
+            return merged
+        }
+    }
+
+    private func fetchMediaBatch(ids: [Int]) async throws -> [Int: DarefulMedia] {
+        guard !ids.isEmpty else { return [:] }
+
+        var components = URLComponents(url: baseURL.appending(path: "wp-json/wp/v2/media"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "include", value: ids.map(String.init).joined(separator: ",")),
+            URLQueryItem(name: "per_page", value: String(ids.count)),
+            URLQueryItem(name: "_fields", value: "id,source_url,media_details"),
+        ]
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+
+        let data = try await fetchData(url)
+        let media = try JSONDecoder().decode([DarefulMedia].self, from: data)
+        return Dictionary(uniqueKeysWithValues: media.map { ($0.id, $0) })
     }
 
     private func fetchData(_ url: URL) async throws -> Data {
@@ -308,6 +356,45 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
         return prioritized
     }
 
+    private static func placeholderWallpapers(
+        from posts: [DarefulPost],
+        mediaByID: [Int: DarefulMedia],
+        tagSlugByID: [Int: String]
+    ) -> [CatalogWallpaper] {
+        deduplicateWallpapers(posts.compactMap { post in
+            let title = DarefulParser.cleanupTitle(post.title.rendered)
+            let searchableText = (
+                [title, post.slug.replacingOccurrences(of: "-", with: " ")] +
+                post.tags.compactMap { tagSlugByID[$0]?.replacingOccurrences(of: "-", with: " ") }
+            ).joined(separator: " ")
+            guard DarefulParser.isSupportedScenicText(searchableText) else {
+                return nil
+            }
+
+            let media = post.featuredMedia.flatMap { mediaByID[$0] }
+            guard DarefulParser.isSupportedResolution(media?.resolution) else {
+                return nil
+            }
+
+            return CatalogWallpaper(
+                id: "dareful-\(post.id)",
+                title: title,
+                category: "Scenic",
+                attribution: "Dareful",
+                previewImageURL: media?.previewImageURL,
+                sourcePageURL: post.link,
+                sources: []
+            )
+        })
+    }
+
+    private static func postID(from wallpaperID: String) -> Int? {
+        guard let rawValue = wallpaperID.split(separator: "-").last else {
+            return nil
+        }
+        return Int(rawValue)
+    }
+
     private static func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
@@ -344,6 +431,54 @@ struct DarefulPost: Decodable {
         case title
         case tags
         case featuredMedia = "featured_media"
+    }
+}
+
+struct DarefulMedia: Decodable {
+    struct MediaDetails: Decodable {
+        struct MediaSize: Decodable {
+            let width: Int?
+            let height: Int?
+            let sourceURL: URL?
+
+            enum CodingKeys: String, CodingKey {
+                case width
+                case height
+                case sourceURL = "source_url"
+            }
+        }
+
+        let width: Int?
+        let height: Int?
+        let sizes: [String: MediaSize]?
+    }
+
+    let id: Int
+    let sourceURL: URL?
+    let mediaDetails: MediaDetails?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case sourceURL = "source_url"
+        case mediaDetails = "media_details"
+    }
+
+    var resolution: MoeWallsResolution? {
+        guard let width = mediaDetails?.width,
+              let height = mediaDetails?.height else {
+            return nil
+        }
+        return MoeWallsResolution(width: width, height: height)
+    }
+
+    var previewImageURL: URL? {
+        let preferredSizes = ["large", "medium_large", "1536x1536", "2048x2048", "vimeo", "full", "medium", "thumbnail"]
+        for key in preferredSizes {
+            if let sourceURL = mediaDetails?.sizes?[key]?.sourceURL {
+                return sourceURL
+            }
+        }
+        return sourceURL
     }
 }
 
@@ -465,7 +600,7 @@ enum DarefulParser {
         }
     }
 
-    private static func cleanupTitle(_ title: String) -> String {
+    static func cleanupTitle(_ title: String) -> String {
         let cleaned = title
             .replacingOccurrences(of: #"[\n\r\t]+"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: #" {2,}"#, with: " ", options: .regularExpression)
