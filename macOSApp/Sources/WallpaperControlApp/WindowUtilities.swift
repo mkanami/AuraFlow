@@ -62,12 +62,13 @@ func preferredWindowSize() -> CGSize {
     return CGSize(width: width, height: height)
 }
 
-func bringMainWindowToFront() {
+@discardableResult
+func bringMainWindowToFront() -> Bool {
     NSApp.activate(ignoringOtherApps: true)
 
     let targetWindow = NSApp.windows.first { $0.identifier == auraFlowMainWindowIdentifier }
     guard let window = targetWindow ?? NSApp.windows.first else {
-        return
+        return false
     }
 
     if window.isMiniaturized {
@@ -77,6 +78,7 @@ func bringMainWindowToFront() {
     ensureWindowIsVisibleOnScreen(window)
     window.makeKeyAndOrderFront(nil)
     window.orderFrontRegardless()
+    return true
 }
 
 func ensureWindowIsVisibleOnScreen(_ window: NSWindow) {

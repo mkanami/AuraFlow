@@ -5,9 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSWindow.allowsAutomaticWindowTabbing = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            bringMainWindowToFront()
-        }
+        scheduleMainWindowReveal()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -15,8 +13,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        bringMainWindowToFront()
+        scheduleMainWindowReveal()
         return true
+    }
+
+    private func scheduleMainWindowReveal(attempt: Int = 0) {
+        let revealDelay = attempt == 0 ? 0.05 : 0.15
+        DispatchQueue.main.asyncAfter(deadline: .now() + revealDelay) {
+            if bringMainWindowToFront() {
+                return
+            }
+            guard attempt < 20 else {
+                return
+            }
+            self.scheduleMainWindowReveal(attempt: attempt + 1)
+        }
     }
 }
 
