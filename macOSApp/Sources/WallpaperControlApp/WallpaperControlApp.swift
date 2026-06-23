@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         scheduleMainWindowReveal()
-        return true
+        return false
     }
 
     private func scheduleMainWindowReveal(attempt: Int = 0) {
@@ -45,7 +45,7 @@ struct WallpaperControlApp: App {
     @StateObject private var viewModel = AppViewModel()
 
     var body: some Scene {
-        Window("AuraFlow", id: Self.mainWindowID) {
+        WindowGroup("AuraFlow", id: Self.mainWindowID) {
             ContentView(viewModel: viewModel)
         }
         .defaultSize(width: preferredWindowSize().width, height: preferredWindowSize().height)

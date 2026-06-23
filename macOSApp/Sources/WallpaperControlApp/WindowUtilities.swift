@@ -4,8 +4,19 @@ let auraFlowMainWindowIdentifier = NSUserInterfaceItemIdentifier("AuraFlowMainWi
 private var auraFlowStoredWindowFrames: [ObjectIdentifier: NSRect] = [:]
 var auraFlowOpenMainWindowAction: (() -> Void)?
 
+private final class AuraFlowMainWindowDelegate: NSObject, NSWindowDelegate {
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.orderOut(nil)
+        return false
+    }
+}
+
+private let auraFlowMainWindowDelegate = AuraFlowMainWindowDelegate()
+
 func configureWindowForClientDecorations(_ window: NSWindow) {
     window.identifier = auraFlowMainWindowIdentifier
+    window.isReleasedWhenClosed = false
+    window.delegate = auraFlowMainWindowDelegate
     window.animationBehavior = .none
     window.tabbingMode = .disallowed
     window.titleVisibility = .hidden
@@ -67,10 +78,13 @@ func preferredWindowSize() -> CGSize {
 func bringMainWindowToFront() -> Bool {
     NSApp.activate(ignoringOtherApps: true)
 
-    let targetWindow = NSApp.windows.first { $0.identifier == auraFlowMainWindowIdentifier }
+    let mainWindows = NSApp.windows.filter { $0.identifier == auraFlowMainWindowIdentifier }
+    let targetWindow = mainWindows.first(where: { $0.isVisible }) ?? mainWindows.first
     guard let window = targetWindow ?? NSApp.windows.first else {
         return false
     }
+
+    removeDuplicateMainWindows(keeping: window)
 
     if window.isMiniaturized {
         window.deminiaturize(nil)
@@ -80,6 +94,13 @@ func bringMainWindowToFront() -> Bool {
     window.makeKeyAndOrderFront(nil)
     window.orderFrontRegardless()
     return true
+}
+
+private func removeDuplicateMainWindows(keeping targetWindow: NSWindow) {
+    for window in NSApp.windows where window.identifier == auraFlowMainWindowIdentifier && window !== targetWindow {
+        window.delegate = nil
+        window.close()
+    }
 }
 
 func hasVisibleAuraFlowMainWindow() -> Bool {
