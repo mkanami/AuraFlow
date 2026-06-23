@@ -439,8 +439,12 @@ final class AppViewModel: ObservableObject {
         selectedVideoURL
     }
 
+    private var isPlaybackRunningForControls: Bool {
+        isRunning && !isPlaybackPaused
+    }
+
     var isStartButtonHighlighted: Bool {
-        selectedVideoURL != nil && !isRunning && !isPlaybackPaused
+        selectedVideoURL != nil && !isPlaybackRunningForControls
     }
 
     var isStopButtonHighlighted: Bool {
@@ -448,11 +452,11 @@ final class AppViewModel: ObservableObject {
     }
 
     var canStart: Bool {
-        isControllerAvailable && !isBusy && !isRunning && selectedVideoURL != nil
+        isControllerAvailable && !isBusy && !isPlaybackRunningForControls && selectedVideoURL != nil
     }
 
     var canStop: Bool {
-        isControllerAvailable && !isBusy && isRunning
+        isControllerAvailable && !isBusy && isPlaybackRunningForControls
     }
 
     var canClearWallpaper: Bool {
@@ -796,7 +800,7 @@ final class AppViewModel: ObservableObject {
 
     func start() {
         guard !isBusy else { return }
-        guard !isRunning else { return }
+        guard !isPlaybackRunningForControls else { return }
         guard let selectedVideoURL else {
             alertMessage = "Choose a video before starting."
             return
@@ -819,6 +823,7 @@ final class AppViewModel: ObservableObject {
     func stop() {
         guard let controller else { return }
         guard !isBusy else { return }
+        guard isPlaybackRunningForControls else { return }
         Task {
             isBusy = true
             defer { isBusy = false }
