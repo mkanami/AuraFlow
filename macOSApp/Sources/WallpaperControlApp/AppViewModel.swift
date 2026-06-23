@@ -43,6 +43,7 @@ struct CatalogWallpaper: Identifiable, Hashable, Codable {
 
 enum CatalogWallpaperGroup: String, CaseIterable, Identifiable {
     case anime
+    case animeNature
     case scenic
 
     var id: String { rawValue }
@@ -51,6 +52,8 @@ enum CatalogWallpaperGroup: String, CaseIterable, Identifiable {
         switch self {
         case .anime:
             return "Anime"
+        case .animeNature:
+            return "Anime Nature"
         case .scenic:
             return "Scenic"
         }
@@ -60,6 +63,8 @@ enum CatalogWallpaperGroup: String, CaseIterable, Identifiable {
         switch self {
         case .anime:
             return "sparkles"
+        case .animeNature:
+            return "mountain.2"
         case .scenic:
             return "leaf"
         }
@@ -68,6 +73,11 @@ enum CatalogWallpaperGroup: String, CaseIterable, Identifiable {
 
 extension CatalogWallpaper {
     var catalogGroup: CatalogWallpaperGroup {
+        if category.localizedCaseInsensitiveCompare("Anime Nature") == .orderedSame ||
+            attribution.localizedCaseInsensitiveCompare("MotionBGS") == .orderedSame ||
+            sourcePageURL?.host?.localizedCaseInsensitiveContains("motionbgs.com") == true {
+            return .animeNature
+        }
         if category.localizedCaseInsensitiveCompare("Anime") == .orderedSame ||
             attribution.localizedCaseInsensitiveCompare("MoeWalls") == .orderedSame ||
             sourcePageURL?.host?.localizedCaseInsensitiveContains("moewalls.com") == true {
