@@ -2,7 +2,6 @@ import AppKit
 
 let auraFlowMainWindowIdentifier = NSUserInterfaceItemIdentifier("AuraFlowMainWindow")
 private var auraFlowStoredWindowFrames: [ObjectIdentifier: NSRect] = [:]
-var auraFlowOpenMainWindowAction: (() -> Void)?
 
 private final class AuraFlowMainWindowDelegate: NSObject, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -80,7 +79,7 @@ func bringMainWindowToFront() -> Bool {
 
     let mainWindows = NSApp.windows.filter { $0.identifier == auraFlowMainWindowIdentifier }
     let targetWindow = mainWindows.first(where: { $0.isVisible }) ?? mainWindows.first
-    guard let window = targetWindow ?? NSApp.windows.first else {
+    guard let window = targetWindow else {
         return false
     }
 
@@ -96,7 +95,7 @@ func bringMainWindowToFront() -> Bool {
     return true
 }
 
-private func removeDuplicateMainWindows(keeping targetWindow: NSWindow) {
+func removeDuplicateMainWindows(keeping targetWindow: NSWindow) {
     for window in NSApp.windows where window.identifier == auraFlowMainWindowIdentifier && window !== targetWindow {
         window.delegate = nil
         window.close()

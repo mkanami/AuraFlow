@@ -199,10 +199,42 @@ final class NativeWallpaperController: WallpaperControlling {
         ].compactMap { $0 }
 
         for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate.path) {
-            return candidate
+            return try installRuntimeHelper(from: candidate)
         }
 
         throw NativeWallpaperControllerError.unavailable("Native wallpaper agent is not bundled with AuraFlow.")
+    }
+
+    private static func installRuntimeHelper(from bundledHelperURL: URL) throws -> URL {
+        let fileManager = FileManager.default
+        let runtimeDirectory = WallpaperRuntimeStore.defaultAppSupportURL()
+            .appendingPathComponent("Runtime", isDirectory: true)
+        let helperURL = runtimeDirectory.appendingPathComponent("AuraWallpaperAgent")
+        try fileManager.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
+
+        let shouldCopy: Bool
+        if fileManager.fileExists(atPath: helperURL.path) {
+            let bundledAttributes = try fileManager.attributesOfItem(atPath: bundledHelperURL.path)
+            let installedAttributes = try fileManager.attributesOfItem(atPath: helperURL.path)
+            shouldCopy = bundledAttributes[.size] as? NSNumber != installedAttributes[.size] as? NSNumber ||
+                bundledAttributes[.modificationDate] as? Date != installedAttributes[.modificationDate] as? Date
+        } else {
+            shouldCopy = true
+        }
+
+        if shouldCopy {
+            let temporaryURL = runtimeDirectory.appendingPathComponent(".AuraWallpaperAgent.\(UUID().uuidString).tmp")
+            try? fileManager.removeItem(at: temporaryURL)
+            try fileManager.copyItem(at: bundledHelperURL, to: temporaryURL)
+            _ = try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temporaryURL.path)
+            if fileManager.fileExists(atPath: helperURL.path) {
+                _ = try fileManager.replaceItemAt(helperURL, withItemAt: temporaryURL)
+            } else {
+                try fileManager.moveItem(at: temporaryURL, to: helperURL)
+            }
+        }
+
+        return helperURL
     }
 
     private func updateConfig(_ block: (inout ControlConfig) -> Void) throws -> ControlConfig {
