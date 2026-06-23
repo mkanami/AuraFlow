@@ -769,8 +769,12 @@ final class AppViewModel: ObservableObject {
             defer { catalogDownloadID = nil }
             do {
                 let localURL = try await downloadCatalogVideo(for: wallpaper)
-                stageCatalogWallpaperForPreview(wallpaper, localURL: localURL)
-                alertMessage = nil
+                do {
+                    try await applyDownloadedCatalogWallpaperImmediately(wallpaper, localURL: localURL)
+                    alertMessage = nil
+                } catch {
+                    alertMessage = "Wallpaper downloaded, but apply failed: \(error.localizedDescription)"
+                }
             } catch {
                 alertMessage = "Failed to download wallpaper: \(error.localizedDescription)"
             }
@@ -2035,6 +2039,33 @@ final class AppViewModel: ObservableObject {
         selectVideoForPreview(localURL, summary: "Wallpaper downloaded. Press Start to apply.")
     }
 
+    private func applyDownloadedCatalogWallpaperImmediately(_ wallpaper: CatalogWallpaper, localURL: URL) async throws {
+        stageCatalogWallpaperForPreview(wallpaper, localURL: localURL)
+
+        let previousVideoPath = appliedVideoURL?.standardizedFileURL.path
+        guard !isBusy else {
+            throw NativeWallpaperControllerError.unavailable("AuraFlow is busy right now. Try applying the wallpaper again.")
+        }
+
+        isBusy = true
+        defer { isBusy = false }
+
+        do {
+            try await startWallpaper(
+                using: localURL,
+                statusSummary: "Wallpaper downloaded and applied."
+            )
+            syncDownloadedCatalogWallpaperAfterApply(
+                wallpaperID: wallpaper.id,
+                requestedURL: localURL,
+                previousVideoPath: previousVideoPath
+            )
+        } catch {
+            statusMessage = "Wallpaper downloaded. Press Start to apply."
+            throw error
+        }
+    }
+
     func selectLocalVideoForPreview(_ url: URL) {
         selectVideoForPreview(url, summary: "Video loaded into preview. Press Start to apply.")
     }
@@ -2057,7 +2088,9 @@ final class AppViewModel: ObservableObject {
     }
 
     private func startWallpaper(using sourceURL: URL, statusSummary: String) async throws {
-        guard let controller else { return }
+        guard let controller else {
+            throw NativeWallpaperControllerError.unavailable("Native wallpaper runtime unavailable.")
+        }
 
         let prepared = try await prepareVideoURLForPlayback(sourceURL)
         let finalStatus = try await runAsync { try controller.start(videoURL: prepared.url, speed: nil) }
