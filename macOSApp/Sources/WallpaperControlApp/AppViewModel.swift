@@ -156,6 +156,7 @@ func catalogOriginHeaderValue(for url: URL) -> String? {
 protocol WallpaperControlling {
     func status() throws -> ControlStatus
     func start(videoURL: URL?, speed: Double?) throws -> ControlStatus
+    func resume() throws -> ControlStatus
     func stop() throws -> ControlStatus
     func clearWallpaper() throws -> ControlStatus
     func setVideo(_ url: URL) throws -> ControlStatus
@@ -286,6 +287,25 @@ final class NativeWallpaperController: WallpaperControlling {
         store.markPaused(false)
         try launchAgentIfNeeded()
         try send(.reload, config: config)
+        return store.status()
+    }
+
+    func resume() throws -> ControlStatus {
+        let config = store.loadConfig()
+        guard !config.video_path.isEmpty else {
+            throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
+        }
+        guard FileManager.default.fileExists(atPath: config.video_path) else {
+            throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
+        }
+
+        store.markPaused(false)
+        try launchAgentIfNeeded()
+        if store.processIsAlive(pid: store.loadPID()) {
+            try send(.resume, config: config)
+        } else {
+            try send(.reload, config: config)
+        }
         return store.status()
     }
 
@@ -846,7 +866,18 @@ final class AppViewModel: ObservableObject {
             isBusy = true
             defer { isBusy = false }
             do {
-                try await startWallpaper(using: selectedVideoURL, statusSummary: "Wallpaper started.")
+                if isPlaybackPaused && pendingPreviewVideoURL == nil {
+                    guard let controller else {
+                        throw NativeWallpaperControllerError.unavailable("Native wallpaper runtime unavailable.")
+                    }
+                    let status = try await runAsync { try controller.resume() }
+                    apply(status: status)
+                    recordBridgeSuccess()
+                    statusMessage = "Wallpaper resumed."
+                    alertMessage = nil
+                } else {
+                    try await startWallpaper(using: selectedVideoURL, statusSummary: "Wallpaper started.")
+                }
             } catch {
                 recordBridgeFailure(error, context: "start")
                 if bridgeFailureCount < bridgeFailureThreshold {

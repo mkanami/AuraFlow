@@ -161,6 +161,61 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
+@Test func pausedWallpaperStartResumesWithoutReloading() async throws {
+    let controller = MockNativeWallpaperController()
+    let defaults = UserDefaults(suiteName: "AppViewModelTests.paused-start-resume")!
+    defaults.removePersistentDomain(forName: "AppViewModelTests.paused-start-resume")
+    let optimizationStore = VideoOptimizationStore(defaults: defaults)
+    optimizationStore.save(
+        VideoOptimizationSettings(
+            enabled: false,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: true,
+            forceSoftwareAV1Encode: false,
+            profile: .quality
+        )
+    )
+    let viewModel = AppViewModel(controller: controller, optimizationStore: optimizationStore)
+
+    let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("resume-current-wallpaper.mp4")
+    FileManager.default.createFile(atPath: tempURL.path, contents: Data(), attributes: nil)
+    defer {
+        try? FileManager.default.removeItem(at: tempURL)
+    }
+
+    viewModel.selectLocalVideoForPreview(tempURL)
+    viewModel.start()
+
+    for _ in 0..<20 {
+        if controller.startCallCount == 1 && viewModel.isRunning {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    viewModel.stop()
+    for _ in 0..<20 {
+        if viewModel.isPlaybackPaused {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    viewModel.start()
+    for _ in 0..<20 {
+        if controller.resumeCallCount == 1 && viewModel.isPlaybackActive {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.startCallCount == 1)
+    #expect(controller.resumeCallCount == 1)
+    #expect(controller.lastConfiguredVideoURL == tempURL)
+    #expect(viewModel.isPlaybackActive)
+}
+
+@MainActor
 @Test func catalogDownloadStagesPreviewUntilStart() throws {
     let controller = MockNativeWallpaperController()
     let viewModel = AppViewModel(controller: controller)
@@ -713,6 +768,7 @@ final class MockNativeWallpaperController: WallpaperControlling {
     var configuredVideoURL: URL?
     var lastConfiguredVideoURL: URL?
     var startCallCount = 0
+    var resumeCallCount = 0
     var statusRunning = false
     var statusPaused: Bool?
     var statusHealth: DaemonHealth?
@@ -728,6 +784,14 @@ final class MockNativeWallpaperController: WallpaperControlling {
             configuredVideoURL = videoURL
             lastConfiguredVideoURL = videoURL
         }
+        statusRunning = true
+        statusPaused = false
+        statusHealth = nil
+        return statusPayload(running: true, paused: false, health: nil)
+    }
+
+    func resume() throws -> ControlStatus {
+        resumeCallCount += 1
         statusRunning = true
         statusPaused = false
         statusHealth = nil
