@@ -631,7 +631,7 @@ struct ControlPanel: View {
                 .allowsTightening(true)
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(AuraGlassButtonStyle())
+        .buttonStyle(AuraPanelButtonStyle())
         .disabled(!viewModel.canClearWallpaper)
     }
 
@@ -645,7 +645,7 @@ struct ControlPanel: View {
                 .allowsTightening(true)
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(AuraGlassButtonStyle())
+        .buttonStyle(AuraPanelButtonStyle())
         .disabled(!viewModel.canClearWallpaper)
     }
 
@@ -659,7 +659,7 @@ struct ControlPanel: View {
                 .allowsTightening(true)
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(AuraGlassButtonStyle())
+        .buttonStyle(AuraPanelButtonStyle())
         .disabled(!viewModel.canClearWallpaper)
     }
 
@@ -673,7 +673,7 @@ struct ControlPanel: View {
                 .allowsTightening(true)
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(AuraGlassButtonStyle())
+        .buttonStyle(AuraPanelButtonStyle())
         .disabled(viewModel.isBusy)
     }
 
@@ -687,7 +687,7 @@ struct ControlPanel: View {
                 .allowsTightening(true)
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(AuraGlassButtonStyle())
+        .buttonStyle(AuraPanelButtonStyle())
         .disabled(!viewModel.canOpenMonitoring)
     }
 
@@ -1188,7 +1188,7 @@ struct ControlButtons: View {
                 .allowsTightening(true)
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(AuraGlassButtonStyle())
+        .buttonStyle(AuraPanelButtonStyle())
         .disabled(!viewModel.canStart)
     }
 
@@ -1202,7 +1202,7 @@ struct ControlButtons: View {
                 .allowsTightening(true)
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(AuraGlassButtonStyle())
+        .buttonStyle(AuraPanelButtonStyle())
         .disabled(!viewModel.canStop)
     }
 
@@ -1216,7 +1216,7 @@ struct ControlButtons: View {
                 .allowsTightening(true)
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(AuraGlassButtonStyle())
+        .buttonStyle(AuraPanelButtonStyle())
         .disabled(!viewModel.canClearWallpaper)
     }
 }
@@ -1898,6 +1898,111 @@ struct DisabledOverlay: View {
                 }
                 .padding(14)
             )
+    }
+}
+
+struct AuraPanelButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        AuraPanelButton(configuration: configuration)
+    }
+}
+
+private struct AuraPanelButton: View {
+    let configuration: ButtonStyle.Configuration
+
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovering = false
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+    }
+
+    private var usesNativeLiquidGlass: Bool {
+        if #available(macOS 26.0, *) {
+            return true
+        }
+        return false
+    }
+
+    private var baseSurfaceOpacity: CGFloat {
+        guard isEnabled else { return 0.028 }
+        if configuration.isPressed {
+            return usesNativeLiquidGlass ? 0.12 : 0.10
+        }
+        if isHovering {
+            return usesNativeLiquidGlass ? 0.095 : 0.085
+        }
+        return usesNativeLiquidGlass ? 0.055 : 0.05
+    }
+
+    private var protectionOpacity: CGFloat {
+        let adaptive = adaptiveGlassAppearance.bottomButtonProtectionOpacity
+        return (usesNativeLiquidGlass ? 0.035 : 0.10) + adaptive
+    }
+
+    private var topHighlightOpacity: CGFloat {
+        guard isEnabled else { return 0.035 }
+        let adaptive = adaptiveGlassAppearance.bottomButtonHighlightOpacity
+        return min(0.22, (usesNativeLiquidGlass ? 0.105 : 0.075) + adaptive)
+    }
+
+    private var labelColor: Color {
+        guard isEnabled else { return Color.white.opacity(0.50) }
+        return Color.white.opacity(configuration.isPressed ? 0.90 : 0.97)
+    }
+
+    var body: some View {
+        configuration.label
+            .font(.body.weight(.semibold))
+            .foregroundStyle(labelColor)
+            .shadow(color: Color.black.opacity(isEnabled ? 0.18 : 0.06), radius: 1, x: 0, y: 1)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 3)
+            .padding(.horizontal, 12)
+            .background {
+                ZStack {
+                    shape.fill(Color.black.opacity(protectionOpacity))
+                    shape.fill(Color.white.opacity(baseSurfaceOpacity))
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(topHighlightOpacity),
+                            Color.white.opacity(isEnabled ? 0.045 : 0.018),
+                            Color.black.opacity(isEnabled ? 0.035 : 0.06),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .clipShape(shape)
+                }
+            }
+            .overlay {
+                shape.strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(isEnabled ? (isHovering ? 0.34 : 0.26) : 0.10),
+                            Color.white.opacity(isEnabled ? 0.10 : 0.055),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.8
+                )
+            }
+            .overlay {
+                shape
+                    .inset(by: 1.1)
+                    .stroke(Color.white.opacity(isEnabled ? 0.055 : 0.02), lineWidth: 0.5)
+            }
+            .contentShape(shape)
+            .clipShape(shape)
+            .scaleEffect(configuration.isPressed ? 0.985 : 1.0)
+            .offset(y: configuration.isPressed ? 0.5 : 0)
+            .onHover { hovering in
+                isHovering = hovering
+            }
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.12), value: isHovering)
     }
 }
 
