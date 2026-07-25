@@ -26,8 +26,10 @@ func configureWindowForClientDecorations(_ window: NSWindow) {
     window.styleMask.insert(.resizable)
     window.styleMask.insert(.fullSizeContentView)
     window.isMovableByWindowBackground = false
-    window.isOpaque = false
-    window.backgroundColor = .clear
+    // The preview covers the complete content area. Declaring the window opaque lets
+    // WindowServer skip blending the full video-sized surface with every window below it.
+    window.isOpaque = true
+    window.backgroundColor = .black
     applyStandardWindowButtonAppearance(for: window)
 }
 

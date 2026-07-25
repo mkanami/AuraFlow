@@ -1,7 +1,6 @@
 import SwiftUI
 import AVKit
 import AppKit
-import AuraGlassBridgeKit
 import ImageIO
 import QuartzCore
 
@@ -16,11 +15,15 @@ extension EnvironmentValues {
     }
 }
 
+private func speedOverlayPillWidth(for availableWidth: CGFloat) -> CGFloat {
+    min(max(availableWidth * 0.46, 420), 720)
+}
+
 struct ContentView: View {
-    @StateObject var viewModel: AppViewModel
+    @ObservedObject var viewModel: AppViewModel
     @State private var isAdjustingSpeed: Bool = false
     @State private var controlsVisible: Bool = true
-    @State private var hideWorkItem: DispatchWorkItem?
+    @State private var hideTask: Task<Void, Never>?
     @State private var localMonitor: Any?
     @State private var globalMonitor: Any?
     @State private var window: NSWindow?
@@ -31,8 +34,12 @@ struct ContentView: View {
     private var aspectRatio: CGFloat { mainScreenAspectRatio() }
     private let hideDelay: TimeInterval = 4.0
     private let activityRefreshThrottle: TimeInterval = 0.18
-    private let dragTitlebarHeight: CGFloat = 92
+    private let topOverlayTopPadding: CGFloat = 18
+    private let zoomedTopOverlayPadding: CGFloat = 48
     private let dragTitlebarTopOffset: CGFloat = -40
+    private var dragTitlebarHeight: CGFloat {
+        topOverlayTopPadding - dragTitlebarTopOffset
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -45,6 +52,7 @@ struct ContentView: View {
             let overlayWidth = viewModel.isCatalogOpen ? min(availableWidth, catalogMaxWidth) : controlPanelWidth
             let isCompactBySize = controlPanelWidth < 1080 || availableHeight < 620
             let isVeryCompactByHeight = availableHeight < 560
+            let topOverlayPadding = resolvedTopOverlayPadding()
             let bottomOverlayPadding = resolvedBottomOverlayPadding()
 
             ZStack {
@@ -54,6 +62,7 @@ struct ContentView: View {
                     overlayWidth: overlayWidth,
                     controlPanelWidth: controlPanelWidth,
                     horizontalPadding: horizontalPadding,
+                    topOverlayPadding: topOverlayPadding,
                     bottomOverlayPadding: bottomOverlayPadding,
                     isCompactBySize: isCompactBySize,
                     isVeryCompactByHeight: isVeryCompactByHeight
@@ -61,20 +70,6 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
-            .overlay(alignment: .top) {
-                TitlebarInteractionOverlay(
-                    window: window,
-                    onDragStateChange: { dragging in
-                        if dragging {
-                            beginWindowDrag()
-                        } else {
-                            endWindowDrag()
-                        }
-                    }
-                )
-                    .frame(height: dragTitlebarHeight)
-                    .padding(.top, dragTitlebarTopOffset)
-            }
             .overlay {
                 if viewModel.isSettingsOpen {
                     SettingsPopupOverlay(viewModel: viewModel)
@@ -105,8 +100,8 @@ struct ContentView: View {
             await viewModel.loadStatus()
         }
         .onAppear {
-            handleUserActivity()
             setupActivityMonitoring()
+            handleUserActivity()
         }
         .onDisappear {
             teardownActivityMonitoring()
@@ -121,11 +116,12 @@ struct ContentView: View {
         overlayWidth: CGFloat,
         controlPanelWidth: CGFloat,
         horizontalPadding: CGFloat,
+        topOverlayPadding: CGFloat,
         bottomOverlayPadding: CGFloat,
         isCompactBySize: Bool,
         isVeryCompactByHeight: Bool
     ) -> some View {
-        ZStack {
+        ZStack(alignment: .top) {
             Color.clear
 
             PreviewLayer(
@@ -135,89 +131,177 @@ struct ContentView: View {
             )
             .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                if !viewModel.isCatalogOpen {
-                    SpeedOverlay(
+            TitlebarInteractionOverlay(
+                window: window,
+                protectedCenterWidth: viewModel.isCatalogOpen
+                    ? nil
+                    : speedOverlayPillWidth(for: availableWidth),
+                onDragStateChange: { dragging in
+                    if dragging {
+                        beginWindowDrag()
+                    } else {
+                        endWindowDrag()
+                    }
+                }
+            )
+            .frame(height: dragTitlebarHeight)
+            .padding(.top, dragTitlebarTopOffset)
+
+            optimizedGlassControls(
+                availableWidth: availableWidth,
+                overlayWidth: overlayWidth,
+                controlPanelWidth: controlPanelWidth,
+                horizontalPadding: horizontalPadding,
+                topOverlayPadding: topOverlayPadding,
+                bottomOverlayPadding: bottomOverlayPadding,
+                isCompactBySize: isCompactBySize,
+                isVeryCompactByHeight: isVeryCompactByHeight
+            )
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+        }
+    }
+
+    @ViewBuilder
+    private func optimizedGlassControls(
+        availableWidth: CGFloat,
+        overlayWidth: CGFloat,
+        controlPanelWidth: CGFloat,
+        horizontalPadding: CGFloat,
+        topOverlayPadding: CGFloat,
+        bottomOverlayPadding: CGFloat,
+        isCompactBySize: Bool,
+        isVeryCompactByHeight: Bool
+    ) -> some View {
+        // The two glass surfaces are far apart and do not morph into one another.
+        // A full-window GlassEffectContainer reorders their background passes above
+        // the controls on macOS 27, washing out labels without reducing useful work.
+        glassControlContents(
+            availableWidth: availableWidth,
+            overlayWidth: overlayWidth,
+            controlPanelWidth: controlPanelWidth,
+            horizontalPadding: horizontalPadding,
+            topOverlayPadding: topOverlayPadding,
+            bottomOverlayPadding: bottomOverlayPadding,
+            isCompactBySize: isCompactBySize,
+            isVeryCompactByHeight: isVeryCompactByHeight
+        )
+    }
+
+    private func glassControlContents(
+        availableWidth: CGFloat,
+        overlayWidth: CGFloat,
+        controlPanelWidth: CGFloat,
+        horizontalPadding: CGFloat,
+        topOverlayPadding: CGFloat,
+        bottomOverlayPadding: CGFloat,
+        isCompactBySize: Bool,
+        isVeryCompactByHeight: Bool
+    ) -> some View {
+        VStack(spacing: 0) {
+            if !viewModel.isCatalogOpen {
+                SpeedOverlay(
+                    viewModel: viewModel,
+                    isAdjustingSpeed: $isAdjustingSpeed,
+                    availableWidth: availableWidth,
+                    onHoverChanged: { hovering in
+                        isHoveringTopOverlay = hovering
+                        handleInterfaceHoverChange()
+                    }
+                )
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, horizontalPadding)
+                .padding(.top, topOverlayPadding)
+                .auraControlsVisibility(controlsVisible)
+            }
+
+            Spacer(minLength: 0)
+
+            VStack(alignment: .leading, spacing: 12) {
+                if let alert = viewModel.alertMessage {
+                    ErrorBanner(text: alert)
+                }
+
+                if viewModel.isCatalogOpen {
+                    WallpaperCatalogView(viewModel: viewModel)
+                } else {
+                    ControlPanel(
                         viewModel: viewModel,
                         isAdjustingSpeed: $isAdjustingSpeed,
-                        availableWidth: availableWidth,
-                        onHoverChanged: { hovering in
-                            isHoveringTopOverlay = hovering
-                            handleInterfaceHoverChange()
+                        panelWidth: controlPanelWidth,
+                        isCompactBySize: isCompactBySize,
+                        isVeryCompactByHeight: isVeryCompactByHeight
+                    )
+                    .disabled(!viewModel.isControllerAvailable)
+                    .overlay(
+                        Group {
+                            if !viewModel.isControllerAvailable {
+                                DisabledOverlay()
+                            }
                         }
                     )
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, horizontalPadding)
-                    .padding(.top, 18)
-                    .opacity(controlsVisible ? 1 : 0)
-                    .animation(.easeInOut(duration: 0.3), value: controlsVisible)
                 }
-
-                Spacer(minLength: 0)
-
-                VStack(alignment: .leading, spacing: 12) {
-                    if let alert = viewModel.alertMessage {
-                        ErrorBanner(text: alert)
-                    }
-
-                    if viewModel.isCatalogOpen {
-                        WallpaperCatalogView(viewModel: viewModel)
-                    } else {
-                        ControlPanel(
-                            viewModel: viewModel,
-                            isAdjustingSpeed: $isAdjustingSpeed,
-                            panelWidth: controlPanelWidth,
-                            isCompactBySize: isCompactBySize,
-                            isVeryCompactByHeight: isVeryCompactByHeight
-                        )
-                        .disabled(!viewModel.isControllerAvailable)
-                        .overlay(
-                            Group {
-                                if !viewModel.isControllerAvailable {
-                                    DisabledOverlay()
-                                }
-                            }
-                        )
-                    }
-                }
-                .frame(width: overlayWidth, alignment: .leading)
-                .padding(.horizontal, horizontalPadding)
-                .padding(.bottom, bottomOverlayPadding)
-                .contentShape(Rectangle())
-                .onHover { hovering in
-                    isHoveringBottomOverlay = hovering
-                    handleInterfaceHoverChange()
-                }
-                .opacity(controlsVisible ? 1 : 0)
-                .animation(.easeInOut(duration: 0.3), value: controlsVisible)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+            .frame(width: overlayWidth, alignment: .leading)
+            .padding(.horizontal, horizontalPadding)
+            .padding(.bottom, bottomOverlayPadding)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHoveringBottomOverlay = hovering
+                handleInterfaceHoverChange()
+            }
+            .auraControlsVisibility(controlsVisible)
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func auraControlsVisibility(_ isVisible: Bool) -> some View {
+        if #available(macOS 26.0, *) {
+            // Native glass is rendered in a separate compositor pass and can remain
+            // visible even when an ancestor reaches opacity zero. Remove the entire
+            // subtree so hidden controls cannot leave an empty glass shell behind.
+            if isVisible {
+                self
+            }
+        } else {
+            opacity(isVisible ? 1 : 0)
+                .allowsHitTesting(isVisible)
+                .accessibilityHidden(!isVisible)
         }
     }
 }
 
 struct TitlebarInteractionOverlay: View {
     let window: NSWindow?
+    let protectedCenterWidth: CGFloat?
     let onDragStateChange: (Bool) -> Void
 
     var body: some View {
-        TitlebarInteractionView(window: window, onDragStateChange: onDragStateChange)
+        TitlebarInteractionView(
+            window: window,
+            protectedCenterWidth: protectedCenterWidth,
+            onDragStateChange: onDragStateChange
+        )
     }
 }
 
 struct TitlebarInteractionView: NSViewRepresentable {
     let window: NSWindow?
+    let protectedCenterWidth: CGFloat?
     let onDragStateChange: (Bool) -> Void
 
     func makeNSView(context: Context) -> TitlebarInteractionNSView {
         let view = TitlebarInteractionNSView()
         view.windowReference = window
+        view.protectedCenterWidth = protectedCenterWidth
         view.onDragStateChange = onDragStateChange
         return view
     }
 
     func updateNSView(_ nsView: TitlebarInteractionNSView, context: Context) {
         nsView.windowReference = window
+        nsView.protectedCenterWidth = protectedCenterWidth
         nsView.onDragStateChange = onDragStateChange
     }
 }
@@ -271,6 +355,7 @@ final class HoverTrackingNSView: NSView {
 
 final class TitlebarInteractionNSView: NSView {
     weak var windowReference: NSWindow?
+    var protectedCenterWidth: CGFloat?
     var onDragStateChange: ((Bool) -> Void)?
 
     override var mouseDownCanMoveWindow: Bool {
@@ -278,7 +363,18 @@ final class TitlebarInteractionNSView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        self
+        if let protectedCenterWidth {
+            let protectedRect = NSRect(
+                x: bounds.midX - (protectedCenterWidth * 0.5),
+                y: bounds.minY,
+                width: protectedCenterWidth,
+                height: bounds.height
+            )
+            if protectedRect.contains(point) {
+                return nil
+            }
+        }
+        return self
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -521,7 +617,7 @@ struct ControlPanel: View {
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: Color.black.opacity(0.34), radius: 24, x: 0, y: 14)
+        .shadow(color: Color.black.opacity(0.18), radius: 4, x: 0, y: 2)
         .environment(\.colorScheme, .dark)
     }
 
@@ -805,7 +901,7 @@ struct SettingsPopupCard: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
-        .shadow(color: Color.black.opacity(0.36), radius: 26, x: 0, y: 16)
+        .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
         .environment(\.colorScheme, .dark)
     }
 }
@@ -927,7 +1023,7 @@ struct MonitoringPopupCard: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
-        .shadow(color: Color.black.opacity(0.36), radius: 26, x: 0, y: 16)
+        .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
         .environment(\.colorScheme, .dark)
     }
 }
@@ -1060,7 +1156,7 @@ struct DownloadedWallpapersCard: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
-        .shadow(color: Color.black.opacity(0.36), radius: 26, x: 0, y: 16)
+        .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
         .environment(\.colorScheme, .dark)
     }
 }
@@ -1230,7 +1326,7 @@ struct WallpaperCatalogView: View {
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: Color.black.opacity(0.30), radius: 20, x: 0, y: 12)
+        .shadow(color: Color.black.opacity(0.26), radius: 12, x: 0, y: 7)
         .environment(\.colorScheme, .dark)
     }
 }
@@ -1430,8 +1526,14 @@ struct CatalogPreviewImage: View {
     }
 }
 
+@MainActor
 final class CatalogPreviewImageLoader: ObservableObject {
     @Published private(set) var image: NSImage?
+
+    private struct DecodedPreview: @unchecked Sendable {
+        let image: NSImage
+        let cost: Int
+    }
 
     private static let cache: NSCache<NSURL, NSImage> = {
         let cache = NSCache<NSURL, NSImage>()
@@ -1454,19 +1556,27 @@ final class CatalogPreviewImageLoader: ObservableObject {
             return
         }
 
-        if url.isFileURL {
-            if let decoded = NSImage(contentsOf: url) {
-                image = decoded
-            }
-            return
-        }
-
         if let cached = Self.cache.object(forKey: url as NSURL) {
             image = cached
             return
         }
 
-        task = Task {
+        task = Task { [weak self] in
+            guard let self else { return }
+
+            if url.isFileURL {
+                let decoded: DecodedPreview? = await Task.detached(priority: .utility) {
+                    guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else {
+                        return nil
+                    }
+                    return Self.decodePreviewImage(data: data)
+                }.value
+                guard !Task.isCancelled, let decoded else { return }
+                Self.cache.setObject(decoded.image, forKey: url as NSURL, cost: decoded.cost)
+                self.image = decoded.image
+                return
+            }
+
             var request = URLRequest(url: url)
             request.timeoutInterval = 20
             request.setValue("AuraFlow/1.1", forHTTPHeaderField: "User-Agent")
@@ -1482,18 +1592,19 @@ final class CatalogPreviewImageLoader: ObservableObject {
                    !(200...299).contains(httpResponse.statusCode) {
                     return
                 }
-                await MainActor.run {
-                    guard let (decoded, cost) = Self.decodePreviewImage(data: data) else { return }
-                    Self.cache.setObject(decoded, forKey: url as NSURL, cost: cost)
-                    self.image = decoded
-                }
+                let decoded = await Task.detached(priority: .utility) {
+                    Self.decodePreviewImage(data: data)
+                }.value
+                guard !Task.isCancelled, let decoded else { return }
+                Self.cache.setObject(decoded.image, forKey: url as NSURL, cost: decoded.cost)
+                self.image = decoded.image
             } catch {
                 // Keep fallback preview on failures.
             }
         }
     }
 
-    private static func decodePreviewImage(data: Data) -> (NSImage, Int)? {
+    nonisolated private static func decodePreviewImage(data: Data) -> DecodedPreview? {
         let sourceOptions: CFDictionary = [
             kCGImageSourceShouldCache: false,
         ] as CFDictionary
@@ -1509,14 +1620,14 @@ final class CatalogPreviewImageLoader: ObservableObject {
             if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) {
                 let image = NSImage(cgImage: cgImage, size: .zero)
                 let cost = max(cgImage.width * cgImage.height * 4, 1)
-                return (image, cost)
+                return DecodedPreview(image: image, cost: cost)
             }
         }
 
         guard let image = NSImage(data: data) else {
             return nil
         }
-        return (image, 4 * 1024 * 1024)
+        return DecodedPreview(image: image, cost: 4 * 1024 * 1024)
     }
 
     func cancel() {
@@ -1533,7 +1644,7 @@ struct SpeedOverlay: View {
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     private var pillWidth: CGFloat {
-        min(max(availableWidth * 0.46, 420), 720)
+        speedOverlayPillWidth(for: availableWidth)
     }
 
     private var compactControlSize: ControlSize {
@@ -1587,7 +1698,7 @@ struct SpeedOverlay: View {
         .overlay(HoverTrackingArea(onHoverChanged: { hovering in
             onHoverChanged?(hovering)
         }))
-        .shadow(color: Color.black.opacity(0.28), radius: 16, x: 0, y: 8)
+        .shadow(color: Color.black.opacity(0.16), radius: 4, x: 0, y: 2)
         .environment(\.colorScheme, .dark)
     }
 }
@@ -1709,7 +1820,7 @@ struct VideoPreview: NSViewRepresentable {
 
 final class AuraPreviewPlayerView: NSView {
     override var isOpaque: Bool {
-        false
+        true
     }
 
     private var playerLayer: AVPlayerLayer {
@@ -1738,13 +1849,17 @@ final class AuraPreviewPlayerView: NSView {
     private func commonInit() {
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
-        playerLayer.backgroundColor = NSColor.clear.cgColor
-        playerLayer.needsDisplayOnBoundsChange = true
+        playerLayer.backgroundColor = NSColor.black.cgColor
+        playerLayer.needsDisplayOnBoundsChange = false
     }
 
     func update(player: AVPlayer?, videoGravity: AVLayerVideoGravity) {
-        playerLayer.player = player
-        playerLayer.videoGravity = videoGravity
+        if playerLayer.player !== player {
+            playerLayer.player = player
+        }
+        if playerLayer.videoGravity != videoGravity {
+            playerLayer.videoGravity = videoGravity
+        }
     }
 }
 
@@ -1797,13 +1912,10 @@ struct AuraGlassButtonStyle: ButtonStyle {
     var fillWidth = true
 
     func makeBody(configuration: Configuration) -> some View {
-        Group {
-            if #available(macOS 26.0, *) {
-                AuraNativeGlassPillButton(configuration: configuration, tone: tone, fillWidth: fillWidth)
-            } else {
-                AuraGlassButton(configuration: configuration, tone: tone, fillWidth: fillWidth)
-            }
-        }
+        // A separate live glass surface for every button multiplies the number of
+        // compositor passes over the video. This lightweight treatment keeps the
+        // same visual language while reserving real glass for the containing panel.
+        AuraGlassButton(configuration: configuration, tone: tone, fillWidth: fillWidth)
     }
 }
 
@@ -1926,186 +2038,10 @@ private struct AuraGlassButton: View {
                 shape.stroke(Color.white.opacity(borderOpacity), lineWidth: 1.0)
             }
             .clipShape(shape)
-            .shadow(
-                color: Color.black.opacity(configuration.isPressed ? 0.16 : 0.24),
-                radius: configuration.isPressed ? 2 : 10,
-                x: 0,
-                y: configuration.isPressed ? 1 : 6
-            )
             .opacity(isEnabled ? 1.0 : 0.62)
             .scaleEffect(configuration.isPressed ? 0.965 : 1.0)
             .offset(y: configuration.isPressed ? 1 : 0)
             .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
-    }
-}
-
-@available(macOS 26.0, *)
-private struct AuraNativeGlassPillButton: View {
-    let configuration: ButtonStyle.Configuration
-    let tone: AuraGlassButtonStyle.Tone
-    let fillWidth: Bool
-
-    @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
-
-    private var shape: Capsule {
-        Capsule()
-    }
-
-    private var labelColor: Color {
-        switch tone {
-        case .secondary:
-            return Color.white.opacity(isEnabled ? 1.0 : 0.66)
-        case .accent, .destructive:
-            return Color.white.opacity(isEnabled ? 0.995 : 0.66)
-        }
-    }
-
-    private var strokeColor: Color {
-        switch tone {
-        case .secondary:
-            return Color.white.opacity(isEnabled ? 0.28 : 0.13)
-        case .accent:
-            return Color.accentColor.opacity(isEnabled ? 0.24 : 0.11)
-        case .destructive:
-            return Color.red.opacity(isEnabled ? 0.24 : 0.11)
-        }
-    }
-
-    private var edgeSeparationColor: Color {
-        Color.black.opacity(isEnabled ? 0.070 : 0.032)
-    }
-
-    private var pressedOverlayColor: Color {
-        Color.black.opacity(isEnabled ? 0.018 : 0.008)
-    }
-
-    private var contrastWashColor: Color {
-        let opacity = adaptiveGlassAppearance.bottomButtonProtectionOpacity
-        return Color.black.opacity(isEnabled ? opacity : opacity * 0.55)
-    }
-
-    private var separationWashColor: Color {
-        let base = adaptiveGlassAppearance.bottomButtonHighlightOpacity * 0.34
-        return Color.white.opacity(isEnabled ? base : base * 0.42)
-    }
-
-    private var highlightGradient: LinearGradient {
-        LinearGradient(
-            colors: [
-                Color.white.opacity(isEnabled ? adaptiveGlassAppearance.bottomButtonHighlightOpacity : adaptiveGlassAppearance.bottomButtonHighlightOpacity * 0.42),
-                Color.white.opacity(isEnabled ? adaptiveGlassAppearance.bottomButtonHighlightOpacity * 0.32 : adaptiveGlassAppearance.bottomButtonHighlightOpacity * 0.14),
-                Color.clear,
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-    }
-
-    private var shadowOpacity: CGFloat {
-        configuration.isPressed ? 0.018 : 0.040
-    }
-
-    private var shadowRadius: CGFloat {
-        configuration.isPressed ? 1.1 : 2.1
-    }
-
-    private var shadowYOffset: CGFloat {
-        configuration.isPressed ? 0.5 : 1.0
-    }
-
-    @ViewBuilder
-    private var labelContent: some View {
-        if fillWidth {
-            configuration.label
-                .frame(maxWidth: .infinity, alignment: .center)
-        } else {
-            configuration.label
-                .fixedSize(horizontal: true, vertical: false)
-        }
-    }
-
-    var body: some View {
-        labelContent
-            .font(.body.weight(.semibold))
-            .foregroundStyle(labelColor)
-            .shadow(color: Color.black.opacity(isEnabled ? 0.34 : 0.18), radius: 2.4, x: 0, y: 1.0)
-            .shadow(color: Color.black.opacity(isEnabled ? 0.20 : 0.10), radius: 0.8, x: 0, y: 0.5)
-            .lineLimit(1)
-            .padding(.vertical, 3)
-            .padding(.horizontal, 12)
-            .background {
-                AuraNativeGlassPillSurface(tone: tone, isEnabled: isEnabled)
-            }
-            .overlay {
-                shape.fill(contrastWashColor)
-            }
-            .overlay {
-                shape.fill(separationWashColor)
-            }
-            .overlay {
-                highlightGradient.clipShape(shape)
-            }
-            .overlay {
-                shape.strokeBorder(edgeSeparationColor, lineWidth: 1.6)
-            }
-            .overlay {
-                shape.strokeBorder(strokeColor, lineWidth: 0.95)
-            }
-            .overlay {
-                if configuration.isPressed {
-                    shape.fill(pressedOverlayColor)
-                }
-            }
-            .shadow(
-                color: Color.black.opacity(shadowOpacity),
-                radius: shadowRadius,
-                x: 0,
-                y: shadowYOffset
-            )
-            .opacity(isEnabled ? 1.0 : 0.62)
-            .scaleEffect(configuration.isPressed ? 0.975 : 1.0)
-            .offset(y: configuration.isPressed ? 1 : 0)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
-
-@available(macOS 26.0, *)
-private struct AuraNativeGlassPillSurface: View {
-    let tone: AuraGlassButtonStyle.Tone
-    let isEnabled: Bool
-
-    private var tint: Color? {
-        let alpha = isEnabled ? 0.045 : 0.022
-
-        switch tone {
-        case .secondary:
-            return nil
-        case .accent:
-            return Color.accentColor.opacity(alpha)
-        case .destructive:
-            return Color.red.opacity(alpha)
-        }
-    }
-
-    private var glass: Glass {
-        var glass = Glass.clear
-        if let tint {
-            glass = glass.tint(tint)
-        }
-        return glass.interactive(isEnabled)
-    }
-
-    var body: some View {
-        let shape = Capsule()
-
-        ZStack {
-            shape
-                .fill(Color.clear)
-                .glassEffect(glass, in: shape)
-
-            shape.fill(Color.white.opacity(isEnabled ? 0.018 : 0.008))
-        }
     }
 }
 
@@ -2128,9 +2064,14 @@ private struct AuraPlainPressButton: View {
     }
 }
 
+private enum AuraSurfaceMaterial: Equatable {
+    case regular
+    case clear
+}
+
 private struct AuraGlassRoundedSurface: View {
     let cornerRadius: CGFloat
-    var material: LiquidGlassView.MaterialStyle = .clear
+    var material: AuraSurfaceMaterial = .clear
     var washColor: Color = .clear
     var alphaMultiplier: CGFloat = 1.0
     var protectionOverlayOpacity: CGFloat = 0.0
@@ -2140,83 +2081,83 @@ private struct AuraGlassRoundedSurface: View {
     }
 
     var body: some View {
-        if #available(macOS 26.0, *) {
-            shape
-                .fill(Color.clear)
-                .glassEffect(material.systemGlass, in: shape)
-                .overlay {
-                    if washColor != .clear {
-                        shape.fill(washColor)
-                    }
-                }
-                .overlay {
-                    if protectionOverlayOpacity > 0.001 {
-                        shape.fill(Color.black.opacity(protectionOverlayOpacity))
-                    }
-                }
-        } else {
-            ZStack {
-                LiquidGlassView(
-                    material: material,
-                    cornerStyle: .fixed(cornerRadius),
-                    alphaMultiplier: alphaMultiplier
-                )
-                if washColor != .clear {
-                    shape.fill(washColor)
-                }
-                if protectionOverlayOpacity > 0.001 {
-                    shape.fill(Color.black.opacity(protectionOverlayOpacity))
-                }
+        let strength = min(max(Double(alphaMultiplier), 0), 1)
+
+        Group {
+            if #available(macOS 26.0, *) {
+                shape
+                    .fill(Color.clear)
+                    .glassEffect(material.systemGlass, in: shape)
+            } else {
+                // SwiftUI Material maps to the efficient system visual-effect blur
+                // used by macOS 13–15; no custom Core Image filters are involved.
+                shape
+                    .fill(material.legacyMaterial)
+                    .opacity(strength)
             }
-            .clipShape(shape)
         }
+        .overlay {
+            if washColor != .clear {
+                shape.fill(washColor)
+            }
+        }
+        .overlay {
+            if protectionOverlayOpacity > 0.001 {
+                shape.fill(Color.black.opacity(protectionOverlayOpacity))
+            }
+        }
+        .clipShape(shape)
     }
 }
 
 private struct AuraGlassCapsuleSurface: View {
-    var material: LiquidGlassView.MaterialStyle = .clear
+    var material: AuraSurfaceMaterial = .clear
     var washColor: Color = .clear
     var alphaMultiplier: CGFloat = 1.0
     var protectionOverlayOpacity: CGFloat = 0.0
 
     var body: some View {
         let shape = Capsule()
+        let strength = min(max(Double(alphaMultiplier), 0), 1)
 
-        if #available(macOS 26.0, *) {
-            shape
-                .fill(Color.clear)
-                .glassEffect(material.systemGlass, in: shape)
-                .overlay {
-                    if washColor != .clear {
-                        shape.fill(washColor)
-                    }
-                }
-                .overlay {
-                    if protectionOverlayOpacity > 0.001 {
-                        shape.fill(Color.black.opacity(protectionOverlayOpacity))
-                    }
-                }
-        } else {
-            ZStack {
-                LiquidGlassView(
-                    material: material,
-                    cornerStyle: .capsule,
-                    alphaMultiplier: alphaMultiplier
-                )
-                if washColor != .clear {
-                    shape.fill(washColor)
-                }
-                if protectionOverlayOpacity > 0.001 {
-                    shape.fill(Color.black.opacity(protectionOverlayOpacity))
-                }
+        Group {
+            if #available(macOS 26.0, *) {
+                shape
+                    .fill(Color.clear)
+                    .glassEffect(material.systemGlass, in: shape)
+            } else {
+                shape
+                    .fill(material.legacyMaterial)
+                    .opacity(strength)
             }
-            .clipShape(shape)
+        }
+        .overlay {
+            if washColor != .clear {
+                shape.fill(washColor)
+            }
+        }
+        .overlay {
+            if protectionOverlayOpacity > 0.001 {
+                shape.fill(Color.black.opacity(protectionOverlayOpacity))
+            }
+        }
+        .clipShape(shape)
+    }
+}
+
+private extension AuraSurfaceMaterial {
+    var legacyMaterial: Material {
+        switch self {
+        case .regular:
+            return .regularMaterial
+        case .clear:
+            return .ultraThinMaterial
         }
     }
 }
 
 @available(macOS 26.0, *)
-private extension LiquidGlassView.MaterialStyle {
+private extension AuraSurfaceMaterial {
     var systemGlass: Glass {
         switch self {
         case .regular:
@@ -2233,18 +2174,30 @@ struct AuraGlassInsetCard: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        AuraGlassRoundedSurface(
-            cornerRadius: cornerRadius,
-            material: emphasized ? .regular : .clear,
-            washColor: colorScheme == .dark
-                ? Color.white.opacity(emphasized ? 0.055 : 0.030)
-                : Color.white.opacity(emphasized ? 0.075 : 0.050)
-        )
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        ZStack {
+            shape.fill(
+                colorScheme == .dark
+                    ? Color.black.opacity(emphasized ? 0.30 : 0.22)
+                    : Color.white.opacity(emphasized ? 0.22 : 0.16)
+            )
+            LinearGradient(
+                colors: [
+                    Color.white.opacity(emphasized ? 0.10 : 0.065),
+                    Color.white.opacity(0.018),
+                    Color.clear,
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .clipShape(shape)
+        }
         .overlay(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            shape
                 .stroke(Color.white.opacity(emphasized ? 0.14 : 0.10), lineWidth: 0.9)
         )
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .clipShape(shape)
     }
 }
 
@@ -2375,8 +2328,8 @@ struct WindowAccessor: NSViewRepresentable {
                         self?.scheduleWindowInteractionEnd()
                     }
                 )
+                configureWindowForClientDecorations(window)
             }
-            configureWindowForClientDecorations(window)
         }
 
         deinit {
@@ -2418,6 +2371,33 @@ private final class WindowAccessorView: NSView {
 }
 
 private extension ContentView {
+    func resolvedTopOverlayPadding() -> CGFloat {
+        guard let window else { return topOverlayTopPadding }
+        if usesZoomedWindowLayout(window) {
+            return zoomedTopOverlayPadding
+        }
+        return topOverlayTopPadding
+    }
+
+    func usesZoomedWindowLayout(_ window: NSWindow) -> Bool {
+        guard !window.styleMask.contains(.fullScreen) else {
+            return false
+        }
+        if window.isZoomed {
+            return true
+        }
+        guard let visibleFrame = window.screen?.visibleFrame else {
+            return false
+        }
+
+        let tolerance: CGFloat = 2
+        let frame = window.frame
+        return abs(frame.minX - visibleFrame.minX) <= tolerance
+            && abs(frame.minY - visibleFrame.minY) <= tolerance
+            && abs(frame.maxX - visibleFrame.maxX) <= tolerance
+            && abs(frame.maxY - visibleFrame.maxY) <= tolerance
+    }
+
     func resolvedBottomOverlayPadding() -> CGFloat {
         guard let window else { return 24 }
         if window.styleMask.contains(.fullScreen) {
@@ -2460,57 +2440,59 @@ private extension ContentView {
             NSEvent.removeMonitor(globalMonitor)
             self.globalMonitor = nil
         }
-        hideWorkItem?.cancel()
-        hideWorkItem = nil
+        hideTask?.cancel()
+        hideTask = nil
     }
 
     func handleUserActivity() {
         let now = Date()
 
         if viewModel.isCatalogOpen {
-            hideWorkItem?.cancel()
-            hideWorkItem = nil
+            hideTask?.cancel()
+            hideTask = nil
             if !controlsVisible {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    controlsVisible = true
-                }
+                setControlsVisible(true, legacyDuration: 0.2)
             }
             lastActivityRefreshAt = now
             return
         }
 
         if isHoveringTopOverlay || isHoveringBottomOverlay {
-            hideWorkItem?.cancel()
-            hideWorkItem = nil
+            hideTask?.cancel()
+            hideTask = nil
             if !controlsVisible {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    controlsVisible = true
-                }
+                setControlsVisible(true, legacyDuration: 0.2)
             }
             lastActivityRefreshAt = now
             return
         }
 
         if controlsVisible,
-           hideWorkItem != nil,
+           hideTask != nil,
            now.timeIntervalSince(lastActivityRefreshAt) < activityRefreshThrottle {
             return
         }
 
-        hideWorkItem?.cancel()
+        hideTask?.cancel()
         if !controlsVisible {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                controlsVisible = true
-            }
+            setControlsVisible(true, legacyDuration: 0.25)
         }
-        let workItem = DispatchWorkItem {
-            withAnimation(.easeInOut(duration: 0.4)) {
-                controlsVisible = false
+        hideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(hideDelay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            guard !isHoveringTopOverlay,
+                  !isHoveringBottomOverlay,
+                  !isAdjustingSpeed,
+                  !viewModel.isCatalogOpen,
+                  !viewModel.isSettingsOpen,
+                  !viewModel.isMonitoringOpen,
+                  !viewModel.isDownloadedWallpapersOpen else {
+                return
             }
+            setControlsVisible(false, legacyDuration: 0.4)
+            hideTask = nil
         }
-        hideWorkItem = workItem
         lastActivityRefreshAt = now
-        DispatchQueue.main.asyncAfter(deadline: .now() + hideDelay, execute: workItem)
     }
 
     func handleInterfaceHoverChange() {
@@ -2519,354 +2501,22 @@ private extension ContentView {
             return
         }
 
-        hideWorkItem?.cancel()
-        hideWorkItem = nil
+        hideTask?.cancel()
+        hideTask = nil
         handleUserActivity()
     }
-}
 
-// MARK: - Liquid Glass Components
-
-struct LiquidGlassView: NSViewRepresentable {
-    enum MaterialStyle {
-        case regular
-        case clear
-    }
-
-    enum CornerStyle {
-        case fixed(CGFloat)
-        case capsule
-    }
-
-    var material: MaterialStyle = .regular
-    var cornerStyle: CornerStyle = .fixed(14)
-    var alphaMultiplier: CGFloat = 1.0
-
-    func makeNSView(context: Context) -> NSView {
+    func setControlsVisible(_ isVisible: Bool, legacyDuration: TimeInterval) {
         if #available(macOS 26.0, *) {
-            let nativeView = LiquidGlassNativeView()
-            nativeView.glassStyle = material
-            nativeView.cornerStyle = cornerStyle
-            nativeView.alphaMultiplier = alphaMultiplier
-            return nativeView
-        }
-
-        let fallback = LiquidGlassFallbackView()
-        fallback.glassStyle = material
-        fallback.cornerStyle = cornerStyle
-        fallback.alphaMultiplier = alphaMultiplier
-        return fallback
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        if #available(macOS 26.0, *) {
-            if let nativeView = nsView as? LiquidGlassNativeView {
-                nativeView.glassStyle = material
-                nativeView.cornerStyle = cornerStyle
-                nativeView.alphaMultiplier = alphaMultiplier
-                return
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                controlsVisible = isVisible
+            }
+        } else {
+            withAnimation(.easeInOut(duration: legacyDuration)) {
+                controlsVisible = isVisible
             }
         }
-
-        guard let fallback = nsView as? LiquidGlassFallbackView else { return }
-        fallback.glassStyle = material
-        fallback.cornerStyle = cornerStyle
-        fallback.alphaMultiplier = alphaMultiplier
     }
-}
-
-@available(macOS 26.0, *)
-private final class LiquidGlassNativeView: NSView {
-    var glassStyle: LiquidGlassView.MaterialStyle = .regular {
-        didSet { updateAppearance() }
-    }
-
-    var cornerStyle: LiquidGlassView.CornerStyle = .fixed(14) {
-        didSet { updateAppearance() }
-    }
-
-    var alphaMultiplier: CGFloat = 1.0 {
-        didSet { updateAppearance() }
-    }
-
-    private let glassView = AuraGlassBridgeView(frame: .zero)
-
-    override var isOpaque: Bool {
-        false
-    }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        commonInit()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        commonInit()
-    }
-
-    private func commonInit() {
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.clear.cgColor
-
-        glassView.frame = bounds
-        glassView.autoresizingMask = [.width, .height]
-        glassView.containerSpacing = 0
-        addSubview(glassView)
-
-        updateAppearance()
-    }
-
-    override func layout() {
-        super.layout()
-        glassView.frame = bounds
-        updateCornerRadius()
-    }
-
-    private func updateAppearance() {
-        glassView.style = glassStyle == .clear ? .clear : .regular
-        glassView.tintColor = nil
-        glassView.alphaValue = 1.0
-        updateCornerRadius()
-    }
-
-    private func updateCornerRadius() {
-        switch cornerStyle {
-        case .fixed(let radius):
-            glassView.cornerRadius = radius
-        case .capsule:
-            glassView.cornerRadius = max(bounds.height * 0.5, 0)
-        }
-    }
-}
-
-private final class LiquidGlassFallbackView: NSVisualEffectView {
-    var glassStyle: LiquidGlassView.MaterialStyle = .regular {
-        didSet { updateAppearance() }
-    }
-
-    var cornerStyle: LiquidGlassView.CornerStyle = .fixed(14) {
-        didSet { updateAppearance() }
-    }
-
-    var alphaMultiplier: CGFloat = 1.0 {
-        didSet { updateAppearance() }
-    }
-
-    private var noiseLayer: CALayer?
-    private var highlightLayer: CAGradientLayer?
-    private var glossLayer: CAGradientLayer?
-    private var shadowLayer: CAGradientLayer?
-    private var rimLayer: CAShapeLayer?
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        commonInit()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        commonInit()
-    }
-
-    private func commonInit() {
-        blendingMode = .withinWindow
-        material = .hudWindow
-        state = .active
-        isEmphasized = true
-        wantsLayer = true
-        layer = CALayer()
-        layer?.masksToBounds = true
-        updateAppearance()
-    }
-
-    override func layout() {
-        super.layout()
-        noiseLayer?.frame = bounds
-        highlightLayer?.frame = bounds
-        glossLayer?.frame = bounds
-        shadowLayer?.frame = bounds
-        rimLayer?.frame = bounds
-        rimLayer?.path = CGPath(
-            roundedRect: bounds.insetBy(dx: 0.6, dy: 0.6),
-            cornerWidth: resolvedCornerRadius,
-            cornerHeight: resolvedCornerRadius,
-            transform: nil
-        )
-    }
-
-    func updateAppearance() {
-        guard let layer = self.layer else { return }
-        material = glassStyle == .clear ? .underWindowBackground : .hudWindow
-        state = .active
-        isEmphasized = true
-        alphaValue = alphaMultiplier
-        layer.cornerRadius = resolvedCornerRadius
-        layer.backgroundColor = baseBackgroundColor.cgColor
-        layer.backgroundFilters = Self.backgroundFilters
-        layer.shadowColor = NSColor.black.cgColor
-        layer.shadowOpacity = Float((glassStyle == .clear ? 0.16 : 0.24) * alphaMultiplier)
-        layer.shadowRadius = glassStyle == .clear ? 12 : 20
-        layer.shadowOffset = CGSize(width: 0, height: glassStyle == .clear ? 4 : 8)
-        Self.applyOverlays(
-            to: layer,
-            style: glassStyle,
-            alphaMultiplier: alphaMultiplier,
-            noiseLayer: &noiseLayer,
-            highlightLayer: &highlightLayer,
-            glossLayer: &glossLayer,
-            shadowLayer: &shadowLayer,
-            rimLayer: &rimLayer
-        )
-    }
-
-    private var resolvedCornerRadius: CGFloat {
-        switch cornerStyle {
-        case .fixed(let radius):
-            return radius
-        case .capsule:
-            return max(bounds.height * 0.5, 0)
-        }
-    }
-
-    private static func applyOverlays(
-        to layer: CALayer,
-        style: LiquidGlassView.MaterialStyle,
-        alphaMultiplier: CGFloat,
-        noiseLayer: inout CALayer?,
-        highlightLayer: inout CAGradientLayer?,
-        glossLayer: inout CAGradientLayer?,
-        shadowLayer: inout CAGradientLayer?,
-        rimLayer: inout CAShapeLayer?
-    ) {
-        if noiseLayer == nil {
-            let noise = CALayer()
-            noise.contents = noiseImage
-            noise.compositingFilter = "softLightBlendMode"
-            noise.contentsGravity = .resizeAspectFill
-            noise.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-            layer.addSublayer(noise)
-            noiseLayer = noise
-        }
-        noiseLayer?.frame = layer.bounds
-        noiseLayer?.opacity = Float((style == .clear ? 0.012 : 0.020) * alphaMultiplier)
-
-        if highlightLayer == nil {
-            let gradient = CAGradientLayer()
-            gradient.type = .radial
-            gradient.colors = [
-                NSColor.white.withAlphaComponent(0.10).cgColor,
-                NSColor.white.withAlphaComponent(0.03).cgColor,
-                NSColor.white.withAlphaComponent(0.0).cgColor,
-            ]
-            gradient.locations = [0.0, 0.36, 1.0]
-            gradient.startPoint = CGPoint(x: 0.32, y: 0.02)
-            gradient.endPoint = CGPoint(x: 0.92, y: 1.08)
-            gradient.compositingFilter = "screenBlendMode"
-            gradient.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-            layer.addSublayer(gradient)
-            highlightLayer = gradient
-        }
-        highlightLayer?.frame = layer.bounds
-        highlightLayer?.opacity = Float((style == .clear ? 0.18 : 0.28) * alphaMultiplier)
-
-        if glossLayer == nil {
-            let gradient = CAGradientLayer()
-            gradient.colors = [
-                NSColor.white.withAlphaComponent(0.12).cgColor,
-                NSColor.white.withAlphaComponent(0.05).cgColor,
-                NSColor.white.withAlphaComponent(0.02).cgColor,
-                NSColor.white.withAlphaComponent(0.0).cgColor,
-            ]
-            gradient.locations = [0.0, 0.12, 0.34, 0.62]
-            gradient.startPoint = CGPoint(x: 0.5, y: 1.0)
-            gradient.endPoint = CGPoint(x: 0.5, y: 0.0)
-            gradient.compositingFilter = "screenBlendMode"
-            gradient.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-            layer.addSublayer(gradient)
-            glossLayer = gradient
-        }
-        glossLayer?.frame = layer.bounds
-        glossLayer?.opacity = Float((style == .clear ? 0.12 : 0.18) * alphaMultiplier)
-
-        if shadowLayer == nil {
-            let gradient = CAGradientLayer()
-            gradient.colors = [
-                NSColor.black.withAlphaComponent(0.0).cgColor,
-                NSColor.black.withAlphaComponent(0.08).cgColor,
-                NSColor.black.withAlphaComponent(0.22).cgColor,
-            ]
-            gradient.locations = [0.0, 0.62, 1.0]
-            gradient.startPoint = CGPoint(x: 0.5, y: 1.0)
-            gradient.endPoint = CGPoint(x: 0.5, y: 0.0)
-            gradient.compositingFilter = "multiplyBlendMode"
-            gradient.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-            layer.addSublayer(gradient)
-            shadowLayer = gradient
-        }
-        shadowLayer?.frame = layer.bounds
-        shadowLayer?.opacity = Float((style == .clear ? 0.28 : 0.42) * alphaMultiplier)
-
-        if rimLayer == nil {
-            let rim = CAShapeLayer()
-            rim.fillColor = NSColor.clear.cgColor
-            rim.lineWidth = 1.1
-            layer.addSublayer(rim)
-            rimLayer = rim
-        }
-        rimLayer?.frame = layer.bounds
-        rimLayer?.path = CGPath(
-            roundedRect: layer.bounds.insetBy(dx: 0.6, dy: 0.6),
-            cornerWidth: 14,
-            cornerHeight: 14,
-            transform: nil
-        )
-        rimLayer?.strokeColor = NSColor.white.withAlphaComponent((style == .clear ? 0.10 : 0.14) * alphaMultiplier).cgColor
-    }
-
-    private var baseBackgroundColor: NSColor {
-        if glassStyle == .clear {
-            return NSColor(calibratedWhite: 0.10, alpha: 0.18 * alphaMultiplier)
-        }
-
-        return NSColor(calibratedWhite: 0.12, alpha: 0.24 * alphaMultiplier)
-    }
-
-    private static let backgroundFilters: [CIFilter] = {
-        var filters: [CIFilter] = []
-        if let clamp = CIFilter(name: "CIAffineClamp") {
-            clamp.setDefaults()
-            clamp.setValue(CGAffineTransform.identity, forKey: "inputTransform")
-            filters.append(clamp)
-        }
-        if let blur = CIFilter(name: "CIGaussianBlur") {
-            blur.setValue(28.0, forKey: kCIInputRadiusKey)
-            filters.append(blur)
-        }
-        if let color = CIFilter(name: "CIColorControls") {
-            color.setValue(1.15, forKey: kCIInputSaturationKey)
-            color.setValue(-0.05, forKey: kCIInputBrightnessKey)
-            color.setValue(1.16, forKey: kCIInputContrastKey)
-            filters.append(color)
-        }
-        if let expose = CIFilter(name: "CIExposureAdjust") {
-            expose.setValue(-0.06, forKey: kCIInputEVKey)
-            filters.append(expose)
-        }
-        return filters
-    }()
-
-    private static let noiseImage: CGImage = {
-        let size = CGSize(width: 128, height: 128)
-        let random = CIFilter(name: "CIRandomGenerator")!.outputImage!
-        let transform = CGAffineTransform(scaleX: size.width, y: size.height)
-        let scaled = random.transformed(by: transform).cropped(to: CGRect(origin: .zero, size: size))
-        let saturation = CIFilter(name: "CIColorControls")!
-        saturation.setValue(scaled, forKey: kCIInputImageKey)
-        saturation.setValue(0.0, forKey: kCIInputSaturationKey)
-        saturation.setValue(0.0, forKey: kCIInputBrightnessKey)
-        saturation.setValue(1.2, forKey: kCIInputContrastKey)
-        let context = CIContext(options: [.workingColorSpace: NSNull()])
-        return context.createCGImage(saturation.outputImage!, from: CGRect(origin: .zero, size: size))!
-    }()
 }

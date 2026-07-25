@@ -44,6 +44,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         writeHealth(reason: "terminating")
+        DistributedNotificationCenter.default().removeObserver(self)
         tearDownPlayback()
         store.removePID()
         store.markPaused(false)
@@ -62,15 +63,28 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startTimers() {
-        commandTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(runtimeCommandDidChange),
+            name: WallpaperRuntimeNotifications.commandDidChange,
+            object: nil,
+            suspensionBehavior: .deliverImmediately
+        )
+
+        // Cross-process notifications handle the normal fast path. This low-frequency
+        // timer is only a safety net for a notification missed during process startup.
+        commandTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.pollCommand()
         }
-        healthTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        commandTimer?.tolerance = 0.20
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.writeHealth(reason: "ok")
         }
-        fullscreenTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
+        healthTimer?.tolerance = 0.30
+        fullscreenTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.applyFullscreenPolicy()
         }
+        fullscreenTimer?.tolerance = 0.15
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(screensChanged),
@@ -78,6 +92,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
         writeHealth(reason: "ok")
+    }
+
+    @objc private func runtimeCommandDidChange(_ notification: Notification) {
+        pollCommand()
     }
 
     @objc private func screensChanged() {
@@ -247,6 +265,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func applyFullscreenPolicy() {
         let shouldPauseForFullscreen = config.pause_on_fullscreen ?? true
+        guard shouldPauseForFullscreen else {
+            fullscreenAppDetected = false
+            if autoPausedForFullscreen {
+                autoPausedForFullscreen = false
+                applyPlaybackRate()
+            }
+            return
+        }
         fullscreenAppDetected = Self.detectFullscreenApplication()
         let shouldAutoPause = shouldPauseForFullscreen && fullscreenAppDetected && !manualPaused
 

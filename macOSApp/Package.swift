@@ -12,11 +12,6 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "AuraGlassBridgeKit",
-            path: "Sources/AuraGlassBridgeKit",
-            publicHeadersPath: "include"
-        ),
-        .target(
             name: "AuraWallpaperCore",
             path: "Sources/AuraWallpaperCore"
         ),
@@ -28,7 +23,6 @@ let package = Package(
         .executableTarget(
             name: "WallpaperControlApp",
             dependencies: [
-                "AuraGlassBridgeKit",
                 "AuraWallpaperCore",
             ],
             resources: [

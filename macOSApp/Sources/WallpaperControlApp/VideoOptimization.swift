@@ -34,7 +34,7 @@ struct VideoOptimizationSettings: Codable {
         allowAV1PassthroughOnHardwareDecode: true,
         transcodeH264ToHEVC: true,
         forceSoftwareAV1Encode: false,
-        profile: .quality
+        profile: .balanced
     )
 
     enum CodingKeys: String, CodingKey {
@@ -222,7 +222,13 @@ final class VideoOptimizer {
         }
 
         let codecType = try await videoCodecType(for: track)
-        let decision = makeDecision(inputURL: inputURL, codecType: codecType, settings: settings)
+        let videoSize = (try? await orientedVideoSize(for: track)) ?? .zero
+        let decision = makeDecision(
+            inputURL: inputURL,
+            codecType: codecType,
+            videoSize: videoSize,
+            settings: settings
+        )
 
         switch decision {
         case .passthrough:
@@ -301,6 +307,7 @@ final class VideoOptimizer {
     private func makeDecision(
         inputURL: URL,
         codecType: CMVideoCodecType,
+        videoSize: CGSize,
         settings: VideoOptimizationSettings
     ) -> VideoOptimizationDecision {
         guard settings.enabled else {
@@ -309,6 +316,11 @@ final class VideoOptimizer {
 
         if isWebContainer(inputURL) || codecType == vp9CodecType || codecType == vp8CodecType {
             return .transcode(reason: "Web video converted for macOS wallpaper compatibility.")
+        }
+
+        if case .balanced = settings.profile,
+           videoSize.width * videoSize.height > 1920 * 1080 {
+            return .transcode(reason: "Video reduced to 1080p for consistent playback across Macs.")
         }
 
         if shouldForceSoftwareAV1Encode(codecType: codecType, settings: settings) {
@@ -403,8 +415,8 @@ final class VideoOptimizer {
             preferred = [AVAssetExportPresetHEVCHighestQuality, AVAssetExportPresetHighestQuality]
         case .balanced:
             preferred = [
-                AVAssetExportPresetHEVCHighestQuality,
                 AVAssetExportPresetHEVC1920x1080,
+                AVAssetExportPresetHEVCHighestQuality,
                 AVAssetExportPresetHighestQuality,
             ]
         }
@@ -669,6 +681,12 @@ final class VideoOptimizer {
             args.append(contentsOf: ["-preset", "slow", "-crf", "17"])
         case .balanced:
             args.append(contentsOf: ["-preset", "medium", "-crf", "19"])
+            args.append(
+                contentsOf: [
+                    "-vf",
+                    "scale=min(1920\\,iw):min(1080\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2",
+                ]
+            )
         }
 
         args.append(contentsOf: ["-movflags", "+faststart", "-f", "mp4", outputURL.path])
@@ -706,6 +724,9 @@ final class VideoOptimizer {
             guard FileManager.default.isExecutableFile(atPath: candidate) else {
                 continue
             }
+            guard executableCanLaunch(candidate, arguments: ["-version"]) else {
+                continue
+            }
             return candidate
         }
         return nil
@@ -727,6 +748,21 @@ final class VideoOptimizer {
             }
         }
         return nil
+    }
+
+    private func executableCanLaunch(_ executable: String, arguments: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        process.waitUntilExit()
+        return process.terminationStatus == 0
     }
 
     private func resolveBinaryFromPATH(_ name: String) -> String? {
@@ -781,6 +817,13 @@ final class VideoOptimizer {
             return 0
         }
         return CMFormatDescriptionGetMediaSubType(description)
+    }
+
+    private func orientedVideoSize(for track: AVAssetTrack) async throws -> CGSize {
+        let naturalSize = try await track.load(.naturalSize)
+        let transform = try await track.load(.preferredTransform)
+        let transformed = CGRect(origin: .zero, size: naturalSize).applying(transform).standardized
+        return CGSize(width: abs(transformed.width), height: abs(transformed.height))
     }
 
     private func optimizedOutputURL(

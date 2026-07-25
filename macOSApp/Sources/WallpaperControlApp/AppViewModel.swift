@@ -248,6 +248,11 @@ final class NativeWallpaperController: WallpaperControlling {
 
     private func send(_ action: WallpaperRuntimeCommandAction, config: ControlConfig? = nil) throws {
         try store.saveCommand(WallpaperRuntimeCommand(action: action, config: config))
+        DistributedNotificationCenter.default().post(
+            name: WallpaperRuntimeNotifications.commandDidChange,
+            object: nil,
+            userInfo: nil
+        )
     }
 
     private func launchAgentIfNeeded() throws {
@@ -1215,10 +1220,6 @@ final class AppViewModel: ObservableObject {
             return (sourceURL, nil)
         }
 
-        if shouldUseFastApplyPath(for: sourceURL, settings: settings) {
-            return (sourceURL, "Using source video directly for faster apply.")
-        }
-
         optimizationInProgress = true
         optimizationProgress = 0
         optimizationLabel = "Preparing optimization..."
@@ -1276,30 +1277,6 @@ final class AppViewModel: ObservableObject {
         return result.outputURL
     }
 
-    private func shouldUseFastApplyPath(for sourceURL: URL, settings: VideoOptimizationSettings) -> Bool {
-        guard settings.enabled else { return true }
-        guard sourceURL.isFileURL else { return false }
-
-        let ext = sourceURL.pathExtension.lowercased()
-        guard ["mp4", "mov", "m4v"].contains(ext) else {
-            return false
-        }
-
-        guard isCatalogManagedVideo(sourceURL) else {
-            return false
-        }
-
-        return !settings.forceSoftwareAV1Encode
-    }
-
-    private func isCatalogManagedVideo(_ sourceURL: URL) -> Bool {
-        guard let catalogDirectory = try? catalogDirectoryURL().standardizedFileURL.path else {
-            return false
-        }
-        let standardizedPath = sourceURL.standardizedFileURL.path
-        return standardizedPath.hasPrefix(catalogDirectory + "/")
-    }
-
     private func apply(
         status: ControlStatus,
         refreshPreview: Bool = true,
@@ -1308,32 +1285,40 @@ final class AppViewModel: ObservableObject {
         let hasConfiguredVideo = !status.config.video_path.isEmpty
         let paused = status.paused ?? false
         let effectiveRunning = statusIndicatesActivePlayback(status)
-        isRunning = status.running
-        isPlaybackActive = effectiveRunning
-        isPlaybackPaused = paused && hasConfiguredVideo && !effectiveRunning
-        playbackSpeed = status.config.playback_speed
-        autostartEnabled = status.autostart ?? status.config.autostart ?? false
-        blendInterpolationEnabled = status.config.blend_interpolation ?? false
-        pauseOnFullscreenEnabled = status.config.pause_on_fullscreen ?? true
+        Self.setIfChanged(&isRunning, to: status.running)
+        Self.setIfChanged(&isPlaybackActive, to: effectiveRunning)
+        Self.setIfChanged(&isPlaybackPaused, to: paused && hasConfiguredVideo && !effectiveRunning)
+        Self.setIfChanged(&playbackSpeed, to: status.config.playback_speed)
+        Self.setIfChanged(&autostartEnabled, to: status.autostart ?? status.config.autostart ?? false)
+        Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
+        Self.setIfChanged(&pauseOnFullscreenEnabled, to: status.config.pause_on_fullscreen ?? true)
         let previousScaleMode = scaleMode
-        scaleMode = WallpaperScaleMode(rawValue: status.config.scale_mode ?? "fill") ?? .fill
+        let resolvedScaleMode = WallpaperScaleMode(rawValue: status.config.scale_mode ?? "fill") ?? .fill
+        Self.setIfChanged(&scaleMode, to: resolvedScaleMode)
         if hasConfiguredVideo {
             let currentURL = URL(fileURLWithPath: status.config.video_path)
             let hasVideoChanged = appliedVideoURL?.path != currentURL.path
-            appliedVideoURL = currentURL
+            Self.setIfChanged(&appliedVideoURL, to: currentURL)
             if pendingPreviewVideoURL == nil,
                refreshPreview && (hasVideoChanged || previewPlayer == nil || previousScaleMode != scaleMode) {
                 configurePreview(for: currentURL)
             }
         } else {
-            appliedVideoURL = nil
+            Self.setIfChanged(&appliedVideoURL, to: nil)
             if pendingPreviewVideoURL == nil {
-                previewPlayer = nil
+                if previewPlayer != nil {
+                    previewPlayer = nil
+                }
             }
         }
         syncPreviewPlaybackRate()
         evaluateStatusContract(status, backgroundUpdate: backgroundUpdate)
         evaluateDaemonHealth(status.health, backgroundUpdate: backgroundUpdate)
+    }
+
+    private static func setIfChanged<Value: Equatable>(_ current: inout Value, to newValue: Value) {
+        guard current != newValue else { return }
+        current = newValue
     }
 
     private func startHealthMonitor() {
@@ -1458,15 +1443,8 @@ final class AppViewModel: ObservableObject {
                 return nil
             }
 
-            let repairedPreviewPath: String?
-            if let localPreviewPath = item.localPreviewPath,
-               FileManager.default.fileExists(atPath: localPreviewPath) {
-                repairedPreviewPath = localPreviewPath
-            } else {
-                repairedPreviewPath = ensureLocalPreviewImage(
-                    for: item.localURL,
-                    legacyWallpaperID: item.wallpaperID
-                )?.path
+            let repairedPreviewPath = item.localPreviewPath.flatMap { localPreviewPath in
+                FileManager.default.fileExists(atPath: localPreviewPath) ? localPreviewPath : nil
             }
 
             return DownloadedCatalogWallpaper(
@@ -1833,19 +1811,41 @@ final class AppViewModel: ObservableObject {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
-    private func ensureLocalPreviewImage(for videoURL: URL, legacyWallpaperID: String?) -> URL? {
+    private func scheduleLocalPreviewImageGeneration(
+        for videoURL: URL,
+        legacyWallpaperID: String?,
+        wallpaperID: String
+    ) {
         let previewKey = previewImageKey(for: videoURL)
 
-        if let existing = existingLocalPreviewImageURL(for: previewKey) {
-            return existing
-        }
+        guard existingLocalPreviewImageURL(for: previewKey) == nil else { return }
+        guard let destinationURL = try? localPreviewImageURL(for: previewKey) else { return }
+        let legacyURL = legacyWallpaperID.flatMap { existingLocalPreviewImageURL(for: $0) }
 
-        guard let destinationURL = try? localPreviewImageURL(for: previewKey) else {
-            return nil
-        }
+        Task.detached(priority: .utility) { [weak self] in
+            guard let generatedURL = Self.generateLocalPreviewImage(
+                for: videoURL,
+                destinationURL: destinationURL,
+                legacyURL: legacyURL
+            ) else {
+                return
+            }
 
-        if let legacyWallpaperID,
-           let legacyURL = existingLocalPreviewImageURL(for: legacyWallpaperID) {
+            await MainActor.run { [weak self] in
+                self?.storeGeneratedPreview(generatedURL, wallpaperID: wallpaperID)
+            }
+        }
+    }
+
+    nonisolated private static func generateLocalPreviewImage(
+        for videoURL: URL,
+        destinationURL: URL,
+        legacyURL: URL?
+    ) -> URL? {
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            return destinationURL
+        }
+        if let legacyURL {
             do {
                 try FileManager.default.copyItem(at: legacyURL, to: destinationURL)
                 return destinationURL
@@ -1853,7 +1853,6 @@ final class AppViewModel: ObservableObject {
                 return legacyURL
             }
         }
-
         let asset = AVURLAsset(url: videoURL)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
@@ -1877,9 +1876,34 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func storeGeneratedPreview(_ previewURL: URL, wallpaperID: String) {
+        var updated = downloadedCatalogWallpapers
+        guard let index = updated.firstIndex(where: { $0.wallpaperID == wallpaperID }) else {
+            return
+        }
+        let current = updated[index]
+        guard current.localPreviewPath != previewURL.path else { return }
+
+        updated[index] = DownloadedCatalogWallpaper(
+            id: current.id,
+            wallpaperID: current.wallpaperID,
+            title: current.title,
+            category: current.category,
+            attribution: current.attribution,
+            previewImageURL: current.previewImageURL,
+            localPreviewPath: previewURL.path,
+            sourcePageURL: current.sourcePageURL,
+            localPath: current.localPath,
+            downloadedAt: current.downloadedAt
+        )
+        downloadedCatalogWallpapers = updated
+        try? persistDownloadedCatalogWallpapers(updated)
+    }
+
     private func registerDownloadedCatalogWallpaper(for wallpaper: CatalogWallpaper, localURL: URL) {
         let normalizedPath = localURL.standardizedFileURL.path
-        let localPreviewPath = ensureLocalPreviewImage(for: localURL, legacyWallpaperID: wallpaper.id)?.path
+        let previewKey = previewImageKey(for: localURL)
+        let localPreviewPath = existingLocalPreviewImageURL(for: previewKey)?.path
         var updated = downloadedCatalogWallpapers
 
         let entry = DownloadedCatalogWallpaper(
@@ -1906,6 +1930,13 @@ final class AppViewModel: ObservableObject {
         })
         downloadedCatalogWallpapers = updated
         try? persistDownloadedCatalogWallpapers(updated)
+        if localPreviewPath == nil {
+            scheduleLocalPreviewImageGeneration(
+                for: localURL,
+                legacyWallpaperID: wallpaper.id,
+                wallpaperID: wallpaper.id
+            )
+        }
     }
 
     private func persistDownloadedCatalogWallpapers(_ wallpapers: [DownloadedCatalogWallpaper]) throws {
@@ -1997,7 +2028,9 @@ final class AppViewModel: ObservableObject {
                 category: "Downloaded",
                 attribution: "Catalog Cache",
                 previewImageURL: nil,
-                localPreviewPath: ensureLocalPreviewImage(for: fileURL, legacyWallpaperID: "local-\(fileName)")?.path,
+                localPreviewPath: existingLocalPreviewImageURL(
+                    for: previewImageKey(for: fileURL)
+                )?.path,
                 sourcePageURL: nil,
                 localPath: fileURL.standardizedFileURL.path,
                 downloadedAt: downloadedAt

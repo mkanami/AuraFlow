@@ -9,7 +9,7 @@ APP_TARGET="WallpaperControlApp"
 HELPER_TARGET="AuraWallpaperAgent"
 APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-AuraFlow}"
 APP_VERSION="${AURAFLOW_VERSION:-1.2.2}"
-APP_BUILD="${AURAFLOW_BUILD:-4}"
+APP_BUILD="${AURAFLOW_BUILD:-5}"
 APP_BUNDLE="$DIST_DIR/${APP_DISPLAY_NAME}.app"
 APP_ZIP="$DIST_DIR/${APP_DISPLAY_NAME}.zip"
 APP_DMG="$DIST_DIR/${APP_DISPLAY_NAME}.dmg"
@@ -235,6 +235,15 @@ build_swift_app() {
 
   local binary="$bin_path/${APP_TARGET}"
   local resources_bundle="$bin_path/${APP_TARGET}_${APP_TARGET}.bundle"
+  if [[ ! -d "$resources_bundle" ]]; then
+    local arm_resources_bundle="$SWIFT_DIR/.build/arm64-apple-macosx/release/${APP_TARGET}_${APP_TARGET}.bundle"
+    local x86_resources_bundle="$SWIFT_DIR/.build/x86_64-apple-macosx/release/${APP_TARGET}_${APP_TARGET}.bundle"
+    if [[ -d "$arm_resources_bundle" ]]; then
+      resources_bundle="$arm_resources_bundle"
+    elif [[ -d "$x86_resources_bundle" ]]; then
+      resources_bundle="$x86_resources_bundle"
+    fi
+  fi
 
   if [[ ! -x "$binary" ]]; then
     log "Binary not found: $binary"
@@ -269,7 +278,7 @@ build_swift_app() {
   fi
 
   if [[ -d "$resources_bundle" ]]; then
-    cp -R "$resources_bundle" "$APP_BUNDLE/Contents/Resources/${APP_TARGET}.bundle"
+    cp -R "$resources_bundle" "$APP_BUNDLE/Contents/Resources/$(basename "$resources_bundle")"
   fi
 
   cat > "$APP_BUNDLE/Contents/Info.plist" <<'EOF'

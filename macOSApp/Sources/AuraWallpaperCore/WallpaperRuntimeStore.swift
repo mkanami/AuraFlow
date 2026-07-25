@@ -2,6 +2,12 @@ import AppKit
 import AVFoundation
 import Foundation
 
+public enum WallpaperRuntimeNotifications {
+    public static let commandDidChange = Notification.Name(
+        "com.andrijvergeles.auraflow.runtime-command-did-change"
+    )
+}
+
 public enum WallpaperRuntimeCommandAction: String, Codable, Equatable {
     case reload
     case update
@@ -184,7 +190,7 @@ public final class WallpaperRuntimeStore {
         let now = Date().timeIntervalSince1970
         let saved = loadHealth()
         let lag = saved?.updated_at.map { max(now - $0, 0) }
-        let fresh = alive && (lag ?? 0) < 4.0
+        let fresh = alive && (lag ?? 0) < 6.0
         return DaemonHealth(
             available: alive,
             fresh: fresh,
