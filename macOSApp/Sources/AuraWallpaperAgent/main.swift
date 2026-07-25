@@ -26,7 +26,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var manualPaused = false
     private var autoPausedForFullscreen = false
     private var fullscreenAppDetected = false
+    private var consecutiveFullscreenSamples = 0
+    private var consecutiveWindowedSamples = 0
+    private var lastSpaceChangeUptime = -Double.infinity
     private var signalSources: [DispatchSourceSignal] = []
+
+    private let spaceTransitionGracePeriod: TimeInterval = 0.75
+    private let fullscreenConfirmationSamples = 2
 
     override init() {
         self.config = store.loadConfig()
@@ -45,6 +51,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         writeHealth(reason: "terminating")
         DistributedNotificationCenter.default().removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         tearDownPlayback()
         store.removePID()
         store.markPaused(false)
@@ -91,6 +98,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(activeSpaceDidChange),
+            name: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil
+        )
         writeHealth(reason: "ok")
     }
 
@@ -101,6 +114,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     @objc private func screensChanged() {
         rebuildWindows()
         writeHealth(reason: "screen-change")
+    }
+
+    @objc private func activeSpaceDidChange() {
+        lastSpaceChangeUptime = ProcessInfo.processInfo.systemUptime
+        consecutiveFullscreenSamples = 0
+        consecutiveWindowedSamples = 0
     }
 
     private func pollCommand() {
@@ -191,6 +210,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             window.hasShadow = false
             window.collectionBehavior = behavior
             window.ignoresMouseEvents = true
+            window.animationBehavior = .none
+            window.hidesOnDeactivate = false
+            window.canHide = false
+            window.isExcludedFromWindowsMenu = true
 
             let content = WallpaperLayerView(frame: screen.frame)
             content.wantsLayer = true
@@ -223,15 +246,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showWindows() {
-        for window in windows {
+        for window in windows where !window.isVisible {
             window.orderBack(nil)
             window.orderFrontRegardless()
-        }
-    }
-
-    private func hideWindows() {
-        for window in windows {
-            window.orderOut(nil)
         }
     }
 
@@ -244,7 +261,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func applyPlaybackRate() {
         guard !manualPaused && !autoPausedForFullscreen else { return }
-        showWindows()
         let rate = Float(max(0.1, min(config.playback_speed, 4.0)))
         player?.playImmediately(atRate: rate)
     }
@@ -267,20 +283,47 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let shouldPauseForFullscreen = config.pause_on_fullscreen ?? true
         guard shouldPauseForFullscreen else {
             fullscreenAppDetected = false
+            consecutiveFullscreenSamples = 0
+            consecutiveWindowedSamples = 0
             if autoPausedForFullscreen {
                 autoPausedForFullscreen = false
                 applyPlaybackRate()
             }
             return
         }
+
+        let uptime = ProcessInfo.processInfo.systemUptime
+        guard uptime - lastSpaceChangeUptime >= spaceTransitionGracePeriod else {
+            return
+        }
+
         fullscreenAppDetected = Self.detectFullscreenApplication()
-        let shouldAutoPause = shouldPauseForFullscreen && fullscreenAppDetected && !manualPaused
+        if fullscreenAppDetected {
+            consecutiveFullscreenSamples = min(
+                consecutiveFullscreenSamples + 1,
+                fullscreenConfirmationSamples
+            )
+            consecutiveWindowedSamples = 0
+        } else {
+            consecutiveWindowedSamples = min(
+                consecutiveWindowedSamples + 1,
+                fullscreenConfirmationSamples
+            )
+            consecutiveFullscreenSamples = 0
+        }
+
+        let shouldAutoPause =
+            fullscreenAppDetected &&
+            consecutiveFullscreenSamples >= fullscreenConfirmationSamples &&
+            !manualPaused
+        let shouldResume =
+            !fullscreenAppDetected &&
+            consecutiveWindowedSamples >= fullscreenConfirmationSamples
 
         if shouldAutoPause && !autoPausedForFullscreen {
             autoPausedForFullscreen = true
             player?.pause()
-            hideWindows()
-        } else if !shouldAutoPause && autoPausedForFullscreen {
+        } else if shouldResume && autoPausedForFullscreen {
             autoPausedForFullscreen = false
             applyPlaybackRate()
         }
@@ -296,17 +339,38 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return false
         }
+        let displayBounds: [CGRect] = NSScreen.screens.compactMap { screen in
+            guard let screenNumber = screen.deviceDescription[
+                NSDeviceDescriptionKey("NSScreenNumber")
+            ] as? NSNumber else {
+                return nil
+            }
+            return CGDisplayBounds(CGDirectDisplayID(screenNumber.uint32Value))
+        }
+        let tolerance: CGFloat = 3
+
         for window in list {
             guard let ownerPID = window[kCGWindowOwnerPID as String] as? pid_t,
                   ownerPID == frontmost.processIdentifier,
+                  let layer = window[kCGWindowLayer as String] as? Int,
+                  layer == 0,
+                  let alpha = window[kCGWindowAlpha as String] as? NSNumber,
+                  alpha.doubleValue > 0,
                   let boundsDict = window[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = boundsDict["X"],
+                  let y = boundsDict["Y"],
                   let width = boundsDict["Width"],
                   let height = boundsDict["Height"]
             else {
                 continue
             }
-            for screen in NSScreen.screens {
-                if abs(width - screen.frame.width) < 3 && abs(height - screen.frame.height) < 3 {
+
+            let bounds = CGRect(x: x, y: y, width: width, height: height)
+            for display in displayBounds {
+                if abs(bounds.minX - display.minX) <= tolerance,
+                   abs(bounds.minY - display.minY) <= tolerance,
+                   abs(bounds.maxX - display.maxX) <= tolerance,
+                   abs(bounds.maxY - display.maxY) <= tolerance {
                     return true
                 }
             }
