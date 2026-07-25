@@ -456,6 +456,8 @@ final class AppViewModel: ObservableObject {
     private let optimizer = VideoOptimizer()
     private let optimizationStore: VideoOptimizationStore
     private var previewEndObserver: NSObjectProtocol?
+    private var previewStalledObserver: NSObjectProtocol?
+    private var previewItemStatusObservation: NSKeyValueObservation?
     private var didAttemptAutostartOnLaunch = false
     private var healthMonitorTask: Task<Void, Never>?
     private var isHealthCheckInProgress = false
@@ -556,6 +558,10 @@ final class AppViewModel: ObservableObject {
         pendingPreviewVideoURL ?? appliedVideoURL
     }
 
+    private var previewPlayerURL: URL? {
+        (previewPlayer?.currentItem?.asset as? AVURLAsset)?.url.standardizedFileURL
+    }
+
     var filteredCatalogWallpapers: [CatalogWallpaper] {
         let groupFiltered = catalogWallpapers.filter { wallpaper in
             guard let selectedCatalogGroup else { return true }
@@ -618,6 +624,10 @@ final class AppViewModel: ObservableObject {
         if let previewEndObserver {
             NotificationCenter.default.removeObserver(previewEndObserver)
         }
+        if let previewStalledObserver {
+            NotificationCenter.default.removeObserver(previewStalledObserver)
+        }
+        previewItemStatusObservation?.invalidate()
         successBannerTask?.cancel()
     }
 
@@ -1300,7 +1310,7 @@ final class AppViewModel: ObservableObject {
             let hasVideoChanged = appliedVideoURL?.path != currentURL.path
             Self.setIfChanged(&appliedVideoURL, to: currentURL)
             if pendingPreviewVideoURL == nil,
-               refreshPreview && (hasVideoChanged || previewPlayer == nil || previousScaleMode != scaleMode) {
+               refreshPreview && (hasVideoChanged || previewPlayer?.currentItem == nil || previousScaleMode != scaleMode) {
                 configurePreview(for: currentURL)
             }
         } else {
@@ -2192,10 +2202,12 @@ final class AppViewModel: ObservableObject {
         let finalStatus = try await runAsync { try controller.start(videoURL: prepared.url, speed: nil) }
 
         pendingPreviewVideoURL = nil
-        apply(status: finalStatus)
-        if sourceURL.standardizedFileURL.path != prepared.url.standardizedFileURL.path,
-           await isPreviewPlayableVideo(at: sourceURL) {
-            configurePreview(for: sourceURL)
+        apply(status: finalStatus, refreshPreview: false)
+        let configuredPreviewURL = finalStatus.config.video_path.isEmpty
+            ? prepared.url
+            : URL(fileURLWithPath: finalStatus.config.video_path)
+        if previewPlayerURL != configuredPreviewURL.standardizedFileURL {
+            configurePreview(for: configuredPreviewURL)
         }
         recordBridgeSuccess()
         statusMessage = prepared.summary ?? statusSummary
@@ -2240,13 +2252,16 @@ final class AppViewModel: ObservableObject {
             NotificationCenter.default.removeObserver(previewEndObserver)
             self.previewEndObserver = nil
         }
-
-        if let previewPlayer {
-            previewPlayer.pause()
-            previewPlayer.replaceCurrentItem(with: nil)
+        if let previewStalledObserver {
+            NotificationCenter.default.removeObserver(previewStalledObserver)
+            self.previewStalledObserver = nil
         }
+        previewItemStatusObservation?.invalidate()
+        previewItemStatusObservation = nil
 
         guard let url else {
+            previewPlayer?.pause()
+            previewPlayer?.replaceCurrentItem(with: nil)
             previewPlayer = nil
             adaptiveGlassAppearance = .default
             return
@@ -2254,11 +2269,33 @@ final class AppViewModel: ObservableObject {
 
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 0.35
-        let player = AVPlayer(playerItem: item)
+        let player: AVPlayer
+        if let existingPlayer = previewPlayer {
+            player = existingPlayer
+            player.pause()
+            // Keep one AVPlayer attached to AVPlayerLayer and replace its item
+            // directly. Inserting an empty item or swapping player identities can
+            // leave the layer displaying its opaque black backing surface.
+            player.replaceCurrentItem(with: item)
+        } else {
+            player = AVPlayer(playerItem: item)
+            previewPlayer = player
+        }
         player.isMuted = true
         player.volume = 0
-        player.automaticallyWaitsToMinimizeStalling = false
-        applyPreviewPlaybackRate(to: player)
+        player.automaticallyWaitsToMinimizeStalling = true
+
+        previewItemStatusObservation = item.observe(
+            \.status,
+            options: [.initial, .new]
+        ) { [weak self, weak player, weak item] _, _ in
+            Task { @MainActor [weak self, weak player, weak item] in
+                guard let self, let player, let item else { return }
+                guard player.currentItem === item else { return }
+                guard item.status == .readyToPlay else { return }
+                self.applyPreviewPlaybackRate(to: player)
+            }
+        }
 
         previewEndObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
@@ -2271,7 +2308,19 @@ final class AppViewModel: ObservableObject {
             }
         }
 
-        previewPlayer = player
+        previewStalledObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled,
+            object: item,
+            queue: .main
+        ) { [weak self, weak player, weak item] _ in
+            Task { @MainActor [weak self, weak player, weak item] in
+                guard let self, let player, let item else { return }
+                guard player.currentItem === item else { return }
+                self.applyPreviewPlaybackRate(to: player)
+            }
+        }
+
+        applyPreviewPlaybackRate(to: player)
         scheduleAdaptiveGlassRefresh(for: url)
     }
 

@@ -123,6 +123,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     }
 
     viewModel.selectLocalVideoForPreview(firstURL)
+    let firstPreviewPlayer = try #require(viewModel.previewPlayer)
     viewModel.start()
 
     for _ in 0..<20 {
@@ -135,8 +136,10 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(controller.lastConfiguredVideoURL == firstURL)
     #expect(controller.startCallCount == 1)
     #expect(viewModel.isRunning)
+    #expect(viewModel.previewPlayer === firstPreviewPlayer)
 
     viewModel.selectLocalVideoForPreview(secondURL)
+    #expect(viewModel.previewPlayer === firstPreviewPlayer)
     #expect(controller.lastConfiguredVideoURL == firstURL)
 
     viewModel.stop()
@@ -158,6 +161,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(controller.lastConfiguredVideoURL == secondURL)
     #expect(controller.startCallCount == 2)
     #expect(viewModel.isRunning)
+    #expect(viewModel.previewPlayer === firstPreviewPlayer)
 }
 
 @MainActor
@@ -244,6 +248,32 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(controller.startCallCount == 0)
     #expect(viewModel.isRunning == false)
     #expect(viewModel.statusMessage == "Wallpaper downloaded. Press Start to apply.")
+}
+
+@MainActor
+@Test func switchingPreviewReusesPlayerAndReplacesItemWithoutDetachingLayer() throws {
+    let controller = MockNativeWallpaperController()
+    let viewModel = AppViewModel(controller: controller)
+
+    let firstURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("stable-preview-player-first.mp4")
+    let secondURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("stable-preview-player-second.mp4")
+    FileManager.default.createFile(atPath: firstURL.path, contents: Data(), attributes: nil)
+    FileManager.default.createFile(atPath: secondURL.path, contents: Data(), attributes: nil)
+    defer {
+        try? FileManager.default.removeItem(at: firstURL)
+        try? FileManager.default.removeItem(at: secondURL)
+    }
+
+    viewModel.selectLocalVideoForPreview(firstURL)
+    let originalPlayer = try #require(viewModel.previewPlayer)
+
+    viewModel.selectLocalVideoForPreview(secondURL)
+
+    #expect(viewModel.previewPlayer === originalPlayer)
+    let currentAsset = try #require(originalPlayer.currentItem?.asset as? AVURLAsset)
+    #expect(currentAsset.url.standardizedFileURL == secondURL.standardizedFileURL)
 }
 
 @MainActor
