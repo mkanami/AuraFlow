@@ -17,6 +17,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var config: ControlConfig
     private var windows: [NSWindow] = []
     private var playerLayers: [AVPlayerLayer] = []
+    private var fallbackImage: CGImage?
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     private var commandTimer: Timer?
@@ -120,6 +121,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         lastSpaceChangeUptime = ProcessInfo.processInfo.systemUptime
         consecutiveFullscreenSamples = 0
         consecutiveWindowedSamples = 0
+        showWindows(forceOrder: true)
+
+        // WindowServer can briefly detach desktop-level windows while the
+        // Spaces animation is finishing. Reassert them on the next run-loop
+        // pass as well, without rebuilding the player or its layers.
+        DispatchQueue.main.async { [weak self] in
+            self?.showWindows(forceOrder: true)
+        }
     }
 
     private func pollCommand() {
@@ -163,6 +172,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        prepareFallbackImage(from: url)
         let item = AVPlayerItem(url: url)
         let player = AVQueuePlayer(items: [])
         player.actionAtItemEnd = .none
@@ -218,6 +228,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             let content = WallpaperLayerView(frame: screen.frame)
             content.wantsLayer = true
             content.autoresizingMask = [.width, .height]
+            content.layer?.contents = fallbackImage
+            content.layer?.contentsGravity = fallbackContentsGravity(
+                for: config.scale_mode
+            )
             let playerLayer = AVPlayerLayer(player: existingPlayer)
             playerLayer.frame = content.bounds
             playerLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
@@ -245,8 +259,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         player = nil
     }
 
-    private func showWindows() {
-        for window in windows where !window.isVisible {
+    private func showWindows(forceOrder: Bool = false) {
+        for window in windows {
+            guard forceOrder || !window.isVisible else { continue }
             window.orderBack(nil)
             window.orderFrontRegardless()
         }
@@ -263,6 +278,40 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !manualPaused && !autoPausedForFullscreen else { return }
         let rate = Float(max(0.1, min(config.playback_speed, 4.0)))
         player?.playImmediately(atRate: rate)
+    }
+
+    private func prepareFallbackImage(from videoURL: URL) {
+        guard let frameURL = try? store.captureStillFrame(from: videoURL),
+              let image = NSImage(contentsOf: frameURL),
+              let cgImage = image.cgImage(
+                  forProposedRect: nil,
+                  context: nil,
+                  hints: nil
+              )
+        else {
+            fallbackImage = nil
+            return
+        }
+
+        fallbackImage = cgImage
+
+        // Mission Control composes the real desktop below our live window.
+        // Giving it the same frame prevents a black/old-wallpaper flash while
+        // WindowServer moves between Spaces.
+        WallpaperDesktopSupport.applyToAllDesktops(imagePath: frameURL.path)
+    }
+
+    private func fallbackContentsGravity(
+        for rawMode: String?
+    ) -> CALayerContentsGravity {
+        switch WallpaperScaleMode(rawValue: rawMode ?? "") ?? .fill {
+        case .fill:
+            return .resizeAspectFill
+        case .fit:
+            return .resizeAspect
+        case .stretch:
+            return .resize
+        }
     }
 
     private func applyRuntimeSettings() {
