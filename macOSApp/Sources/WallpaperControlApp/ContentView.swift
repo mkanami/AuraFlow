@@ -22,18 +22,9 @@ private func speedOverlayPillWidth(for availableWidth: CGFloat) -> CGFloat {
 struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var isAdjustingSpeed: Bool = false
-    @State private var controlsVisible: Bool = true
-    @State private var hideTask: Task<Void, Never>?
-    @State private var localMonitor: Any?
-    @State private var globalMonitor: Any?
     @State private var window: NSWindow?
-    @State private var lastActivityRefreshAt: Date = .distantPast
-    @State private var isHoveringTopOverlay: Bool = false
-    @State private var isHoveringBottomOverlay: Bool = false
 
     private var aspectRatio: CGFloat { mainScreenAspectRatio() }
-    private let hideDelay: TimeInterval = 4.0
-    private let activityRefreshThrottle: TimeInterval = 0.18
     private let topOverlayTopPadding: CGFloat = 18
     private let zoomedTopOverlayPadding: CGFloat = 48
     private let dragTitlebarTopOffset: CGFloat = -40
@@ -99,13 +90,6 @@ struct ContentView: View {
         .task {
             await viewModel.loadStatus()
         }
-        .onAppear {
-            setupActivityMonitoring()
-            handleUserActivity()
-        }
-        .onDisappear {
-            teardownActivityMonitoring()
-        }
         .environment(\.adaptiveGlassAppearance, viewModel.adaptiveGlassAppearance)
     }
 
@@ -129,6 +113,11 @@ struct ContentView: View {
                 aspectRatio: aspectRatio,
                 scaleMode: viewModel.scaleMode
             )
+            .frame(
+                width: proxy.size.width,
+                height: proxy.size.height
+            )
+            .clipped()
             .ignoresSafeArea()
 
             TitlebarInteractionOverlay(
@@ -145,9 +134,11 @@ struct ContentView: View {
                 }
             )
             .frame(height: dragTitlebarHeight)
-            .padding(.top, dragTitlebarTopOffset)
+            .offset(y: dragTitlebarTopOffset)
 
             optimizedGlassControls(
+                containerWidth: proxy.size.width,
+                containerHeight: proxy.size.height,
                 availableWidth: availableWidth,
                 overlayWidth: overlayWidth,
                 controlPanelWidth: controlPanelWidth,
@@ -157,12 +148,13 @@ struct ContentView: View {
                 isCompactBySize: isCompactBySize,
                 isVeryCompactByHeight: isVeryCompactByHeight
             )
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
         }
     }
 
     @ViewBuilder
     private func optimizedGlassControls(
+        containerWidth: CGFloat,
+        containerHeight: CGFloat,
         availableWidth: CGFloat,
         overlayWidth: CGFloat,
         controlPanelWidth: CGFloat,
@@ -176,6 +168,8 @@ struct ContentView: View {
         // A full-window GlassEffectContainer reorders their background passes above
         // the controls on macOS 27, washing out labels without reducing useful work.
         glassControlContents(
+            containerWidth: containerWidth,
+            containerHeight: containerHeight,
             availableWidth: availableWidth,
             overlayWidth: overlayWidth,
             controlPanelWidth: controlPanelWidth,
@@ -188,6 +182,8 @@ struct ContentView: View {
     }
 
     private func glassControlContents(
+        containerWidth: CGFloat,
+        containerHeight: CGFloat,
         availableWidth: CGFloat,
         overlayWidth: CGFloat,
         controlPanelWidth: CGFloat,
@@ -197,25 +193,25 @@ struct ContentView: View {
         isCompactBySize: Bool,
         isVeryCompactByHeight: Bool
     ) -> some View {
-        VStack(spacing: 0) {
+        Color.clear
+            .frame(
+                width: containerWidth,
+                height: containerHeight,
+                alignment: .top
+            )
+            .overlay(alignment: .top) {
             if !viewModel.isCatalogOpen {
                 SpeedOverlay(
                     viewModel: viewModel,
                     isAdjustingSpeed: $isAdjustingSpeed,
-                    availableWidth: availableWidth,
-                    onHoverChanged: { hovering in
-                        isHoveringTopOverlay = hovering
-                        handleInterfaceHoverChange()
-                    }
+                    availableWidth: availableWidth
                 )
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, horizontalPadding)
                 .padding(.top, topOverlayPadding)
-                .auraControlsVisibility(controlsVisible)
             }
-
-            Spacer(minLength: 0)
-
+        }
+        .overlay(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 12) {
                 if let alert = viewModel.alertMessage {
                     ErrorBanner(text: alert)
@@ -244,31 +240,8 @@ struct ContentView: View {
             .frame(width: overlayWidth, alignment: .leading)
             .padding(.horizontal, horizontalPadding)
             .padding(.bottom, bottomOverlayPadding)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                isHoveringBottomOverlay = hovering
-                handleInterfaceHoverChange()
-            }
-            .auraControlsVisibility(controlsVisible)
         }
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func auraControlsVisibility(_ isVisible: Bool) -> some View {
-        if #available(macOS 26.0, *) {
-            // Native glass is rendered in a separate compositor pass and can remain
-            // visible even when an ancestor reaches opacity zero. Remove the entire
-            // subtree so hidden controls cannot leave an empty glass shell behind.
-            if isVisible {
-                self
-            }
-        } else {
-            opacity(isVisible ? 1 : 0)
-                .allowsHitTesting(isVisible)
-                .accessibilityHidden(!isVisible)
-        }
+        .clipped()
     }
 }
 
@@ -303,53 +276,6 @@ struct TitlebarInteractionView: NSViewRepresentable {
         nsView.windowReference = window
         nsView.protectedCenterWidth = protectedCenterWidth
         nsView.onDragStateChange = onDragStateChange
-    }
-}
-
-struct HoverTrackingArea: NSViewRepresentable {
-    let onHoverChanged: (Bool) -> Void
-
-    func makeNSView(context: Context) -> HoverTrackingNSView {
-        let view = HoverTrackingNSView()
-        view.onHoverChanged = onHoverChanged
-        return view
-    }
-
-    func updateNSView(_ nsView: HoverTrackingNSView, context: Context) {
-        nsView.onHoverChanged = onHoverChanged
-    }
-}
-
-final class HoverTrackingNSView: NSView {
-    var onHoverChanged: ((Bool) -> Void)?
-    private var trackingAreaRef: NSTrackingArea?
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let trackingAreaRef {
-            removeTrackingArea(trackingAreaRef)
-        }
-
-        let options: NSTrackingArea.Options = [
-            .mouseEnteredAndExited,
-            .activeInKeyWindow,
-            .inVisibleRect
-        ]
-        let area = NSTrackingArea(rect: .zero, options: options, owner: self, userInfo: nil)
-        addTrackingArea(area)
-        trackingAreaRef = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        onHoverChanged?(true)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        onHoverChanged?(false)
     }
 }
 
@@ -1690,7 +1616,6 @@ struct SpeedOverlay: View {
     @ObservedObject var viewModel: AppViewModel
     @Binding var isAdjustingSpeed: Bool
     let availableWidth: CGFloat
-    var onHoverChanged: ((Bool) -> Void)? = nil
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     private var pillWidth: CGFloat {
@@ -1745,9 +1670,6 @@ struct SpeedOverlay: View {
         .overlay(
             Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
-        .overlay(HoverTrackingArea(onHoverChanged: { hovering in
-            onHoverChanged?(hovering)
-        }))
         .shadow(color: Color.black.opacity(0.16), radius: 4, x: 0, y: 2)
         .environment(\.colorScheme, .dark)
     }
@@ -2570,108 +2492,5 @@ private extension ContentView {
 
     func endWindowDrag() {
         viewModel.resumePreviewRenderingAfterWindowDrag()
-    }
-
-    func setupActivityMonitoring() {
-        teardownActivityMonitoring()
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .rightMouseDown, .keyDown]) { event in
-            if event.type == .mouseMoved, controlsVisible, !viewModel.isCatalogOpen {
-                return event
-            }
-            handleUserActivity()
-            return event
-        }
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { _ in
-            handleUserActivity()
-        }
-    }
-
-    func teardownActivityMonitoring() {
-        if let localMonitor {
-            NSEvent.removeMonitor(localMonitor)
-            self.localMonitor = nil
-        }
-        if let globalMonitor {
-            NSEvent.removeMonitor(globalMonitor)
-            self.globalMonitor = nil
-        }
-        hideTask?.cancel()
-        hideTask = nil
-    }
-
-    func handleUserActivity() {
-        let now = Date()
-
-        if viewModel.isCatalogOpen {
-            hideTask?.cancel()
-            hideTask = nil
-            if !controlsVisible {
-                setControlsVisible(true, legacyDuration: 0.2)
-            }
-            lastActivityRefreshAt = now
-            return
-        }
-
-        if isHoveringTopOverlay || isHoveringBottomOverlay {
-            hideTask?.cancel()
-            hideTask = nil
-            if !controlsVisible {
-                setControlsVisible(true, legacyDuration: 0.2)
-            }
-            lastActivityRefreshAt = now
-            return
-        }
-
-        if controlsVisible,
-           hideTask != nil,
-           now.timeIntervalSince(lastActivityRefreshAt) < activityRefreshThrottle {
-            return
-        }
-
-        hideTask?.cancel()
-        if !controlsVisible {
-            setControlsVisible(true, legacyDuration: 0.25)
-        }
-        hideTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(hideDelay * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            guard !isHoveringTopOverlay,
-                  !isHoveringBottomOverlay,
-                  !isAdjustingSpeed,
-                  !viewModel.isCatalogOpen,
-                  !viewModel.isSettingsOpen,
-                  !viewModel.isMonitoringOpen,
-                  !viewModel.isDownloadedWallpapersOpen else {
-                return
-            }
-            setControlsVisible(false, legacyDuration: 0.4)
-            hideTask = nil
-        }
-        lastActivityRefreshAt = now
-    }
-
-    func handleInterfaceHoverChange() {
-        if isHoveringTopOverlay || isHoveringBottomOverlay {
-            handleUserActivity()
-            return
-        }
-
-        hideTask?.cancel()
-        hideTask = nil
-        handleUserActivity()
-    }
-
-    func setControlsVisible(_ isVisible: Bool, legacyDuration: TimeInterval) {
-        if #available(macOS 26.0, *) {
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                controlsVisible = isVisible
-            }
-        } else {
-            withAnimation(.easeInOut(duration: legacyDuration)) {
-                controlsVisible = isVisible
-            }
-        }
     }
 }
