@@ -8,8 +8,8 @@ DIST_DIR="$ROOT_DIR/dist"
 APP_TARGET="WallpaperControlApp"
 HELPER_TARGET="AuraWallpaperAgent"
 APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-AuraFlow}"
-APP_VERSION="${AURAFLOW_VERSION:-1.2.2}"
-APP_BUILD="${AURAFLOW_BUILD:-8}"
+APP_VERSION="${AURAFLOW_VERSION:-1.3.0}"
+APP_BUILD="${AURAFLOW_BUILD:-9}"
 APP_BUNDLE="$DIST_DIR/${APP_DISPLAY_NAME}.app"
 APP_ZIP="$DIST_DIR/${APP_DISPLAY_NAME}.zip"
 APP_DMG="$DIST_DIR/${APP_DISPLAY_NAME}.dmg"
@@ -353,6 +353,27 @@ bundle_runtime_tools() {
   log "Bundled ffprobe from $ffprobe_path"
 }
 
+bundle_lock_screen_saver() {
+  local plugins_dir="$APP_BUNDLE/Contents/PlugIns"
+  mkdir -p "$plugins_dir"
+  log "Building AuraFlow Lock Screen screen saver"
+  AURAFLOW_VERSION="$APP_VERSION" \
+    AURAFLOW_BUILD="$APP_BUILD" \
+    BUILD_UNIVERSAL="$BUILD_UNIVERSAL" \
+    REQUIRE_UNIVERSAL="$REQUIRE_UNIVERSAL" \
+    "$ROOT_DIR/scripts/build_screensaver.sh" "$plugins_dir"
+
+  if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
+    local saver_binary saver_archs
+    saver_binary="$plugins_dir/AuraFlowLockScreen.saver/Contents/MacOS/AuraFlowLockScreen"
+    saver_archs="$(lipo -archs "$saver_binary" 2>/dev/null || true)"
+    if [[ "$saver_archs" != *"arm64"* || "$saver_archs" != *"x86_64"* ]]; then
+      log "Universal screen saver required, produced: ${saver_archs:-unknown}"
+      exit 1
+    fi
+  fi
+}
+
 codesign_args() {
   local identity="${CODESIGN_IDENTITY:--}"
   local args=(
@@ -416,6 +437,19 @@ sign_app_bundle() {
     done < <(find "$APP_BUNDLE/Contents/Frameworks" -mindepth 1 -maxdepth 1 -type d \( -name "*.framework" -o -name "*.bundle" \) | sort)
   fi
 
+  if [[ -d "$APP_BUNDLE/Contents/PlugIns" ]]; then
+    while IFS= read -r plugin; do
+      codesign_target "$plugin"
+    done < <(
+      find "$APP_BUNDLE/Contents/PlugIns" \
+        -mindepth 1 \
+        -maxdepth 1 \
+        -type d \
+        \( -name "*.saver" -o -name "*.bundle" \) \
+        | sort
+    )
+  fi
+
   if [[ -n "$CODESIGN_IDENTITY" ]]; then
     codesign_target "$APP_BUNDLE" --options runtime
   else
@@ -473,6 +507,7 @@ main() {
   build_swift_app
   apply_plist_customizations
   bundle_runtime_tools
+  bundle_lock_screen_saver
   sign_app_bundle
   package_distribution
   log "Done: $APP_BUNDLE"

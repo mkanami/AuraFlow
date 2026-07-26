@@ -31,7 +31,10 @@ let package = Package(
         ),
         .testTarget(
             name: "WallpaperControlAppTests",
-            dependencies: ["WallpaperControlApp"],
+            dependencies: [
+                "AuraWallpaperCore",
+                "WallpaperControlApp",
+            ],
             path: "Tests/WallpaperControlAppTests",
             resources: [
                 .process("Fixtures")

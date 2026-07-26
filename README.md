@@ -32,6 +32,7 @@ Runtime state is stored in:
 - playback speed control
 - fill, fit, and stretch scale modes
 - auto-pause while fullscreen apps are active
+- matching live system screen saver with a direct Start button
 - launch at login through a LaunchAgent
 - built-in wallpaper catalog
 - downloaded wallpaper library
@@ -50,6 +51,30 @@ Runtime state is stored in:
 - macOS 13 or later
 - Apple Silicon or Intel Mac
 - internet connection for catalog downloads
+
+## Lock Screen
+
+Enable **Play AuraFlow on Lock Screen** in Playback Settings to keep the current
+video playing through macOS's modern lock-screen wallpaper engine. Because Apple
+does not publish its wallpaper-extension API, AuraFlow temporarily reserves one
+already-downloaded Apple Aerial cache slot. The original Aerial asset and the
+complete wallpaper configuration are backed up before the first change and are
+restored when the feature is disabled.
+
+The current video, thumbnail, active Spaces, and displays are synchronized each
+time the wallpaper starts. Deleted Space records and old AuraFlow
+`last_frame.png` references are removed during the transaction. On macOS
+versions without the modern Aerial store, AuraFlow falls back to its bundled
+legacy Screen Saver module.
+
+**Remove** stops the wallpaper agent, restores the reserved Aerial asset and
+wallpaper configuration, clears the selected video, restores the original
+desktop on every current Space, and restarts the macOS wallpaper presenters so
+no managed stop frame is left behind.
+
+This integration is intentionally reversible but uses an undocumented macOS
+cache format. A macOS update or an Aerial re-download can temporarily replace
+the reserved asset; launching AuraFlow synchronizes it again.
 
 For release builds, `ffmpeg` and `ffprobe` are bundled when available on the build machine. They are used only for compatibility conversion paths, not for normal AVFoundation playback.
 

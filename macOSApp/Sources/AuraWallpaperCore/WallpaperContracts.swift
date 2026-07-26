@@ -8,6 +8,7 @@ public struct ControlConfig: Codable, Equatable {
     public var autostart: Bool?
     public var blend_interpolation: Bool?
     public var pause_on_fullscreen: Bool?
+    public var show_on_lock_screen: Bool?
     public var scale_mode: String?
 
     public init(
@@ -17,6 +18,7 @@ public struct ControlConfig: Codable, Equatable {
         autostart: Bool? = false,
         blend_interpolation: Bool? = false,
         pause_on_fullscreen: Bool? = true,
+        show_on_lock_screen: Bool? = false,
         scale_mode: String? = WallpaperScaleMode.fill.rawValue
     ) {
         self.video_path = video_path
@@ -25,6 +27,7 @@ public struct ControlConfig: Codable, Equatable {
         self.autostart = autostart
         self.blend_interpolation = blend_interpolation
         self.pause_on_fullscreen = pause_on_fullscreen
+        self.show_on_lock_screen = show_on_lock_screen
         self.scale_mode = scale_mode
     }
 
@@ -86,6 +89,12 @@ public struct DaemonHealth: Codable, Equatable {
     public var pause_on_fullscreen: Bool?
     public var fullscreen_app_detected: Bool?
     public var auto_paused_for_fullscreen: Bool?
+    public var lock_screen_enabled: Bool?
+    public var session_inactive: Bool?
+    public var lock_screen_preview_active: Bool?
+    public var presentation_mode: String?
+    public var lock_transition_count: Int?
+    public var last_lock_transition_ms: Double?
     public var blend_interpolation_enabled: Bool?
     public var blend_interpolation_active: Bool?
     public var scale_mode: String?
@@ -111,6 +120,12 @@ public struct DaemonHealth: Codable, Equatable {
         pause_on_fullscreen: Bool? = nil,
         fullscreen_app_detected: Bool? = nil,
         auto_paused_for_fullscreen: Bool? = nil,
+        lock_screen_enabled: Bool? = nil,
+        session_inactive: Bool? = nil,
+        lock_screen_preview_active: Bool? = nil,
+        presentation_mode: String? = nil,
+        lock_transition_count: Int? = nil,
+        last_lock_transition_ms: Double? = nil,
         blend_interpolation_enabled: Bool? = nil,
         blend_interpolation_active: Bool? = nil,
         scale_mode: String? = nil
@@ -135,6 +150,12 @@ public struct DaemonHealth: Codable, Equatable {
         self.pause_on_fullscreen = pause_on_fullscreen
         self.fullscreen_app_detected = fullscreen_app_detected
         self.auto_paused_for_fullscreen = auto_paused_for_fullscreen
+        self.lock_screen_enabled = lock_screen_enabled
+        self.session_inactive = session_inactive
+        self.lock_screen_preview_active = lock_screen_preview_active
+        self.presentation_mode = presentation_mode
+        self.lock_transition_count = lock_transition_count
+        self.last_lock_transition_ms = last_lock_transition_ms
         self.blend_interpolation_enabled = blend_interpolation_enabled
         self.blend_interpolation_active = blend_interpolation_active
         self.scale_mode = scale_mode
@@ -217,6 +238,5 @@ public struct DaemonMetrics: Codable, Equatable {
 }
 
 public enum AuraWallpaperContract {
-    public static let statusVersion = 2
+    public static let statusVersion = 3
 }
-

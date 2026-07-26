@@ -13,30 +13,63 @@ private final class WallpaperLayerView: NSView {
 }
 
 private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
+    private struct LockScreenRearmToken: Equatable {
+        let sessionGeneration: UInt64
+        let wallpaperRevision: UInt64
+        let videoPath: String
+    }
+
     private let store = WallpaperRuntimeStore()
+    private let lockScreenInstaller = AerialLockScreenInstaller()
+    private let lockScreenRepairQueue = DispatchQueue(
+        label: "com.auraflow.lock-screen-repair",
+        qos: .utility
+    )
     private var config: ControlConfig
     private var windows: [NSWindow] = []
     private var playerLayers: [AVPlayerLayer] = []
     private var fallbackImage: CGImage?
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
+    private var playbackTimeObserver: Any?
     private var commandTimer: Timer?
     private var healthTimer: Timer?
     private var fullscreenTimer: Timer?
     private var lastCommandID: String?
     private var manualPaused = false
+    private var sleeping = false
+    private var sessionInactive = false
     private var autoPausedForFullscreen = false
     private var fullscreenAppDetected = false
     private var consecutiveFullscreenSamples = 0
     private var consecutiveWindowedSamples = 0
     private var lastSpaceChangeUptime = -Double.infinity
     private var signalSources: [DispatchSourceSignal] = []
+    private var lockScreenState: LockScreenStateMachine
+    private var transitionGeneration = 0
+    private var lockSessionGeneration: UInt64 = 0
+    private var wallpaperRevision: UInt64 = 0
+    private var pendingRearmToken: LockScreenRearmToken?
+    private var lastRearmedToken: LockScreenRearmToken?
+    private var lastSessionTransitionUptime = -Double.infinity
+    private var lockTransitionCount = 0
+    private var lastLockTransitionMilliseconds: Double?
+    private var lastPlaybackProgressUptime: TimeInterval?
+    private var consecutiveStallPolls = 0
+    private var stallEvents = 0
+    private var recoveryEvents = 0
+    private var lockScreenRepairInProgress = false
+    private var isTerminating = false
 
     private let spaceTransitionGracePeriod: TimeInterval = 0.75
     private let fullscreenConfirmationSamples = 2
+    private let stallRecoveryThreshold = 2
 
     override init() {
         self.config = store.loadConfig()
+        self.lockScreenState = LockScreenStateMachine(
+            isEnabled: self.config.show_on_lock_screen ?? false
+        )
         super.init()
     }
 
@@ -47,12 +80,32 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         installSignalHandlers()
         rebuildPlayback(from: config, keepPaused: false)
         startTimers()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            [weak self] in
+            self?.reconcileSystemSessionState()
+            self?.rearmModernLockScreenForNextSession()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        isTerminating = true
+        transitionGeneration += 1
+        lockSessionGeneration &+= 1
+        pendingRearmToken = nil
         writeHealth(reason: "terminating")
         DistributedNotificationCenter.default().removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+        NotificationCenter.default.removeObserver(self)
+        commandTimer?.invalidate()
+        healthTimer?.invalidate()
+        fullscreenTimer?.invalidate()
+        commandTimer = nil
+        healthTimer = nil
+        fullscreenTimer = nil
+        for source in signalSources {
+            source.cancel()
+        }
+        signalSources.removeAll()
         tearDownPlayback()
         store.removePID()
         store.markPaused(false)
@@ -78,6 +131,20 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             suspensionBehavior: .deliverImmediately
         )
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(sessionDidResignActive),
+            name: Notification.Name("com.apple.screenIsLocked"),
+            object: nil,
+            suspensionBehavior: .deliverImmediately
+        )
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(sessionDidBecomeActive),
+            name: Notification.Name("com.apple.screenIsUnlocked"),
+            object: nil,
+            suspensionBehavior: .deliverImmediately
+        )
 
         // Cross-process notifications handle the normal fast path. This low-frequency
         // timer is only a safety net for a notification missed during process startup.
@@ -86,7 +153,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
         commandTimer?.tolerance = 0.20
         healthTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.writeHealth(reason: "ok")
+            self?.samplePlaybackHealth()
         }
         healthTimer?.tolerance = 0.30
         fullscreenTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -105,6 +172,36 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             name: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(sessionDidResignActive),
+            name: NSWorkspace.sessionDidResignActiveNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(sessionDidBecomeActive),
+            name: NSWorkspace.sessionDidBecomeActiveNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(systemWillSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(systemDidWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(screensDidWake),
+            name: NSWorkspace.screensDidWakeNotification,
+            object: nil
+        )
         writeHealth(reason: "ok")
     }
 
@@ -113,36 +210,147 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func screensChanged() {
+        guard !isTerminating else { return }
         rebuildWindows()
         writeHealth(reason: "screen-change")
     }
 
     @objc private func activeSpaceDidChange() {
+        guard !isTerminating else { return }
         lastSpaceChangeUptime = ProcessInfo.processInfo.systemUptime
         consecutiveFullscreenSamples = 0
         consecutiveWindowedSamples = 0
         showWindows(forceOrder: true)
+        let generation = transitionGeneration
 
         // WindowServer can briefly detach desktop-level windows while the
         // Spaces animation is finishing. Reassert them on the next run-loop
         // pass as well, without rebuilding the player or its layers.
         DispatchQueue.main.async { [weak self] in
-            self?.showWindows(forceOrder: true)
+            guard let self,
+                  !self.isTerminating,
+                  self.transitionGeneration == generation
+            else {
+                return
+            }
+            self.showWindows(forceOrder: true)
         }
     }
 
+    @objc private func sessionDidResignActive() {
+        handleSessionNotification(expectedLocked: true)
+    }
+
+    @objc private func sessionDidBecomeActive() {
+        handleSessionNotification(expectedLocked: false)
+    }
+
+    private func handleSessionNotification(expectedLocked: Bool) {
+        guard !isTerminating else { return }
+        let actualLocked = systemSessionIsLocked()
+        if actualLocked == nil || actualLocked == expectedLocked {
+            applySystemSessionState(locked: expectedLocked)
+        }
+
+        // CGSession can lag either notification center by a run-loop turn.
+        // Reconcile again instead of permanently dropping a valid transition.
+        for delay in [0.10, 0.35, 1.0] {
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + delay
+            ) { [weak self] in
+                self?.reconcileSystemSessionState()
+            }
+        }
+    }
+
+    private func reconcileSystemSessionState() {
+        guard !isTerminating,
+              let locked = systemSessionIsLocked()
+        else {
+            return
+        }
+        applySystemSessionState(locked: locked)
+    }
+
+    private func applySystemSessionState(locked: Bool) {
+        if locked {
+            guard !sessionInactive else { return }
+            lockSessionGeneration &+= 1
+            pendingRearmToken = nil
+            sessionInactive = true
+            lastSessionTransitionUptime =
+                ProcessInfo.processInfo.systemUptime
+            syncLockScreenSetting(reason: "lock-setting")
+            handleLockScreenEvent(.sessionLocked, reason: "session-locked")
+            writeHealth(reason: "session-inactive")
+            return
+        }
+
+        guard sessionInactive else { return }
+        lockSessionGeneration &+= 1
+        sessionInactive = false
+        lastSessionTransitionUptime =
+            ProcessInfo.processInfo.systemUptime
+        handleLockScreenEvent(.sessionUnlocked, reason: "session-unlocked")
+        showWindows(forceOrder: true)
+        applyPlaybackRate()
+        writeHealth(reason: "session-active")
+        rearmModernLockScreenForNextSession()
+    }
+
+    @objc private func systemWillSleep() {
+        guard !isTerminating, !sleeping else { return }
+        sleeping = true
+        player?.pause()
+        writeHealth(reason: "sleeping")
+    }
+
+    @objc private func systemDidWake() {
+        recoverAfterWake(reason: "wake")
+    }
+
+    @objc private func screensDidWake() {
+        recoverAfterWake(reason: "screens-wake")
+    }
+
+    private func recoverAfterWake(reason: String) {
+        guard !isTerminating else { return }
+        sleeping = false
+        showWindows(forceOrder: true)
+        applyPlaybackRate()
+        writeHealth(reason: reason)
+    }
+
     private func pollCommand() {
+        guard !isTerminating else { return }
         guard let command = store.loadCommand(), command.id != lastCommandID else { return }
         lastCommandID = command.id
         if let newConfig = command.config {
             config = store.normalized(newConfig)
         }
+        let wallpaperReloaded =
+            command.action == .reload && !config.video_path.isEmpty
+        if wallpaperReloaded {
+            // A rearm is tied to the exact video, not just the lock-session
+            // generation. Every reload gets a new revision so even replacing
+            // a file in-place cannot let an older provider completion win.
+            wallpaperRevision &+= 1
+            pendingRearmToken = nil
+            lastRearmedToken = nil
+        }
 
         switch command.action {
         case .reload:
-            rebuildPlayback(from: config, keepPaused: false)
+            _ = lockScreenState.apply(
+                .setEnabled(config.show_on_lock_screen ?? false)
+            )
             manualPaused = false
             store.markPaused(false)
+            rebuildPlayback(from: config, keepPaused: false)
+            if wallpaperReloaded, config.show_on_lock_screen == true {
+                repairModernLockScreenIfNeeded(force: true)
+                rearmModernLockScreenForNextSession()
+            }
         case .update:
             applyRuntimeSettings()
         case .resume:
@@ -152,6 +360,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             applyPlaybackRate()
         case .pause:
             pauseAndCommitStillFrame()
+        case .previewLock:
+            syncLockScreenSetting(reason: "lock-setting")
+            handleLockScreenEvent(.beginPreview, reason: "lock-preview")
+        case .previewUnlock:
+            syncLockScreenSetting(reason: "lock-setting")
+            handleLockScreenEvent(.endPreview, reason: "lock-preview-ended")
+            rearmModernLockScreenForNextSession()
         case .terminate:
             NSApp.terminate(nil)
         }
@@ -180,6 +395,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         player.automaticallyWaitsToMinimizeStalling = false
         looper = AVPlayerLooper(player: player, templateItem: item)
         self.player = player
+        lastPlaybackProgressUptime = ProcessInfo.processInfo.systemUptime
+        playbackTimeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+            queue: .main
+        ) { [weak self] _ in
+            self?.lastPlaybackProgressUptime =
+                ProcessInfo.processInfo.systemUptime
+        }
         rebuildWindows()
 
         if keepPaused || manualPaused {
@@ -198,7 +421,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         playerLayers.removeAll()
 
         guard let existingPlayer else { return }
-        let desktopLevel = Int(CGWindowLevelForKey(.desktopWindow))
         let behavior: NSWindow.CollectionBehavior = [
             .canJoinAllSpaces,
             .stationary,
@@ -215,7 +437,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             )
             window.isReleasedWhenClosed = false
             window.backgroundColor = .black
-            window.level = NSWindow.Level(rawValue: desktopLevel)
+            window.level = windowLevel(for: lockScreenState.presentationMode)
             window.isOpaque = true
             window.hasShadow = false
             window.collectionBehavior = behavior
@@ -225,7 +447,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             window.canHide = false
             window.isExcludedFromWindowsMenu = true
 
-            let content = WallpaperLayerView(frame: screen.frame)
+            let content = WallpaperLayerView(
+                frame: NSRect(origin: .zero, size: screen.frame.size)
+            )
             content.wantsLayer = true
             content.autoresizingMask = [.width, .height]
             content.layer?.contents = fallbackImage
@@ -240,16 +464,19 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             playerLayers.append(playerLayer)
             window.contentView = content
 
-            if !manualPaused {
-                window.orderBack(nil)
-                window.orderFrontRegardless()
-            }
             windows.append(window)
+            if !manualPaused {
+                present(window, as: lockScreenState.presentationMode)
+            }
         }
     }
 
     private func tearDownPlayback() {
         player?.pause()
+        if let playbackTimeObserver, let player {
+            player.removeTimeObserver(playbackTimeObserver)
+        }
+        playbackTimeObserver = nil
         looper = nil
         for window in windows {
             window.orderOut(nil)
@@ -257,13 +484,93 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         windows.removeAll()
         playerLayers.removeAll()
         player = nil
+        lastPlaybackProgressUptime = nil
+        consecutiveStallPolls = 0
     }
 
     private func showWindows(forceOrder: Bool = false) {
         for window in windows {
             guard forceOrder || !window.isVisible else { continue }
+            present(window, as: lockScreenState.presentationMode)
+        }
+    }
+
+    private func handleLockScreenEvent(
+        _ event: LockScreenStateEvent,
+        reason: String
+    ) {
+        guard !isTerminating else { return }
+        let previousMode = lockScreenState.presentationMode
+        let stateChanged = lockScreenState.apply(event)
+        let modeChanged = previousMode != lockScreenState.presentationMode
+
+        guard stateChanged else { return }
+        if modeChanged {
+            applyPresentationMode(reason: reason)
+        } else {
+            writeHealth(reason: reason)
+        }
+    }
+
+    private func syncLockScreenSetting(reason: String) {
+        let previousMode = lockScreenState.presentationMode
+        let stateChanged = lockScreenState.apply(
+            .setEnabled(config.show_on_lock_screen ?? false)
+        )
+        guard stateChanged else { return }
+        if previousMode != lockScreenState.presentationMode {
+            applyPresentationMode(reason: reason)
+        } else {
+            writeHealth(reason: reason)
+        }
+    }
+
+    private func applyPresentationMode(reason: String) {
+        let startedAt = CACurrentMediaTime()
+        transitionGeneration += 1
+        let mode = lockScreenState.presentationMode
+
+        // Reuse the existing AVQueuePlayer and AVPlayerLayers. Changing only the
+        // window level keeps playback time continuous and avoids a black startup
+        // frame during lock and unlock transitions.
+        for window in windows {
+            present(window, as: mode)
+        }
+
+        lockTransitionCount += 1
+        lastLockTransitionMilliseconds = (CACurrentMediaTime() - startedAt) * 1_000
+        if mode == .lockScreen {
+            applyPlaybackRate()
+        } else {
+            applyFullscreenPolicy()
+        }
+        writeHealth(reason: reason)
+    }
+
+    private func present(
+        _ window: NSWindow,
+        as mode: WallpaperPresentationMode
+    ) {
+        window.level = windowLevel(for: mode)
+        switch mode {
+        case .desktop:
             window.orderBack(nil)
             window.orderFrontRegardless()
+        case .lockScreen:
+            window.orderFrontRegardless()
+        }
+    }
+
+    private func windowLevel(
+        for mode: WallpaperPresentationMode
+    ) -> NSWindow.Level {
+        switch mode {
+        case .desktop:
+            return NSWindow.Level(
+                rawValue: Int(CGWindowLevelForKey(.desktopWindow))
+            )
+        case .lockScreen:
+            return .screenSaver
         }
     }
 
@@ -275,7 +582,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyPlaybackRate() {
-        guard !manualPaused && !autoPausedForFullscreen else { return }
+        guard !manualPaused && !sleeping else { return }
+        if lockScreenState.presentationMode != .lockScreen {
+            guard !autoPausedForFullscreen else { return }
+        }
         let rate = Float(max(0.1, min(config.playback_speed, 4.0)))
         player?.playImmediately(atRate: rate)
     }
@@ -294,11 +604,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
 
         fallbackImage = cgImage
-
-        // Mission Control composes the real desktop below our live window.
-        // Giving it the same frame prevents a black/old-wallpaper flash while
-        // WindowServer moves between Spaces.
-        WallpaperDesktopSupport.applyToAllDesktops(imagePath: frameURL.path)
     }
 
     private func fallbackContentsGravity(
@@ -315,6 +620,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyRuntimeSettings() {
+        syncLockScreenSetting(reason: "lock-setting")
         player?.volume = Float(max(0, min(config.volume ?? 0, 1)))
         let gravity = videoGravity(for: config.scale_mode)
         for layer in playerLayers {
@@ -329,6 +635,17 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyFullscreenPolicy() {
+        if lockScreenState.presentationMode == .lockScreen {
+            fullscreenAppDetected = false
+            consecutiveFullscreenSamples = 0
+            consecutiveWindowedSamples = 0
+            if autoPausedForFullscreen {
+                autoPausedForFullscreen = false
+            }
+            applyPlaybackRate()
+            return
+        }
+
         let shouldPauseForFullscreen = config.pause_on_fullscreen ?? true
         guard shouldPauseForFullscreen else {
             fullscreenAppDetected = false
@@ -432,16 +749,16 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let health = DaemonHealth(
             available: true,
             fresh: true,
-            suspicious: false,
+            suspicious: consecutiveStallPolls >= 2,
             reason: reason,
             updated_at: Date().timeIntervalSince1970,
             lag_seconds: 0,
             screens: NSScreen.screens.count,
             windows: windows.count,
             player_rate: Double(player?.rate ?? 0),
-            stall_events: 0,
-            recovery_events: 0,
-            consecutive_stall_polls: 0,
+            stall_events: stallEvents,
+            recovery_events: recoveryEvents,
+            consecutive_stall_polls: consecutiveStallPolls,
             paused: paused,
             manual_paused: manualPaused,
             low_power_mode: ProcessInfo.processInfo.isLowPowerModeEnabled,
@@ -449,11 +766,278 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             pause_on_fullscreen: config.pause_on_fullscreen ?? true,
             fullscreen_app_detected: fullscreenAppDetected,
             auto_paused_for_fullscreen: autoPausedForFullscreen,
+            lock_screen_enabled: lockScreenState.isEnabled,
+            session_inactive: sessionInactive,
+            lock_screen_preview_active: lockScreenState.previewState == .active,
+            presentation_mode: lockScreenState.presentationMode.rawValue,
+            lock_transition_count: lockTransitionCount,
+            last_lock_transition_ms: lastLockTransitionMilliseconds,
             blend_interpolation_enabled: config.blend_interpolation ?? false,
             blend_interpolation_active: false,
             scale_mode: config.scale_mode
         )
         try? store.saveHealth(health)
+    }
+
+    private func samplePlaybackHealth() {
+        reconcileSystemSessionState()
+        repairModernLockScreenIfNeeded()
+        rearmModernLockScreenForNextSession()
+
+        guard !manualPaused,
+              !sleeping,
+              !autoPausedForFullscreen
+        else {
+            lastPlaybackProgressUptime = nil
+            consecutiveStallPolls = 0
+            writeHealth(reason: "ok")
+            return
+        }
+
+        let uptime = ProcessInfo.processInfo.systemUptime
+        var failureReason = "playback-stall"
+        if let player {
+            let itemStatus = player.currentItem?.status
+            if itemStatus == .readyToPlay, player.rate <= 0 {
+                applyPlaybackRate()
+                failureReason = "playback-rate-zero"
+            } else if itemStatus == .failed {
+                failureReason = "playback-item-failed"
+            } else if itemStatus != .readyToPlay {
+                failureReason = "playback-item-not-ready"
+            }
+            if itemStatus == .readyToPlay,
+               player.rate > 0,
+               let lastProgress = lastPlaybackProgressUptime,
+               uptime - lastProgress < 3.5 {
+                consecutiveStallPolls = 0
+                writeHealth(reason: "ok")
+                return
+            }
+        } else {
+            failureReason = "playback-player-missing"
+        }
+
+        if lastPlaybackProgressUptime == nil {
+            lastPlaybackProgressUptime = uptime
+        }
+
+        consecutiveStallPolls += 1
+        guard consecutiveStallPolls >= stallRecoveryThreshold else {
+            writeHealth(reason: "\(failureReason)-suspected")
+            return
+        }
+
+        stallEvents += 1
+        recoveryEvents += 1
+        consecutiveStallPolls = 0
+        lastPlaybackProgressUptime = nil
+        rebuildPlayback(from: config, keepPaused: false)
+        writeHealth(reason: "playback-stall-recovered")
+    }
+
+    private func repairModernLockScreenIfNeeded(force: Bool = false) {
+        guard config.show_on_lock_screen == true,
+              !config.video_path.isEmpty,
+              lockScreenInstaller.isAvailable,
+              !lockScreenRepairInProgress,
+              !sessionInactive,
+              lockScreenState.sessionState == .unlocked,
+              systemSessionIsLocked() == false,
+              force
+                || ProcessInfo.processInfo.systemUptime
+                    - lastSessionTransitionUptime > 1.0
+        else {
+            return
+        }
+        let videoURL = URL(fileURLWithPath: config.video_path)
+        guard FileManager.default.fileExists(atPath: videoURL.path) else {
+            return
+        }
+
+        let token = currentRearmToken()
+        lockScreenRepairInProgress = true
+        lockScreenRepairQueue.async { [weak self] in
+            guard let self else { return }
+            let repairError: Error?
+            do {
+                _ = try self.lockScreenInstaller.repair(
+                    videoURL: videoURL,
+                    shouldProceed: { [weak self] in
+                        guard let self else { return false }
+                        return DispatchQueue.main.sync {
+                            self.repairCanProceed(
+                                token: token,
+                                videoURL: videoURL,
+                                allowRecentTransition: force
+                            )
+                        }
+                    }
+                )
+                repairError = nil
+            } catch {
+                repairError = error
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.lockScreenRepairInProgress = false
+                if let repairError {
+                    self.writeHealth(
+                        reason:
+                            "lock-screen-repair-failed: "
+                            + repairError.localizedDescription
+                    )
+                }
+                if let pendingToken = self.pendingRearmToken,
+                   pendingToken == self.currentRearmToken() {
+                    self.pendingRearmToken = nil
+                    self.rearmModernLockScreenForNextSession()
+                }
+            }
+        }
+    }
+
+    private func rearmModernLockScreenForNextSession() {
+        guard config.show_on_lock_screen == true,
+              !config.video_path.isEmpty,
+              lockScreenInstaller.isAvailable,
+              !sessionInactive,
+              lockScreenState.sessionState == .unlocked,
+              lockScreenState.previewState == .inactive,
+              systemSessionIsLocked() == false
+        else {
+            return
+        }
+        let videoURL = URL(fileURLWithPath: config.video_path)
+        guard FileManager.default.fileExists(atPath: videoURL.path) else {
+            return
+        }
+        let token = currentRearmToken()
+        if lockScreenRepairInProgress {
+            pendingRearmToken = token
+            return
+        }
+        guard pendingRearmToken != token,
+              lastRearmedToken != token
+        else {
+            return
+        }
+        pendingRearmToken = token
+        lockScreenRepairInProgress = true
+        lockScreenRepairQueue.async { [weak self] in
+            guard let self else { return }
+            let didRearm: Bool
+            let rearmError: Error?
+            do {
+                didRearm = try self.lockScreenInstaller.rearmForNextLock(
+                    videoURL: videoURL,
+                    shouldProceed: { [weak self] in
+                        guard let self else { return false }
+                        return DispatchQueue.main.sync {
+                            self.rearmCanProceed(
+                                token: token,
+                                videoURL: videoURL
+                            )
+                        }
+                    }
+                )
+                rearmError = nil
+            } catch {
+                didRearm = false
+                rearmError = error
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.lockScreenRepairInProgress = false
+                if self.pendingRearmToken == token {
+                    self.pendingRearmToken = nil
+                }
+                if didRearm,
+                   self.currentRearmToken() == token,
+                   !self.sessionInactive {
+                    self.lastRearmedToken = token
+                }
+                if let rearmError {
+                    self.writeHealth(
+                        reason:
+                            "lock-screen-rearm-failed: "
+                            + rearmError.localizedDescription
+                    )
+                }
+                if let pendingToken = self.pendingRearmToken,
+                   pendingToken == self.currentRearmToken() {
+                    self.pendingRearmToken = nil
+                    self.rearmModernLockScreenForNextSession()
+                }
+            }
+        }
+    }
+
+    private func currentRearmToken() -> LockScreenRearmToken {
+        LockScreenRearmToken(
+            sessionGeneration: lockSessionGeneration,
+            wallpaperRevision: wallpaperRevision,
+            videoPath: config.video_path
+        )
+    }
+
+    private func repairCanProceed(
+        token: LockScreenRearmToken,
+        videoURL: URL,
+        allowRecentTransition: Bool
+    ) -> Bool {
+        !isTerminating
+            && currentRearmToken() == token
+            && !sessionInactive
+            && lockScreenState.sessionState == .unlocked
+            && lockScreenState.previewState == .inactive
+            && config.show_on_lock_screen == true
+            && config.video_path == videoURL.path
+            && systemSessionIsLocked() == false
+            && (
+                allowRecentTransition
+                    || ProcessInfo.processInfo.systemUptime
+                        - lastSessionTransitionUptime > 1.0
+            )
+    }
+
+    private func rearmCanProceed(
+        token: LockScreenRearmToken,
+        videoURL: URL
+    ) -> Bool {
+        !isTerminating
+            && pendingRearmToken == token
+            && currentRearmToken() == token
+            && !sessionInactive
+            && lockScreenState.sessionState == .unlocked
+            && lockScreenState.previewState == .inactive
+            && config.show_on_lock_screen == true
+            && config.video_path == videoURL.path
+            && systemSessionIsLocked() == false
+    }
+
+    private func systemSessionIsLocked() -> Bool? {
+        guard let session =
+            CGSessionCopyCurrentDictionary() as? [String: Any]
+        else {
+            return nil
+        }
+        if let value =
+            session["CGSSessionScreenIsLocked"] as? NSNumber {
+            return value.boolValue
+        }
+
+        // On an unlocked console macOS omits the lock key instead of storing
+        // `false`. Treat that omission as unlocked only when the same snapshot
+        // confirms this is the active, fully logged-in console session.
+        let onConsole =
+            (session["kCGSSessionOnConsoleKey"] as? NSNumber)?.boolValue
+        let loginDone =
+            (session["kCGSessionLoginDoneKey"] as? NSNumber)?.boolValue
+        if onConsole == true, loginDone == true {
+            return false
+        }
+        return nil
     }
 
     private func videoGravity(for rawMode: String?) -> AVLayerVideoGravity {

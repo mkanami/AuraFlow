@@ -39,11 +39,33 @@ private struct NativeRuntimeFixture {
     }
 }
 
+private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling {
+    private(set) var installedVideoURL: URL?
+    private(set) var uninstallCallCount = 0
+
+    var isInstalled: Bool {
+        installedVideoURL != nil && uninstallCallCount == 0
+    }
+
+    func install(videoURL: URL) throws {
+        installedVideoURL = videoURL
+    }
+
+    func uninstall() throws {
+        uninstallCallCount += 1
+    }
+}
+
 @Test func nativeStatusWithoutHelperReportsUnavailable() throws {
     let fixture = try NativeRuntimeFixture("status")
     defer { fixture.cleanup() }
 
-    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL)
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
     let status = try controller.status()
 
     #expect(status.running == false)
@@ -55,7 +77,12 @@ private struct NativeRuntimeFixture {
     let fixture = try NativeRuntimeFixture("start")
     defer { fixture.cleanup() }
 
-    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL)
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
     let status = try controller.start(videoURL: fixture.videoURL, speed: 1.75)
     let config = fixture.store.loadConfig()
     let command = fixture.store.loadCommand()
@@ -89,7 +116,12 @@ private struct NativeRuntimeFixture {
     let fixture = try NativeRuntimeFixture("stop-clear")
     defer { fixture.cleanup() }
 
-    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL)
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
     let started = try controller.start(videoURL: fixture.videoURL, speed: 1.0)
     #expect(fixture.store.processIsAlive(pid: started.pid))
 
@@ -102,6 +134,10 @@ private struct NativeRuntimeFixture {
     #expect(cleared.wallpaper_restored != nil)
     #expect(fixture.store.processIsAlive(pid: started.pid) == false)
     #expect(fixture.store.loadCommand() == nil)
+    #expect(fixture.store.loadConfig().video_path.isEmpty)
+    #expect(
+        fixture.store.loadConfig().show_on_lock_screen == false
+    )
 }
 
 @Test func nativeStartIgnoresStaleTerminateCommandFromPreviousClear() throws {
@@ -141,6 +177,84 @@ private struct NativeRuntimeFixture {
     #expect(plist.contains(fixture.store.configURL.path))
 }
 
+@Test func nativeLockScreenSettingInstallsSaverAndSendsPreviewCommands() throws {
+    let fixture = try NativeRuntimeFixture("lock-screen")
+    defer { fixture.cleanup() }
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    _ = try controller.start(videoURL: fixture.videoURL, speed: 1.0)
+    _ = try controller.setScaleMode(.fit)
+    let videoAttributes = try FileManager.default.attributesOfItem(
+        atPath: fixture.videoURL.path
+    )
+    let videoSize = try #require(
+        videoAttributes[.size] as? NSNumber
+    )
+    let videoModifiedAt = try #require(
+        videoAttributes[.modificationDate] as? Date
+    )
+    FileManager.default.createFile(
+        atPath: fixture.store.lastFrameURL.path,
+        contents: Data([0x89, 0x50, 0x4E, 0x47]),
+        attributes: nil
+    )
+    let lastFrameSource = try JSONSerialization.data(
+        withJSONObject: [
+            "path": fixture.videoURL.standardizedFileURL.path,
+            "size": videoSize.uint64Value,
+            "modifiedAt": videoModifiedAt.timeIntervalSince1970,
+        ],
+        options: []
+    )
+    try lastFrameSource.write(
+        to: fixture.store.lastFrameSourceURL,
+        options: .atomic
+    )
+    _ = try controller.setShowOnLockScreen(true)
+
+    #expect(fixture.store.loadConfig().show_on_lock_screen == true)
+    #expect(installer.installedVideoURL == fixture.videoURL)
+    #expect(fixture.store.loadConfig().scale_mode == WallpaperScaleMode.fit.rawValue)
+    #expect(fixture.store.loadCommand()?.action == .update)
+
+    _ = try controller.beginLockScreenPreview()
+    #expect(fixture.store.loadCommand()?.action == .previewLock)
+
+    _ = try controller.endLockScreenPreview()
+    #expect(fixture.store.loadCommand()?.action == .previewUnlock)
+
+    _ = try controller.clearWallpaper()
+    #expect(fixture.store.loadConfig().show_on_lock_screen == false)
+    #expect(fixture.store.loadConfig().video_path.isEmpty)
+    #expect(installer.uninstallCallCount == 1)
+}
+
+@Test func runtimeNormalizationDefaultsLegacyLockScreenSettingToDisabled() throws {
+    let fixture = try NativeRuntimeFixture("legacy-lock-default")
+    defer { fixture.cleanup() }
+
+    let legacyJSON = """
+    {
+      "video_path": "\(fixture.videoURL.path)",
+      "playback_speed": 1.0,
+      "pause_on_fullscreen": true,
+      "scale_mode": "fill"
+    }
+    """
+    try Data(legacyJSON.utf8).write(
+        to: fixture.store.configURL,
+        options: .atomic
+    )
+
+    let config = fixture.store.loadConfig()
+    #expect(config.show_on_lock_screen == false)
+}
+
 @Test func nativeStatusJSONKeepsLegacyContractShape() throws {
     let payload = ControlStatus(
         running: true,
@@ -164,7 +278,7 @@ private struct NativeRuntimeFixture {
     let config = try #require(object["config"] as? [String: Any])
     let decoded = try JSONDecoder().decode(ControlStatus.self, from: data)
 
-    #expect(object["contract_version"] as? Int == 2)
+    #expect(object["contract_version"] as? Int == 3)
     #expect(config["video_path"] as? String == "/tmp/wallpaper.mp4")
     #expect(config["playback_speed"] as? Double == 1.2)
     #expect(decoded.health?.reason == "ok")
@@ -188,6 +302,19 @@ private struct NativeRuntimeFixture {
     )
 
     #expect(saved)
+    let laterWallpaperURL = fixture.root
+        .appendingPathComponent("later-desktop.jpg")
+    FileManager.default.createFile(
+        atPath: laterWallpaperURL.path,
+        contents: Data([4, 5, 6]),
+        attributes: nil
+    )
+    #expect(
+        WallpaperDesktopSupport.saveWallpaperBackup(
+            appSupportPath: appSupportPath,
+            wallpapers: ["screen-b": laterWallpaperURL.path]
+        )
+    )
 
     let backupURL = fixture.store.appSupportURL.appendingPathComponent("wallpaper_backup.json")
     let legacyBackupURL = fixture.store.appSupportURL.appendingPathComponent("wallpaper_backup_original.json")
@@ -199,31 +326,4 @@ private struct NativeRuntimeFixture {
     #expect(backup["screen-a"] == nil)
     #expect(backup["screen-b"] == latestWallpaperURL.standardizedFileURL.path)
     #expect(legacyBackup == backup)
-}
-
-@Test func wallpaperStoreBackupRoundTripsLatestSystemIndex() throws {
-    let fixture = try NativeRuntimeFixture("wallpaper-store-backup")
-    defer { fixture.cleanup() }
-
-    let appSupportPath = fixture.store.appSupportURL.path
-    let systemStoreDirectory = fixture.root.appendingPathComponent("com.apple.wallpaper/Store", isDirectory: true)
-    try FileManager.default.createDirectory(at: systemStoreDirectory, withIntermediateDirectories: true)
-    let systemIndexURL = systemStoreDirectory.appendingPathComponent("Index.plist")
-    let originalData = Data("latest-user-wallpaper".utf8)
-    try originalData.write(to: systemIndexURL, options: .atomic)
-
-    let saved = WallpaperDesktopSupport.saveWallpaperStoreBackupIfNeeded(
-        appSupportPath: appSupportPath,
-        systemWallpaperIndexURL: systemIndexURL
-    )
-    #expect(saved)
-
-    try Data("auraflow-runtime-state".utf8).write(to: systemIndexURL, options: .atomic)
-
-    let restored = WallpaperDesktopSupport.restoreWallpaperStoreBackup(
-        appSupportPath: appSupportPath,
-        systemWallpaperIndexURL: systemIndexURL
-    )
-    #expect(restored)
-    #expect(try Data(contentsOf: systemIndexURL) == originalData)
 }

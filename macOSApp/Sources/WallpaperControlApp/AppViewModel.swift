@@ -163,6 +163,10 @@ protocol WallpaperControlling {
     func setSpeed(_ speed: Double) throws -> ControlStatus
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus
+    func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus
+    func syncLockScreenSaver() throws
+    func beginLockScreenPreview() throws -> ControlStatus
+    func endLockScreenPreview() throws -> ControlStatus
     func setScaleMode(_ mode: WallpaperScaleMode) throws -> ControlStatus
     func setAutostart(_ enabled: Bool) throws -> ControlStatus
     func metrics() throws -> DaemonMetrics
@@ -180,18 +184,46 @@ enum NativeWallpaperControllerError: LocalizedError {
 }
 
 final class NativeWallpaperController: WallpaperControlling {
-    private let store: WallpaperRuntimeStore
-    private let helperURL: URL
-
-    init(store: WallpaperRuntimeStore = WallpaperRuntimeStore(), helperURL: URL? = nil) throws {
-        self.store = store
-        self.helperURL = try helperURL ?? Self.resolveHelperURL()
+    private struct RuntimeHelperResolution {
+        let url: URL
+        let didUpdateInstalledCopy: Bool
     }
 
-    private static func resolveHelperURL() throws -> URL {
+    private let store: WallpaperRuntimeStore
+    private let helperURL: URL
+    private let lockScreenSaverInstaller: LockScreenSaverInstalling
+
+    init(
+        store: WallpaperRuntimeStore = WallpaperRuntimeStore(),
+        helperURL: URL? = nil,
+        lockScreenSaverInstaller: LockScreenSaverInstalling? = nil
+    ) throws {
+        self.store = store
+        let helperResolution: RuntimeHelperResolution
+        if let helperURL {
+            helperResolution = RuntimeHelperResolution(
+                url: helperURL,
+                didUpdateInstalledCopy: false
+            )
+        } else {
+            helperResolution = try Self.resolveHelperURL()
+        }
+        self.helperURL = helperResolution.url
+        self.lockScreenSaverInstaller =
+            lockScreenSaverInstaller ?? LockScreenWallpaperInstaller()
+        if helperResolution.didUpdateInstalledCopy {
+            try restartRunningAgentAfterHelperUpdate()
+        }
+        recoverInterruptedWallpaperRemovalIfNeeded()
+    }
+
+    private static func resolveHelperURL() throws -> RuntimeHelperResolution {
         let environment = ProcessInfo.processInfo.environment
         if let override = environment["AURAFLOW_AGENT_PATH"], FileManager.default.isExecutableFile(atPath: override) {
-            return URL(fileURLWithPath: override)
+            return RuntimeHelperResolution(
+                url: URL(fileURLWithPath: override),
+                didUpdateInstalledCopy: false
+            )
         }
 
         let candidates = [
@@ -206,7 +238,9 @@ final class NativeWallpaperController: WallpaperControlling {
         throw NativeWallpaperControllerError.unavailable("Native wallpaper agent is not bundled with AuraFlow.")
     }
 
-    private static func installRuntimeHelper(from bundledHelperURL: URL) throws -> URL {
+    private static func installRuntimeHelper(
+        from bundledHelperURL: URL
+    ) throws -> RuntimeHelperResolution {
         let fileManager = FileManager.default
         let runtimeDirectory = WallpaperRuntimeStore.defaultAppSupportURL()
             .appendingPathComponent("Runtime", isDirectory: true)
@@ -235,7 +269,48 @@ final class NativeWallpaperController: WallpaperControlling {
             }
         }
 
-        return helperURL
+        return RuntimeHelperResolution(
+            url: helperURL,
+            didUpdateInstalledCopy: shouldCopy
+        )
+    }
+
+    private func restartRunningAgentAfterHelperUpdate() throws {
+        guard store.processIsAlive(pid: store.loadPID()) else { return }
+        let config = store.loadConfig()
+        guard store.terminateDaemon(timeout: 1.0) else {
+            throw NativeWallpaperControllerError.unavailable(
+                "The previous wallpaper agent did not stop during the update."
+            )
+        }
+        guard !config.video_path.isEmpty,
+              FileManager.default.fileExists(atPath: config.video_path)
+        else {
+            return
+        }
+        try launchAgentIfNeeded()
+        try send(.reload, config: config)
+    }
+
+    private func recoverInterruptedWallpaperRemovalIfNeeded() {
+        guard store.appSupportURL.standardizedFileURL
+            == WallpaperRuntimeStore.defaultAppSupportURL()
+                .standardizedFileURL
+        else {
+            return
+        }
+        let config = store.loadConfig()
+        guard config.video_path.isEmpty,
+              config.show_on_lock_screen != true
+        else {
+            return
+        }
+        if store.restoreWallpaperBackup() {
+            store.removeManagedFallback()
+        } else {
+            _ = WallpaperDesktopSupport
+                .repairCurrentDesktopWallpaperIfNeeded()
+        }
     }
 
     private func updateConfig(_ block: (inout ControlConfig) -> Void) throws -> ControlConfig {
@@ -289,6 +364,9 @@ final class NativeWallpaperController: WallpaperControlling {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
         _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(appSupportPath: store.appSupportURL.path)
+        if config.show_on_lock_screen ?? false {
+            try installLockScreenSaver(using: config)
+        }
         store.markPaused(false)
         try launchAgentIfNeeded()
         try send(.reload, config: config)
@@ -324,13 +402,29 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func clearWallpaper() throws -> ControlStatus {
+        let currentConfig = store.loadConfig()
         if store.processIsAlive(pid: store.loadPID()) {
-            try? send(.terminate, config: store.loadConfig())
+            try? send(.terminate, config: currentConfig)
         }
-        _ = store.terminateDaemon(timeout: 1.0)
+        guard store.terminateDaemon(timeout: 2.0) else {
+            throw NativeWallpaperControllerError.unavailable(
+                "The wallpaper agent did not stop, so its desktop window could not be removed."
+            )
+        }
         store.removeCommand()
         store.removeHealth()
+        if currentConfig.show_on_lock_screen == true
+            || lockScreenSaverInstaller.isInstalled {
+            try lockScreenSaverInstaller.uninstall()
+        }
         let restored = store.restoreWallpaperBackup()
+        _ = try updateConfig { config in
+            config.video_path = ""
+            config.show_on_lock_screen = false
+        }
+        if restored {
+            store.removeManagedFallback()
+        }
         return store.status(wallpaperRestored: restored)
     }
 
@@ -377,6 +471,58 @@ final class NativeWallpaperController: WallpaperControlling {
         return store.status()
     }
 
+    func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus {
+        let currentConfig = store.loadConfig()
+        if enabled {
+            guard !currentConfig.video_path.isEmpty else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "Choose and start a wallpaper before enabling Lock Screen."
+                )
+            }
+            try installLockScreenSaver(using: currentConfig)
+        } else {
+            try lockScreenSaverInstaller.uninstall()
+        }
+
+        let config = try updateConfig { config in
+            config.show_on_lock_screen = enabled
+        }
+        if store.processIsAlive(pid: store.loadPID()) {
+            try send(.update, config: config)
+        }
+        return store.status()
+    }
+
+    func syncLockScreenSaver() throws {
+        let config = store.loadConfig()
+        guard config.show_on_lock_screen ?? false else { return }
+        try installLockScreenSaver(using: config)
+    }
+
+    func beginLockScreenPreview() throws -> ControlStatus {
+        let config = store.loadConfig()
+        guard config.show_on_lock_screen ?? false else {
+            throw NativeWallpaperControllerError.unavailable(
+                "Enable Lock Screen before previewing the transition."
+            )
+        }
+        guard store.processIsAlive(pid: store.loadPID()) else {
+            throw NativeWallpaperControllerError.unavailable(
+                "Start the wallpaper before previewing the Lock Screen transition."
+            )
+        }
+        try send(.previewLock, config: config)
+        return store.status()
+    }
+
+    func endLockScreenPreview() throws -> ControlStatus {
+        let config = store.loadConfig()
+        if store.processIsAlive(pid: store.loadPID()) {
+            try send(.previewUnlock, config: config)
+        }
+        return store.status()
+    }
+
     func setScaleMode(_ mode: WallpaperScaleMode) throws -> ControlStatus {
         let config = try updateConfig { config in
             config.scale_mode = mode.commandValue
@@ -405,6 +551,12 @@ final class NativeWallpaperController: WallpaperControlling {
     func metrics() throws -> DaemonMetrics {
         store.metrics()
     }
+
+    private func installLockScreenSaver(using config: ControlConfig) throws {
+        let videoURL = URL(fileURLWithPath: config.video_path)
+        _ = try store.ensureCurrentStillFrame(from: videoURL)
+        try lockScreenSaverInstaller.install(videoURL: videoURL)
+    }
 }
 
 @MainActor
@@ -418,6 +570,8 @@ final class AppViewModel: ObservableObject {
     @Published var autostartEnabled: Bool = false
     @Published var blendInterpolationEnabled: Bool = false
     @Published var pauseOnFullscreenEnabled: Bool = true
+    @Published var showOnLockScreenEnabled: Bool = false
+    @Published private(set) var isLockScreenPreviewActive: Bool = false
     @Published var scaleMode: WallpaperScaleMode = .fill
     @Published var isSettingsOpen: Bool = false
     @Published var isMonitoringOpen: Bool = false
@@ -479,7 +633,7 @@ final class AppViewModel: ObservableObject {
     private var suspendedPreviewRate: Float?
     private var glassAnalysisTask: Task<Void, Never>?
 
-    private let expectedStatusContractVersion = 2
+    private let expectedStatusContractVersion = 3
     private let bridgeFailureThreshold = 3
     private let daemonSuspiciousThreshold = 2
     private static let appSupportDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
@@ -503,7 +657,9 @@ final class AppViewModel: ObservableObject {
     }
 
     var isStartButtonHighlighted: Bool {
-        selectedVideoURL != nil && !isPlaybackRunningForControls
+        selectedVideoURL != nil
+            && !isPlaybackRunningForControls
+            && !isPlaybackPaused
     }
 
     var isStopButtonHighlighted: Bool {
@@ -532,6 +688,17 @@ final class AppViewModel: ObservableObject {
 
     var canTogglePauseOnFullscreen: Bool {
         isControllerAvailable && !isBusy
+    }
+
+    var canToggleShowOnLockScreen: Bool {
+        isControllerAvailable && !isBusy && appliedVideoURL != nil
+    }
+
+    var canPreviewLockScreen: Bool {
+        canToggleShowOnLockScreen
+            && showOnLockScreenEnabled
+            && isPlaybackActive
+            && !isLockScreenPreviewActive
     }
 
     var canToggleScaleMode: Bool {
@@ -648,6 +815,17 @@ final class AppViewModel: ObservableObject {
             let needsNormalizationURL = configuredVideoNeedingCompatibilityNormalization(from: status)
             recordBridgeSuccess()
             await startFromAutostartIfNeeded(using: status)
+            if status.config.show_on_lock_screen ?? false {
+                do {
+                    try await runAsync {
+                        try controller.syncLockScreenSaver()
+                    }
+                } catch {
+                    alertMessage =
+                        "Lock Screen sync failed: \(error.localizedDescription)"
+                    return
+                }
+            }
             if let needsNormalizationURL {
                 Task { @MainActor [weak self] in
                     try? await Task.sleep(nanoseconds: 120_000_000)
@@ -1069,6 +1247,107 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func toggleShowOnLockScreen(_ enabled: Bool) {
+        guard !isBusy else {
+            showOnLockScreenEnabled = !enabled
+            return
+        }
+
+        let previous = showOnLockScreenEnabled
+        showOnLockScreenEnabled = enabled
+        guard let controller else { return }
+        Task {
+            isBusy = true
+            defer { isBusy = false }
+            do {
+                let status = try await runAsync {
+                    try controller.setShowOnLockScreen(enabled)
+                }
+                apply(status: status)
+                recordBridgeSuccess()
+                statusMessage = enabled
+                    ? "AuraFlow Lock Screen installed and selected."
+                    : "AuraFlow Lock Screen removed."
+                alertMessage = nil
+            } catch {
+                showOnLockScreenEnabled = previous
+                recordBridgeFailure(error, context: "set-lock-screen")
+                if bridgeFailureCount < bridgeFailureThreshold {
+                    alertMessage = "Failed to update Lock Screen: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func previewLockScreenTransition() {
+        guard canPreviewLockScreen, let controller else { return }
+
+        Task {
+            isBusy = true
+            isLockScreenPreviewActive = true
+            defer {
+                isLockScreenPreviewActive = false
+                isBusy = false
+            }
+
+            do {
+                _ = try await runAsync {
+                    try controller.beginLockScreenPreview()
+                }
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+                let status = try await runAsync {
+                    try controller.endLockScreenPreview()
+                }
+                apply(status: status, refreshPreview: false)
+                recordBridgeSuccess()
+                statusMessage = "No-flash layer test completed."
+                alertMessage = nil
+            } catch {
+                _ = try? await runAsync {
+                    try controller.endLockScreenPreview()
+                }
+                recordBridgeFailure(error, context: "preview-lock-screen")
+                if bridgeFailureCount < bridgeFailureThreshold {
+                    alertMessage = "Lock Screen preview failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func openScreenSaverSettings() {
+        let destinations = [
+            "x-apple.systempreferences:com.apple.ScreenSaver-Settings.extension",
+            "x-apple.systempreferences:com.apple.preference.desktopscreeneffect",
+        ]
+        for destination in destinations {
+            guard let url = URL(string: destination) else { continue }
+            if NSWorkspace.shared.open(url) {
+                return
+            }
+        }
+        alertMessage =
+            "Open System Settings → Wallpaper to inspect the active Lock Screen wallpaper."
+    }
+
+    func startSystemScreenSaver() {
+        let screenSaverURL = URL(
+            fileURLWithPath:
+                "/System/Library/CoreServices/ScreenSaverEngine.app",
+            isDirectory: true
+        )
+        guard FileManager.default.fileExists(
+            atPath: screenSaverURL.path
+        ),
+        NSWorkspace.shared.open(screenSaverURL)
+        else {
+            alertMessage =
+                "macOS could not start the system Screen Saver."
+            return
+        }
+        statusMessage = "Starting the system Lock Screen wallpaper."
+        alertMessage = nil
+    }
+
     func setScaleMode(_ mode: WallpaperScaleMode) {
         guard !isBusy else { return }
         let previous = scaleMode
@@ -1080,6 +1359,11 @@ final class AppViewModel: ObservableObject {
             do {
                 let status = try await runAsync { try controller.setScaleMode(mode) }
                 apply(status: status)
+                if showOnLockScreenEnabled {
+                    try await runAsync {
+                        try controller.syncLockScreenSaver()
+                    }
+                }
                 recordBridgeSuccess()
                 statusMessage = "Scale mode: \(mode.title)."
                 alertMessage = nil
@@ -1302,6 +1586,7 @@ final class AppViewModel: ObservableObject {
         Self.setIfChanged(&autostartEnabled, to: status.autostart ?? status.config.autostart ?? false)
         Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
         Self.setIfChanged(&pauseOnFullscreenEnabled, to: status.config.pause_on_fullscreen ?? true)
+        Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? false)
         let previousScaleMode = scaleMode
         let resolvedScaleMode = WallpaperScaleMode(rawValue: status.config.scale_mode ?? "fill") ?? .fill
         Self.setIfChanged(&scaleMode, to: resolvedScaleMode)
@@ -2212,6 +2497,15 @@ final class AppViewModel: ObservableObject {
         recordBridgeSuccess()
         statusMessage = prepared.summary ?? statusSummary
         alertMessage = nil
+        if showOnLockScreenEnabled {
+            do {
+                try await runAsync {
+                    try controller.syncLockScreenSaver()
+                }
+            } catch {
+                alertMessage = "Wallpaper started, but Lock Screen sync failed: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func resolveDownloadedCatalogWallpaperURL(_ wallpaper: DownloadedCatalogWallpaper) async throws -> URL {

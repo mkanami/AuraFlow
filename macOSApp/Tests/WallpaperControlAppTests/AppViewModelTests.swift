@@ -464,6 +464,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     )
     let provider = ManagedWallpaperCatalogProvider(
         animeProvider: MockCatalogProvider(wallpapers: [liveWallpaper, secondLiveWallpaper]),
+        animeNatureProvider: MockCatalogProvider(wallpapers: []),
         scenicProvider: MockCatalogProvider(wallpapers: []),
         curatedCatalog: [curatedWallpaper, secondCuratedWallpaper]
     )
@@ -490,6 +491,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     )
     let provider = ManagedWallpaperCatalogProvider(
         animeProvider: FailingCatalogProvider(),
+        animeNatureProvider: MockCatalogProvider(wallpapers: []),
         scenicProvider: MockCatalogProvider(wallpapers: []),
         curatedCatalog: [curatedWallpaper]
     )
@@ -865,6 +867,20 @@ final class MockNativeWallpaperController: WallpaperControlling {
     }
 
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus {
+        try status()
+    }
+
+    func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus {
+        try status()
+    }
+
+    func syncLockScreenSaver() throws {}
+
+    func beginLockScreenPreview() throws -> ControlStatus {
+        try status()
+    }
+
+    func endLockScreenPreview() throws -> ControlStatus {
         try status()
     }
 

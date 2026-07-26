@@ -13,6 +13,8 @@ public enum WallpaperRuntimeCommandAction: String, Codable, Equatable {
     case update
     case pause
     case resume
+    case previewLock
+    case previewUnlock
     case terminate
 }
 
@@ -36,6 +38,12 @@ public struct WallpaperRuntimeCommand: Codable, Equatable {
 }
 
 public final class WallpaperRuntimeStore {
+    private struct LastFrameSourceRevision: Codable, Equatable {
+        var path: String
+        var size: UInt64?
+        var modifiedAt: Double?
+    }
+
     public let appSupportURL: URL
     private let launchAgentFileURL: URL
 
@@ -59,6 +67,9 @@ public final class WallpaperRuntimeStore {
     public var pidURL: URL { appSupportURL.appendingPathComponent("wallpaper_daemon.pid") }
     public var pausedURL: URL { appSupportURL.appendingPathComponent("wallpaper_daemon.paused") }
     public var lastFrameURL: URL { appSupportURL.appendingPathComponent("last_frame.png") }
+    public var lastFrameSourceURL: URL {
+        appSupportURL.appendingPathComponent("last_frame_source.json")
+    }
     public var launchAgentURL: URL { launchAgentFileURL }
 
     public func ensureDirectories() throws {
@@ -143,6 +154,7 @@ public final class WallpaperRuntimeStore {
         normalized.autostart = config.autostart ?? false
         normalized.blend_interpolation = config.blend_interpolation ?? false
         normalized.pause_on_fullscreen = config.pause_on_fullscreen ?? true
+        normalized.show_on_lock_screen = config.show_on_lock_screen ?? false
         if WallpaperScaleMode(rawValue: config.scale_mode ?? "") == nil {
             normalized.scale_mode = WallpaperScaleMode.fill.rawValue
         }
@@ -188,6 +200,7 @@ public final class WallpaperRuntimeStore {
 
     public func healthForStatus(alive: Bool, paused: Bool) -> DaemonHealth {
         let now = Date().timeIntervalSince1970
+        let config = loadConfig()
         let saved = loadHealth()
         let lag = saved?.updated_at.map { max(now - $0, 0) }
         let fresh = alive && (lag ?? 0) < 6.0
@@ -211,6 +224,12 @@ public final class WallpaperRuntimeStore {
             pause_on_fullscreen: saved?.pause_on_fullscreen,
             fullscreen_app_detected: saved?.fullscreen_app_detected ?? false,
             auto_paused_for_fullscreen: saved?.auto_paused_for_fullscreen ?? false,
+            lock_screen_enabled: saved?.lock_screen_enabled ?? config.show_on_lock_screen ?? false,
+            session_inactive: saved?.session_inactive ?? false,
+            lock_screen_preview_active: saved?.lock_screen_preview_active ?? false,
+            presentation_mode: saved?.presentation_mode ?? WallpaperPresentationMode.desktop.rawValue,
+            lock_transition_count: saved?.lock_transition_count ?? 0,
+            last_lock_transition_ms: saved?.last_lock_transition_ms,
             blend_interpolation_enabled: saved?.blend_interpolation_enabled ?? false,
             blend_interpolation_active: saved?.blend_interpolation_active ?? false,
             scale_mode: saved?.scale_mode ?? loadConfig().scale_mode
@@ -271,9 +290,16 @@ public final class WallpaperRuntimeStore {
             Thread.sleep(forTimeInterval: 0.05)
         }
         kill(pid_t(pid), SIGKILL)
-        removePID()
-        markPaused(false)
-        return !processIsAlive(pid: pid)
+        let killDeadline = Date().addingTimeInterval(1.0)
+        while Date() < killDeadline {
+            if !processIsAlive(pid: pid) {
+                removePID()
+                markPaused(false)
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return false
     }
 
     public func captureStillFrame(from videoURL: URL, time: CMTime = CMTime(seconds: 0.2, preferredTimescale: 600)) throws -> URL {
@@ -288,7 +314,30 @@ public final class WallpaperRuntimeStore {
             throw WallpaperRuntimeError.unavailable("Could not encode wallpaper frame.")
         }
         try data.write(to: lastFrameURL, options: .atomic)
+        try writeJSON(
+            sourceRevision(for: videoURL),
+            to: lastFrameSourceURL
+        )
         return lastFrameURL
+    }
+
+    public func ensureCurrentStillFrame(from videoURL: URL) throws -> URL {
+        let expectedRevision = sourceRevision(for: videoURL)
+        let savedRevision: LastFrameSourceRevision? =
+            try? readJSON(
+                LastFrameSourceRevision.self,
+                from: lastFrameSourceURL
+            )
+        if FileManager.default.fileExists(atPath: lastFrameURL.path),
+           savedRevision == expectedRevision {
+            return lastFrameURL
+        }
+        return try captureStillFrame(from: videoURL)
+    }
+
+    public func removeManagedFallback() {
+        try? FileManager.default.removeItem(at: lastFrameURL)
+        try? FileManager.default.removeItem(at: lastFrameSourceURL)
     }
 
     @discardableResult
@@ -324,6 +373,19 @@ public final class WallpaperRuntimeStore {
         } else {
             try FileManager.default.moveItem(at: tempURL, to: url)
         }
+    }
+
+    private func sourceRevision(for videoURL: URL) -> LastFrameSourceRevision {
+        let standardizedURL = videoURL.standardizedFileURL
+        let attributes = try? FileManager.default.attributesOfItem(
+            atPath: standardizedURL.path
+        )
+        return LastFrameSourceRevision(
+            path: standardizedURL.path,
+            size: (attributes?[.size] as? NSNumber)?.uint64Value,
+            modifiedAt: (attributes?[.modificationDate] as? Date)?
+                .timeIntervalSince1970
+        )
     }
 
     private func runLaunchctl(_ arguments: [String]) -> Bool {

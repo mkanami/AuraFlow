@@ -772,6 +772,43 @@ struct SettingsPopupCard: View {
             .disabled(!viewModel.canTogglePauseOnFullscreen)
 
             Toggle(isOn: Binding(
+                get: { viewModel.showOnLockScreenEnabled },
+                set: { newValue in viewModel.toggleShowOnLockScreen(newValue) }
+            )) {
+                Label(
+                    "Play AuraFlow on Lock Screen",
+                    systemImage: "lock.display"
+                )
+            }
+            .toggleStyle(.switch)
+            .disabled(!viewModel.canToggleShowOnLockScreen)
+
+            HStack(spacing: 10) {
+                Button {
+                    viewModel.startSystemScreenSaver()
+                } label: {
+                    Label(
+                        "Test Lock Screen",
+                        systemImage: "play.rectangle.on.rectangle"
+                    )
+                }
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                .disabled(!viewModel.canPreviewLockScreen)
+
+                Button {
+                    viewModel.openScreenSaverSettings()
+                } label: {
+                    Label("Screen Saver Settings", systemImage: "gear")
+                }
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+            }
+
+            Text("AuraFlow uses macOS's Aerial engine for the real lock screen and restores the reserved system asset when disabled. This integration is experimental because Apple does not publish its wallpaper extension API.")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle(isOn: Binding(
                 get: { viewModel.blendInterpolationEnabled },
                 set: { newValue in viewModel.toggleBlendInterpolation(newValue) }
             )) {
