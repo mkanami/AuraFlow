@@ -300,9 +300,7 @@ final class NativeWallpaperController: WallpaperControlling {
             return
         }
         let config = store.loadConfig()
-        guard config.video_path.isEmpty,
-              config.show_on_lock_screen != true
-        else {
+        guard config.video_path.isEmpty else {
             return
         }
         if store.restoreWallpaperBackup() {
@@ -355,6 +353,12 @@ final class NativeWallpaperController: WallpaperControlling {
             }
             if let speed {
                 config.playback_speed = speed
+            }
+            // Version 1.3.0 stored the implicit default as an explicit `false`.
+            // Treat that legacy value as unset once. From 1.3.1 onward an
+            // explicit user toggle is recorded and always respected.
+            if config.lock_screen_preference_configured != true {
+                config.show_on_lock_screen = true
             }
         }
         guard !config.video_path.isEmpty else {
@@ -420,7 +424,6 @@ final class NativeWallpaperController: WallpaperControlling {
         let restored = store.restoreWallpaperBackup()
         _ = try updateConfig { config in
             config.video_path = ""
-            config.show_on_lock_screen = false
         }
         if restored {
             store.removeManagedFallback()
@@ -486,6 +489,7 @@ final class NativeWallpaperController: WallpaperControlling {
 
         let config = try updateConfig { config in
             config.show_on_lock_screen = enabled
+            config.lock_screen_preference_configured = true
         }
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.update, config: config)
@@ -495,7 +499,14 @@ final class NativeWallpaperController: WallpaperControlling {
 
     func syncLockScreenSaver() throws {
         let config = store.loadConfig()
-        guard config.show_on_lock_screen ?? false else { return }
+        guard config.show_on_lock_screen ?? false,
+              !config.video_path.isEmpty,
+              FileManager.default.fileExists(
+                atPath: config.video_path
+              )
+        else {
+            return
+        }
         try installLockScreenSaver(using: config)
     }
 
@@ -554,7 +565,11 @@ final class NativeWallpaperController: WallpaperControlling {
 
     private func installLockScreenSaver(using config: ControlConfig) throws {
         let videoURL = URL(fileURLWithPath: config.video_path)
-        _ = try store.ensureCurrentStillFrame(from: videoURL)
+        // A thumbnail improves the static transition frame, but it must never
+        // prevent the actual live video from being installed. AVFoundation can
+        // fail still extraction for codecs that the system Aerial provider can
+        // nevertheless decode and play correctly.
+        _ = try? store.ensureCurrentStillFrame(from: videoURL)
         try lockScreenSaverInstaller.install(videoURL: videoURL)
     }
 }
@@ -815,7 +830,8 @@ final class AppViewModel: ObservableObject {
             let needsNormalizationURL = configuredVideoNeedingCompatibilityNormalization(from: status)
             recordBridgeSuccess()
             await startFromAutostartIfNeeded(using: status)
-            if status.config.show_on_lock_screen ?? false {
+            if status.config.show_on_lock_screen ?? false,
+               !status.config.video_path.isEmpty {
                 do {
                     try await runAsync {
                         try controller.syncLockScreenSaver()

@@ -54,12 +54,13 @@ Runtime state is stored in:
 
 ## Lock Screen
 
-Enable **Play AuraFlow on Lock Screen** in Playback Settings to keep the current
-video playing through macOS's modern lock-screen wallpaper engine. Because Apple
-does not publish its wallpaper-extension API, AuraFlow temporarily reserves one
-already-downloaded Apple Aerial cache slot. The original Aerial asset and the
-complete wallpaper configuration are backed up before the first change and are
-restored when the feature is disabled.
+**Play AuraFlow on Lock Screen** is enabled by default and can be turned off in
+Playback Settings. It keeps the current video playing through macOS's modern
+lock-screen wallpaper engine. Because Apple does not publish its
+wallpaper-extension API, AuraFlow temporarily reserves a compatible Apple
+Aerial cache slot advertised by the system provider. The original Aerial asset
+and the complete wallpaper configuration are backed up before the first change
+and are restored when the feature is disabled.
 
 The current video, thumbnail, active Spaces, and displays are synchronized each
 time the wallpaper starts. Deleted Space records and old AuraFlow
@@ -70,7 +71,8 @@ legacy Screen Saver module.
 **Remove** stops the wallpaper agent, restores the reserved Aerial asset and
 wallpaper configuration, clears the selected video, restores the original
 desktop on every current Space, and restarts the macOS wallpaper presenters so
-no managed stop frame is left behind.
+no managed stop frame is left behind. The Lock Screen preference is remembered,
+so applying another wallpaper synchronizes it again automatically.
 
 This integration is intentionally reversible but uses an undocumented macOS
 cache format. A macOS update or an Aerial re-download can temporarily replace

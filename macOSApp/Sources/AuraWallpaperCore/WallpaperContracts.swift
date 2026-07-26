@@ -9,6 +9,7 @@ public struct ControlConfig: Codable, Equatable {
     public var blend_interpolation: Bool?
     public var pause_on_fullscreen: Bool?
     public var show_on_lock_screen: Bool?
+    public var lock_screen_preference_configured: Bool?
     public var scale_mode: String?
 
     public init(
@@ -19,6 +20,7 @@ public struct ControlConfig: Codable, Equatable {
         blend_interpolation: Bool? = false,
         pause_on_fullscreen: Bool? = true,
         show_on_lock_screen: Bool? = false,
+        lock_screen_preference_configured: Bool? = false,
         scale_mode: String? = WallpaperScaleMode.fill.rawValue
     ) {
         self.video_path = video_path
@@ -28,10 +30,17 @@ public struct ControlConfig: Codable, Equatable {
         self.blend_interpolation = blend_interpolation
         self.pause_on_fullscreen = pause_on_fullscreen
         self.show_on_lock_screen = show_on_lock_screen
+        self.lock_screen_preference_configured =
+            lock_screen_preference_configured
         self.scale_mode = scale_mode
     }
 
-    public static let defaultConfig = ControlConfig(video_path: "", playback_speed: 1.0)
+    public static let defaultConfig = ControlConfig(
+        video_path: "",
+        playback_speed: 1.0,
+        show_on_lock_screen: true,
+        lock_screen_preference_configured: false
+    )
 }
 
 public struct ControlStatus: Codable, Equatable {

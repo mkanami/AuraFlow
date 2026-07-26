@@ -720,6 +720,19 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
+@Test func enabledLockPreferenceWithoutVideoDoesNotSyncOnLoad() async {
+    let controller = MockNativeWallpaperController()
+    controller.statusShowOnLockScreen = true
+    let viewModel = AppViewModel(controller: controller)
+
+    await viewModel.loadStatus()
+
+    #expect(controller.syncLockScreenCallCount == 0)
+    #expect(viewModel.alertMessage == nil)
+    #expect(viewModel.showOnLockScreenEnabled)
+}
+
+@MainActor
 @Test func startForcesPlaybackWhenSetVideoReturnsSuspiciousRunningState() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.suspicious-start")!
@@ -804,6 +817,8 @@ final class MockNativeWallpaperController: WallpaperControlling {
     var statusRunning = false
     var statusPaused: Bool?
     var statusHealth: DaemonHealth?
+    var statusShowOnLockScreen = false
+    var syncLockScreenCallCount = 0
     var setVideoStatusOverride: ControlStatus?
 
     func status() throws -> ControlStatus {
@@ -874,7 +889,9 @@ final class MockNativeWallpaperController: WallpaperControlling {
         try status()
     }
 
-    func syncLockScreenSaver() throws {}
+    func syncLockScreenSaver() throws {
+        syncLockScreenCallCount += 1
+    }
 
     func beginLockScreenPreview() throws -> ControlStatus {
         try status()
@@ -907,7 +924,8 @@ final class MockNativeWallpaperController: WallpaperControlling {
                 video_path: configuredVideoURL?.path ?? "",
                 playback_speed: 1.0,
                 volume: 0.0,
-                autostart: false
+                autostart: false,
+                show_on_lock_screen: statusShowOnLockScreen
             ),
             pid: running ? 1234 : nil,
             autostart: false,
