@@ -93,13 +93,20 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.processIsAlive(pid: status.pid))
     #expect(command?.action == .reload)
     #expect(command?.config?.video_path == fixture.videoURL.path)
+    #expect(config.show_on_lock_screen == true)
+    #expect(installer.installedVideoURL == fixture.videoURL)
 }
 
 @Test func nativeSetSpeedAndScaleUpdateConfigAndCommand() throws {
     let fixture = try NativeRuntimeFixture("settings")
     defer { fixture.cleanup() }
 
-    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL)
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller:
+            RecordingLockScreenSaverInstaller()
+    )
     _ = try controller.start(videoURL: fixture.videoURL, speed: 1.0)
     _ = try controller.setSpeed(2.25)
     _ = try controller.setScaleMode(.fit)
@@ -136,7 +143,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadCommand() == nil)
     #expect(fixture.store.loadConfig().video_path.isEmpty)
     #expect(
-        fixture.store.loadConfig().show_on_lock_screen == false
+        fixture.store.loadConfig().show_on_lock_screen == true
     )
 }
 
@@ -146,7 +153,12 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
 
     try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .terminate))
 
-    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL)
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller:
+            RecordingLockScreenSaverInstaller()
+    )
     let status = try controller.start(videoURL: fixture.videoURL, speed: 1.0)
 
     #expect(status.running)
@@ -229,12 +241,12 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadCommand()?.action == .previewUnlock)
 
     _ = try controller.clearWallpaper()
-    #expect(fixture.store.loadConfig().show_on_lock_screen == false)
+    #expect(fixture.store.loadConfig().show_on_lock_screen == true)
     #expect(fixture.store.loadConfig().video_path.isEmpty)
     #expect(installer.uninstallCallCount == 1)
 }
 
-@Test func runtimeNormalizationDefaultsLegacyLockScreenSettingToDisabled() throws {
+@Test func runtimeNormalizationDefaultsLegacyLockScreenSettingToEnabled() throws {
     let fixture = try NativeRuntimeFixture("legacy-lock-default")
     defer { fixture.cleanup() }
 
@@ -252,7 +264,87 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     let config = fixture.store.loadConfig()
+    #expect(config.show_on_lock_screen == true)
+    #expect(config.lock_screen_preference_configured == false)
+}
+
+@Test func legacyFalseDefaultMigratesOnNextWallpaperStart() throws {
+    let fixture = try NativeRuntimeFixture("legacy-lock-migration")
+    defer { fixture.cleanup() }
+    let installer = RecordingLockScreenSaverInstaller()
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: "",
+            playback_speed: 1.0,
+            show_on_lock_screen: false,
+            lock_screen_preference_configured: nil
+        )
+    )
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    _ = try controller.start(
+        videoURL: fixture.videoURL,
+        speed: 1.0
+    )
+
+    let config = fixture.store.loadConfig()
+    #expect(config.show_on_lock_screen == true)
+    #expect(installer.installedVideoURL == fixture.videoURL)
+}
+
+@Test func explicitLockScreenOptOutSurvivesWallpaperChanges() throws {
+    let fixture = try NativeRuntimeFixture("lock-opt-out")
+    defer { fixture.cleanup() }
+    let installer = RecordingLockScreenSaverInstaller()
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: "",
+            playback_speed: 1.0,
+            show_on_lock_screen: false,
+            lock_screen_preference_configured: true
+        )
+    )
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    _ = try controller.start(
+        videoURL: fixture.videoURL,
+        speed: 1.0
+    )
+
+    let config = fixture.store.loadConfig()
     #expect(config.show_on_lock_screen == false)
+    #expect(installer.installedVideoURL == nil)
+}
+
+@Test func enabledLockPreferenceWithoutVideoDoesNotAttemptSync() throws {
+    let fixture = try NativeRuntimeFixture("empty-lock-sync")
+    defer { fixture.cleanup() }
+    let installer = RecordingLockScreenSaverInstaller()
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: "",
+            playback_speed: 1.0,
+            show_on_lock_screen: true,
+            lock_screen_preference_configured: true
+        )
+    )
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    try controller.syncLockScreenSaver()
+
+    #expect(installer.installedVideoURL == nil)
 }
 
 @Test func nativeStatusJSONKeepsLegacyContractShape() throws {

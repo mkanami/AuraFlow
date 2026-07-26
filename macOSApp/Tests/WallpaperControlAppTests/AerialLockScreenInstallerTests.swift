@@ -35,6 +35,8 @@ private struct AerialLockScreenFixture {
         "2335F433-2476-462F-B0BA-F7A4DE8FC1E4"
     static let assetID =
         "7C643A39-C0B2-4BA0-8BC2-2EAA47CC580E"
+    static let alternateAssetID =
+        "11111111-2222-4333-8444-555555555555"
 
     let root: URL
     let storeURL: URL
@@ -50,7 +52,10 @@ private struct AerialLockScreenFixture {
 
     init(
         hasExistingAsset: Bool = true,
-        providerHasAsset: Bool = true
+        providerHasAsset: Bool = true,
+        providerAssetIDs: [String]? = nil,
+        configuredAssetID: String? = Self.assetID,
+        allSpacesAndDisplaysIsContainer: Bool = false
     ) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -107,11 +112,11 @@ private struct AerialLockScreenFixture {
             to: providerURL
                 .appendingPathComponent("Contents/Info.plist")
         )
+        let advertisedAssetIDs = providerAssetIDs
+            ?? (providerHasAsset ? [Self.assetID] : [])
         let catalogData = try JSONSerialization.data(
             withJSONObject: [
-                "assets": providerHasAsset
-                    ? [["id": Self.assetID]]
-                    : [],
+                "assets": advertisedAssetIDs.map { ["id": $0] },
             ]
         )
         try catalogData.write(
@@ -169,7 +174,10 @@ private struct AerialLockScreenFixture {
             "Idle": managedIdle,
         ]
         let store: [String: Any] = [
-            "AllSpacesAndDisplays": "$null",
+            "AllSpacesAndDisplays":
+                allSpacesAndDisplaysIsContainer
+                    ? originalContainer
+                    : "$null",
             "SystemDefault": originalContainer,
             "Displays": [
                 Self.displayID: managedContainer,
@@ -236,7 +244,7 @@ private struct AerialLockScreenFixture {
             aerialThumbnailsURL: thumbnailsURL,
             aerialProviderURL: providerURL,
             stateDirectoryURL: stateURL,
-            assetID: Self.assetID,
+            assetID: configuredAssetID,
             refreshSystem: {
                 counter.increment()
             },
@@ -537,6 +545,63 @@ private struct AerialLockScreenFixture {
 
     try fixture.installer.uninstall()
     #expect(!FileManager.default.fileExists(atPath: fixture.assetURL.path))
+}
+
+@Test func freshMacUsesAnyAssetAdvertisedByItsSystemProvider() throws {
+    let fixture = try AerialLockScreenFixture(
+        hasExistingAsset: false,
+        providerAssetIDs: [AerialLockScreenFixture.alternateAssetID],
+        configuredAssetID: nil
+    )
+    defer { fixture.cleanup() }
+    let resolvedAssetURL = fixture.videosURL
+        .appendingPathComponent(
+            AerialLockScreenFixture.alternateAssetID
+        )
+        .appendingPathExtension("mov")
+
+    #expect(fixture.installer.isAvailable)
+    try fixture.installer.install(videoURL: fixture.videoURL)
+
+    #expect(
+        try Data(contentsOf: resolvedAssetURL)
+            == Data("new-wallpaper".utf8)
+    )
+    #expect(
+        wallpaperStoreContains(
+            try readWallpaperStore(fixture.storeURL),
+            provider: "com.apple.wallpaper.choice.aerials",
+            assetID: AerialLockScreenFixture.alternateAssetID
+        )
+    )
+}
+
+@Test func allSpacesAndDisplaysContainerAlsoSelectsAuraFlowVideo() throws {
+    let fixture = try AerialLockScreenFixture(
+        allSpacesAndDisplaysIsContainer: true
+    )
+    defer { fixture.cleanup() }
+
+    try fixture.installer.install(videoURL: fixture.videoURL)
+
+    let root = try readWallpaperStore(fixture.storeURL)
+    let allSpaces = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let providers = wallpaperChoiceProviders(allSpaces)
+    #expect(!providers.isEmpty)
+    #expect(
+        providers.allSatisfy {
+            $0 == "com.apple.wallpaper.choice.aerials"
+        }
+    )
+    #expect(
+        wallpaperStoreContains(
+            allSpaces,
+            provider: "com.apple.wallpaper.choice.aerials",
+            assetID: AerialLockScreenFixture.assetID
+        )
+    )
 }
 
 @Test func modernLockScreenRejectsProviderWithoutReservedAsset() throws {

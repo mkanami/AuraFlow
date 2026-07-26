@@ -725,6 +725,7 @@ struct SettingsPopupOverlay: View {
             SettingsPopupCard(viewModel: viewModel)
                 .frame(maxWidth: 620)
                 .padding(.horizontal, 24)
+                .padding(.vertical, 24)
                 .transition(.asymmetric(insertion: .scale(scale: 0.94).combined(with: .opacity), removal: .opacity))
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.86), value: viewModel.isSettingsOpen)
@@ -737,6 +738,30 @@ struct SettingsPopupCard: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        ViewThatFits(in: .vertical) {
+            settingsContents
+                .fixedSize(horizontal: false, vertical: true)
+
+            ScrollView(.vertical) {
+                settingsContents
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(
+            AuraGlassRoundedSurface(
+                cornerRadius: 18,
+                material: .clear
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
+        )
+        .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
+        .environment(\.colorScheme, .dark)
+    }
+
+    private var settingsContents: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("Playback Settings", systemImage: "gearshape.2.fill")
@@ -928,18 +953,6 @@ struct SettingsPopupCard: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
-        .background(
-            AuraGlassRoundedSurface(
-                cornerRadius: 18,
-                material: .clear
-            )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
-        )
-        .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
-        .environment(\.colorScheme, .dark)
     }
 }
 

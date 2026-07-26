@@ -36,7 +36,7 @@ public enum AerialLockScreenInstallerError: LocalizedError {
         case .wallpaperStoreUnavailable:
             return "The macOS wallpaper store is not available."
         case .aerialAssetUnavailable:
-            return "Download one Apple Aerial wallpaper before enabling Lock Screen."
+            return "This macOS Aerial provider does not expose a compatible wallpaper asset."
         case .malformedWallpaperStore:
             return "The macOS wallpaper store could not be read safely."
         case .wallpaperStoreUpdateFailed:
@@ -577,15 +577,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     private func resolveAssetID() -> String? {
-        if let configuredAssetID {
-            return configuredAssetID
+        let supportedAssetIDs = supportedProviderAssetIDs
+        guard !supportedAssetIDs.isEmpty else {
+            return nil
         }
-
-        let preferredURL = aerialVideosURL
-            .appendingPathComponent(Self.preferredAssetID)
-            .appendingPathExtension("mov")
-        if fileManager.fileExists(atPath: preferredURL.path) {
-            return Self.preferredAssetID
+        if let configuredAssetID {
+            return supportedAssetIDs.contains(configuredAssetID)
+                ? configuredAssetID
+                : nil
         }
 
         let candidates = (
@@ -595,13 +594,28 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 options: [.skipsHiddenFiles]
             )
         ) ?? []
-        return candidates
+        let downloadedAssetIDs = candidates
             .filter { $0.pathExtension.lowercased() == "mov" }
             .map { $0.deletingPathExtension().lastPathComponent }
-            .filter { UUID(uuidString: $0) != nil }
+            .filter {
+                UUID(uuidString: $0) != nil
+                    && supportedAssetIDs.contains($0)
+            }
             .sorted()
-            .first
-            ?? Self.preferredAssetID
+        if downloadedAssetIDs.contains(Self.preferredAssetID) {
+            return Self.preferredAssetID
+        }
+        if let downloadedAssetID = downloadedAssetIDs.first {
+            return downloadedAssetID
+        }
+        if supportedAssetIDs.contains(Self.preferredAssetID) {
+            return Self.preferredAssetID
+        }
+        // A fresh account may not have downloaded any Aerial yet. Any asset
+        // declared by the signed system provider is a valid cache slot, so use
+        // a deterministic provider-specific fallback instead of depending on
+        // one asset ID being present on every macOS release and Mac model.
+        return supportedAssetIDs.sorted().first
     }
 
     private func providerSupportsAsset(_ assetID: String) -> Bool {
@@ -747,6 +761,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         transform: ([String: Any]) -> [String: Any]
     ) -> [String: Any] {
         var result = root
+        if let allSpacesAndDisplays =
+            result["AllSpacesAndDisplays"] as? [String: Any] {
+            result["AllSpacesAndDisplays"] =
+                transform(allSpacesAndDisplays)
+        }
         if let systemDefault = result["SystemDefault"] as? [String: Any] {
             result["SystemDefault"] = transform(systemDefault)
         }
@@ -1075,6 +1094,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
 
         var containers: [[String: Any]] = []
+        if let allSpacesAndDisplays =
+            root["AllSpacesAndDisplays"] as? [String: Any] {
+            containers.append(allSpacesAndDisplays)
+        }
         if let systemDefault = root["SystemDefault"] as? [String: Any] {
             containers.append(systemDefault)
         }

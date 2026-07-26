@@ -154,7 +154,9 @@ public final class WallpaperRuntimeStore {
         normalized.autostart = config.autostart ?? false
         normalized.blend_interpolation = config.blend_interpolation ?? false
         normalized.pause_on_fullscreen = config.pause_on_fullscreen ?? true
-        normalized.show_on_lock_screen = config.show_on_lock_screen ?? false
+        normalized.show_on_lock_screen = config.show_on_lock_screen ?? true
+        normalized.lock_screen_preference_configured =
+            config.lock_screen_preference_configured ?? false
         if WallpaperScaleMode(rawValue: config.scale_mode ?? "") == nil {
             normalized.scale_mode = WallpaperScaleMode.fill.rawValue
         }
