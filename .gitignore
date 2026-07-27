@@ -30,3 +30,4 @@ build/
 # IDE
 .idea/
 .vscode/
+.codex/environments/
