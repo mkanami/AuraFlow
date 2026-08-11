@@ -1946,7 +1946,10 @@ final class AppViewModel: ObservableObject {
             session = .shared
         }
 
-        let (temporaryURL, response) = try await session.download(for: request)
+        let (temporaryURL, response) = try await CatalogFileDownloader.download(
+            request: request,
+            session: session
+        )
         if let httpResponse = response as? HTTPURLResponse,
            !(200...299).contains(httpResponse.statusCode) {
             throw CatalogDownloadError.badStatus(url: source.url, statusCode: httpResponse.statusCode)
