@@ -77,6 +77,7 @@ struct ContentView: View {
                 }
             }
         }
+        .ignoresSafeArea()
         .frame(minWidth: 760, minHeight: 480)
         .background(Color.clear)
         .overlay(

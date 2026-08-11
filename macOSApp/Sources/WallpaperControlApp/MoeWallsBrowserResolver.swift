@@ -49,15 +49,9 @@ final class MoeWallsBrowserResolver: NSObject {
         try await prepareDownloadState()
         var lastError: Error?
 
-        do {
-            return try await startBrowserManagedDownload(to: destinationURL)
-        } catch {
-            lastError = error
-        }
-
         let cookies = await currentCookies()
 
-        if let token = try? await waitForDownloadToken() {
+        if let token = try? await waitForDownloadToken(maxAttempts: 8) {
             do {
                 let downloadURL = try Self.resolvedDownloadURL(from: token, pageURL: pageURL)
                 return try await downloadWithBrowserContext(
@@ -69,6 +63,12 @@ final class MoeWallsBrowserResolver: NSObject {
             } catch {
                 lastError = error
             }
+        }
+
+        do {
+            return try await startBrowserManagedDownload(to: destinationURL)
+        } catch {
+            lastError = error
         }
 
         if let playableSourceURL = try? await waitForPlayableSourceURL(pageURL: pageURL) {
@@ -107,7 +107,7 @@ final class MoeWallsBrowserResolver: NSObject {
         }
     }
 
-    private func waitForDownloadToken() async throws -> String {
+    private func waitForDownloadToken(maxAttempts: Int = 80) async throws -> String {
         let script = """
         (() => {
             const button = document.getElementById('moe-download');
@@ -116,7 +116,7 @@ final class MoeWallsBrowserResolver: NSObject {
         })();
         """
 
-        for _ in 0..<80 {
+        for _ in 0..<maxAttempts {
             if let value = try await webView.evaluateJavaScript(script) as? String,
                !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                !value.contains("facebook.com/sharer"),
@@ -286,7 +286,10 @@ final class MoeWallsBrowserResolver: NSObject {
         cookies.forEach { configuration.httpCookieStorage?.setCookie($0) }
 
         let session = URLSession(configuration: configuration)
-        let (temporaryURL, response) = try await session.download(for: request)
+        let (temporaryURL, response) = try await CatalogFileDownloader.download(
+            request: request,
+            session: session
+        )
         if let httpResponse = response as? HTTPURLResponse,
            !(200...299).contains(httpResponse.statusCode) {
             throw CatalogDownloadError.badStatus(url: downloadURL, statusCode: httpResponse.statusCode)
