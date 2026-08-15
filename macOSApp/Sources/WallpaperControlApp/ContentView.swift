@@ -253,6 +253,10 @@ struct ContentView: View {
         }
         .overlay(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 12) {
+                if let success = viewModel.successBannerMessage {
+                    SuccessBanner(text: success)
+                }
+
                 if let alert = viewModel.alertMessage {
                     ErrorBanner(text: alert)
                 }
@@ -2408,6 +2412,35 @@ struct ErrorBanner: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.white.opacity(colorScheme == .dark ? 0.16 : 0.22), lineWidth: 0.9)
+        )
+    }
+}
+
+struct SuccessBanner: View {
+    let text: String
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
+                .lineLimit(2)
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .background(
+            AuraGlassRoundedSurface(
+                cornerRadius: 14,
+                material: .regular,
+                washColor: Color.green.opacity(0.06)
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.18), lineWidth: 0.9)
         )
     }
 }
