@@ -2487,17 +2487,36 @@ final class AppViewModel: ObservableObject {
     }
 
     func selectLocalVideoForPreview(_ url: URL) {
-        selectVideoForPreview(url, summary: "Video loaded into preview. Press Start to apply.")
+        let hasCurrentWallpaper = isPlaybackActive || isPlaybackPaused
+        guard hasCurrentWallpaper else {
+            selectVideoForPreview(url, summary: "Video loaded into preview. Press Start to apply.")
+            return
+        }
+
+        applySelectionImmediately(
+            url,
+            failureContext: "change-wallpaper",
+            statusSummary: "Wallpaper changed.",
+            successMessage: "Wallpaper changed."
+        )
     }
 
-    private func applySelectionImmediately(_ sourceURL: URL, failureContext: String) {
+    private func applySelectionImmediately(
+        _ sourceURL: URL,
+        failureContext: String,
+        statusSummary: String = "Wallpaper started.",
+        successMessage: String? = nil
+    ) {
         guard !isBusy else { return }
 
         Task {
             isBusy = true
             defer { isBusy = false }
             do {
-                try await startWallpaper(using: sourceURL, statusSummary: "Wallpaper started.")
+                try await startWallpaper(using: sourceURL, statusSummary: statusSummary)
+                if let successMessage {
+                    showSuccessBanner(successMessage)
+                }
             } catch {
                 recordBridgeFailure(error, context: failureContext)
                 if bridgeFailureCount < bridgeFailureThreshold {

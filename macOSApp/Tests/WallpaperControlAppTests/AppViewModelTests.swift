@@ -97,7 +97,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
-@Test func localPreviewVideoStartsAfterStopAndStart() async throws {
+@Test func localVideoSelectionReplacesRunningWallpaperImmediately() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.local-preview-start")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.local-preview-start")
@@ -139,18 +139,6 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(viewModel.previewPlayer === firstPreviewPlayer)
 
     viewModel.selectLocalVideoForPreview(secondURL)
-    #expect(viewModel.previewPlayer === firstPreviewPlayer)
-    #expect(controller.lastConfiguredVideoURL == firstURL)
-
-    viewModel.stop()
-    for _ in 0..<20 {
-        if viewModel.isRunning == false {
-            break
-        }
-        try? await Task.sleep(nanoseconds: 25_000_000)
-    }
-
-    viewModel.start()
     for _ in 0..<20 {
         if controller.lastConfiguredVideoURL == secondURL && controller.startCallCount == 2 && viewModel.isRunning {
             break
@@ -161,7 +149,6 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(controller.lastConfiguredVideoURL == secondURL)
     #expect(controller.startCallCount == 2)
     #expect(viewModel.isRunning)
-    #expect(viewModel.previewPlayer === firstPreviewPlayer)
 }
 
 @MainActor
