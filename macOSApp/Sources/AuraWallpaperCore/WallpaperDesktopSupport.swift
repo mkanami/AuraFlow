@@ -10,7 +10,11 @@ public enum WallpaperDesktopSupport {
     ) -> Bool {
         let managedPath = managedWallpaperPath(appSupportPath: appSupportPath)
         let workspace = NSWorkspace.shared
-        var wallpapers: [String: String] = [:]
+        // Keep the last known external wallpaper for displays whose current
+        // desktop URL is temporarily occupied by AuraFlow's still-frame.
+        // Refresh every external display on each capture so Remove restores
+        // what the user most recently selected outside AuraFlow.
+        var wallpapers = loadWallpaperBackup(appSupportPath: appSupportPath) ?? [:]
 
         for screen in NSScreen.screens {
             guard let url = workspace.desktopImageURL(for: screen) else { continue }
@@ -344,9 +348,6 @@ public enum WallpaperDesktopSupport {
 
     @discardableResult
     public static func saveWallpaperBackup(appSupportPath: String, wallpapers: [String: String]) -> Bool {
-        if loadWallpaperBackup(appSupportPath: appSupportPath) != nil {
-            return true
-        }
         let managedPath = managedWallpaperPath(appSupportPath: appSupportPath)
         let sanitized = wallpapers.reduce(into: [String: String]()) { result, item in
             let standardized = URL(fileURLWithPath: item.value).standardizedFileURL.path

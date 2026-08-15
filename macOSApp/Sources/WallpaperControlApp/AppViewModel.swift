@@ -418,6 +418,12 @@ final class NativeWallpaperController: WallpaperControlling {
 
     func clearWallpaper() throws -> ControlStatus {
         let currentConfig = store.loadConfig()
+        // Refresh the snapshot immediately before removal. The user can
+        // change the desktop wallpaper outside AuraFlow while our windows are
+        // running, so the most recent external selection must be restored.
+        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
+            appSupportPath: store.appSupportURL.path
+        )
         if store.processIsAlive(pid: store.loadPID()) {
             try? send(.terminate, config: currentConfig)
         }
@@ -433,10 +439,10 @@ final class NativeWallpaperController: WallpaperControlling {
             try lockScreenSaverInstaller.uninstall()
         }
         let restored = store.restoreWallpaperBackup()
-        _ = try updateConfig { config in
-            config.video_path = ""
-        }
         if restored {
+            _ = try updateConfig { config in
+                config.video_path = ""
+            }
             store.removeManagedFallback()
         }
         return store.status(wallpaperRestored: restored)

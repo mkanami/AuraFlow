@@ -376,7 +376,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(decoded.health?.reason == "ok")
 }
 
-@Test func wallpaperBackupSkipsManagedLastFrameAndWritesCurrentEntries() throws {
+@Test func wallpaperBackupRefreshesToLatestExternalEntriesAndSkipsManagedLastFrame() throws {
     let fixture = try NativeRuntimeFixture("backup-files")
     defer { fixture.cleanup() }
 
@@ -401,12 +401,10 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         contents: Data([4, 5, 6]),
         attributes: nil
     )
-    #expect(
-        WallpaperDesktopSupport.saveWallpaperBackup(
-            appSupportPath: appSupportPath,
-            wallpapers: ["screen-b": laterWallpaperURL.path]
-        )
-    )
+    #expect(WallpaperDesktopSupport.saveWallpaperBackup(
+        appSupportPath: appSupportPath,
+        wallpapers: ["screen-b": laterWallpaperURL.path]
+    ))
 
     let backupURL = fixture.store.appSupportURL.appendingPathComponent("wallpaper_backup.json")
     let legacyBackupURL = fixture.store.appSupportURL.appendingPathComponent("wallpaper_backup_original.json")
@@ -416,6 +414,18 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let legacyBackup = try #require(JSONSerialization.jsonObject(with: legacyData) as? [String: String])
 
     #expect(backup["screen-a"] == nil)
-    #expect(backup["screen-b"] == latestWallpaperURL.standardizedFileURL.path)
+    #expect(backup["screen-b"] == laterWallpaperURL.standardizedFileURL.path)
     #expect(legacyBackup == backup)
+
+    for _ in 0..<1_000 {
+        #expect(WallpaperDesktopSupport.saveWallpaperBackup(
+            appSupportPath: appSupportPath,
+            wallpapers: ["screen-b": latestWallpaperURL.path]
+        ))
+    }
+    let repeatedData = try Data(contentsOf: backupURL)
+    let repeatedBackup = try #require(
+        JSONSerialization.jsonObject(with: repeatedData) as? [String: String]
+    )
+    #expect(repeatedBackup["screen-b"] == latestWallpaperURL.standardizedFileURL.path)
 }
