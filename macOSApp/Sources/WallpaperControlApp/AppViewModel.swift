@@ -649,6 +649,9 @@ final class AppViewModel: ObservableObject {
     private var terminationObserver: NSObjectProtocol?
     private var isShuttingDown = false
     private var catalogRefreshTask: Task<Void, Never>?
+    private var catalogDownloadTask: Task<Void, Never>?
+    private var localWallpaperImportTask: Task<Void, Never>?
+    private var localWallpaperImportGeneration = 0
     private var lastCatalogRefreshAt: Date?
     private var successBannerTask: Task<Void, Never>?
     private var controllerBootstrapTask: Task<Void, Never>?
@@ -657,6 +660,8 @@ final class AppViewModel: ObservableObject {
     private var previewRenderingSuspended = false
     private var suspendedPreviewRate: Float?
     private var glassAnalysisTask: Task<Void, Never>?
+    private var glassAnalysisGeneration = 0
+    private var cacheGeneration = 0
 
     private let expectedStatusContractVersion = 3
     private let bridgeFailureThreshold = 3
@@ -743,7 +748,10 @@ final class AppViewModel: ObservableObject {
     }
 
     var canClearCache: Bool {
-        true
+        !isBusy
+            && !optimizationInProgress
+            && catalogDownloadID == nil
+            && !catalogIsRefreshing
     }
 
     private var selectedVideoURL: URL? {
@@ -808,6 +816,8 @@ final class AppViewModel: ObservableObject {
         healthMonitorTask?.cancel()
         monitoringTask?.cancel()
         catalogRefreshTask?.cancel()
+        catalogDownloadTask?.cancel()
+        localWallpaperImportTask?.cancel()
         controllerBootstrapTask?.cancel()
         glassAnalysisTask?.cancel()
         if let terminationObserver {
@@ -1032,11 +1042,20 @@ final class AppViewModel: ObservableObject {
             return
         }
         catalogDownloadID = wallpaper.id
+        let requestedCacheGeneration = cacheGeneration
 
-        Task {
-            defer { catalogDownloadID = nil }
+        catalogDownloadTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                catalogDownloadID = nil
+                catalogDownloadTask = nil
+            }
             do {
                 let localURL = try await downloadCatalogVideo(for: wallpaper)
+                guard !Task.isCancelled, requestedCacheGeneration == cacheGeneration else {
+                    try? FileManager.default.removeItem(at: localURL)
+                    return
+                }
                 showSuccessBanner("Wallpaper downloaded. Applying…")
                 do {
                     try await applyDownloadedCatalogWallpaperImmediately(wallpaper, localURL: localURL)
@@ -1045,7 +1064,10 @@ final class AppViewModel: ObservableObject {
                 } catch {
                     alertMessage = "Wallpaper downloaded, but apply failed: \(error.localizedDescription)"
                 }
+            } catch is CancellationError {
+                return
             } catch {
+                guard !Task.isCancelled else { return }
                 alertMessage = "Failed to download wallpaper: \(error.localizedDescription)"
             }
         }
@@ -1467,6 +1489,7 @@ final class AppViewModel: ObservableObject {
         if let cacheClearTask, !cacheClearTask.isCancelled {
             return
         }
+        cancelLocalWallpaperImport()
 
         cacheClearTask = Task {
             isBusy = true
@@ -1476,9 +1499,46 @@ final class AppViewModel: ObservableObject {
             }
 
             do {
-                let preservedPaths = preservedCachePaths()
-                try clearCatalogCache(preserving: preservedPaths)
-                try clearOptimizedVideoCache(preserving: preservedPaths)
+                cacheGeneration &+= 1
+                catalogRefreshTask?.cancel()
+                catalogDownloadTask?.cancel()
+                catalogDownloadID = nil
+                let refreshTask = catalogRefreshTask
+                let downloadTask = catalogDownloadTask
+                await refreshTask?.value
+                await downloadTask?.value
+
+                let appliedVideoIsManaged = appliedVideoURL.map(isManagedCacheURL) ?? false
+                let pendingPreviewIsManaged = pendingPreviewVideoURL.map(isManagedCacheURL) ?? false
+
+                // A downloaded wallpaper can still be the active source. Stop
+                // it before deleting the file, otherwise the daemon keeps the
+                // item alive and the cache appears to survive the cleanup.
+                if appliedVideoIsManaged {
+                    // Clearing the active managed wallpaper also clears any
+                    // preview layer; otherwise `apply(status:)` intentionally
+                    // keeps a pending preview alive.
+                    pendingPreviewVideoURL = nil
+                } else if pendingPreviewIsManaged {
+                    pendingPreviewVideoURL = nil
+                }
+                if appliedVideoIsManaged {
+                    guard let controller else {
+                        throw NativeWallpaperControllerError.unavailable(
+                            "Cannot clear the active downloaded wallpaper while the wallpaper runtime is unavailable."
+                        )
+                    }
+                    let status = try await runAsync { try controller.clearWallpaper() }
+                    apply(status: status)
+                    recordBridgeSuccess()
+                } else if pendingPreviewIsManaged {
+                    configurePreview(for: selectedVideoURL)
+                }
+
+                try clearCatalogCache()
+                try clearOptimizedVideoCache()
+                try clearRuntimePreviewCache()
+                URLCache.shared.removeAllCachedResponses()
                 CatalogPreviewImageLoader.clearCache()
 
                 if let cacheClearingProvider = catalogProvider as? CatalogCacheClearing {
@@ -1487,20 +1547,21 @@ final class AppViewModel: ObservableObject {
 
                 downloadedCatalogWallpapers = []
 
-                if let pendingPreviewURL = pendingPreviewVideoURL,
-                   !preservedPaths.contains(pendingPreviewURL.standardizedFileURL.path) {
-                    pendingPreviewVideoURL = nil
-                }
-
                 catalogWallpapers = []
                 selectedCatalogWallpaper = nil
                 lastCatalogRefreshAt = nil
-                statusMessage = "Cache cleared."
+                statusMessage = "Cache and downloaded wallpapers cleared."
                 alertMessage = nil
             } catch {
                 alertMessage = "Failed to clear cache: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func cancelLocalWallpaperImport() {
+        localWallpaperImportGeneration &+= 1
+        localWallpaperImportTask?.cancel()
+        localWallpaperImportTask = nil
     }
 
     func preview() {
@@ -1838,6 +1899,7 @@ final class AppViewModel: ObservableObject {
                 statusMessage = nil
                 lastCatalogRefreshAt = Date()
             } catch {
+                guard !Task.isCancelled else { return }
                 if catalogWallpapers.isEmpty {
                     selectedCatalogWallpaper = nil
                 }
@@ -2145,6 +2207,7 @@ final class AppViewModel: ObservableObject {
         guard existingLocalPreviewImageURL(for: previewKey) == nil else { return }
         guard let destinationURL = try? localPreviewImageURL(for: previewKey) else { return }
         let legacyURL = legacyWallpaperID.flatMap { existingLocalPreviewImageURL(for: $0) }
+        let requestedCacheGeneration = cacheGeneration
 
         Task.detached(priority: .utility) { [weak self] in
             guard let generatedURL = Self.generateLocalPreviewImage(
@@ -2156,7 +2219,14 @@ final class AppViewModel: ObservableObject {
             }
 
             await MainActor.run { [weak self] in
-                self?.storeGeneratedPreview(generatedURL, wallpaperID: wallpaperID)
+                guard let self else { return }
+                guard self.cacheGeneration == requestedCacheGeneration else {
+                    if generatedURL.standardizedFileURL == destinationURL.standardizedFileURL {
+                        try? FileManager.default.removeItem(at: generatedURL)
+                    }
+                    return
+                }
+                self.storeGeneratedPreview(generatedURL, wallpaperID: wallpaperID)
             }
         }
     }
@@ -2402,48 +2472,62 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func preservedCachePaths() -> Set<String> {
-        var paths: Set<String> = []
-        if let appliedVideoURL, (isPlaybackActive || isPlaybackPaused || isRunning) {
-            paths.insert(appliedVideoURL.standardizedFileURL.path)
+    private func isManagedCacheURL(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        let managedDirectories = [
+            try? catalogDirectoryURL(),
+            try? optimizedVideosDirectoryURL(),
+        ].compactMap { $0?.standardizedFileURL.path }
+
+        return managedDirectories.contains { directoryPath in
+            path == directoryPath || path.hasPrefix(directoryPath + "/")
         }
-        return paths
     }
 
-    private func clearCatalogCache(preserving preservedPaths: Set<String>) throws {
+    private func clearCatalogCache() throws {
         let directory = try catalogDirectoryURL()
-        let manifestURL = try downloadedCatalogManifestURL()
-        let entries = (try? FileManager.default.contentsOfDirectory(
+        let entries = try FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )) ?? []
+            options: []
+        )
 
         for entry in entries {
-            let standardizedPath = entry.standardizedFileURL.path
-            if preservedPaths.contains(standardizedPath) {
-                continue
-            }
-            try? FileManager.default.removeItem(at: entry)
+            try FileManager.default.removeItem(at: entry)
         }
 
         downloadedCatalogWallpapers = []
-        try? FileManager.default.removeItem(at: manifestURL)
     }
 
-    private func clearOptimizedVideoCache(preserving preservedPaths: Set<String>) throws {
+    private func clearOptimizedVideoCache() throws {
         let directory = try optimizedVideosDirectoryURL()
-        let entries = (try? FileManager.default.contentsOfDirectory(
+        let entries = try FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )) ?? []
+            options: []
+        )
 
         for entry in entries {
-            if preservedPaths.contains(entry.standardizedFileURL.path) {
-                continue
+            try FileManager.default.removeItem(at: entry)
+        }
+    }
+
+    private func clearRuntimePreviewCache() throws {
+        let fileManager = FileManager.default
+        let entries = try fileManager.contentsOfDirectory(
+            at: Self.appSupportDirectoryURL,
+            includingPropertiesForKeys: nil,
+            options: []
+        )
+
+        for entry in entries {
+            let name = entry.lastPathComponent
+            let isGeneratedStillFrame = name == "last_frame.png"
+                || name == "last_frame_source.json"
+                || (name.hasPrefix("last_frame_") && name.hasSuffix(".png"))
+            if isGeneratedStillFrame {
+                try fileManager.removeItem(at: entry)
             }
-            try? FileManager.default.removeItem(at: entry)
         }
     }
 
@@ -2487,18 +2571,154 @@ final class AppViewModel: ObservableObject {
     }
 
     func selectLocalVideoForPreview(_ url: URL) {
+        let normalizedURL = url.standardizedFileURL
+        scheduleLocalWallpaperImport(for: normalizedURL)
+
         let hasCurrentWallpaper = isPlaybackActive || isPlaybackPaused
         guard hasCurrentWallpaper else {
-            selectVideoForPreview(url, summary: "Video loaded into preview. Press Start to apply.")
+            selectVideoForPreview(normalizedURL, summary: "Video loaded into preview. Press Start to apply.")
             return
         }
 
         applySelectionImmediately(
-            url,
+            normalizedURL,
             failureContext: "change-wallpaper",
             statusSummary: "Wallpaper changed.",
             successMessage: "Wallpaper changed."
         )
+    }
+
+    private func scheduleLocalWallpaperImport(for sourceURL: URL) {
+        guard !isManagedCacheURL(sourceURL) else { return }
+
+        localWallpaperImportTask?.cancel()
+        let requestedGeneration = localWallpaperImportGeneration
+        localWallpaperImportTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var copiedResult: (url: URL, created: Bool)?
+
+            do {
+                copiedResult = try await copyLocalWallpaperToCatalog(from: sourceURL)
+                try Task.checkCancellation()
+                guard requestedGeneration == localWallpaperImportGeneration else {
+                    if copiedResult?.created == true {
+                        try? FileManager.default.removeItem(at: copiedResult!.url)
+                    }
+                    return
+                }
+                if let copiedResult {
+                    registerLocalWallpaperCopy(
+                        originalURL: sourceURL,
+                        copiedURL: copiedResult.url
+                    )
+                }
+            } catch is CancellationError {
+                if copiedResult?.created == true {
+                    try? FileManager.default.removeItem(at: copiedResult!.url)
+                }
+            } catch {
+                if copiedResult?.created == true {
+                    try? FileManager.default.removeItem(at: copiedResult!.url)
+                }
+                guard requestedGeneration == localWallpaperImportGeneration else { return }
+                statusMessage = "Wallpaper selected, but its copy could not be saved."
+            }
+
+            if requestedGeneration == localWallpaperImportGeneration {
+                localWallpaperImportTask = nil
+            }
+        }
+    }
+
+    private func copyLocalWallpaperToCatalog(from sourceURL: URL) async throws -> (url: URL, created: Bool) {
+        guard !isManagedCacheURL(sourceURL) else {
+            return (sourceURL, false)
+        }
+
+        if let existing = downloadedCatalogWallpapers.first(where: {
+            isImportedLocalWallpaper($0, from: sourceURL)
+                && FileManager.default.fileExists(atPath: $0.localURL.path)
+        }) {
+            return (existing.localURL.standardizedFileURL, false)
+        }
+
+        let directory = try catalogDirectoryURL()
+        let extensionName = sourceURL.pathExtension.isEmpty
+            ? "mp4"
+            : sourceURL.pathExtension.lowercased()
+        let destination = directory.appendingPathComponent(
+            "local-\(UUID().uuidString.lowercased()).\(extensionName)"
+        )
+
+        do {
+            try Task.checkCancellation()
+            try await Task.detached(priority: .utility) {
+                try FileManager.default.copyItem(at: sourceURL, to: destination)
+            }.value
+            try Task.checkCancellation()
+            return (destination.standardizedFileURL, true)
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+    }
+
+    private func isImportedLocalWallpaper(
+        _ wallpaper: DownloadedCatalogWallpaper,
+        from sourceURL: URL
+    ) -> Bool {
+        guard wallpaper.attribution == "This Mac",
+              let originalURL = wallpaper.sourcePageURL,
+              originalURL.isFileURL else {
+            return false
+        }
+        return originalURL.standardizedFileURL.path == sourceURL.standardizedFileURL.path
+    }
+
+    private func registerLocalWallpaperCopy(originalURL: URL, copiedURL: URL) {
+        let normalizedOriginalURL = originalURL.standardizedFileURL
+        let normalizedCopiedURL = copiedURL.standardizedFileURL
+        let previewKey = previewImageKey(for: normalizedCopiedURL)
+        let localPreviewPath = existingLocalPreviewImageURL(for: previewKey)?.path
+        var updated = downloadedCatalogWallpapers
+        let existingIndex = updated.firstIndex {
+            isImportedLocalWallpaper($0, from: normalizedOriginalURL)
+        }
+        let existing = existingIndex.map { updated[$0] }
+        let localID = existing?.id ?? "local-\(UUID().uuidString.lowercased())"
+        let entry = DownloadedCatalogWallpaper(
+            id: localID,
+            wallpaperID: existing?.wallpaperID ?? localID,
+            title: inferredTitleFromDownloadedFileName(
+                normalizedOriginalURL.deletingPathExtension().lastPathComponent
+            ),
+            category: "Local",
+            attribution: "This Mac",
+            previewImageURL: nil,
+            localPreviewPath: localPreviewPath,
+            sourcePageURL: normalizedOriginalURL,
+            localPath: normalizedCopiedURL.path,
+            downloadedAt: existing?.downloadedAt ?? Date()
+        )
+
+        if let existingIndex {
+            updated[existingIndex] = entry
+        } else {
+            updated.append(entry)
+        }
+        updated.sort(by: { lhs, rhs in
+            lhs.downloadedAt > rhs.downloadedAt
+        })
+        downloadedCatalogWallpapers = updated
+        try? persistDownloadedCatalogWallpapers(updated)
+
+        if localPreviewPath == nil {
+            scheduleLocalPreviewImageGeneration(
+                for: normalizedCopiedURL,
+                legacyWallpaperID: nil,
+                wallpaperID: entry.wallpaperID
+            )
+        }
     }
 
     private func applySelectionImmediately(

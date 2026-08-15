@@ -152,6 +152,60 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
+@Test func localWallpaperSelectionStoresSeparateCopyAndKeepsOriginal() async throws {
+    let controller = MockNativeWallpaperController()
+    let viewModel = AppViewModel(controller: controller)
+    let sourceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("local-import-\(UUID().uuidString).mp4")
+    FileManager.default.createFile(
+        atPath: sourceURL.path,
+        contents: Data("original-wallpaper".utf8),
+        attributes: nil
+    )
+
+    var importedWallpaper: DownloadedCatalogWallpaper?
+    defer {
+        try? FileManager.default.removeItem(at: sourceURL)
+        if let importedWallpaper {
+            try? FileManager.default.removeItem(at: importedWallpaper.localURL)
+            if let previewURL = importedWallpaper.localPreviewURL {
+                try? FileManager.default.removeItem(at: previewURL)
+            }
+        }
+
+        let manifestURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/AuraFlow/Catalog/downloaded-catalog.json")
+        if let data = try? Data(contentsOf: manifestURL),
+           var entries = try? JSONDecoder().decode([DownloadedCatalogWallpaper].self, from: data) {
+            entries.removeAll {
+                $0.sourcePageURL?.standardizedFileURL.path == sourceURL.standardizedFileURL.path
+            }
+            if let updatedData = try? JSONEncoder().encode(entries) {
+                try? updatedData.write(to: manifestURL, options: .atomic)
+            }
+        }
+    }
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+
+    for _ in 0..<80 {
+        importedWallpaper = viewModel.downloadedCatalogWallpapers.first {
+            $0.sourcePageURL?.standardizedFileURL.path == sourceURL.standardizedFileURL.path
+        }
+        if importedWallpaper != nil {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    let imported = try #require(importedWallpaper)
+    #expect(imported.localURL.standardizedFileURL.path != sourceURL.standardizedFileURL.path)
+    #expect(FileManager.default.fileExists(atPath: sourceURL.path))
+    #expect(FileManager.default.fileExists(atPath: imported.localURL.path))
+    #expect(imported.attribution == "This Mac")
+}
+
+@MainActor
 @Test func pausedWallpaperStartResumesWithoutReloading() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.paused-start-resume")!
