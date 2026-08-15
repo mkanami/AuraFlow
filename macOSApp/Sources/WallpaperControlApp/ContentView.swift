@@ -681,18 +681,24 @@ struct SettingsPopupOverlay: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(colorScheme == .dark ? 0.42 : 0.28)
-                .ignoresSafeArea()
-                .onTapGesture {
-                    viewModel.closeSettings()
-                }
+        GeometryReader { proxy in
+            ZStack {
+                Color.black.opacity(colorScheme == .dark ? 0.42 : 0.28)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        viewModel.closeSettings()
+                    }
 
-            SettingsPopupCard(viewModel: viewModel)
-                .frame(maxWidth: 620)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 24)
-                .transition(.asymmetric(insertion: .scale(scale: 0.94).combined(with: .opacity), removal: .opacity))
+                SettingsPopupCard(viewModel: viewModel)
+                    .frame(
+                        maxWidth: min(620, max(proxy.size.width - 48, 1)),
+                        maxHeight: max(proxy.size.height - 48, 1)
+                    )
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 24)
+                    .transition(.asymmetric(insertion: .scale(scale: 0.94).combined(with: .opacity), removal: .opacity))
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.86), value: viewModel.isSettingsOpen)
         .zIndex(50)
@@ -705,15 +711,11 @@ struct SettingsPopupCard: View {
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
-        ViewThatFits(in: .vertical) {
+        ScrollView(.vertical) {
             settingsContents
-                .fixedSize(horizontal: false, vertical: true)
-
-            ScrollView(.vertical) {
-                settingsContents
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
         .background(
             AuraGlassRoundedSurface(
@@ -725,6 +727,7 @@ struct SettingsPopupCard: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
         .environment(\.colorScheme, .dark)
     }
