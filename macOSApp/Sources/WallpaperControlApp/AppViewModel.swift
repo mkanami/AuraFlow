@@ -5,6 +5,11 @@ import Combine
 import Foundation
 import UniformTypeIdentifiers
 
+enum AdaptiveTextTone: Equatable {
+    case dark
+    case light
+}
+
 struct AdaptiveGlassAppearance: Equatable {
     var topGlassAlpha: CGFloat
     var bottomGlassAlpha: CGFloat
@@ -12,6 +17,9 @@ struct AdaptiveGlassAppearance: Equatable {
     var bottomProtectionOverlayOpacity: CGFloat
     var bottomButtonProtectionOpacity: CGFloat
     var bottomButtonHighlightOpacity: CGFloat
+    var topTextTone: AdaptiveTextTone
+    var bottomTextTone: AdaptiveTextTone
+    var centerTextTone: AdaptiveTextTone
 
     static let `default` = AdaptiveGlassAppearance(
         topGlassAlpha: 1.0,
@@ -19,7 +27,10 @@ struct AdaptiveGlassAppearance: Equatable {
         topProtectionOverlayOpacity: 0.0,
         bottomProtectionOverlayOpacity: 0.0,
         bottomButtonProtectionOpacity: 0.0,
-        bottomButtonHighlightOpacity: 0.055
+        bottomButtonHighlightOpacity: 0.055,
+        topTextTone: .light,
+        bottomTextTone: .light,
+        centerTextTone: .light
     )
 }
 
@@ -637,7 +648,6 @@ final class AppViewModel: ObservableObject {
     private var monitoringTask: Task<Void, Never>?
     private var terminationObserver: NSObjectProtocol?
     private var isShuttingDown = false
-    private var catalogNavigationLockedUntil: Date = .distantPast
     private var catalogRefreshTask: Task<Void, Never>?
     private var lastCatalogRefreshAt: Date?
     private var successBannerTask: Task<Void, Never>?
@@ -988,7 +998,6 @@ final class AppViewModel: ObservableObject {
     }
 
     func openCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
-        guard Date() >= catalogNavigationLockedUntil else { return }
         catalogScrollTargetID = wallpaper.id
         selectedCatalogWallpaper = wallpaper
     }
@@ -996,13 +1005,11 @@ final class AppViewModel: ObservableObject {
     func navigateBackFromCatalog() {
         if selectedCatalogWallpaper != nil {
             selectedCatalogWallpaper = nil
-            catalogNavigationLockedUntil = Date().addingTimeInterval(0.35)
             return
         }
         selectedCatalogWallpaper = nil
         catalogScrollTargetID = nil
         isCatalogOpen = false
-        catalogNavigationLockedUntil = Date().addingTimeInterval(0.2)
     }
 
     func isDownloading(_ wallpaper: CatalogWallpaper) -> Bool {
@@ -1030,8 +1037,10 @@ final class AppViewModel: ObservableObject {
             defer { catalogDownloadID = nil }
             do {
                 let localURL = try await downloadCatalogVideo(for: wallpaper)
+                showSuccessBanner("Wallpaper downloaded. Applying…")
                 do {
                     try await applyDownloadedCatalogWallpaperImmediately(wallpaper, localURL: localURL)
+                    showSuccessBanner("Wallpaper downloaded and applied.")
                     alertMessage = nil
                 } catch {
                     alertMessage = "Wallpaper downloaded, but apply failed: \(error.localizedDescription)"
@@ -1166,6 +1175,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func setPreviewPlaybackSpeed(_ speed: Double) {
+        guard abs(playbackSpeed - speed) > 0.0001 else { return }
         playbackSpeed = speed
         syncPreviewPlaybackRate()
     }
@@ -1332,7 +1342,7 @@ final class AppViewModel: ObservableObject {
 
     func openScreenSaverSettings() {
         let destinations = [
-            "x-apple.systempreferences:com.apple.ScreenSaver-Settings.extension",
+            "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension",
             "x-apple.systempreferences:com.apple.preference.desktopscreeneffect",
         ]
         for destination in destinations {
@@ -2698,6 +2708,24 @@ final class AppViewModel: ObservableObject {
             height: height,
             region: CGRect(x: 0.08, y: 0.80, width: 0.84, height: 0.16)
         )
+        let topTextStats = textLuminanceStats(
+            pixels: pixels,
+            width: width,
+            height: height,
+            region: regionFromTop(CGRect(x: 0.26, y: 0.035, width: 0.48, height: 0.125))
+        )
+        let bottomTextStats = textLuminanceStats(
+            pixels: pixels,
+            width: width,
+            height: height,
+            region: regionFromTop(CGRect(x: 0.08, y: 0.78, width: 0.84, height: 0.19))
+        )
+        let centerTextStats = textLuminanceStats(
+            pixels: pixels,
+            width: width,
+            height: height,
+            region: regionFromTop(CGRect(x: 0.16, y: 0.28, width: 0.68, height: 0.44))
+        )
 
         let topProtection = protectionLevel(for: topStats)
         let bottomProtection = protectionLevel(for: bottomStats)
@@ -2708,8 +2736,39 @@ final class AppViewModel: ObservableObject {
             topProtectionOverlayOpacity: 0.016 * topProtection,
             bottomProtectionOverlayOpacity: 0.020 * bottomProtection,
             bottomButtonProtectionOpacity: 0.014 * bottomProtection,
-            bottomButtonHighlightOpacity: max(0.018, 0.055 - (0.040 * bottomProtection))
+            bottomButtonHighlightOpacity: max(0.018, 0.055 - (0.040 * bottomProtection)),
+            topTextTone: textTone(for: topTextStats),
+            bottomTextTone: textTone(for: bottomTextStats),
+            centerTextTone: textTone(for: centerTextStats)
         )
+    }
+
+    nonisolated private static func regionFromTop(_ region: CGRect) -> CGRect {
+        CGRect(
+            x: region.minX,
+            y: 1.0 - region.maxY,
+            width: region.width,
+            height: region.height
+        )
+    }
+
+    nonisolated private static func textTone(for stats: TextLuminanceStats) -> AdaptiveTextTone {
+        let darkBackground = (stats.lowerQuartile * 0.70) + (stats.median * 0.30)
+        let lightBackground = (stats.upperQuartile * 0.70) + (stats.median * 0.30)
+        let darkContrast = (darkBackground + 0.05) / 0.05
+        let lightContrast = 1.05 / (lightBackground + 0.05)
+
+        // A bright highlight such as a moon must not force black text over a
+        // mostly dark panel. The reverse protects black text on mostly white
+        // snow or sky.
+        if stats.darkCoverage >= 0.36, stats.lightCoverage < 0.36 {
+            return .light
+        }
+        if stats.lightCoverage >= 0.36, stats.darkCoverage < 0.36 {
+            return .dark
+        }
+
+        return lightContrast > darkContrast ? .light : .dark
     }
 
     nonisolated private static func protectionLevel(for stats: LuminanceStats) -> CGFloat {
@@ -2785,9 +2844,88 @@ final class AppViewModel: ObservableObject {
         return LuminanceStats(mean: mean, standardDeviation: sqrt(variance))
     }
 
+    nonisolated private static func textLuminanceStats(
+        pixels: [UInt8],
+        width: Int,
+        height: Int,
+        region: CGRect
+    ) -> TextLuminanceStats {
+        let minX = max(Int(CGFloat(width) * region.minX), 0)
+        let maxX = min(Int(CGFloat(width) * region.maxX), width)
+        let minY = max(Int(CGFloat(height) * region.minY), 0)
+        let maxY = min(Int(CGFloat(height) * region.maxY), height)
+
+        var luminanceValues: [CGFloat] = []
+        luminanceValues.reserveCapacity(max((maxX - minX) * (maxY - minY), 1))
+
+        guard minX < maxX, minY < maxY else {
+            return .default
+        }
+
+        for y in minY..<maxY {
+            for x in minX..<maxX {
+                let offset = ((y * width) + x) * 4
+                let red = linearizeSRGB(CGFloat(pixels[offset]) / 255.0)
+                let green = linearizeSRGB(CGFloat(pixels[offset + 1]) / 255.0)
+                let blue = linearizeSRGB(CGFloat(pixels[offset + 2]) / 255.0)
+                luminanceValues.append((0.2126 * red) + (0.7152 * green) + (0.0722 * blue))
+            }
+        }
+
+        guard !luminanceValues.isEmpty else {
+            return .default
+        }
+
+        luminanceValues.sort()
+        let darkCount = luminanceValues.reduce(into: 0) { count, luminance in
+            if luminance < 0.18 { count += 1 }
+        }
+        let lightCount = luminanceValues.reduce(into: 0) { count, luminance in
+            if luminance > 0.65 { count += 1 }
+        }
+
+        return TextLuminanceStats(
+            lowerQuartile: percentile(luminanceValues, at: 0.25),
+            median: percentile(luminanceValues, at: 0.50),
+            upperQuartile: percentile(luminanceValues, at: 0.75),
+            darkCoverage: CGFloat(darkCount) / CGFloat(luminanceValues.count),
+            lightCoverage: CGFloat(lightCount) / CGFloat(luminanceValues.count)
+        )
+    }
+
+    nonisolated private static func linearizeSRGB(_ value: CGFloat) -> CGFloat {
+        if value <= 0.04045 {
+            return value / 12.92
+        }
+        return pow((value + 0.055) / 1.055, 2.4)
+    }
+
+    nonisolated private static func percentile(_ values: [CGFloat], at fraction: CGFloat) -> CGFloat {
+        guard !values.isEmpty else { return 0.0 }
+        let clampedFraction = min(max(fraction, 0.0), 1.0)
+        let index = Int((CGFloat(values.count - 1) * clampedFraction).rounded())
+        return values[min(max(index, 0), values.count - 1)]
+    }
+
     private struct LuminanceStats {
         let mean: CGFloat
         let standardDeviation: CGFloat
+    }
+
+    private struct TextLuminanceStats {
+        let lowerQuartile: CGFloat
+        let median: CGFloat
+        let upperQuartile: CGFloat
+        let darkCoverage: CGFloat
+        let lightCoverage: CGFloat
+
+        static let `default` = TextLuminanceStats(
+            lowerQuartile: 0.18,
+            median: 0.18,
+            upperQuartile: 0.18,
+            darkCoverage: 0.0,
+            lightCoverage: 0.0
+        )
     }
 
     private func previewPlaybackRate() -> Float {

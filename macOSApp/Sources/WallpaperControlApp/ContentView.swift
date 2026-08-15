@@ -15,6 +15,44 @@ extension EnvironmentValues {
     }
 }
 
+private extension AdaptiveTextTone {
+    var primaryTextColor: Color {
+        switch self {
+        case .dark:
+            return Color.black.opacity(0.82)
+        case .light:
+            return Color.white.opacity(0.94)
+        }
+    }
+
+    var secondaryTextColor: Color {
+        switch self {
+        case .dark:
+            return Color.black.opacity(0.60)
+        case .light:
+            return Color.white.opacity(0.78)
+        }
+    }
+
+    var disabledTextColor: Color {
+        switch self {
+        case .dark:
+            return Color.black.opacity(0.34)
+        case .light:
+            return Color.white.opacity(0.50)
+        }
+    }
+
+    var textShadowColor: Color {
+        switch self {
+        case .dark:
+            return Color.white.opacity(0.18)
+        case .light:
+            return Color.black.opacity(0.18)
+        }
+    }
+}
+
 private func speedOverlayPillWidth(for availableWidth: CGFloat) -> CGFloat {
     min(max(availableWidth * 0.46, 420), 720)
 }
@@ -26,7 +64,8 @@ struct ContentView: View {
 
     private var aspectRatio: CGFloat { mainScreenAspectRatio() }
     private let topOverlayTopPadding: CGFloat = 18
-    private let zoomedTopOverlayPadding: CGFloat = 48
+    private let zoomedTopOverlayPadding: CGFloat = 38
+    private let fullScreenTopOverlayPadding: CGFloat = 38
     private let dragTitlebarTopOffset: CGFloat = -40
     private var dragTitlebarHeight: CGFloat {
         topOverlayTopPadding - dragTitlebarTopOffset
@@ -506,7 +545,7 @@ struct ControlPanel: View {
 
             if showsStatusMessage, let message = viewModel.statusMessage {
                 Text(message)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -518,7 +557,7 @@ struct ControlPanel: View {
                     if let label = viewModel.optimizationLabel {
                         Text(label)
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
@@ -626,10 +665,10 @@ struct ControlPanel: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Video")
                 .font(.headline.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(0.96))
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
             Text(viewModel.selectedVideoName)
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.76))
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
@@ -663,6 +702,7 @@ struct SettingsPopupOverlay: View {
 struct SettingsPopupCard: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         ViewThatFits(in: .vertical) {
@@ -674,6 +714,7 @@ struct SettingsPopupCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 18,
@@ -757,7 +798,7 @@ struct SettingsPopupCard: View {
 
             Text("AuraFlow uses macOS's Aerial engine for the real lock screen and restores the reserved system asset when disabled. This integration is experimental because Apple does not publish its wallpaper extension API.")
                 .font(.caption2)
-                .foregroundColor(.secondary)
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 .fixedSize(horizontal: false, vertical: true)
 
             Toggle(isOn: Binding(
@@ -787,7 +828,7 @@ struct SettingsPopupCard: View {
 
             Text("Video Optimization")
                 .font(.subheadline.weight(.semibold))
-                .foregroundColor(.secondary)
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
 
             Toggle(isOn: Binding(
                 get: { viewModel.optimizationEnabled },
@@ -848,11 +889,11 @@ struct SettingsPopupCard: View {
             if viewModel.optimizationHardwareAV1DecodeAvailable {
                 Text("AV1 hardware encode is unavailable on Mac. Force AV1 uses software ffmpeg and can be CPU intensive.")
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             } else {
                 Text("Force AV1 encode is disabled because this Mac has no hardware AV1 decode.")
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             }
 
             Divider().padding(.vertical, 4)
@@ -870,7 +911,7 @@ struct SettingsPopupCard: View {
                     if let label = viewModel.optimizationLabel {
                         Text(label)
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                     }
                     ProgressView(value: viewModel.optimizationProgress)
                         .progressViewStyle(.linear)
@@ -908,6 +949,7 @@ struct MonitoringPopupOverlay: View {
 struct MonitoringPopupCard: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -951,19 +993,19 @@ struct MonitoringPopupCard: View {
                     let suffix = pids.count > 4 ? ", ..." : ""
                     Text("PIDs: \(rendered)\(suffix)")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 }
 
                 if let reason = metrics.health?.reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("Health: \(reason)")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                         .padding(.top, 4)
                 }
             } else {
                 Text("Collecting daemon metrics...")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             }
 
             if let error = viewModel.monitoringErrorMessage {
@@ -990,6 +1032,7 @@ struct MonitoringPopupCard: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
+        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 18,
@@ -1008,12 +1051,13 @@ struct MonitoringPopupCard: View {
 struct MonitoringRow: View {
     let label: String
     let value: String
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         HStack {
             Text(label)
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             Spacer()
             Text(value)
                 .font(.caption.weight(.semibold))
@@ -1052,6 +1096,7 @@ struct DownloadedWallpapersOverlay: View {
 struct DownloadedWallpapersCard: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1061,7 +1106,7 @@ struct DownloadedWallpapersCard: View {
                 Spacer()
                 Text("\(viewModel.downloadedCatalogWallpapers.count)")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 Button {
                     viewModel.closeDownloadedWallpapers()
                 } label: {
@@ -1076,7 +1121,7 @@ struct DownloadedWallpapersCard: View {
             if viewModel.downloadedCatalogWallpapers.isEmpty {
                 Text("No downloaded wallpapers yet. Use Download & Apply in the catalog.")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
@@ -1096,10 +1141,10 @@ struct DownloadedWallpapersCard: View {
                                         .lineLimit(1)
                                     Text("\(wallpaper.category) • \(wallpaper.attribution)")
                                         .font(.caption)
-                                        .foregroundColor(.secondary)
+                                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                                     Text(wallpaper.localURL.lastPathComponent)
                                         .font(.caption2)
-                                        .foregroundColor(.secondary)
+                                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                 }
@@ -1123,6 +1168,7 @@ struct DownloadedWallpapersCard: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
+        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 18,
@@ -1201,6 +1247,7 @@ struct ControlButtons: View {
 struct WallpaperCatalogView: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     private var isDetailOpened: Bool {
         viewModel.selectedCatalogWallpaper != nil
@@ -1235,7 +1282,7 @@ struct WallpaperCatalogView: View {
 
                 Text(viewModel.selectedCatalogWallpaper?.title ?? "Wallpaper Catalog")
                     .font(.headline.weight(.semibold))
-                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.96) : Color.black.opacity(0.86))
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
 
                 Spacer()
 
@@ -1246,7 +1293,7 @@ struct WallpaperCatalogView: View {
                     }
                     Text(catalogCountText)
                         .font(.caption2)
-                        .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.78) : Color.black.opacity(0.64))
+                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                 }
             }
             .zIndex(10)
@@ -1268,7 +1315,7 @@ struct WallpaperCatalogView: View {
                     TextField("Search catalog", text: $viewModel.catalogSearchText)
                         .textFieldStyle(.plain)
                         .font(.body.weight(.medium))
-                        .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.94) : Color.black.opacity(0.84))
+                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
                         .padding(.vertical, 9)
                         .padding(.horizontal, 12)
                         .background(AuraGlassInsetCard(emphasized: true))
@@ -1315,6 +1362,7 @@ struct CatalogGroupFilterButton: View {
     let action: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         Button(action: action) {
@@ -1325,7 +1373,11 @@ struct CatalogGroupFilterButton: View {
                     .lineLimit(1)
             }
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.82))
+            .foregroundStyle(
+                isSelected
+                    ? adaptiveGlassAppearance.bottomTextTone.primaryTextColor
+                    : adaptiveGlassAppearance.bottomTextTone.secondaryTextColor
+            )
             .padding(.vertical, 6)
             .padding(.horizontal, 9)
             .background(AuraGlassInsetCard(cornerRadius: 9, emphasized: isSelected))
@@ -1346,6 +1398,7 @@ struct CatalogGroupFilterButton: View {
 struct WallpaperCatalogGridView: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     private let columns = [GridItem(.adaptive(minimum: 220), spacing: 12)]
 
@@ -1379,11 +1432,11 @@ struct WallpaperCatalogGridView: View {
 
                                 Text(wallpaper.title)
                                     .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.96) : Color.black.opacity(0.86))
+                                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
                                     .lineLimit(1)
                                 Text(wallpaper.category)
                                     .font(.caption)
-                                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.78) : Color.black.opacity(0.64))
+                                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(10)
@@ -1409,6 +1462,7 @@ struct WallpaperCatalogDetailView: View {
     @ObservedObject var viewModel: AppViewModel
     let wallpaper: CatalogWallpaper
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1422,11 +1476,11 @@ struct WallpaperCatalogDetailView: View {
 
             Text(wallpaper.title)
                 .font(.headline)
-                .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.96) : Color.black.opacity(0.86))
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
 
             Text("Category: \(wallpaper.category) • Source: \(wallpaper.attribution)")
                 .font(.caption)
-                .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.80) : Color.black.opacity(0.66))
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
 
             HStack(spacing: 10) {
                 Button {
@@ -1628,10 +1682,10 @@ struct SpeedOverlay: View {
     }
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 4) {
             Label("Speed", systemImage: "speedometer")
                 .labelStyle(.titleAndIcon)
-                .foregroundStyle(Color.white.opacity(0.94))
+                .foregroundStyle(adaptiveGlassAppearance.topTextTone.primaryTextColor)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
 
@@ -1653,9 +1707,9 @@ struct SpeedOverlay: View {
 
             Text(String(format: "%.2fx", viewModel.playbackSpeed))
                 .monospacedDigit()
-                .foregroundStyle(Color.white.opacity(0.78))
+                .foregroundStyle(adaptiveGlassAppearance.topTextTone.secondaryTextColor)
                 .lineLimit(1)
-                .frame(minWidth: 64, alignment: .trailing)
+                .frame(minWidth: 32, alignment: .trailing)
         }
         .controlSize(compactControlSize)
         .padding(.vertical, 10)
@@ -1699,10 +1753,6 @@ private struct AuraLegacySpeedSlider: View {
             let knobX = normalizedValue * usableWidth
 
             ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.white.opacity(0.10))
-                    .frame(height: trackHeight)
-
                 AuraLegacySliderDashes()
                     .mask(
                         Capsule()
@@ -1755,18 +1805,19 @@ private struct AuraLegacySpeedSlider: View {
 }
 
 private struct AuraLegacySliderDashes: View {
-    private let dashCount = 38
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         GeometryReader { proxy in
             let dashWidth: CGFloat = 1
+            let dashCount = max(38, Int(proxy.size.width / 4.2))
             let dashHeight = max(proxy.size.height + 4, 8)
             let spacing = max((proxy.size.width - (CGFloat(dashCount) * dashWidth)) / CGFloat(max(dashCount - 1, 1)), 1)
 
             HStack(spacing: spacing) {
                 ForEach(0..<dashCount, id: \.self) { _ in
                     Capsule()
-                        .fill(Color.white.opacity(0.22))
+                        .fill(adaptiveGlassAppearance.topTextTone.primaryTextColor.opacity(0.28))
                         .frame(width: dashWidth, height: dashHeight)
                 }
             }
@@ -1921,51 +1972,67 @@ private struct AuraPanelButton: View {
     }
 
     private var labelColor: Color {
-        guard isEnabled else { return Color.white.opacity(0.50) }
-        return Color.white.opacity(configuration.isPressed ? 0.90 : 0.97)
+        let tone = adaptiveGlassAppearance.bottomTextTone
+        guard isEnabled else { return tone.disabledTextColor }
+        return tone.primaryTextColor.opacity(configuration.isPressed ? 0.96 : 1.0)
     }
 
     var body: some View {
         configuration.label
             .font(.body.weight(.semibold))
             .foregroundStyle(labelColor)
-            .shadow(color: Color.black.opacity(isEnabled ? 0.18 : 0.06), radius: 1, x: 0, y: 1)
+            .shadow(
+                color: adaptiveGlassAppearance.bottomTextTone.textShadowColor.opacity(isEnabled ? 1.0 : 0.35),
+                radius: 1,
+                x: 0,
+                y: 1
+            )
             .frame(maxWidth: .infinity)
             .padding(.vertical, 3)
             .padding(.horizontal, 12)
             .background {
                 ZStack {
-                    shape.fill(Color.black.opacity(protectionOpacity))
-                    shape.fill(Color.white.opacity(baseSurfaceOpacity))
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(topHighlightOpacity),
-                            Color.white.opacity(isEnabled ? 0.045 : 0.018),
-                            Color.black.opacity(isEnabled ? 0.035 : 0.06),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .clipShape(shape)
+                    if #available(macOS 26.0, *) {
+                        shape
+                            .fill(Color.clear)
+                            .glassEffect(.clear.interactive(), in: shape)
+                    } else {
+                        shape.fill(Color.black.opacity(protectionOpacity))
+                        shape.fill(Color.white.opacity(baseSurfaceOpacity))
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(topHighlightOpacity),
+                                Color.white.opacity(isEnabled ? 0.045 : 0.018),
+                                Color.black.opacity(isEnabled ? 0.035 : 0.06),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .clipShape(shape)
+                    }
                 }
             }
             .overlay {
-                shape.strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(isEnabled ? (isHovering ? 0.34 : 0.26) : 0.10),
-                            Color.white.opacity(isEnabled ? 0.10 : 0.055),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.8
-                )
-            }
-            .overlay {
-                shape
-                    .inset(by: 1.1)
-                    .stroke(Color.white.opacity(isEnabled ? 0.055 : 0.02), lineWidth: 0.5)
+                if #available(macOS 26.0, *) {
+                    shape.strokeBorder(
+                        adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(
+                            isEnabled ? (isHovering ? 0.24 : 0.16) : 0.08
+                        ),
+                        lineWidth: 0.8
+                    )
+                } else {
+                    shape.strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(isEnabled ? (isHovering ? 0.34 : 0.26) : 0.10),
+                                Color.white.opacity(isEnabled ? 0.10 : 0.055),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.8
+                    )
+                }
             }
             .contentShape(shape)
             .clipShape(shape)
@@ -2010,6 +2077,7 @@ private struct AuraGlassButton: View {
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     private var baseTint: Color {
         switch tone {
@@ -2060,11 +2128,12 @@ private struct AuraGlassButton: View {
     }
 
     private var foregroundColor: Color {
+        let textTone = adaptiveGlassAppearance.centerTextTone
         switch tone {
         case .secondary:
-            return Color.white.opacity(0.94)
+            return textTone.primaryTextColor
         case .accent, .destructive:
-            return .white.opacity(isEnabled ? 0.96 : 0.82)
+            return textTone.primaryTextColor.opacity(isEnabled ? 1.0 : 0.86)
         }
     }
 
@@ -2091,29 +2160,50 @@ private struct AuraGlassButton: View {
         labelContent
             .font(.body.weight(.semibold))
             .foregroundStyle(foregroundColor)
-            .shadow(color: Color.black.opacity(tone == .secondary ? 0.10 : 0.18), radius: 1, x: 0, y: 1)
+            .shadow(
+                color: adaptiveGlassAppearance.centerTextTone.textShadowColor.opacity(tone == .secondary ? 0.55 : 0.80),
+                radius: 1,
+                x: 0,
+                y: 1
+            )
             .padding(.vertical, 3)
             .padding(.horizontal, 12)
             .background {
                 ZStack {
-                    shape.fill(backdropColor)
-                    shape.fill(baseTint.opacity(tintOpacity))
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.12),
-                            Color.white.opacity(0.04),
-                            Color.clear,
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .clipShape(shape)
+                    if #available(macOS 26.0, *) {
+                        shape
+                            .fill(Color.clear)
+                            .glassEffect(.clear.interactive(), in: shape)
+                    } else {
+                        shape.fill(backdropColor)
+                        shape.fill(baseTint.opacity(tintOpacity))
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.12),
+                                Color.white.opacity(0.04),
+                                Color.clear,
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .clipShape(shape)
+                    }
                     shape.fill(pressedOverlayColor)
                 }
                 .clipShape(shape)
             }
             .overlay {
-                shape.stroke(Color.white.opacity(borderOpacity), lineWidth: 1.0)
+                if #available(macOS 26.0, *) {
+                    let opacity: CGFloat = tone == .secondary ? 0.16 : 0.24
+                    shape.stroke(
+                        adaptiveGlassAppearance.centerTextTone.primaryTextColor.opacity(
+                            isEnabled ? opacity : 0.08
+                        ),
+                        lineWidth: 0.8
+                    )
+                } else {
+                    shape.stroke(Color.white.opacity(borderOpacity), lineWidth: 1.0)
+                }
             }
             .clipShape(shape)
             .opacity(isEnabled ? 1.0 : 0.62)
@@ -2255,11 +2345,22 @@ struct AuraGlassInsetCard: View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         ZStack {
-            shape.fill(
-                colorScheme == .dark
-                    ? Color.black.opacity(emphasized ? 0.30 : 0.22)
-                    : Color.white.opacity(emphasized ? 0.22 : 0.16)
-            )
+            if #available(macOS 26.0, *) {
+                shape
+                    .fill(Color.clear)
+                    .glassEffect(.clear.interactive(), in: shape)
+                shape.fill(
+                    colorScheme == .dark
+                        ? Color.black.opacity(emphasized ? 0.10 : 0.06)
+                        : Color.white.opacity(emphasized ? 0.10 : 0.06)
+                )
+            } else {
+                shape.fill(
+                    colorScheme == .dark
+                        ? Color.black.opacity(emphasized ? 0.30 : 0.22)
+                        : Color.white.opacity(emphasized ? 0.22 : 0.16)
+                )
+            }
             LinearGradient(
                 colors: [
                     Color.white.opacity(emphasized ? 0.10 : 0.065),
@@ -2282,6 +2383,7 @@ struct AuraGlassInsetCard: View {
 struct ErrorBanner: View {
     let text: String
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -2289,7 +2391,7 @@ struct ErrorBanner: View {
                 .foregroundColor(.yellow)
             Text(text)
                 .font(.callout)
-                .foregroundColor(.primary)
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 14)
@@ -2451,6 +2553,9 @@ private final class WindowAccessorView: NSView {
 private extension ContentView {
     func resolvedTopOverlayPadding() -> CGFloat {
         guard let window else { return topOverlayTopPadding }
+        if window.styleMask.contains(.fullScreen) {
+            return fullScreenTopOverlayPadding
+        }
         if usesZoomedWindowLayout(window) {
             return zoomedTopOverlayPadding
         }
