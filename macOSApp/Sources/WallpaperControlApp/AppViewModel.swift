@@ -2953,24 +2953,32 @@ final class AppViewModel: ObservableObject {
             height: height,
             region: CGRect(x: 0.08, y: 0.80, width: 0.84, height: 0.16)
         )
-        let topTextStats = textLuminanceStats(
-            pixels: pixels,
-            width: width,
-            height: height,
-            region: regionFromTop(CGRect(x: 0.26, y: 0.035, width: 0.48, height: 0.125))
-        )
-        let bottomTextStats = textLuminanceStats(
-            pixels: pixels,
-            width: width,
-            height: height,
-            region: regionFromTop(CGRect(x: 0.08, y: 0.78, width: 0.84, height: 0.19))
-        )
-        let centerTextStats = textLuminanceStats(
-            pixels: pixels,
-            width: width,
-            height: height,
-            region: regionFromTop(CGRect(x: 0.16, y: 0.28, width: 0.68, height: 0.44))
-        )
+        // Text is one visual system across the app. Sample the three places
+        // where glass controls actually live, then choose the tone with the
+        // best worst-case contrast. A full-frame average is misleading for a
+        // bright sky beside a dark subject and was the source of the old
+        // black-Speed/white-buttons mismatch.
+        let sharedTextRegions = [
+            textLuminanceStats(
+                pixels: pixels,
+                width: width,
+                height: height,
+                region: regionFromTop(CGRect(x: 0.20, y: 0.02, width: 0.60, height: 0.18))
+            ),
+            textLuminanceStats(
+                pixels: pixels,
+                width: width,
+                height: height,
+                region: regionFromTop(CGRect(x: 0.05, y: 0.76, width: 0.90, height: 0.22))
+            ),
+            textLuminanceStats(
+                pixels: pixels,
+                width: width,
+                height: height,
+                region: regionFromTop(CGRect(x: 0.08, y: 0.18, width: 0.84, height: 0.58))
+            ),
+        ]
+        let sharedTextTone = textTone(for: sharedTextRegions)
 
         let topProtection = protectionLevel(for: topStats)
         let bottomProtection = protectionLevel(for: bottomStats)
@@ -2982,9 +2990,9 @@ final class AppViewModel: ObservableObject {
             bottomProtectionOverlayOpacity: 0.020 * bottomProtection,
             bottomButtonProtectionOpacity: 0.014 * bottomProtection,
             bottomButtonHighlightOpacity: max(0.018, 0.055 - (0.040 * bottomProtection)),
-            topTextTone: textTone(for: topTextStats),
-            bottomTextTone: textTone(for: bottomTextStats),
-            centerTextTone: textTone(for: centerTextStats)
+            topTextTone: sharedTextTone,
+            bottomTextTone: sharedTextTone,
+            centerTextTone: sharedTextTone
         )
     }
 
@@ -3014,6 +3022,33 @@ final class AppViewModel: ObservableObject {
         }
 
         return lightContrast > darkContrast ? .light : .dark
+    }
+
+    nonisolated private static func textTone(for regions: [TextLuminanceStats]) -> AdaptiveTextTone {
+        guard !regions.isEmpty else { return .light }
+
+        let worstDarkContrast = regions
+            .map { textContrast(for: .dark, stats: $0) }
+            .min() ?? 0.0
+        let worstLightContrast = regions
+            .map { textContrast(for: .light, stats: $0) }
+            .min() ?? 0.0
+
+        return worstLightContrast > worstDarkContrast ? .light : .dark
+    }
+
+    nonisolated private static func textContrast(
+        for tone: AdaptiveTextTone,
+        stats: TextLuminanceStats
+    ) -> CGFloat {
+        switch tone {
+        case .dark:
+            let darkBackground = (stats.lowerQuartile * 0.70) + (stats.median * 0.30)
+            return (darkBackground + 0.05) / 0.05
+        case .light:
+            let lightBackground = (stats.upperQuartile * 0.70) + (stats.median * 0.30)
+            return 1.05 / (lightBackground + 0.05)
+        }
     }
 
     nonisolated private static func protectionLevel(for stats: LuminanceStats) -> CGFloat {

@@ -16,6 +16,27 @@ extension EnvironmentValues {
 }
 
 private extension AdaptiveTextTone {
+    /// A low-opacity tint that improves contrast without turning Liquid Glass
+    /// into an opaque panel. Dark text gets a light lift; light text gets a
+    /// dark lift. Every button and inset surface uses the same tone.
+    var contrastSurfaceColor: Color {
+        switch self {
+        case .dark:
+            return Color.white
+        case .light:
+            return Color.black
+        }
+    }
+
+    var contrastHighlightColor: Color {
+        switch self {
+        case .dark:
+            return Color.white
+        case .light:
+            return Color.white
+        }
+    }
+
     var primaryTextColor: Color {
         switch self {
         case .dark:
@@ -1328,7 +1349,10 @@ struct WallpaperCatalogView: View {
                         .background(AuraGlassInsetCard(emphasized: true))
                         .overlay(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(Color.white.opacity(0.12), lineWidth: 0.9)
+                                .stroke(
+                                    adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.12),
+                                    lineWidth: 0.9
+                                )
                         )
                         .frame(maxWidth: 260)
                 }
@@ -1391,7 +1415,9 @@ struct CatalogGroupFilterButton: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .stroke(
-                        isSelected ? Color.accentColor.opacity(0.55) : Color.white.opacity(0.10),
+                        isSelected
+                            ? adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.55)
+                            : adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.10),
                         lineWidth: isSelected ? 1.1 : 0.9
                     )
             )
@@ -1984,6 +2010,10 @@ private struct AuraPanelButton: View {
         return tone.primaryTextColor.opacity(configuration.isPressed ? 0.96 : 1.0)
     }
 
+    private var textTone: AdaptiveTextTone {
+        adaptiveGlassAppearance.bottomTextTone
+    }
+
     var body: some View {
         configuration.label
             .font(.body.weight(.semibold))
@@ -2003,14 +2033,19 @@ private struct AuraPanelButton: View {
                         shape
                             .fill(Color.clear)
                             .glassEffect(.clear.interactive(), in: shape)
+                        shape.fill(
+                            textTone.contrastSurfaceColor.opacity(
+                                isEnabled ? (configuration.isPressed ? 0.045 : 0.022) : 0.012
+                            )
+                        )
                     } else {
-                        shape.fill(Color.black.opacity(protectionOpacity))
-                        shape.fill(Color.white.opacity(baseSurfaceOpacity))
+                        shape.fill(textTone.contrastSurfaceColor.opacity(protectionOpacity))
+                        shape.fill(textTone.contrastHighlightColor.opacity(baseSurfaceOpacity))
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(topHighlightOpacity),
-                                Color.white.opacity(isEnabled ? 0.045 : 0.018),
-                                Color.black.opacity(isEnabled ? 0.035 : 0.06),
+                                textTone.contrastHighlightColor.opacity(topHighlightOpacity),
+                                textTone.contrastHighlightColor.opacity(isEnabled ? 0.045 : 0.018),
+                                textTone.contrastSurfaceColor.opacity(isEnabled ? 0.035 : 0.06),
                             ],
                             startPoint: .top,
                             endPoint: .bottom
@@ -2029,13 +2064,8 @@ private struct AuraPanelButton: View {
                     )
                 } else {
                     shape.strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(isEnabled ? (isHovering ? 0.34 : 0.26) : 0.10),
-                                Color.white.opacity(isEnabled ? 0.10 : 0.055),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
+                        textTone.primaryTextColor.opacity(
+                            isEnabled ? (isHovering ? 0.24 : 0.17) : 0.08
                         ),
                         lineWidth: 0.8
                     )
@@ -2089,9 +2119,8 @@ private struct AuraGlassButton: View {
     private var baseTint: Color {
         switch tone {
         case .secondary:
-            return colorScheme == .dark
-                ? Color.white.opacity(0.08)
-                : Color.white.opacity(0.06)
+            return adaptiveGlassAppearance.centerTextTone.contrastHighlightColor
+                .opacity(colorScheme == .dark ? 0.08 : 0.06)
         case .accent:
             return Color(red: 0.67, green: 0.28, blue: 0.78)
         case .destructive:
@@ -2124,9 +2153,9 @@ private struct AuraGlassButton: View {
     private var backdropColor: Color {
         switch tone {
         case .secondary:
-            return colorScheme == .dark
-                ? Color.black.opacity(0.24)
-                : Color.black.opacity(0.20)
+            return adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(
+                colorScheme == .dark ? 0.24 : 0.20
+            )
         case .accent:
             return Color.black.opacity(colorScheme == .dark ? 0.18 : 0.14)
         case .destructive:
@@ -2149,7 +2178,9 @@ private struct AuraGlassButton: View {
     }
 
     private var pressedOverlayColor: Color {
-        Color.white.opacity(configuration.isPressed ? 0.10 : 0.0)
+        adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(
+            configuration.isPressed ? 0.10 : 0.0
+        )
     }
 
     @ViewBuilder
@@ -2181,14 +2212,19 @@ private struct AuraGlassButton: View {
                         shape
                             .fill(Color.clear)
                             .glassEffect(.clear.interactive(), in: shape)
+                        shape.fill(
+                            adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(
+                                isEnabled ? (configuration.isPressed ? 0.045 : 0.022) : 0.012
+                            )
+                        )
                     } else {
                         shape.fill(backdropColor)
                         shape.fill(baseTint.opacity(tintOpacity))
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(0.12),
-                                Color.white.opacity(0.04),
-                                Color.clear,
+                                adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.12),
+                                adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.04),
+                                adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(0.025),
                             ],
                             startPoint: .top,
                             endPoint: .bottom
@@ -2209,7 +2245,12 @@ private struct AuraGlassButton: View {
                         lineWidth: 0.8
                     )
                 } else {
-                    shape.stroke(Color.white.opacity(borderOpacity), lineWidth: 1.0)
+                    shape.stroke(
+                        adaptiveGlassAppearance.centerTextTone.primaryTextColor.opacity(
+                            isEnabled ? borderOpacity : 0.08
+                        ),
+                        lineWidth: 1.0
+                    )
                 }
             }
             .clipShape(shape)
@@ -2346,10 +2387,11 @@ private extension AuraSurfaceMaterial {
 struct AuraGlassInsetCard: View {
     var cornerRadius: CGFloat = 10
     var emphasized: Bool = false
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let textTone = adaptiveGlassAppearance.centerTextTone
 
         ZStack {
             if #available(macOS 26.0, *) {
@@ -2357,22 +2399,18 @@ struct AuraGlassInsetCard: View {
                     .fill(Color.clear)
                     .glassEffect(.clear.interactive(), in: shape)
                 shape.fill(
-                    colorScheme == .dark
-                        ? Color.black.opacity(emphasized ? 0.10 : 0.06)
-                        : Color.white.opacity(emphasized ? 0.10 : 0.06)
+                    textTone.contrastSurfaceColor.opacity(emphasized ? 0.10 : 0.06)
                 )
             } else {
                 shape.fill(
-                    colorScheme == .dark
-                        ? Color.black.opacity(emphasized ? 0.30 : 0.22)
-                        : Color.white.opacity(emphasized ? 0.22 : 0.16)
+                    textTone.contrastSurfaceColor.opacity(emphasized ? 0.30 : 0.22)
                 )
             }
             LinearGradient(
                 colors: [
-                    Color.white.opacity(emphasized ? 0.10 : 0.065),
-                    Color.white.opacity(0.018),
-                    Color.clear,
+                    textTone.contrastHighlightColor.opacity(emphasized ? 0.10 : 0.065),
+                    textTone.contrastHighlightColor.opacity(0.018),
+                    textTone.contrastSurfaceColor.opacity(0.012),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -2381,7 +2419,7 @@ struct AuraGlassInsetCard: View {
         }
         .overlay(
             shape
-                .stroke(Color.white.opacity(emphasized ? 0.14 : 0.10), lineWidth: 0.9)
+                .stroke(textTone.primaryTextColor.opacity(emphasized ? 0.14 : 0.10), lineWidth: 0.9)
         )
         .clipShape(shape)
     }
