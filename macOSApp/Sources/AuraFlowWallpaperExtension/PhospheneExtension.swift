@@ -2,7 +2,6 @@ import AppKit
 import ExtensionFoundation
 import Foundation
 
-@main
 final class AuraFlowWallpaperExtension: NSObject, AppExtension {
     override required init() {
         super.init()
@@ -168,3 +167,13 @@ final class AuraFlowWallpaperExtension: NSObject, AppExtension {
     }
 }
 
+// AppExtension.main() currently traps on macOS 27 when Swift synthesizes the
+// entry point for an @main AppExtension type. Start it from the main actor
+// explicitly and keep the extension process alive on the main run loop.
+@_cdecl("main")
+func auraFlowExtensionEntryPoint() -> Int32 {
+    Task { @MainActor in
+        try! AuraFlowWallpaperExtension.main()
+    }
+    dispatchMain()
+}
