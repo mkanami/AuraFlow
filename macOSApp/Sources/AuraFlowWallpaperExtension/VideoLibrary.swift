@@ -23,13 +23,17 @@ struct VideoEntry: Codable {
 final class VideoLibrary: Sendable {
     static let shared = VideoLibrary()
 
+    static var sharedDocumentsURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/AuraFlow/Lock Screen", isDirectory: true)
+    }
+
     private let videosDir: URL
     private let indexURL: URL
     private let lock = OSAllocatedUnfairLock(initialState: [VideoEntry]())
 
     private init() {
-        let docs = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents")
+        let docs = Self.sharedDocumentsURL
         self.videosDir = docs.appendingPathComponent("videos")
         self.indexURL = docs.appendingPathComponent("library.json")
         try? FileManager.default.createDirectory(at: videosDir, withIntermediateDirectories: true)
@@ -359,4 +363,3 @@ final class VideoLibrary: Sendable {
         }
     }
 }
-

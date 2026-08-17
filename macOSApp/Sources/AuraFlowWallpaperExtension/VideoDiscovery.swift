@@ -55,7 +55,7 @@ func generateThumbnail(from videoURL: URL) async -> URL? {
         return nil
     }
 
-    let docsDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
+    let docsDir = VideoLibrary.sharedDocumentsURL
     try? FileManager.default.createDirectory(at: docsDir, withIntermediateDirectories: true)
     let thumbnailURL = docsDir.appendingPathComponent("thumbnail.jpg")
 
@@ -76,4 +76,3 @@ func generateThumbnail(from videoURL: URL) async -> URL? {
     extensionLog("  Thumbnail saved: \(thumbnailURL.path)")
     return thumbnailURL
 }
-

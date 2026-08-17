@@ -79,7 +79,7 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
         self.extensionDocumentsURL = extensionDocumentsURL
             ?? fileManager.homeDirectoryForCurrentUser
                 .appendingPathComponent(
-                    "Library/Containers/com.andrijvergeles.auraflow.wallpaper-extension/Data/Documents",
+                    "Library/Application Support/AuraFlow/Lock Screen",
                     isDirectory: true
                 )
         self.wallpaperStoreURL = wallpaperStoreURL

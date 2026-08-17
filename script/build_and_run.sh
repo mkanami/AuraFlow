@@ -19,6 +19,7 @@ APP_PLUGINS="$APP_CONTENTS/PlugIns"
 APP_EXTENSIONS="$APP_CONTENTS/Extensions"
 APP_BINARY="$APP_MACOS/$PROCESS_NAME"
 HELPER_NAME="AuraWallpaperAgent"
+SIGNING_IDENTITY="${CODESIGN_IDENTITY:--}"
 
 SWIFT_BIN="${AURAFLOW_SWIFT_BIN:-swift}"
 SWIFT_ARGS=()
@@ -88,10 +89,15 @@ cat >"$APP_CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --sign - "$APP_MACOS/$HELPER_NAME"
-codesign --force --sign - "$APP_BINARY"
-codesign --force --sign - "$APP_BUNDLE"
+codesign --force --sign "$SIGNING_IDENTITY" "$APP_MACOS/$HELPER_NAME"
+codesign --force --sign "$SIGNING_IDENTITY" "$APP_BINARY"
+codesign --force --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
+
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$LSREGISTER" ]]; then
+  "$LSREGISTER" -f -R -trusted "$APP_BUNDLE"
+fi
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
