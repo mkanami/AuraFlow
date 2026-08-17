@@ -9,14 +9,12 @@ extension AerialLockScreenInstaller: ModernLockScreenInstalling {}
 
 /// Routes Lock Screen media to the surface that macOS actually launches.
 ///
-/// macOS 26 and later no longer make the old Aerial store injection the active
-/// lock/screen-saver surface. AuraFlow already bundles a signed screen saver
-/// component, so prefer that component on those systems. Older systems retain
-/// the Aerial path when it is available.
+/// macOS 26 and later require a registered WallpaperExtensionKit provider.
+/// Older systems retain the existing Aerial/screen-saver compatibility paths.
 final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
     private let modern: ModernLockScreenInstalling
     private let legacy: LockScreenSaverInstalling
-    private let preferLegacy: Bool
+    private let useExtensionPath: Bool
 
     init(
         modern: ModernLockScreenInstalling = AerialLockScreenInstaller(),
@@ -26,7 +24,7 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
     ) {
         self.modern = modern
         self.legacy = legacy
-        self.preferLegacy = operatingSystemVersion.majorVersion >= 26
+        self.useExtensionPath = operatingSystemVersion.majorVersion >= 26
     }
 
     var isInstalled: Bool {
@@ -34,20 +32,20 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
     }
 
     func install(videoURL: URL) throws {
-        if preferLegacy {
-            try legacy.install(videoURL: videoURL)
-            // Remove a stale Aerial installation after the working screen
-            // saver is active. A failed cleanup must not undo the working
-            // Lock Screen selection.
-            if modern.isInstalled {
-                try? modern.uninstall()
+        if useExtensionPath {
+            guard modern.isAvailable else {
+                throw WallpaperExtensionLockScreenInstallerError.extensionNotBundled
+            }
+            try modern.install(videoURL: videoURL)
+            if legacy.isInstalled {
+                try? legacy.uninstall()
             }
             return
         }
 
         if modern.isAvailable {
             if legacy.isInstalled {
-                try legacy.uninstall()
+                try? legacy.uninstall()
             }
             try modern.install(videoURL: videoURL)
         } else {
