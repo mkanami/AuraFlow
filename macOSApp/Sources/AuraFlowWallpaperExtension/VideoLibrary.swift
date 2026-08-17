@@ -24,8 +24,7 @@ final class VideoLibrary: Sendable {
     static let shared = VideoLibrary()
 
     static var sharedDocumentsURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/AuraFlow/Lock Screen", isDirectory: true)
+        URL(fileURLWithPath: "/Users/Shared/AuraFlow/Lock Screen", isDirectory: true)
     }
 
     private let videosDir: URL

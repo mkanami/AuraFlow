@@ -77,11 +77,7 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
             ?? Bundle.main.bundleURL
                 .appendingPathComponent("Contents/Extensions/AuraFlowWallpaperExtension.appex", isDirectory: true)
         self.extensionDocumentsURL = extensionDocumentsURL
-            ?? fileManager.homeDirectoryForCurrentUser
-                .appendingPathComponent(
-                    "Library/Application Support/AuraFlow/Lock Screen",
-                    isDirectory: true
-                )
+            ?? URL(fileURLWithPath: "/Users/Shared/AuraFlow/Lock Screen", isDirectory: true)
         self.wallpaperStoreURL = wallpaperStoreURL
             ?? fileManager.homeDirectoryForCurrentUser
                 .appendingPathComponent(
