@@ -870,7 +870,7 @@ struct SettingsPopupCard: View {
                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             }
 
-            Text("AuraFlow uses macOS's Aerial engine for the real lock screen and restores the reserved system asset when disabled. This integration is experimental because Apple does not publish its wallpaper extension API.")
+            Text("On macOS 26 and later, AuraFlow uses a Wallpaper Extension for the real Lock Screen. It changes only the Lock Screen wallpaper; your Desktop wallpaper stays separate.")
                 .font(.caption2)
                 .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 .fixedSize(horizontal: false, vertical: true)

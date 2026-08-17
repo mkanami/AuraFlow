@@ -1618,21 +1618,23 @@ final class AppViewModel: ObservableObject {
     }
 
     func startSystemScreenSaver() {
-        let screenSaverURL = URL(
-            fileURLWithPath:
-                "/System/Library/CoreServices/ScreenSaverEngine.app",
-            isDirectory: true
-        )
-        guard FileManager.default.fileExists(
-            atPath: screenSaverURL.path
-        ),
-        NSWorkspace.shared.open(screenSaverURL)
-        else {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+        task.arguments = ["displaysleepnow"]
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
             alertMessage =
-                "macOS could not start the system Screen Saver."
+                "macOS could not start the Lock Screen test."
             return
         }
-        statusMessage = "Starting the system Lock Screen wallpaper."
+        guard task.terminationStatus == 0 else {
+            alertMessage =
+                "macOS did not accept the Lock Screen test request."
+            return
+        }
+        statusMessage = "Lock Screen test started. Unlock the Mac manually to return."
         alertMessage = nil
     }
 

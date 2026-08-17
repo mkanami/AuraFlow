@@ -59,7 +59,7 @@ func buildSettingsViewModelsXPC() async -> AnyObject? {
     let group = SettingsGroup(
         id: groupID,
         items: items,
-        localizedName: "Phosphene \u{2014} Video Wallpapers",
+        localizedName: "AuraFlow \u{2014} Lock Screen Wallpapers",
         disposability: .none,
         sortOrder: -100,
         sortID: GroupSortID(id: "com.apple.wallpaper.aerials"),
@@ -140,4 +140,3 @@ private func remapToRealXPC(_ viewModels: SettingsViewModels) -> AnyObject? {
     }
     return result as AnyObject?
 }
-
