@@ -17,7 +17,7 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
     private let useExtensionPath: Bool
 
     init(
-        modern: ModernLockScreenInstalling = AerialLockScreenInstaller(),
+        modern: ModernLockScreenInstalling = WallpaperExtensionLockScreenInstaller(),
         legacy: LockScreenSaverInstalling = LockScreenSaverInstaller(),
         operatingSystemVersion: OperatingSystemVersion =
             ProcessInfo.processInfo.operatingSystemVersion
