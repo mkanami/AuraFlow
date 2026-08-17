@@ -171,6 +171,7 @@ protocol WallpaperControlling {
     func stop() throws -> ControlStatus
     func clearWallpaper() throws -> ControlStatus
     func setVideo(_ url: URL) throws -> ControlStatus
+    func setLockScreenMedia(_ url: URL?) throws -> ControlStatus
     func setSpeed(_ speed: Double) throws -> ControlStatus
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus
@@ -181,6 +182,14 @@ protocol WallpaperControlling {
     func setScaleMode(_ mode: WallpaperScaleMode) throws -> ControlStatus
     func setAutostart(_ enabled: Bool) throws -> ControlStatus
     func metrics() throws -> DaemonMetrics
+}
+
+extension WallpaperControlling {
+    func setLockScreenMedia(_ url: URL?) throws -> ControlStatus {
+        throw NativeWallpaperControllerError.unavailable(
+            "Lock Screen media selection is unavailable."
+        )
+    }
 }
 
 enum NativeWallpaperControllerError: LocalizedError {
@@ -311,15 +320,26 @@ final class NativeWallpaperController: WallpaperControlling {
             return
         }
         let config = store.loadConfig()
-        guard config.video_path.isEmpty else {
+        // A Lock Screen-only configuration deliberately has an empty desktop
+        // path. It is not an interrupted removal and must remain intact.
+        guard config.video_path.isEmpty,
+              config.effectiveLockScreenPath.isEmpty
+        else {
             return
         }
-        if store.restoreWallpaperBackup() {
-            store.removeManagedFallback()
-        } else {
-            _ = WallpaperDesktopSupport
-                .repairCurrentDesktopWallpaperIfNeeded()
+        if lockScreenSaverInstaller.isInstalled {
+            try? lockScreenSaverInstaller.uninstall()
         }
+        WallpaperDesktopSupport.discardWallpaperBackups(
+            appSupportPath: store.appSupportURL.path
+        )
+        _ = try? updateConfig { config in
+            config.show_on_lock_screen = false
+            config.lock_screen_preference_configured = true
+            config.lock_screen_path = nil
+            config.lock_screen_runtime_path = nil
+        }
+        store.removeManagedFallback()
     }
 
     private func updateConfig(_ block: (inout ControlConfig) -> Void) throws -> ControlConfig {
@@ -358,28 +378,33 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func start(videoURL: URL?, speed: Double?) throws -> ControlStatus {
-        let config = try updateConfig { config in
+        var config = try updateConfig { config in
             if let videoURL {
                 config.video_path = videoURL.path
             }
             if let speed {
                 config.playback_speed = speed
             }
-            // Version 1.3.0 stored the implicit default as an explicit `false`.
-            // Treat that legacy value as unset once. From 1.3.1 onward an
-            // explicit user toggle is recorded and always respected.
+            // Aerial changes the system wallpaper store, so Lock Screen is
+            // opt-in. Old configurations did not record the user's choice;
+            // migrate those to the safe desktop-only mode on their next run.
             if config.lock_screen_preference_configured != true {
-                config.show_on_lock_screen = true
+                config.show_on_lock_screen = false
             }
         }
         guard !config.video_path.isEmpty else {
-            throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
+            throw NativeWallpaperControllerError.unavailable("No desktop wallpaper configured. Choose a wallpaper first.")
         }
         guard FileManager.default.fileExists(atPath: config.video_path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
-        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(appSupportPath: store.appSupportURL.path)
         if config.show_on_lock_screen ?? false {
+            _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
+                appSupportPath: store.appSupportURL.path
+            )
+            let prepared = try prepareLockScreenConfig(config)
+            config = prepared
+            try store.saveConfig(config)
             try installLockScreenSaver(using: config)
         }
         store.markPaused(false)
@@ -389,14 +414,25 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func resume() throws -> ControlStatus {
-        let config = store.loadConfig()
+        var config = store.loadConfig()
         guard !config.video_path.isEmpty else {
-            throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
+            throw NativeWallpaperControllerError.unavailable("No desktop wallpaper configured. Choose a wallpaper first.")
         }
         guard FileManager.default.fileExists(atPath: config.video_path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
 
+        // Lock Screen is the only mode that changes the system wallpaper
+        // store. Desktop-only playback is an overlay and must not create or
+        // restore wallpaper snapshots.
+        if config.show_on_lock_screen == true {
+            _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
+                appSupportPath: store.appSupportURL.path
+            )
+            let prepared = try prepareLockScreenConfig(config)
+            config = prepared
+            try store.saveConfig(config)
+        }
         store.markPaused(false)
         try launchAgentIfNeeded()
         if store.processIsAlive(pid: store.loadPID()) {
@@ -418,12 +454,6 @@ final class NativeWallpaperController: WallpaperControlling {
 
     func clearWallpaper() throws -> ControlStatus {
         let currentConfig = store.loadConfig()
-        // Refresh the snapshot immediately before removal. The user can
-        // change the desktop wallpaper outside AuraFlow while our windows are
-        // running, so the most recent external selection must be restored.
-        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
-            appSupportPath: store.appSupportURL.path
-        )
         if store.processIsAlive(pid: store.loadPID()) {
             try? send(.terminate, config: currentConfig)
         }
@@ -434,29 +464,91 @@ final class NativeWallpaperController: WallpaperControlling {
         }
         store.removeCommand()
         store.removeHealth()
-        if currentConfig.show_on_lock_screen == true
-            || lockScreenSaverInstaller.isInstalled {
+        // `Remove` is the Desktop action. A separately selected Lock Screen
+        // source remains active; only a Lock Screen that falls back to the
+        // desktop source must be removed with the desktop wallpaper.
+        let keepsDedicatedLockScreen = currentConfig.lock_screen_path != nil
+        let mustRemoveDesktopFallbackLockScreen = !keepsDedicatedLockScreen
+            && (currentConfig.show_on_lock_screen == true
+                || lockScreenSaverInstaller.isInstalled)
+        if mustRemoveDesktopFallbackLockScreen {
             try lockScreenSaverInstaller.uninstall()
         }
-        let restored = store.restoreWallpaperBackup()
-        if restored {
-            _ = try updateConfig { config in
-                config.video_path = ""
+        // Modern Lock Screen uninstall restores only the system Idle slot.
+        // Restoring AuraFlow's old full-store snapshot here would overwrite
+        // desktop wallpapers that the user chose while Lock Screen was on.
+        WallpaperDesktopSupport.discardWallpaperBackups(
+            appSupportPath: store.appSupportURL.path
+        )
+        _ = try updateConfig { config in
+            config.video_path = ""
+            if !keepsDedicatedLockScreen {
+                config.lock_screen_path = nil
+                config.lock_screen_runtime_path = nil
+                config.show_on_lock_screen = false
+                config.lock_screen_preference_configured = true
             }
-            store.removeManagedFallback()
         }
-        return store.status(wallpaperRestored: restored)
+        store.removeManagedFallback()
+        return store.status(wallpaperRestored: true)
     }
 
     func setVideo(_ url: URL) throws -> ControlStatus {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(url.path)")
         }
-        let config = try updateConfig { config in
+        let previousConfig = store.loadConfig()
+        if previousConfig.show_on_lock_screen == true {
+            _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
+                appSupportPath: store.appSupportURL.path
+            )
+        }
+        var config = try updateConfig { config in
             config.video_path = url.path
+            if config.lock_screen_path == nil {
+                config.lock_screen_runtime_path = nil
+            }
+        }
+        if config.show_on_lock_screen == true,
+           config.lock_screen_path == nil {
+            config = try prepareLockScreenConfig(config)
+            try store.saveConfig(config)
+            try installLockScreenSaver(using: config)
         }
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.reload, config: config)
+        }
+        return store.status()
+    }
+
+    func setLockScreenMedia(_ url: URL?) throws -> ControlStatus {
+        if let url {
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "Lock Screen media file not found: \(url.path)"
+                )
+            }
+        }
+
+        var config = store.loadConfig()
+        if url == nil,
+           config.video_path.isEmpty {
+            throw NativeWallpaperControllerError.unavailable(
+                "Choose a desktop wallpaper before using it for Lock Screen."
+            )
+        }
+        config.lock_screen_path = url?.standardizedFileURL.path
+        config.lock_screen_runtime_path = nil
+        config.show_on_lock_screen = true
+        config.lock_screen_preference_configured = true
+        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
+            appSupportPath: store.appSupportURL.path
+        )
+        config = try prepareLockScreenConfig(config)
+        try installLockScreenSaver(using: config)
+        try store.saveConfig(config)
+        if store.processIsAlive(pid: store.loadPID()) {
+            try send(.update, config: config)
         }
         return store.status()
     }
@@ -494,14 +586,29 @@ final class NativeWallpaperController: WallpaperControlling {
     func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus {
         let currentConfig = store.loadConfig()
         if enabled {
-            guard !currentConfig.video_path.isEmpty else {
+            guard !currentConfig.effectiveLockScreenPath.isEmpty else {
                 throw NativeWallpaperControllerError.unavailable(
-                    "Choose and start a wallpaper before enabling Lock Screen."
+                    "Choose a desktop or Lock Screen wallpaper before enabling Lock Screen."
                 )
             }
-            try installLockScreenSaver(using: currentConfig)
+            var prepared = currentConfig
+            prepared.show_on_lock_screen = true
+            prepared.lock_screen_preference_configured = true
+            _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
+                appSupportPath: store.appSupportURL.path
+            )
+            prepared = try prepareLockScreenConfig(prepared)
+            try installLockScreenSaver(using: prepared)
+            try store.saveConfig(prepared)
+            if store.processIsAlive(pid: store.loadPID()) {
+                try send(.update, config: prepared)
+            }
+            return store.status()
         } else {
             try lockScreenSaverInstaller.uninstall()
+            WallpaperDesktopSupport.discardWallpaperBackups(
+                appSupportPath: store.appSupportURL.path
+            )
         }
 
         let config = try updateConfig { config in
@@ -517,14 +624,16 @@ final class NativeWallpaperController: WallpaperControlling {
     func syncLockScreenSaver() throws {
         let config = store.loadConfig()
         guard config.show_on_lock_screen ?? false,
-              !config.video_path.isEmpty,
-              FileManager.default.fileExists(
-                atPath: config.video_path
-              )
+              !config.effectiveLockScreenPath.isEmpty,
+              FileManager.default.fileExists(atPath: config.effectiveLockScreenPath)
         else {
             return
         }
-        try installLockScreenSaver(using: config)
+        let prepared = try prepareLockScreenConfig(config)
+        if prepared != config {
+            try store.saveConfig(prepared)
+        }
+        try installLockScreenSaver(using: prepared)
     }
 
     func beginLockScreenPreview() throws -> ControlStatus {
@@ -580,8 +689,18 @@ final class NativeWallpaperController: WallpaperControlling {
         store.metrics()
     }
 
+    private func prepareLockScreenConfig(_ config: ControlConfig) throws -> ControlConfig {
+        var prepared = config
+        let sourceURL = URL(fileURLWithPath: config.effectiveLockScreenPath)
+        let runtimeURL = try store.ensureLockScreenVideo(from: sourceURL)
+        prepared.lock_screen_runtime_path = runtimeURL.path == sourceURL.path
+            ? nil
+            : runtimeURL.path
+        return prepared
+    }
+
     private func installLockScreenSaver(using config: ControlConfig) throws {
-        let videoURL = URL(fileURLWithPath: config.video_path)
+        let videoURL = URL(fileURLWithPath: config.effectiveLockScreenRuntimePath)
         // A thumbnail improves the static transition frame, but it must never
         // prevent the actual live video from being installed. AVFoundation can
         // fail still extraction for codecs that the system Aerial provider can
@@ -603,6 +722,7 @@ final class AppViewModel: ObservableObject {
     @Published var blendInterpolationEnabled: Bool = false
     @Published var pauseOnFullscreenEnabled: Bool = true
     @Published var showOnLockScreenEnabled: Bool = false
+    @Published private(set) var lockScreenSourceURL: URL?
     @Published private(set) var isLockScreenPreviewActive: Bool = false
     @Published var scaleMode: WallpaperScaleMode = .fill
     @Published var isSettingsOpen: Bool = false
@@ -684,6 +804,10 @@ final class AppViewModel: ObservableObject {
         selectedVideoURL?.lastPathComponent ?? "Not selected"
     }
 
+    var lockScreenSourceName: String {
+        lockScreenSourceURL?.lastPathComponent ?? "Uses desktop wallpaper"
+    }
+
     var currentVideoURL: URL? {
         selectedVideoURL
     }
@@ -727,13 +851,22 @@ final class AppViewModel: ObservableObject {
     }
 
     var canToggleShowOnLockScreen: Bool {
-        isControllerAvailable && !isBusy && appliedVideoURL != nil
+        isControllerAvailable
+            && !isBusy
+            && (lockScreenSourceURL != nil || appliedVideoURL != nil)
+    }
+
+    var canChooseLockScreenMedia: Bool {
+        isControllerAvailable && !isBusy
+    }
+
+    var canUseDesktopWallpaperForLockScreen: Bool {
+        canChooseLockScreenMedia && appliedVideoURL != nil
     }
 
     var canPreviewLockScreen: Bool {
         canToggleShowOnLockScreen
             && showOnLockScreenEnabled
-            && isPlaybackActive
             && !isLockScreenPreviewActive
     }
 
@@ -857,7 +990,7 @@ final class AppViewModel: ObservableObject {
             recordBridgeSuccess()
             await startFromAutostartIfNeeded(using: status)
             if status.config.show_on_lock_screen ?? false,
-               !status.config.video_path.isEmpty {
+               !status.config.effectiveLockScreenPath.isEmpty {
                 do {
                     try await runAsync {
                         try controller.syncLockScreenSaver()
@@ -936,15 +1069,87 @@ final class AppViewModel: ObservableObject {
     func chooseVideo(force: Bool = false) {
         guard force || !isBusy else { return }
         let panel = NSOpenPanel()
-        var types: [UTType] = [.mpeg4Movie, .quickTimeMovie, .gif]
+        var types: [UTType] = [
+            .mpeg4Movie,
+            .quickTimeMovie,
+            .gif,
+            .png,
+            .jpeg,
+            .heic,
+            .tiff,
+            .bmp,
+        ]
         if let m4v = UTType(filenameExtension: "m4v") {
             types.append(m4v)
         }
-        panel.allowedContentTypes = types
-        panel.allowsMultipleSelection = false
+        if let webp = UTType(filenameExtension: "webp") {
+            types.append(webp)
+        }
+        configureMediaOpenPanel(
+            panel,
+            title: "Choose Desktop Wallpaper",
+            allowedContentTypes: types,
+            preferredDirectory: "Movies"
+        )
         if panel.runModal() == .OK, let url = panel.url {
             selectLocalVideoForPreview(url)
         }
+    }
+
+    func chooseLockScreenMedia() {
+        guard canChooseLockScreenMedia else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [
+            .mpeg4Movie,
+            .quickTimeMovie,
+            .gif,
+            .png,
+            .jpeg,
+            .heic,
+            .tiff,
+            .bmp,
+        ]
+        if let webp = UTType(filenameExtension: "webp") {
+            panel.allowedContentTypes.append(webp)
+        }
+        configureMediaOpenPanel(
+            panel,
+            title: "Choose Lock Screen Wallpaper",
+            allowedContentTypes: panel.allowedContentTypes,
+            preferredDirectory: "Pictures"
+        )
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        setLockScreenMedia(url)
+    }
+
+    private func configureMediaOpenPanel(
+        _ panel: NSOpenPanel,
+        title: String,
+        allowedContentTypes: [UTType],
+        preferredDirectory: String
+    ) {
+        panel.title = title
+        panel.prompt = "Choose"
+        panel.allowedContentTypes = allowedContentTypes
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser
+        let preferredURL = home.appendingPathComponent(preferredDirectory, isDirectory: true)
+        let downloadsURL = home.appendingPathComponent("Downloads", isDirectory: true)
+        if fileManager.fileExists(atPath: preferredURL.path) {
+            panel.directoryURL = preferredURL
+        } else if fileManager.fileExists(atPath: downloadsURL.path) {
+            panel.directoryURL = downloadsURL
+        } else {
+            panel.directoryURL = home
+        }
+    }
+
+    func useDesktopWallpaperForLockScreen() {
+        setLockScreenMedia(nil)
     }
 
     func chooseVideoFromMenuBar() {
@@ -1333,6 +1538,35 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func setLockScreenMedia(_ url: URL?) {
+        guard !isBusy else { return }
+        let previous = lockScreenSourceURL
+        lockScreenSourceURL = url?.standardizedFileURL
+        guard let controller else { return }
+
+        Task {
+            isBusy = true
+            defer { isBusy = false }
+            do {
+                let status = try await runAsync {
+                    try controller.setLockScreenMedia(url)
+                }
+                apply(status: status, refreshPreview: false)
+                recordBridgeSuccess()
+                statusMessage = url == nil
+                    ? "Desktop wallpaper applied to Lock Screen."
+                    : "Lock Screen source applied. Desktop wallpaper was not changed."
+                alertMessage = nil
+            } catch {
+                lockScreenSourceURL = previous
+                recordBridgeFailure(error, context: "set-lock-screen-media")
+                if bridgeFailureCount < bridgeFailureThreshold {
+                    alertMessage = "Failed to update Lock Screen source: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     func previewLockScreenTransition() {
         guard canPreviewLockScreen, let controller else { return }
 
@@ -1602,6 +1836,9 @@ final class AppViewModel: ObservableObject {
     }
 
     private func prepareVideoURLForPlayback(_ sourceURL: URL) async throws -> (url: URL, summary: String?) {
+        if WallpaperMediaKind.forURL(sourceURL).isStaticImage {
+            return (sourceURL.standardizedFileURL, nil)
+        }
         let settings = currentOptimizationSettings()
         guard settings.enabled else {
             return (sourceURL, nil)
@@ -1680,6 +1917,15 @@ final class AppViewModel: ObservableObject {
         Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
         Self.setIfChanged(&pauseOnFullscreenEnabled, to: status.config.pause_on_fullscreen ?? true)
         Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? false)
+        let configuredLockScreenURL: URL?
+        if status.config.lock_screen_path?.isEmpty == false {
+            configuredLockScreenURL = URL(
+                fileURLWithPath: status.config.lock_screen_path!
+            ).standardizedFileURL
+        } else {
+            configuredLockScreenURL = nil
+        }
+        Self.setIfChanged(&lockScreenSourceURL, to: configuredLockScreenURL)
         let previousScaleMode = scaleMode
         let resolvedScaleMode = WallpaperScaleMode(rawValue: status.config.scale_mode ?? "fill") ?? .fill
         Self.setIfChanged(&scaleMode, to: resolvedScaleMode)
@@ -2914,6 +3160,15 @@ final class AppViewModel: ObservableObject {
     }
 
     nonisolated static func adaptiveGlassAppearance(for url: URL, scaleMode: WallpaperScaleMode) -> AdaptiveGlassAppearance {
+        if WallpaperMediaKind.forURL(url).isStaticImage,
+           let image = NSImage(contentsOf: url),
+           let cgImage = image.cgImage(
+               forProposedRect: nil,
+               context: nil,
+               hints: nil
+           ) {
+            return adaptiveGlassAppearance(for: cgImage)
+        }
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true

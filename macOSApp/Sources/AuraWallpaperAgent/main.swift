@@ -388,6 +388,19 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
 
         prepareFallbackImage(from: url)
+        if WallpaperMediaKind.forURL(url).isStaticImage {
+            // A static desktop wallpaper is rendered by the same desktop-level
+            // overlay windows as motion wallpapers. It never writes to
+            // macOS's system Wallpaper Store.
+            rebuildWindows()
+            if keepPaused || manualPaused {
+                showWindows()
+            }
+            lastPlaybackProgressUptime = nil
+            writeHealth(reason: "ok")
+            return
+        }
+
         let item = AVPlayerItem(url: url)
         let player = AVQueuePlayer(items: [])
         player.actionAtItemEnd = .none
@@ -420,7 +433,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         windows.removeAll()
         playerLayers.removeAll()
 
-        guard let existingPlayer else { return }
+        guard existingPlayer != nil || fallbackImage != nil else { return }
         let behavior: NSWindow.CollectionBehavior = [
             .canJoinAllSpaces,
             .stationary,
@@ -456,12 +469,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             content.layer?.contentsGravity = fallbackContentsGravity(
                 for: config.scale_mode
             )
-            let playerLayer = AVPlayerLayer(player: existingPlayer)
-            playerLayer.frame = content.bounds
-            playerLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-            playerLayer.videoGravity = videoGravity(for: config.scale_mode)
-            content.layer?.addSublayer(playerLayer)
-            playerLayers.append(playerLayer)
+            if let existingPlayer {
+                let playerLayer = AVPlayerLayer(player: existingPlayer)
+                playerLayer.frame = content.bounds
+                playerLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+                playerLayer.videoGravity = videoGravity(for: config.scale_mode)
+                content.layer?.addSublayer(playerLayer)
+                playerLayers.append(playerLayer)
+            }
             window.contentView = content
 
             windows.append(window)
@@ -591,8 +606,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func prepareFallbackImage(from videoURL: URL) {
-        guard let frameURL = try? store.captureStillFrame(from: videoURL),
-              let image = NSImage(contentsOf: frameURL),
+        let image: NSImage?
+        if WallpaperMediaKind.forURL(videoURL).isStaticImage {
+            image = NSImage(contentsOf: videoURL)
+        } else if let frameURL = try? store.captureStillFrame(from: videoURL) {
+            image = NSImage(contentsOf: frameURL)
+        } else {
+            image = nil
+        }
+        guard let image,
               let cgImage = image.cgImage(
                   forProposedRect: nil,
                   context: nil,
@@ -635,6 +657,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyFullscreenPolicy() {
+        if WallpaperMediaKind.forURL(URL(fileURLWithPath: config.video_path)).isStaticImage {
+            fullscreenAppDetected = false
+            consecutiveFullscreenSamples = 0
+            consecutiveWindowedSamples = 0
+            writeHealth(reason: "ok")
+            return
+        }
         if lockScreenState.presentationMode == .lockScreen {
             fullscreenAppDetected = false
             consecutiveFullscreenSamples = 0
@@ -794,6 +823,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        if WallpaperMediaKind.forURL(URL(fileURLWithPath: config.video_path)).isStaticImage {
+            consecutiveStallPolls = 0
+            writeHealth(reason: "ok")
+            return
+        }
+
         let uptime = ProcessInfo.processInfo.systemUptime
         var failureReason = "playback-stall"
         if let player {
@@ -838,7 +873,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func repairModernLockScreenIfNeeded(force: Bool = false) {
         guard config.show_on_lock_screen == true,
-              !config.video_path.isEmpty,
+              !config.effectiveLockScreenRuntimePath.isEmpty,
               lockScreenInstaller.isAvailable,
               !lockScreenRepairInProgress,
               !sessionInactive,
@@ -850,8 +885,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         else {
             return
         }
-        let videoURL = URL(fileURLWithPath: config.video_path)
-        guard FileManager.default.fileExists(atPath: videoURL.path) else {
+        guard let videoURL = lockScreenVideoURL() else {
             return
         }
 
@@ -899,7 +933,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func rearmModernLockScreenForNextSession() {
         guard config.show_on_lock_screen == true,
-              !config.video_path.isEmpty,
+              !config.effectiveLockScreenRuntimePath.isEmpty,
               lockScreenInstaller.isAvailable,
               !sessionInactive,
               lockScreenState.sessionState == .unlocked,
@@ -908,8 +942,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         else {
             return
         }
-        let videoURL = URL(fileURLWithPath: config.video_path)
-        guard FileManager.default.fileExists(atPath: videoURL.path) else {
+        guard let videoURL = lockScreenVideoURL() else {
             return
         }
         let token = currentRearmToken()
@@ -977,8 +1010,19 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         LockScreenRearmToken(
             sessionGeneration: lockSessionGeneration,
             wallpaperRevision: wallpaperRevision,
-            videoPath: config.video_path
+            videoPath: lockScreenVideoURL()?.path
+                ?? config.effectiveLockScreenRuntimePath
         )
+    }
+
+    private func lockScreenVideoURL() -> URL? {
+        let sourcePath = config.effectiveLockScreenRuntimePath
+        guard !sourcePath.isEmpty else { return nil }
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            return nil
+        }
+        return try? store.ensureLockScreenVideo(from: sourceURL)
     }
 
     private func repairCanProceed(
@@ -992,7 +1036,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             && lockScreenState.sessionState == .unlocked
             && lockScreenState.previewState == .inactive
             && config.show_on_lock_screen == true
-            && config.video_path == videoURL.path
+            && lockScreenVideoURL()?.path == videoURL.path
             && systemSessionIsLocked() == false
             && (
                 allowRecentTransition
@@ -1012,7 +1056,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             && lockScreenState.sessionState == .unlocked
             && lockScreenState.previewState == .inactive
             && config.show_on_lock_screen == true
-            && config.video_path == videoURL.path
+            && lockScreenVideoURL()?.path == videoURL.path
             && systemSessionIsLocked() == false
     }
 

@@ -143,7 +143,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadCommand() == nil)
     #expect(fixture.store.loadConfig().video_path.isEmpty)
     #expect(
-        fixture.store.loadConfig().show_on_lock_screen == true
+        fixture.store.loadConfig().show_on_lock_screen == false
     )
 }
 
@@ -241,12 +241,60 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadCommand()?.action == .previewUnlock)
 
     _ = try controller.clearWallpaper()
-    #expect(fixture.store.loadConfig().show_on_lock_screen == true)
+    #expect(fixture.store.loadConfig().show_on_lock_screen == false)
     #expect(fixture.store.loadConfig().video_path.isEmpty)
+    #expect(fixture.store.loadConfig().lock_screen_path == nil)
     #expect(installer.uninstallCallCount == 1)
 }
 
-@Test func runtimeNormalizationDefaultsLegacyLockScreenSettingToEnabled() throws {
+@Test func lockScreenCanBeConfiguredWithoutTouchingDesktopSource() throws {
+    let fixture = try NativeRuntimeFixture("lock-screen-only")
+    defer { fixture.cleanup() }
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    _ = try controller.setLockScreenMedia(fixture.videoURL)
+
+    let config = fixture.store.loadConfig()
+    #expect(config.video_path.isEmpty)
+    #expect(config.lock_screen_path == fixture.videoURL.standardizedFileURL.path)
+    #expect(config.effectiveLockScreenPath == fixture.videoURL.standardizedFileURL.path)
+    #expect(config.show_on_lock_screen == true)
+    #expect(installer.installedVideoURL == fixture.videoURL)
+
+    _ = try controller.clearWallpaper()
+    let clearedConfig = fixture.store.loadConfig()
+    #expect(clearedConfig.video_path.isEmpty)
+    #expect(clearedConfig.lock_screen_path == fixture.videoURL.standardizedFileURL.path)
+    #expect(clearedConfig.show_on_lock_screen == true)
+    #expect(installer.uninstallCallCount == 0)
+}
+
+@Test func desktopSourceIsAppliedImmediatelyWhenChosenForLockScreen() throws {
+    let fixture = try NativeRuntimeFixture("lock-screen-desktop-source")
+    defer { fixture.cleanup() }
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    _ = try controller.start(videoURL: fixture.videoURL, speed: 1.0)
+    _ = try controller.setLockScreenMedia(nil)
+
+    let config = fixture.store.loadConfig()
+    #expect(config.video_path == fixture.videoURL.path)
+    #expect(config.lock_screen_path == nil)
+    #expect(config.show_on_lock_screen == true)
+    #expect(installer.installedVideoURL == fixture.videoURL)
+}
+
+@Test func runtimeNormalizationKeepsLegacyLockScreenSettingDisabledUntilExplicitlyEnabled() throws {
     let fixture = try NativeRuntimeFixture("legacy-lock-default")
     defer { fixture.cleanup() }
 
@@ -264,11 +312,11 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     let config = fixture.store.loadConfig()
-    #expect(config.show_on_lock_screen == true)
+    #expect(config.show_on_lock_screen == false)
     #expect(config.lock_screen_preference_configured == false)
 }
 
-@Test func legacyFalseDefaultMigratesOnNextWallpaperStart() throws {
+@Test func legacyLockScreenDefaultRemainsDisabledOnNextWallpaperStart() throws {
     let fixture = try NativeRuntimeFixture("legacy-lock-migration")
     defer { fixture.cleanup() }
     let installer = RecordingLockScreenSaverInstaller()
@@ -292,8 +340,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     let config = fixture.store.loadConfig()
-    #expect(config.show_on_lock_screen == true)
-    #expect(installer.installedVideoURL == fixture.videoURL)
+    #expect(config.show_on_lock_screen == false)
+    #expect(installer.installedVideoURL == nil)
 }
 
 @Test func explicitLockScreenOptOutSurvivesWallpaperChanges() throws {

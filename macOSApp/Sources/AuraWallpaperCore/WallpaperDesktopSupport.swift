@@ -183,6 +183,13 @@ public enum WallpaperDesktopSupport {
         return true
     }
 
+    /// Removes recovery files without changing the system wallpaper store.
+    /// Desktop-only playback never owns that store, so any stale recovery
+    /// files from an older version must be discarded rather than restored.
+    public static func discardWallpaperBackups(appSupportPath: String) {
+        removeWallpaperBackupFiles(appSupportPath: appSupportPath)
+    }
+
     /// Recovers a wallpaper store left by an older or interrupted AuraFlow
     /// removal even after the JSON backup has already been consumed.
     @discardableResult

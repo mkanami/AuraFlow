@@ -114,11 +114,22 @@ static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
         [applicationSupportURL URLByAppendingPathComponent:@"config.json"];
     NSDictionary *runtimeConfig = [self JSONDictionaryAtURL:runtimeConfigURL];
 
-    // The app runtime contract uses video_path while the portable saver
-    // resource uses video_file. Prefer a valid current app selection.
+    // The app runtime contract keeps a separate Lock Screen source. Prefer
+    // its generated playable path (used for static images), then the
+    // explicit source, and finally the legacy desktop source.
     NSURL *runtimeVideoURL =
-        [self existingURLForConfiguredValue:runtimeConfig[@"video_path"]
+        [self existingURLForConfiguredValue:runtimeConfig[@"lock_screen_runtime_path"]
                                   relativeTo:applicationSupportURL];
+    if (runtimeVideoURL == nil) {
+        runtimeVideoURL =
+            [self existingURLForConfiguredValue:runtimeConfig[@"lock_screen_path"]
+                                      relativeTo:applicationSupportURL];
+    }
+    if (runtimeVideoURL == nil) {
+        runtimeVideoURL =
+            [self existingURLForConfiguredValue:runtimeConfig[@"video_path"]
+                                      relativeTo:applicationSupportURL];
+    }
     if (runtimeVideoURL != nil) {
         videoURL = runtimeVideoURL;
     }

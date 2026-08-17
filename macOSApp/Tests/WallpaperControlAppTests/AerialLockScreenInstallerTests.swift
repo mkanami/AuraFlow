@@ -332,7 +332,12 @@ private struct AerialLockScreenFixture {
     try fixture.installer.uninstall()
 
     #expect(!fixture.installer.isInstalled)
-    #expect(try Data(contentsOf: fixture.storeURL) == exactStoreBackup)
+    #expect(
+        try wallpaperStoresSemanticallyMatch(
+            Data(contentsOf: fixture.storeURL),
+            exactStoreBackup
+        )
+    )
     #expect(
         try Data(contentsOf: fixture.assetURL)
             == Data("original-aerial".utf8)
@@ -349,6 +354,36 @@ private struct AerialLockScreenFixture {
     )
 }
 
+@Test func modernLockScreenUninstallPreservesDesktopChangedWhileLockScreenWasActive() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.install(videoURL: fixture.videoURL)
+    var root = try readWallpaperStore(fixture.storeURL)
+    var systemDefault = try #require(root["SystemDefault"] as? [String: Any])
+    systemDefault["Desktop"] = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.image",
+        configuration: [
+            "type": "imageFile",
+            "url": ["relative": "file:///desktop-changed-while-locked.jpg"],
+        ]
+    )
+    root["SystemDefault"] = systemDefault
+    try writeWallpaperStore(root, to: fixture.storeURL)
+
+    try fixture.installer.uninstall()
+
+    let restored = try readWallpaperStore(fixture.storeURL)
+    #expect(wallpaperStoreText(restored).contains("desktop-changed-while-locked.jpg"))
+    #expect(
+        wallpaperStoreContains(
+            restored,
+            provider: "com.apple.wallpaper.choice.aerials",
+            assetID: AerialLockScreenFixture.assetID
+        ) == false
+    )
+}
+
 @Test func healthyModernLockScreenSyncIsANoOp() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
@@ -358,14 +393,20 @@ private struct AerialLockScreenFixture {
 
     try fixture.installer.install(videoURL: fixture.videoURL)
     #expect(fixture.refreshCounter.count == 1)
+    let root = try readWallpaperStore(fixture.storeURL)
     #expect(
-        wallpaperChoiceProviders(try readWallpaperStore(fixture.storeURL))
-            == Array(
-                repeating: "com.apple.wallpaper.choice.aerials",
-                count: wallpaperChoiceProviders(
-                    try readWallpaperStore(fixture.storeURL)
-                ).count
-            )
+        wallpaperStoreContains(
+            root,
+            provider: "com.apple.wallpaper.choice.aerials",
+            assetID: AerialLockScreenFixture.assetID
+        )
+    )
+    #expect(
+        wallpaperStoreContains(
+            root,
+            provider: "com.apple.wallpaper.choice.image",
+            assetID: nil
+        )
     )
 }
 
@@ -395,14 +436,20 @@ private struct AerialLockScreenFixture {
             try Data(contentsOf: fixture.assetURL)
                 == Data("new-wallpaper".utf8)
         )
-        let providers = wallpaperChoiceProviders(
-            try readWallpaperStore(fixture.storeURL)
-        )
-        #expect(!providers.isEmpty)
+        let root = try readWallpaperStore(fixture.storeURL)
         #expect(
-            providers.allSatisfy {
-                $0 == "com.apple.wallpaper.choice.aerials"
-            }
+            wallpaperStoreContains(
+                root,
+                provider: "com.apple.wallpaper.choice.aerials",
+                assetID: AerialLockScreenFixture.assetID
+            )
+        )
+        #expect(
+            wallpaperStoreContains(
+                root,
+                provider: "com.apple.wallpaper.choice.image",
+                assetID: nil
+            )
         )
     }
 }
@@ -518,14 +565,20 @@ private struct AerialLockScreenFixture {
         try Data(contentsOf: fixture.assetURL)
             == Data("new-wallpaper".utf8)
     )
-    let repairedProviders = wallpaperChoiceProviders(
-        try readWallpaperStore(fixture.storeURL)
-    )
-    #expect(!repairedProviders.isEmpty)
+    let repairedRoot = try readWallpaperStore(fixture.storeURL)
     #expect(
-        repairedProviders.allSatisfy {
-            $0 == "com.apple.wallpaper.choice.aerials"
-        }
+        wallpaperStoreContains(
+            repairedRoot,
+            provider: "com.apple.wallpaper.choice.aerials",
+            assetID: AerialLockScreenFixture.assetID
+        )
+    )
+    #expect(
+        wallpaperStoreContains(
+            repairedRoot,
+            provider: "com.apple.wallpaper.choice.image",
+            assetID: nil
+        )
     )
 }
 
@@ -576,7 +629,7 @@ private struct AerialLockScreenFixture {
     )
 }
 
-@Test func allSpacesAndDisplaysContainerAlsoSelectsAuraFlowVideo() throws {
+@Test func allSpacesAndDisplaysContainerKeepsDesktopAndChangesOnlyLockScreenSlot() throws {
     let fixture = try AerialLockScreenFixture(
         allSpacesAndDisplaysIsContainer: true
     )
@@ -588,12 +641,15 @@ private struct AerialLockScreenFixture {
     let allSpaces = try #require(
         root["AllSpacesAndDisplays"] as? [String: Any]
     )
-    let providers = wallpaperChoiceProviders(allSpaces)
-    #expect(!providers.isEmpty)
+    let desktop = try #require(allSpaces["Desktop"] as? [String: Any])
+    let idle = try #require(allSpaces["Idle"] as? [String: Any])
     #expect(
-        providers.allSatisfy {
-            $0 == "com.apple.wallpaper.choice.aerials"
-        }
+        wallpaperChoiceProviders(desktop)
+            .allSatisfy { $0 == "com.apple.wallpaper.choice.image" }
+    )
+    #expect(
+        wallpaperChoiceProviders(idle)
+            .allSatisfy { $0 == "com.apple.wallpaper.choice.aerials" }
     )
     #expect(
         wallpaperStoreContains(
@@ -664,7 +720,12 @@ private struct AerialLockScreenFixture {
     try fixture.installer.uninstall()
 
     #expect(!fixture.installer.isInstalled)
-    #expect(try Data(contentsOf: fixture.storeURL) == exactStoreBackup)
+    #expect(
+        try wallpaperStoresSemanticallyMatch(
+            Data(contentsOf: fixture.storeURL),
+            exactStoreBackup
+        )
+    )
     #expect(
         try Data(contentsOf: fixture.assetURL)
             == Data("original-aerial".utf8)
@@ -680,6 +741,48 @@ private func readWallpaperStore(_ url: URL) throws -> [String: Any] {
             format: nil
         ) as? [String: Any]
     )
+}
+
+private func wallpaperStoresSemanticallyMatch(
+    _ lhs: Data,
+    _ rhs: Data
+) throws -> Bool {
+    let lhsRoot = try PropertyListSerialization.propertyList(
+        from: lhs,
+        options: [],
+        format: nil
+    )
+    let rhsRoot = try PropertyListSerialization.propertyList(
+        from: rhs,
+        options: [],
+        format: nil
+    )
+    let lhsData = try PropertyListSerialization.data(
+        fromPropertyList: comparableWallpaperStoreValue(lhsRoot),
+        format: .xml,
+        options: 0
+    )
+    let rhsData = try PropertyListSerialization.data(
+        fromPropertyList: comparableWallpaperStoreValue(rhsRoot),
+        format: .xml,
+        options: 0
+    )
+    return lhsData == rhsData
+}
+
+private func comparableWallpaperStoreValue(_ value: Any) -> Any {
+    if let dictionary = value as? [String: Any] {
+        return dictionary.reduce(into: [String: Any]()) { result, entry in
+            guard entry.key != "LastSet", entry.key != "LastUse" else {
+                return
+            }
+            result[entry.key] = comparableWallpaperStoreValue(entry.value)
+        }
+    }
+    if let array = value as? [Any] {
+        return array.map(comparableWallpaperStoreValue)
+    }
+    return value
 }
 
 private func writeWallpaperStore(

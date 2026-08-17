@@ -242,8 +242,22 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         let thumbnailURL = aerialThumbnailsURL
             .appendingPathComponent(assetID)
             .appendingPathExtension("png")
+        let auraFlowStoreBackupData = WallpaperDesktopSupport
+            .wallpaperStoreBackupData(
+                appSupportPath: WallpaperRuntimeStore.defaultAppSupportURL().path
+            )
 
         if installationIsCurrent(videoURL: videoURL, assetID: assetID) {
+            // The desktop snapshot is refreshed independently from the Aerial
+            // session. Keep Aerial's recovery copy in sync even when the same
+            // live video is resumed, otherwise uninstall can restore an old
+            // wallpaper store from a previous session.
+            if let auraFlowStoreBackupData {
+                try? auraFlowStoreBackupData.write(
+                    to: wallpaperStoreBackupURL,
+                    options: .atomic
+                )
+            }
             guard forceRefresh, shouldProceed() else {
                 return false
             }
@@ -282,7 +296,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             )
 
         let originalStoreData: Data
-        if fileManager.fileExists(atPath: wallpaperStoreBackupURL.path) {
+        if let auraFlowStoreBackupData {
+            originalStoreData = auraFlowStoreBackupData
+            try originalStoreData.write(
+                to: wallpaperStoreBackupURL,
+                options: .atomic
+            )
+        } else if fileManager.fileExists(atPath: wallpaperStoreBackupURL.path) {
             originalStoreData = try Data(contentsOf: wallpaperStoreBackupURL)
         } else {
             let currentStoreData = try Data(contentsOf: wallpaperStoreURL)
@@ -475,7 +495,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             let originalStoreData = try Data(
                 contentsOf: wallpaperStoreBackupURL
             )
-            try originalStoreData.write(
+            let currentStoreData = storeBeforeAttempt ?? originalStoreData
+            let restoredStoreData = try restoreIdleSlots(
+                in: currentStoreData,
+                from: originalStoreData,
+                assetID: marker.assetID
+            )
+            try restoredStoreData.write(
                 to: wallpaperStoreURL,
                 options: .atomic
             )
@@ -499,14 +525,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             }
             var restorationVerified = false
             for _ in 0..<3 {
-                try originalStoreData.write(
+                try restoredStoreData.write(
                     to: wallpaperStoreURL,
                     options: .atomic
                 )
                 try refreshSystem({ true })
                 Thread.sleep(forTimeInterval: 0.4)
                 if wallpaperStoreSemanticallyMatches(
-                    expectedData: originalStoreData
+                    expectedData: restoredStoreData
                 ) {
                     restorationVerified = true
                     break
@@ -543,6 +569,163 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             try? refreshSystem({ true })
             throw error
         }
+    }
+
+    /// Restores only the Idle slot owned by AuraFlow. Desktop entries always
+    /// come from the current system store, so changing a desktop wallpaper
+    /// while Lock Screen is active cannot be undone during cleanup.
+    private func restoreIdleSlots(
+        in currentData: Data,
+        from originalData: Data,
+        assetID: String
+    ) throws -> Data {
+        guard var currentRoot = try propertyListDictionary(from: currentData),
+              let originalRoot = try propertyListDictionary(from: originalData)
+        else {
+            throw AerialLockScreenInstallerError.malformedWallpaperStore
+        }
+
+        if let currentAll = currentRoot["AllSpacesAndDisplays"] as? [String: Any],
+           let originalAll = originalRoot["AllSpacesAndDisplays"] as? [String: Any] {
+            currentRoot["AllSpacesAndDisplays"] = restoreIdleSlot(
+                in: currentAll,
+                from: originalAll,
+                assetID: assetID
+            )
+        }
+        if let currentDefault = currentRoot["SystemDefault"] as? [String: Any],
+           let originalDefault = originalRoot["SystemDefault"] as? [String: Any] {
+            currentRoot["SystemDefault"] = restoreIdleSlot(
+                in: currentDefault,
+                from: originalDefault,
+                assetID: assetID
+            )
+        }
+        if let currentDisplays = currentRoot["Displays"] as? [String: Any],
+           let originalDisplays = originalRoot["Displays"] as? [String: Any] {
+            currentRoot["Displays"] = restoreIdleSlots(
+                inDisplays: currentDisplays,
+                from: originalDisplays,
+                assetID: assetID
+            )
+        }
+        if let currentSpaces = currentRoot["Spaces"] as? [String: Any],
+           let originalSpaces = originalRoot["Spaces"] as? [String: Any] {
+            currentRoot["Spaces"] = restoreIdleSlots(
+                inSpaces: currentSpaces,
+                from: originalSpaces,
+                assetID: assetID
+            )
+        }
+
+        return try PropertyListSerialization.data(
+            fromPropertyList: currentRoot,
+            format: .binary,
+            options: 0
+        )
+    }
+
+    private func restoreIdleSlots(
+        inDisplays currentDisplays: [String: Any],
+        from originalDisplays: [String: Any],
+        assetID: String
+    ) -> [String: Any] {
+        currentDisplays.reduce(into: [String: Any]()) { result, entry in
+            let (displayID, currentValue) = entry
+            guard let currentContainer = currentValue as? [String: Any],
+                  let originalContainer = originalDisplays[displayID]
+                    as? [String: Any]
+            else {
+                result[displayID] = currentValue
+                return
+            }
+            result[displayID] = restoreIdleSlot(
+                in: currentContainer,
+                from: originalContainer,
+                assetID: assetID
+            )
+        }
+    }
+
+    private func restoreIdleSlots(
+        inSpaces currentSpaces: [String: Any],
+        from originalSpaces: [String: Any],
+        assetID: String
+    ) -> [String: Any] {
+        currentSpaces.reduce(into: [String: Any]()) { result, entry in
+            let (spaceID, currentValue) = entry
+            guard var currentSpace = currentValue as? [String: Any],
+                  let originalSpace = originalSpaces[spaceID] as? [String: Any]
+            else {
+                result[spaceID] = currentValue
+                return
+            }
+            if let currentDefault = currentSpace["Default"] as? [String: Any],
+               let originalDefault = originalSpace["Default"] as? [String: Any] {
+                currentSpace["Default"] = restoreIdleSlot(
+                    in: currentDefault,
+                    from: originalDefault,
+                    assetID: assetID
+                )
+            }
+            if let currentDisplays = currentSpace["Displays"] as? [String: Any],
+               let originalDisplays = originalSpace["Displays"] as? [String: Any] {
+                currentSpace["Displays"] = restoreIdleSlots(
+                    inDisplays: currentDisplays,
+                    from: originalDisplays,
+                    assetID: assetID
+                )
+            }
+            result[spaceID] = currentSpace
+        }
+    }
+
+    private func restoreIdleSlot(
+        in currentContainer: [String: Any],
+        from originalContainer: [String: Any],
+        assetID: String
+    ) -> [String: Any] {
+        guard let currentIdle = currentContainer["Idle"] as? [String: Any],
+              modeFullySelectsAerial(currentIdle, assetID: assetID),
+              let originalIdle = originalContainer["Idle"]
+        else {
+            return currentContainer
+        }
+        var result = currentContainer
+        result["Idle"] = originalIdle
+        if let currentDesktop = currentContainer["Desktop"],
+           let originalDesktop = originalContainer["Desktop"],
+           wallpaperStoreValuesSemanticallyMatch(
+                currentDesktop,
+                originalDesktop
+           ) {
+            if let originalType = originalContainer["Type"] {
+                result["Type"] = originalType
+            } else {
+                result.removeValue(forKey: "Type")
+            }
+        }
+        return result
+    }
+
+    private func wallpaperStoreValuesSemanticallyMatch(
+        _ lhs: Any,
+        _ rhs: Any
+    ) -> Bool {
+        guard let lhsData = try? PropertyListSerialization.data(
+                fromPropertyList: wallpaperStoreComparableValue(lhs),
+                format: .xml,
+                options: 0
+              ),
+              let rhsData = try? PropertyListSerialization.data(
+                fromPropertyList: wallpaperStoreComparableValue(rhs),
+                format: .xml,
+                options: 0
+              )
+        else {
+            return false
+        }
+        return lhsData == rhsData
     }
 
     private func withCrossProcessLock<T>(
@@ -742,8 +925,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         )
         root = mapWallpaperContainers(in: root) { container in
             var result = container
-            if result["Desktop"] != nil || result["Idle"] != nil {
-                result["Desktop"] = aerialMode
+            // `Idle` is the secure Lock Screen/screen-saver slot. Keep every
+            // `Desktop` entry byte-for-byte as selected by the user; changing
+            // it here would briefly replace ordinary desktop wallpapers on
+            // every Space while Lock Screen is being installed.
+            if result["Idle"] != nil {
                 result["Idle"] = aerialMode
                 result["Type"] = "individual"
             }
@@ -1123,14 +1309,15 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
 
         var inspectedModes = 0
         for container in containers {
-            for key in ["Desktop", "Idle"] {
-                guard let mode = container[key] as? [String: Any] else {
-                    continue
-                }
-                inspectedModes += 1
-                guard modeFullySelectsAerial(mode, assetID: assetID) else {
-                    return false
-                }
+            // Only the secure Lock Screen/screen-saver slot is owned by this
+            // installer. Desktop mode is deliberately excluded so a user's
+            // ordinary wallpaper remains selected throughout the operation.
+            guard let mode = container["Idle"] as? [String: Any] else {
+                continue
+            }
+            inspectedModes += 1
+            guard modeFullySelectsAerial(mode, assetID: assetID) else {
+                return false
             }
         }
         return inspectedModes > 0

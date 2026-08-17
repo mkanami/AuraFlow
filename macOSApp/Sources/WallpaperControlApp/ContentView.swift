@@ -171,6 +171,7 @@ struct ContentView: View {
 
             PreviewLayer(
                 player: viewModel.previewPlayer,
+                wallpaperURL: viewModel.currentVideoURL ?? viewModel.appliedVideoURL,
                 aspectRatio: aspectRatio,
                 scaleMode: viewModel.scaleMode
             )
@@ -387,14 +388,27 @@ final class TitlebarInteractionNSView: NSView {
 
 struct PreviewLayer: View {
     let player: AVPlayer?
+    let wallpaperURL: URL?
     let aspectRatio: CGFloat
     let scaleMode: WallpaperScaleMode
 
     var body: some View {
-        VideoPreview(player: player, videoGravity: scaleMode.previewGravity)
-            .aspectRatio(aspectRatio, contentMode: .fill)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipped()
+        Group {
+            if let wallpaperURL,
+               WallpaperMediaKind.forURL(wallpaperURL).isStaticImage,
+               let image = NSImage(contentsOf: wallpaperURL) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(
+                        contentMode: scaleMode == .fit ? .fit : .fill
+                    )
+            } else {
+                VideoPreview(player: player, videoGravity: scaleMode.previewGravity)
+                    .aspectRatio(aspectRatio, contentMode: .fill)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 }
 
@@ -803,6 +817,38 @@ struct SettingsPopupCard: View {
             }
             .toggleStyle(.switch)
             .disabled(!viewModel.canToggleShowOnLockScreen)
+
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Lock Screen wallpaper")
+                        .font(.caption.weight(.semibold))
+                    Text(viewModel.lockScreenSourceName)
+                        .font(.caption2)
+                        .foregroundStyle(
+                            adaptiveGlassAppearance.centerTextTone.secondaryTextColor
+                        )
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
+                Button("Choose Lock Screen…") {
+                    viewModel.chooseLockScreenMedia()
+                }
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                .disabled(!viewModel.canChooseLockScreenMedia)
+                Button("Use Desktop") {
+                    viewModel.useDesktopWallpaperForLockScreen()
+                }
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                .disabled(!viewModel.canUseDesktopWallpaperForLockScreen || viewModel.lockScreenSourceURL == nil)
+            }
+
+            Text("Choosing a file applies it to Lock Screen immediately. Start controls the desktop wallpaper.")
+                .font(.caption2)
+                .foregroundStyle(
+                    adaptiveGlassAppearance.centerTextTone.secondaryTextColor
+                )
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 10) {
                 Button {
