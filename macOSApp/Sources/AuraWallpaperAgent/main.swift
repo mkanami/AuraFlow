@@ -65,6 +65,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let fullscreenConfirmationSamples = 2
     private let stallRecoveryThreshold = 2
 
+    private var shouldUseModernLockScreenPath: Bool {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 26
+    }
+
     override init() {
         self.config = store.loadConfig()
         self.lockScreenState = LockScreenStateMachine(
@@ -872,7 +876,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func repairModernLockScreenIfNeeded(force: Bool = false) {
-        guard config.show_on_lock_screen == true,
+        guard shouldUseModernLockScreenPath,
+              config.show_on_lock_screen == true,
               !config.effectiveLockScreenRuntimePath.isEmpty,
               lockScreenInstaller.isAvailable,
               !lockScreenRepairInProgress,
@@ -932,7 +937,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rearmModernLockScreenForNextSession() {
-        guard config.show_on_lock_screen == true,
+        guard shouldUseModernLockScreenPath,
+              config.show_on_lock_screen == true,
               !config.effectiveLockScreenRuntimePath.isEmpty,
               lockScreenInstaller.isAvailable,
               !sessionInactive,

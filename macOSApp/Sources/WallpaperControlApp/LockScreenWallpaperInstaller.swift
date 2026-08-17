@@ -1,18 +1,32 @@
 import AuraWallpaperCore
 import Foundation
 
-/// Chooses the modern secure-lock path on systems that provide Apple's Aerial
-/// wallpaper engine. Older systems retain the legacy screen saver fallback.
+protocol ModernLockScreenInstalling: LockScreenSaverInstalling {
+    var isAvailable: Bool { get }
+}
+
+extension AerialLockScreenInstaller: ModernLockScreenInstalling {}
+
+/// Routes Lock Screen media to the surface that macOS actually launches.
+///
+/// macOS 26 and later no longer make the old Aerial store injection the active
+/// lock/screen-saver surface. AuraFlow already bundles a signed screen saver
+/// component, so prefer that component on those systems. Older systems retain
+/// the Aerial path when it is available.
 final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
-    private let modern: AerialLockScreenInstaller
+    private let modern: ModernLockScreenInstalling
     private let legacy: LockScreenSaverInstalling
+    private let preferLegacy: Bool
 
     init(
-        modern: AerialLockScreenInstaller = AerialLockScreenInstaller(),
-        legacy: LockScreenSaverInstalling = LockScreenSaverInstaller()
+        modern: ModernLockScreenInstalling = AerialLockScreenInstaller(),
+        legacy: LockScreenSaverInstalling = LockScreenSaverInstaller(),
+        operatingSystemVersion: OperatingSystemVersion =
+            ProcessInfo.processInfo.operatingSystemVersion
     ) {
         self.modern = modern
         self.legacy = legacy
+        self.preferLegacy = operatingSystemVersion.majorVersion >= 26
     }
 
     var isInstalled: Bool {
@@ -20,6 +34,17 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
     }
 
     func install(videoURL: URL) throws {
+        if preferLegacy {
+            try legacy.install(videoURL: videoURL)
+            // Remove a stale Aerial installation after the working screen
+            // saver is active. A failed cleanup must not undo the working
+            // Lock Screen selection.
+            if modern.isInstalled {
+                try? modern.uninstall()
+            }
+            return
+        }
+
         if modern.isAvailable {
             if legacy.isInstalled {
                 try legacy.uninstall()
