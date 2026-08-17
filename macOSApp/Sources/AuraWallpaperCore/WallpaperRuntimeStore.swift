@@ -482,6 +482,9 @@ public final class WallpaperRuntimeStore {
     /// this conversion. The cached movie is keyed by the image's file
     /// revision, so selecting a different image cannot reuse stale pixels.
     public func ensureLockScreenVideo(from sourceURL: URL) throws -> URL {
+        if sourceURL.pathExtension.lowercased() == "gif" {
+            return try ensureAnimatedGIFVideo(from: sourceURL)
+        }
         guard WallpaperMediaKind.forURL(sourceURL).isStaticImage else {
             return sourceURL.standardizedFileURL
         }
@@ -571,6 +574,137 @@ public final class WallpaperRuntimeStore {
         guard writer.status == .completed else {
             throw writer.error ?? WallpaperRuntimeError.unavailable(
                 "Could not finish the Lock Screen image movie."
+            )
+        }
+
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            _ = try FileManager.default.replaceItemAt(outputURL, withItemAt: temporaryURL)
+        } else {
+            try FileManager.default.moveItem(at: temporaryURL, to: outputURL)
+        }
+        try writeJSON(revision, to: sourceRevisionURL)
+        return outputURL
+    }
+
+    private func ensureAnimatedGIFVideo(from sourceURL: URL) throws -> URL {
+        try ensureDirectories()
+
+        let sourceRevisionURL = appSupportURL
+            .appendingPathComponent("lock_screen_video_source.json")
+        let outputURL = appSupportURL
+            .appendingPathComponent("lock_screen_video.mov")
+        let revision = imageSourceRevision(for: sourceURL)
+        if FileManager.default.fileExists(atPath: outputURL.path),
+           (try? readJSON(ImageSourceRevision.self, from: sourceRevisionURL)) == revision {
+            return outputURL
+        }
+
+        guard let imageSource = CGImageSourceCreateWithURL(sourceURL as CFURL, nil) else {
+            throw WallpaperRuntimeError.unavailable(
+                "Could not read the selected Lock Screen GIF."
+            )
+        }
+
+        let frameCount = max(1, CGImageSourceGetCount(imageSource))
+        var frames: [(image: CGImage, duration: Double)] = []
+        frames.reserveCapacity(frameCount)
+        for index in 0..<frameCount {
+            guard let image = CGImageSourceCreateImageAtIndex(imageSource, index, nil) else {
+                continue
+            }
+            let properties = CGImageSourceCopyPropertiesAtIndex(
+                imageSource,
+                index,
+                nil
+            ) as? [String: Any]
+            let gifProperties = properties?[kCGImagePropertyGIFDictionary as String] as? [String: Any]
+            let unclampedDelay = (gifProperties?[kCGImagePropertyGIFUnclampedDelayTime as String] as? NSNumber)?.doubleValue
+            let clampedDelay = (gifProperties?[kCGImagePropertyGIFDelayTime as String] as? NSNumber)?.doubleValue
+            let duration = max(0.04, unclampedDelay ?? clampedDelay ?? 0.1)
+            frames.append((image: image, duration: duration))
+        }
+        guard let firstFrame = frames.first else {
+            throw WallpaperRuntimeError.unavailable(
+                "The selected Lock Screen GIF contains no readable frames."
+            )
+        }
+
+        let width = max(2, firstFrame.image.width - (firstFrame.image.width % 2))
+        let height = max(2, firstFrame.image.height - (firstFrame.image.height % 2))
+        let temporaryURL = appSupportURL
+            .appendingPathComponent(".lock_screen_gif_video.\(UUID().uuidString).mov")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+
+        let writer = try AVAssetWriter(outputURL: temporaryURL, fileType: .mov)
+        let input = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: width,
+                AVVideoHeightKey: height,
+            ]
+        )
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+            ]
+        )
+        guard writer.canAdd(input) else {
+            throw WallpaperRuntimeError.unavailable(
+                "Could not prepare the Lock Screen GIF encoder."
+            )
+        }
+        writer.add(input)
+        guard writer.startWriting() else {
+            throw writer.error ?? WallpaperRuntimeError.unavailable(
+                "Could not start the Lock Screen GIF encoder."
+            )
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        var presentationTime = CMTime.zero
+        for frame in frames {
+            guard let pixelBuffer = makePixelBuffer(
+                from: frame.image,
+                width: width,
+                height: height
+            ) else {
+                writer.cancelWriting()
+                throw WallpaperRuntimeError.unavailable(
+                    "Could not prepare a Lock Screen GIF frame."
+                )
+            }
+            while !input.isReadyForMoreMediaData {
+                if writer.status == .failed {
+                    throw writer.error ?? WallpaperRuntimeError.unavailable(
+                        "The Lock Screen GIF encoder stopped unexpectedly."
+                    )
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            guard adaptor.append(pixelBuffer, withPresentationTime: presentationTime) else {
+                writer.cancelWriting()
+                throw writer.error ?? WallpaperRuntimeError.unavailable(
+                    "Could not encode a Lock Screen GIF frame."
+                )
+            }
+            presentationTime = CMTimeAdd(
+                presentationTime,
+                CMTime(seconds: frame.duration, preferredTimescale: 600)
+            )
+        }
+
+        input.markAsFinished()
+        let semaphore = DispatchSemaphore(value: 0)
+        writer.finishWriting { semaphore.signal() }
+        semaphore.wait()
+        guard writer.status == .completed else {
+            throw writer.error ?? WallpaperRuntimeError.unavailable(
+                "Could not finish the Lock Screen GIF movie."
             )
         }
 
