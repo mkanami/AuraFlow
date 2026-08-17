@@ -3,9 +3,19 @@ import Foundation
 
 protocol ModernLockScreenInstalling: LockScreenSaverInstalling {
     var isAvailable: Bool { get }
+
+    /// `activate` is false during status refreshes. Refreshing the app must not
+    /// reopen System Settings; only an explicit user change commits selection.
+    func install(videoURL: URL, activate: Bool) throws
 }
 
 extension AerialLockScreenInstaller: ModernLockScreenInstalling {}
+
+extension ModernLockScreenInstalling {
+    func install(videoURL: URL, activate _: Bool) throws {
+        try install(videoURL: videoURL)
+    }
+}
 
 /// Routes Lock Screen media to the surface that macOS actually launches.
 ///
@@ -32,11 +42,15 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
     }
 
     func install(videoURL: URL) throws {
+        try install(videoURL: videoURL, activate: true)
+    }
+
+    func install(videoURL: URL, activate: Bool = true) throws {
         if useExtensionPath {
             guard modern.isAvailable else {
                 throw WallpaperExtensionLockScreenInstallerError.extensionNotBundled
             }
-            try modern.install(videoURL: videoURL)
+            try modern.install(videoURL: videoURL, activate: activate)
             if legacy.isInstalled {
                 try? legacy.uninstall()
             }
@@ -47,7 +61,7 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
             if legacy.isInstalled {
                 try? legacy.uninstall()
             }
-            try modern.install(videoURL: videoURL)
+            try modern.install(videoURL: videoURL, activate: activate)
         } else {
             try legacy.install(videoURL: videoURL)
         }

@@ -9,6 +9,7 @@ enum WallpaperExtensionLockScreenInstallerError: LocalizedError {
     case noLockScreenSlot
     case backupWriteFailed
     case selectionWriteFailed
+    case selectionActivationFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -26,6 +27,8 @@ enum WallpaperExtensionLockScreenInstallerError: LocalizedError {
             return "AuraFlow could not save the previous Lock Screen wallpaper."
         case .selectionWriteFailed:
             return "macOS did not accept AuraFlow as the Lock Screen wallpaper."
+        case .selectionActivationFailed(let detail):
+            return "AuraFlow could not commit the Lock Screen selection in System Settings: \(detail)"
         }
     }
 }
@@ -54,6 +57,8 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
     private let extensionBundleID = "com.andrijvergeles.auraflow.wallpaper-extension"
     private let restartWallpaperAgentAction: () -> Void
     private let notifyExtensionLibraryChangedAction: () -> Void
+    private let activateSelectionAction: () throws -> Void
+    private let deactivateSelectionAction: () throws -> Void
     private let operationLock = NSLock()
 
     init(
@@ -63,7 +68,9 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
         wallpaperStoreURL: URL? = nil,
         backupURL: URL? = nil,
         restartWallpaperAgentAction: @escaping () -> Void = WallpaperExtensionLockScreenInstaller.restartWallpaperAgent,
-        notifyExtensionLibraryChangedAction: @escaping () -> Void = WallpaperExtensionLockScreenInstaller.notifyExtensionLibraryChanged
+        notifyExtensionLibraryChangedAction: @escaping () -> Void = WallpaperExtensionLockScreenInstaller.notifyExtensionLibraryChanged,
+        activateSelectionAction: @escaping () throws -> Void = WallpaperExtensionLockScreenInstaller.activateAuraFlowSelection,
+        deactivateSelectionAction: @escaping () throws -> Void = WallpaperExtensionLockScreenInstaller.deactivateAuraFlowSelection
     ) {
         self.fileManager = fileManager
         self.extensionBundleURL = extensionBundleURL
@@ -86,6 +93,8 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
                 .appendingPathComponent("wallpaper_extension_idle_backup.plist")
         self.restartWallpaperAgentAction = restartWallpaperAgentAction
         self.notifyExtensionLibraryChangedAction = notifyExtensionLibraryChangedAction
+        self.activateSelectionAction = activateSelectionAction
+        self.deactivateSelectionAction = deactivateSelectionAction
     }
 
     var isAvailable: Bool {
@@ -101,6 +110,10 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
     }
 
     func install(videoURL: URL) throws {
+        try install(videoURL: videoURL, activate: true)
+    }
+
+    func install(videoURL: URL, activate: Bool) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
 
@@ -147,6 +160,17 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
             throw WallpaperExtensionLockScreenInstallerError.selectionWriteFailed
         }
         notifyExtensionLibraryChangedAction()
+        if activate {
+            do {
+                try activateSelectionAction()
+            } catch let error as WallpaperExtensionLockScreenInstallerError {
+                throw error
+            } catch {
+                throw WallpaperExtensionLockScreenInstallerError.selectionActivationFailed(
+                    error.localizedDescription
+                )
+            }
+        }
     }
 
     func uninstall() throws {
@@ -175,6 +199,15 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
         removeDeployment()
         try? fileManager.removeItem(at: backupURL)
         restartWallpaperAgentAction()
+        do {
+            try deactivateSelectionAction()
+        } catch let error as WallpaperExtensionLockScreenInstallerError {
+            throw error
+        } catch {
+            throw WallpaperExtensionLockScreenInstallerError.selectionActivationFailed(
+                error.localizedDescription
+            )
+        }
     }
 
     private func deploy(videoURL: URL) throws {
@@ -394,5 +427,65 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
             nil,
             true
         )
+    }
+
+    /// WallpaperExtensionKit exposes the provider to System Settings, but
+    /// macOS keeps the active screen-saver choice in WallpaperAgent's settings
+    /// manager. Writing Index.plist alone only changes a cache and is ignored
+    /// on the next lock. The settings sheet is the system-owned commit path.
+    private static func activateAuraFlowSelection() throws {
+        try commitSystemScreenSaverSelection(clickOffset: (x: 75, y: 475))
+    }
+
+    private static func deactivateAuraFlowSelection() throws {
+        // The Automatic radio button is the system's safe fallback. It clears
+        // AuraFlow from the active Lock Screen without changing Desktop.
+        try commitSystemScreenSaverSelection(clickOffset: (x: 310, y: 197))
+    }
+
+    private static func commitSystemScreenSaverSelection(clickOffset: (x: Int, y: Int)) throws {
+        let script = """
+        tell application "System Settings"
+            open location "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension?ScreenSaver"
+        end tell
+        tell application "System Events"
+            tell process "System Settings"
+                repeat 40 times
+                    if exists sheet 1 of window 1 then exit repeat
+                    delay 0.15
+                end repeat
+                if not (exists sheet 1 of window 1) then error "Screen Saver settings did not open"
+                set saverSheet to sheet 1 of window 1
+                set sheetPosition to position of saverSheet
+                click at {(item 1 of sheetPosition) + \(clickOffset.x), (item 2 of sheetPosition) + \(clickOffset.y)}
+                delay 0.35
+                click button 1 of group 1 of saverSheet
+            end tell
+        end tell
+        """
+
+        let task = Process()
+        let output = Pipe()
+        let error = Pipe()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script]
+        task.standardOutput = output
+        task.standardError = error
+        do {
+            try task.run()
+        } catch {
+            throw WallpaperExtensionLockScreenInstallerError.selectionActivationFailed(
+                error.localizedDescription
+            )
+        }
+        task.waitUntilExit()
+        guard task.terminationStatus == 0 else {
+            let errorData = error.fileHandleForReading.readDataToEndOfFile()
+            let detail = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw WallpaperExtensionLockScreenInstallerError.selectionActivationFailed(
+                detail?.isEmpty == false ? detail! : "System Settings rejected the selection"
+            )
+        }
     }
 }

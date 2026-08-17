@@ -405,7 +405,7 @@ final class NativeWallpaperController: WallpaperControlling {
             let prepared = try prepareLockScreenConfig(config)
             config = prepared
             try store.saveConfig(config)
-            try installLockScreenSaver(using: config)
+            try installLockScreenSaver(using: config, activate: false)
         }
         store.markPaused(false)
         try launchAgentIfNeeded()
@@ -513,7 +513,7 @@ final class NativeWallpaperController: WallpaperControlling {
            config.lock_screen_path == nil {
             config = try prepareLockScreenConfig(config)
             try store.saveConfig(config)
-            try installLockScreenSaver(using: config)
+            try installLockScreenSaver(using: config, activate: false)
         }
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.reload, config: config)
@@ -545,7 +545,7 @@ final class NativeWallpaperController: WallpaperControlling {
             appSupportPath: store.appSupportURL.path
         )
         config = try prepareLockScreenConfig(config)
-        try installLockScreenSaver(using: config)
+        try installLockScreenSaver(using: config, activate: false)
         try store.saveConfig(config)
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.update, config: config)
@@ -598,7 +598,7 @@ final class NativeWallpaperController: WallpaperControlling {
                 appSupportPath: store.appSupportURL.path
             )
             prepared = try prepareLockScreenConfig(prepared)
-            try installLockScreenSaver(using: prepared)
+            try installLockScreenSaver(using: prepared, activate: true)
             try store.saveConfig(prepared)
             if store.processIsAlive(pid: store.loadPID()) {
                 try send(.update, config: prepared)
@@ -633,7 +633,7 @@ final class NativeWallpaperController: WallpaperControlling {
         if prepared != config {
             try store.saveConfig(prepared)
         }
-        try installLockScreenSaver(using: prepared)
+        try installLockScreenSaver(using: prepared, activate: false)
     }
 
     func beginLockScreenPreview() throws -> ControlStatus {
@@ -699,14 +699,18 @@ final class NativeWallpaperController: WallpaperControlling {
         return prepared
     }
 
-    private func installLockScreenSaver(using config: ControlConfig) throws {
+    private func installLockScreenSaver(using config: ControlConfig, activate: Bool) throws {
         let videoURL = URL(fileURLWithPath: config.effectiveLockScreenRuntimePath)
         // A thumbnail improves the static transition frame, but it must never
         // prevent the actual live video from being installed. AVFoundation can
         // fail still extraction for codecs that the system Aerial provider can
         // nevertheless decode and play correctly.
         _ = try? store.ensureCurrentStillFrame(from: videoURL)
-        try lockScreenSaverInstaller.install(videoURL: videoURL)
+        if let modernInstaller = lockScreenSaverInstaller as? LockScreenWallpaperInstaller {
+            try modernInstaller.install(videoURL: videoURL, activate: activate)
+        } else {
+            try lockScreenSaverInstaller.install(videoURL: videoURL)
+        }
     }
 }
 
