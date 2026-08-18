@@ -404,7 +404,7 @@ final class NativeWallpaperController: WallpaperControlling {
             let prepared = try prepareLockScreenConfig(config)
             config = prepared
             try store.saveConfig(config)
-            try installLockScreenSaver(using: config, activate: false)
+            try installLockScreenSaver(using: config, activate: true)
         }
         store.markPaused(false)
         try launchAgentIfNeeded()
@@ -434,7 +434,7 @@ final class NativeWallpaperController: WallpaperControlling {
             let prepared = try prepareLockScreenConfig(config)
             config = prepared
             try store.saveConfig(config)
-            try installLockScreenSaver(using: config, activate: false)
+            try installLockScreenSaver(using: config, activate: true)
         }
         store.markPaused(false)
         try launchAgentIfNeeded()
