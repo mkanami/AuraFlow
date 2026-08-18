@@ -125,3 +125,29 @@ private struct WallpaperExtensionFixture {
     #expect(!installer.isInstalled)
     #expect(!FileManager.default.fileExists(atPath: fixture.backupURL.path))
 }
+
+@Test func wallpaperExtensionReplacesStaleDeploymentMedia() throws {
+    let fixture = try WallpaperExtensionFixture()
+    defer { fixture.cleanup() }
+
+    let entryURL = fixture.documentsURL
+        .appendingPathComponent("videos/A2A1B4DD-6CB6-4AF2-8F9D-2A6730B43218", isDirectory: true)
+    try FileManager.default.createDirectory(at: entryURL, withIntermediateDirectories: true)
+    let staleURL = entryURL.appendingPathComponent("lock_screen.mp4")
+    FileManager.default.createFile(atPath: staleURL.path, contents: Data("stale".utf8))
+
+    let installer = fixture.makeInstaller()
+    try installer.install(videoURL: fixture.videoURL)
+
+    let installed = try fixture.readStore()
+    let systemDefault = try #require(installed["SystemDefault"] as? [String: Any])
+    let idle = try #require(systemDefault["Idle"] as? [String: Any])
+    let idleContent = try #require(idle["Content"] as? [String: Any])
+    let choices = try #require(idleContent["Choices"] as? [[String: Any]])
+    let file = try #require(choices.first?["Files"] as? [[String: Any]])
+    #expect(file.first?["relative"] as? String == fixture.documentsURL
+        .appendingPathComponent("videos/A2A1B4DD-6CB6-4AF2-8F9D-2A6730B43218/lock_screen.mov")
+        .absoluteString)
+    #expect(FileManager.default.fileExists(atPath: entryURL.appendingPathComponent("lock_screen.mov").path))
+    #expect(!FileManager.default.fileExists(atPath: staleURL.path))
+}

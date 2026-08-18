@@ -132,8 +132,8 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
             }
         }
 
-        try deploy(videoURL: videoURL)
-        let choice = makeChoice(videoURL: deployedVideoURL())
+        let deployedURL = try deploy(videoURL: videoURL)
+        let choice = makeChoice(videoURL: deployedURL)
         let changed = replaceIdleSelections(in: &propertyList, with: choice)
         guard changed > 0 else {
             throw WallpaperExtensionLockScreenInstallerError.noLockScreenSlot
@@ -180,7 +180,7 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
         restartWallpaperAgentAction()
     }
 
-    private func deploy(videoURL: URL) throws {
+    private func deploy(videoURL: URL) throws -> URL {
         let videosURL = extensionDocumentsURL.appendingPathComponent("videos", isDirectory: true)
         let entryURL = videosURL.appendingPathComponent(entryID, isDirectory: true)
         try fileManager.createDirectory(at: entryURL, withIntermediateDirectories: true)
@@ -202,6 +202,21 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
             throw error
         }
 
+        // A deployment can change containers (for example mp4 → mov after
+        // image/GIF preparation). Keep only the managed media for this entry;
+        // otherwise a directory scan can select an older file at random.
+        let managedExtensions = Set(["mov", "mp4", "m4v"])
+        let deployedFiles = (try? fileManager.contentsOfDirectory(
+            at: entryURL,
+            includingPropertiesForKeys: nil,
+            options: .skipsHiddenFiles
+        )) ?? []
+        for fileURL in deployedFiles
+            where fileURL.standardizedFileURL.path != destinationURL.standardizedFileURL.path
+                && managedExtensions.contains(fileURL.pathExtension.lowercased()) {
+            try? fileManager.removeItem(at: fileURL)
+        }
+
         let metadata = DeploymentMetadata(
             id: entryID,
             name: "AuraFlow Lock Screen",
@@ -214,6 +229,7 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
         )
         let metadataURL = entryURL.appendingPathComponent("metadata.json")
         try JSONEncoder().encode(metadata).write(to: metadataURL, options: .atomic)
+        return destinationURL
     }
 
     private func removeDeployment() {
@@ -221,19 +237,6 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
             .appendingPathComponent("videos", isDirectory: true)
             .appendingPathComponent(entryID, isDirectory: true)
         try? fileManager.removeItem(at: entryURL)
-    }
-
-    private func deployedVideoURL() -> URL {
-        let entryURL = extensionDocumentsURL
-            .appendingPathComponent("videos", isDirectory: true)
-            .appendingPathComponent(entryID, isDirectory: true)
-        let contents = (try? fileManager.contentsOfDirectory(
-            at: entryURL,
-            includingPropertiesForKeys: nil,
-            options: .skipsHiddenFiles
-        )) ?? []
-        return contents.first(where: { ["mov", "mp4", "m4v"].contains($0.pathExtension.lowercased()) })
-            ?? entryURL.appendingPathComponent("lock_screen.mov")
     }
 
     private func makeChoice(videoURL: URL) -> [String: Any] {
