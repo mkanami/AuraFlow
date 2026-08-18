@@ -316,7 +316,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(config.lock_screen_preference_configured == false)
 }
 
-@Test func legacyLockScreenDefaultRemainsDisabledOnNextWallpaperStart() throws {
+@Test func legacyLockScreenDefaultIsEnabledByNormalWallpaperStart() throws {
     let fixture = try NativeRuntimeFixture("legacy-lock-migration")
     defer { fixture.cleanup() }
     let installer = RecordingLockScreenSaverInstaller()
@@ -340,11 +340,11 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     let config = fixture.store.loadConfig()
-    #expect(config.show_on_lock_screen == false)
-    #expect(installer.installedVideoURL == nil)
+    #expect(config.show_on_lock_screen == true)
+    #expect(installer.installedVideoURL == fixture.videoURL)
 }
 
-@Test func explicitLockScreenOptOutSurvivesWallpaperChanges() throws {
+@Test func normalWallpaperStartEnablesLockScreenAfterSettingsOptOut() throws {
     let fixture = try NativeRuntimeFixture("lock-opt-out")
     defer { fixture.cleanup() }
     let installer = RecordingLockScreenSaverInstaller()
@@ -368,8 +368,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     let config = fixture.store.loadConfig()
-    #expect(config.show_on_lock_screen == false)
-    #expect(installer.installedVideoURL == nil)
+    #expect(config.show_on_lock_screen == true)
+    #expect(installer.installedVideoURL == fixture.videoURL)
 }
 
 @Test func enabledLockPreferenceWithoutVideoDoesNotAttemptSync() throws {

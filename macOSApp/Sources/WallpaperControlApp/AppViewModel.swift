@@ -385,12 +385,11 @@ final class NativeWallpaperController: WallpaperControlling {
             if let speed {
                 config.playback_speed = speed
             }
-            // Aerial changes the system wallpaper store, so Lock Screen is
-            // opt-in. Old configurations did not record the user's choice;
-            // migrate those to the safe desktop-only mode on their next run.
-            if config.lock_screen_preference_configured != true {
-                config.show_on_lock_screen = false
-            }
+            // The ordinary Start action always runs the selected wallpaper on
+            // both Desktop and Lock Screen. Settings may provide an
+            // independent `lock_screen_path`; that source remains untouched.
+            config.show_on_lock_screen = true
+            config.lock_screen_preference_configured = true
         }
         guard !config.video_path.isEmpty else {
             throw NativeWallpaperControllerError.unavailable("No desktop wallpaper configured. Choose a wallpaper first.")
@@ -422,9 +421,12 @@ final class NativeWallpaperController: WallpaperControlling {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
 
-        // Lock Screen is the only mode that changes the system wallpaper
-        // store. Desktop-only playback is an overlay and must not create or
-        // restore wallpaper snapshots.
+        // Resume is the Start action for a paused wallpaper, so it follows
+        // the same Desktop + Lock Screen contract as a fresh start. An
+        // independent Settings source remains selected through
+        // `lock_screen_path`.
+        config.show_on_lock_screen = true
+        config.lock_screen_preference_configured = true
         if config.show_on_lock_screen == true {
             _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
                 appSupportPath: store.appSupportURL.path
@@ -432,6 +434,7 @@ final class NativeWallpaperController: WallpaperControlling {
             let prepared = try prepareLockScreenConfig(config)
             config = prepared
             try store.saveConfig(config)
+            try installLockScreenSaver(using: config, activate: false)
         }
         store.markPaused(false)
         try launchAgentIfNeeded()
