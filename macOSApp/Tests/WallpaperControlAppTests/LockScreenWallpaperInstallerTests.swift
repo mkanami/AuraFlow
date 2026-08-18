@@ -7,6 +7,7 @@ private final class RecordingModernLockScreenInstaller:
     let isAvailable: Bool
     var isInstalled = false
     var installCount = 0
+    var activationValues: [Bool] = []
     var uninstallCount = 0
 
     init(isAvailable: Bool = true) {
@@ -16,6 +17,11 @@ private final class RecordingModernLockScreenInstaller:
     func install(videoURL: URL) throws {
         installCount += 1
         isInstalled = true
+    }
+
+    func install(videoURL: URL, activate: Bool) throws {
+        activationValues.append(activate)
+        try install(videoURL: videoURL)
     }
 
     func uninstall() throws {
@@ -41,11 +47,13 @@ private final class RecordingLegacyLockScreenInstaller:
     }
 }
 
-@Test func macOS26AndLaterPreferWallpaperExtension() throws {
+@Test func macOS26AndLaterPreferPermissionFreeAerialWhenAvailable() throws {
     let modern = RecordingModernLockScreenInstaller()
+    let normalStart = RecordingModernLockScreenInstaller()
     let legacy = RecordingLegacyLockScreenInstaller()
     let installer = LockScreenWallpaperInstaller(
         modern: modern,
+        normalStart: normalStart,
         legacy: legacy,
         operatingSystemVersion: OperatingSystemVersion(
             majorVersion: 26,
@@ -57,7 +65,55 @@ private final class RecordingLegacyLockScreenInstaller:
     try installer.install(videoURL: URL(fileURLWithPath: "/tmp/lock.mov"))
 
     #expect(legacy.installCount == 0)
+    #expect(normalStart.installCount == 1)
+    #expect(modern.installCount == 0)
+}
+
+@Test func normalStartUsesPermissionFreeAerialRouteOnMacOS26AndLater() throws {
+    let modern = RecordingModernLockScreenInstaller()
+    let normalStart = RecordingModernLockScreenInstaller()
+    let legacy = RecordingLegacyLockScreenInstaller()
+    let installer = LockScreenWallpaperInstaller(
+        modern: modern,
+        normalStart: normalStart,
+        legacy: legacy,
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 27,
+            minorVersion: 0,
+            patchVersion: 0
+        )
+    )
+
+    try installer.installForNormalStart(
+        videoURL: URL(fileURLWithPath: "/tmp/lock.mov")
+    )
+
+    #expect(normalStart.installCount == 1)
+    #expect(modern.installCount == 0)
+    #expect(legacy.installCount == 0)
+}
+
+@Test func normalStartNeverUsesSystemSettingsActivationWhenAerialIsUnavailable() throws {
+    let modern = RecordingModernLockScreenInstaller()
+    let normalStart = RecordingModernLockScreenInstaller(isAvailable: false)
+    let legacy = RecordingLegacyLockScreenInstaller()
+    let installer = LockScreenWallpaperInstaller(
+        modern: modern,
+        normalStart: normalStart,
+        legacy: legacy,
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 27,
+            minorVersion: 0,
+            patchVersion: 0
+        )
+    )
+
+    try installer.installForNormalStart(
+        videoURL: URL(fileURLWithPath: "/tmp/lock.mov")
+    )
+
     #expect(modern.installCount == 1)
+    #expect(modern.activationValues == [false])
 }
 
 @Test func olderSystemsKeepAerialWhenAvailable() throws {
@@ -81,10 +137,12 @@ private final class RecordingLegacyLockScreenInstaller:
 
 @Test func macOS26AndLaterCleanUpStaleScreenSaverAfterExtensionInstall() throws {
     let modern = RecordingModernLockScreenInstaller()
+    let normalStart = RecordingModernLockScreenInstaller(isAvailable: false)
     let legacy = RecordingLegacyLockScreenInstaller()
     legacy.isInstalled = true
     let installer = LockScreenWallpaperInstaller(
         modern: modern,
+        normalStart: normalStart,
         legacy: legacy,
         operatingSystemVersion: OperatingSystemVersion(
             majorVersion: 27,

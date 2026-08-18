@@ -404,7 +404,11 @@ final class NativeWallpaperController: WallpaperControlling {
             let prepared = try prepareLockScreenConfig(config)
             config = prepared
             try store.saveConfig(config)
-            try installLockScreenSaver(using: config, activate: true)
+            try installLockScreenSaver(
+                using: config,
+                activate: true,
+                normalStart: true
+            )
         }
         store.markPaused(false)
         try launchAgentIfNeeded()
@@ -434,7 +438,11 @@ final class NativeWallpaperController: WallpaperControlling {
             let prepared = try prepareLockScreenConfig(config)
             config = prepared
             try store.saveConfig(config)
-            try installLockScreenSaver(using: config, activate: true)
+            try installLockScreenSaver(
+                using: config,
+                activate: true,
+                normalStart: true
+            )
         }
         store.markPaused(false)
         try launchAgentIfNeeded()
@@ -702,7 +710,11 @@ final class NativeWallpaperController: WallpaperControlling {
         return prepared
     }
 
-    private func installLockScreenSaver(using config: ControlConfig, activate: Bool) throws {
+    private func installLockScreenSaver(
+        using config: ControlConfig,
+        activate: Bool,
+        normalStart: Bool = false
+    ) throws {
         let videoURL = URL(fileURLWithPath: config.effectiveLockScreenRuntimePath)
         // A thumbnail improves the static transition frame, but it must never
         // prevent the actual live video from being installed. AVFoundation can
@@ -710,7 +722,11 @@ final class NativeWallpaperController: WallpaperControlling {
         // nevertheless decode and play correctly.
         _ = try? store.ensureCurrentStillFrame(from: videoURL)
         if let modernInstaller = lockScreenSaverInstaller as? LockScreenWallpaperInstaller {
-            try modernInstaller.install(videoURL: videoURL, activate: activate)
+            if normalStart {
+                try modernInstaller.installForNormalStart(videoURL: videoURL)
+            } else {
+                try modernInstaller.install(videoURL: videoURL, activate: activate)
+            }
         } else {
             try lockScreenSaverInstaller.install(videoURL: videoURL)
         }
