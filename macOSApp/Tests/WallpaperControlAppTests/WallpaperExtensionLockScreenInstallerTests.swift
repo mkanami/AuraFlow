@@ -53,9 +53,7 @@ private struct WallpaperExtensionFixture {
             wallpaperStoreURL: storeURL,
             backupURL: backupURL,
             restartWallpaperAgentAction: restartAction,
-            notifyExtensionLibraryChangedAction: notifyAction,
-            activateSelectionAction: {},
-            deactivateSelectionAction: {}
+            notifyExtensionLibraryChangedAction: notifyAction
         )
     }
 
