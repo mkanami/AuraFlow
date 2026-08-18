@@ -24,7 +24,11 @@ final class VideoLibrary: Sendable {
     static let shared = VideoLibrary()
 
     static var sharedDocumentsURL: URL {
-        URL(fileURLWithPath: "/Users/Shared/AuraFlow/Lock Screen", isDirectory: true)
+        // In an App Extension, the home directory already is this extension's
+        // `…/Data` container. The host deploys the selected media to its
+        // Documents directory; do not append another container path here.
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents", isDirectory: true)
     }
 
     private let videosDir: URL

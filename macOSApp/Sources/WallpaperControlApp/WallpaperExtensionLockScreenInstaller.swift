@@ -70,7 +70,14 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
             ?? Bundle.main.bundleURL
                 .appendingPathComponent("Contents/Extensions/AuraFlowWallpaperExtension.appex", isDirectory: true)
         self.extensionDocumentsURL = extensionDocumentsURL
-            ?? URL(fileURLWithPath: "/Users/Shared/AuraFlow/Lock Screen", isDirectory: true)
+            // The Wallpaper extension is sandboxed. Its VideoLibrary reads
+            // this container directly, so deploying to a shared host-only
+            // directory makes Lock Screen acquire fall back to a blank frame.
+            ?? fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent(
+                    "Library/Containers/com.andrijvergeles.auraflow.wallpaper-extension/Data/Documents",
+                    isDirectory: true
+                )
         self.wallpaperStoreURL = wallpaperStoreURL
             ?? fileManager.homeDirectoryForCurrentUser
                 .appendingPathComponent(
