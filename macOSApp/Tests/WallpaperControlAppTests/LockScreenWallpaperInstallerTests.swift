@@ -47,7 +47,7 @@ private final class RecordingLegacyLockScreenInstaller:
     }
 }
 
-@Test func macOS26AndLaterUseAerialBackedLockScreenWhenAvailable() throws {
+@Test func macOS26AndLaterPreferBundledScreenSaver() throws {
     let modern = RecordingModernLockScreenInstaller()
     let aerial = RecordingModernLockScreenInstaller()
     let legacy = RecordingLegacyLockScreenInstaller()
@@ -64,14 +64,14 @@ private final class RecordingLegacyLockScreenInstaller:
 
     try installer.install(videoURL: URL(fileURLWithPath: "/tmp/lock.mov"))
 
-    #expect(legacy.installCount == 0)
-    #expect(aerial.installCount == 1)
+    #expect(legacy.installCount == 1)
+    #expect(aerial.installCount == 0)
     #expect(modern.installCount == 0)
 }
 
-@Test func standardInstallUsesAuraFlowExtensionWithoutActivationOnMacOS26AndLater() throws {
+@Test func standardInstallUsesAuraFlowSaverWithoutOpeningSettingsOnMacOS26AndLater() throws {
     let modern = RecordingModernLockScreenInstaller()
-    let aerial = RecordingModernLockScreenInstaller(isAvailable: false)
+    let aerial = RecordingModernLockScreenInstaller()
     let legacy = RecordingLegacyLockScreenInstaller()
     let installer = LockScreenWallpaperInstaller(
         modern: modern,
@@ -89,14 +89,14 @@ private final class RecordingLegacyLockScreenInstaller:
         activate: false
     )
 
-    #expect(modern.installCount == 1)
-    #expect(modern.activationValues == [false])
-    #expect(legacy.installCount == 0)
+    #expect(legacy.installCount == 1)
+    #expect(modern.installCount == 0)
+    #expect(aerial.installCount == 0)
 }
 
-@Test func standardInstallDoesNotActivateSystemLockScreenSelection() throws {
+@Test func standardInstallKeepsSaverSelectedForTheRealLockScreen() throws {
     let modern = RecordingModernLockScreenInstaller()
-    let aerial = RecordingModernLockScreenInstaller(isAvailable: false)
+    let aerial = RecordingModernLockScreenInstaller()
     let legacy = RecordingLegacyLockScreenInstaller()
     let installer = LockScreenWallpaperInstaller(
         modern: modern,
@@ -114,13 +114,13 @@ private final class RecordingLegacyLockScreenInstaller:
         activate: false
     )
 
-    #expect(modern.installCount == 1)
-    #expect(modern.activationValues == [false])
+    #expect(legacy.installCount == 1)
+    #expect(modern.installCount == 0)
 }
 
 @Test func explicitLockScreenToggleKeepsActivationPath() throws {
     let modern = RecordingModernLockScreenInstaller()
-    let aerial = RecordingModernLockScreenInstaller(isAvailable: false)
+    let aerial = RecordingModernLockScreenInstaller()
     let legacy = RecordingLegacyLockScreenInstaller()
     let installer = LockScreenWallpaperInstaller(
         modern: modern,
@@ -138,7 +138,8 @@ private final class RecordingLegacyLockScreenInstaller:
         activate: true
     )
 
-    #expect(modern.activationValues == [true])
+    #expect(legacy.installCount == 1)
+    #expect(modern.installCount == 0)
 }
 
 @Test func olderSystemsKeepAerialWhenAvailable() throws {
@@ -163,11 +164,12 @@ private final class RecordingLegacyLockScreenInstaller:
     #expect(legacy.installCount == 0)
 }
 
-@Test func macOS26AndLaterCleanUpStaleScreenSaverAfterExtensionInstall() throws {
+@Test func macOS26AndLaterCleanUpStaleModernProvidersAfterLegacyInstall() throws {
     let modern = RecordingModernLockScreenInstaller()
-    let aerial = RecordingModernLockScreenInstaller(isAvailable: false)
+    let aerial = RecordingModernLockScreenInstaller()
     let legacy = RecordingLegacyLockScreenInstaller()
-    legacy.isInstalled = true
+    aerial.isInstalled = true
+    modern.isInstalled = true
     let installer = LockScreenWallpaperInstaller(
         modern: modern,
         aerial: aerial,
@@ -181,7 +183,7 @@ private final class RecordingLegacyLockScreenInstaller:
 
     try installer.install(videoURL: URL(fileURLWithPath: "/tmp/lock.mov"))
 
-    #expect(legacy.installCount == 0)
-    #expect(legacy.uninstallCount == 1)
-    #expect(modern.installCount == 1)
+    #expect(legacy.installCount == 1)
+    #expect(aerial.uninstallCount == 1)
+    #expect(modern.uninstallCount == 1)
 }

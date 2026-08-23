@@ -17,16 +17,17 @@ extension ModernLockScreenInstalling {
 
 /// Routes Lock Screen media to the surface that macOS actually launches.
 ///
-/// macOS 26 can expose a WallpaperExtensionKit provider in Index.plist while
-/// the active secure Lock Screen still remains on Apple's Aerial surface. Use
-/// the Aerial-backed path when available so Start changes the real Lock Screen
-/// as well as the Desktop agent. Keep the AuraFlow extension as a fallback for
-/// systems where Aerial is unavailable.
+/// On macOS 26 and later the visible secure Lock Screen is driven by the
+/// selected screen-saver module (`com.apple.screensaver`), even though the
+/// wallpaper store may contain an Aerial or WallpaperExtensionKit entry for
+/// its Idle slot. Prefer AuraFlow's signed saver there so the wallpaper shown
+/// after a real lock is the same media that Start installed. Keep the modern
+/// providers as fallbacks for hosts where the bundled saver is unavailable.
 final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
     private let modern: ModernLockScreenInstalling
     private let aerial: ModernLockScreenInstalling
     private let legacy: LockScreenSaverInstalling
-    private let useExtensionPath: Bool
+    private let preferLegacy: Bool
 
     init(
         modern: ModernLockScreenInstalling = WallpaperExtensionLockScreenInstaller(),
@@ -38,7 +39,7 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
         self.modern = modern
         self.aerial = aerial ?? AerialLockScreenInstaller()
         self.legacy = legacy
-        self.useExtensionPath = operatingSystemVersion.majorVersion >= 26
+        self.preferLegacy = operatingSystemVersion.majorVersion >= 26
     }
 
     var isInstalled: Bool {
@@ -50,38 +51,45 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
     }
 
     func install(videoURL: URL, activate: Bool) throws {
-        if useExtensionPath {
-            if aerial.isAvailable {
-                try uninstallExtensionIfNeeded()
-                try aerial.install(videoURL: videoURL, activate: activate)
-                if legacy.isInstalled {
-                    try? legacy.uninstall()
+        if preferLegacy {
+            do {
+                // Clear stale modern deployments first. Aerial/extension
+                // uninstall restores their own Store snapshot, so doing this
+                // after the saver install could erase AuraFlow's new Idle
+                // screen-saver descriptor again.
+                if aerial.isInstalled {
+                    try? aerial.uninstall()
                 }
+                if modern.isInstalled {
+                    try? modern.uninstall()
+                }
+                // The legacy installer updates the real macOS screen-saver
+                // selection directly and never opens System Settings. The
+                // `activate` value is intentionally ignored here: Start and
+                // Resume both need the selected saver to remain available,
+                // while the preference itself is controlled by the UI toggle.
+                try legacy.install(videoURL: videoURL)
                 return
+            } catch LockScreenSaverInstallerError.componentNotBundled {
+                // Development or partial builds may omit the saver bundle.
+                // Fall through to the modern provider paths in that case.
             }
-            guard modern.isAvailable else {
-                throw WallpaperExtensionLockScreenInstallerError.extensionNotBundled
-            }
-            try modern.install(videoURL: videoURL, activate: activate)
+        }
+
+        if aerial.isAvailable {
+            try uninstallExtensionIfNeeded()
+            try aerial.install(videoURL: videoURL, activate: activate)
             if legacy.isInstalled {
                 try? legacy.uninstall()
             }
             return
         }
-
-        if aerial.isAvailable {
-            try uninstallExtensionIfNeeded()
-            if legacy.isInstalled {
-                try legacy.uninstall()
-            }
-            try aerial.install(videoURL: videoURL, activate: activate)
-        } else if modern.isAvailable {
-            if legacy.isInstalled {
-                try legacy.uninstall()
-            }
-            try modern.install(videoURL: videoURL, activate: activate)
-        } else {
-            try legacy.install(videoURL: videoURL)
+        guard modern.isAvailable else {
+            throw WallpaperExtensionLockScreenInstallerError.extensionNotBundled
+        }
+        try modern.install(videoURL: videoURL, activate: activate)
+        if legacy.isInstalled {
+            try? legacy.uninstall()
         }
     }
 
