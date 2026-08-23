@@ -337,11 +337,24 @@ final class NativeWallpaperController: WallpaperControlling {
         else {
             return
         }
+        let hasRecoveryArtifacts = [
+            store.lastFrameURL,
+            store.appSupportURL.appendingPathComponent("wallpaper_backup.json"),
+            store.appSupportURL.appendingPathComponent("wallpaper_backup_original.json"),
+            store.appSupportURL.appendingPathComponent("ModernLockScreen/installation.json"),
+            store.appSupportURL.appendingPathComponent("ModernLockScreen/Index.before-auraflow.plist"),
+        ].contains { FileManager.default.fileExists(atPath: $0.path) }
+        guard hasRecoveryArtifacts else { return }
+
         if store.restoreWallpaperBackup() {
             store.removeManagedFallback()
         } else if isCanonicalStore {
-            _ = WallpaperDesktopSupport
-                .repairCurrentDesktopWallpaperIfNeeded()
+            if WallpaperDesktopSupport.repairCurrentDesktopWallpaperIfNeeded() {
+                store.removeManagedFallback()
+                WallpaperDesktopSupport.discardWallpaperBackups(
+                    appSupportPath: store.appSupportURL.path
+                )
+            }
         }
     }
 
@@ -458,7 +471,8 @@ final class NativeWallpaperController: WallpaperControlling {
         // active; the backup session keeps that newer choice without allowing
         // the managed still frame to become the restore target.
         _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
-            appSupportPath: store.appSupportURL.path
+            appSupportPath: store.appSupportURL.path,
+            includeRecoverySnapshot: true
         )
         if store.processIsAlive(pid: store.loadPID()) {
             try? send(.terminate, config: currentConfig)
@@ -474,7 +488,11 @@ final class NativeWallpaperController: WallpaperControlling {
             || lockScreenSaverInstaller.isInstalled {
             try lockScreenSaverInstaller.uninstall()
         }
-        let restored = store.restoreWallpaperBackup()
+        var restored = store.restoreWallpaperBackup()
+        if !restored {
+            restored = WallpaperDesktopSupport
+                .repairCurrentDesktopWallpaperIfNeeded()
+        }
         (lockScreenSaverInstaller as? LockScreenWallpaperInstaller)?
             .refreshAfterWallpaperRestore()
         _ = try updateConfig { config in
@@ -487,6 +505,9 @@ final class NativeWallpaperController: WallpaperControlling {
         }
         if restored {
             store.removeManagedFallback()
+            WallpaperDesktopSupport.discardWallpaperBackups(
+                appSupportPath: store.appSupportURL.path
+            )
         }
         return store.status(wallpaperRestored: restored)
     }

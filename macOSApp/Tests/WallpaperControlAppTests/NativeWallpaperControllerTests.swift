@@ -194,6 +194,60 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(idleProvider == "com.apple.wallpaper.choice.aerials")
 }
 
+@Test func removeRestoresExternalImageToDesktopAndIdleTogether() throws {
+    let managedDesktop: [String: Any] = [
+        "Content": [
+            "Choices": [[
+                "Provider": "com.apple.wallpaper.choice.image",
+                "Files": [[
+                    "relative": "file:///Users/test/AuraFlow/last_frame.png",
+                ]],
+            ]],
+        ],
+    ]
+    let staleIdle: [String: Any] = [
+        "Content": [
+            "Choices": [[
+                "Provider": "com.apple.wallpaper.choice.screen-saver",
+                "Files": [],
+            ]],
+        ],
+    ]
+    let store: [String: Any] = [
+        "AllSpacesAndDisplays": [
+            "Desktop": managedDesktop,
+            "Idle": staleIdle,
+        ],
+    ]
+    let data = try PropertyListSerialization.data(
+        fromPropertyList: store,
+        format: .binary,
+        options: 0
+    )
+    let restoredData = try #require(
+        WallpaperDesktopSupport.wallpaperStoreDataWithRestoredImage(
+            data: data,
+            imagePath: "/Users/test/Pictures/user-wallpaper.jpg",
+            date: Date(timeIntervalSince1970: 3)
+        )
+    )
+    let restored = try #require(
+        PropertyListSerialization.propertyList(
+            from: restoredData,
+            options: [],
+            format: nil
+        ) as? [String: Any]
+    )
+    let allSpaces = try #require(
+        restored["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let desktop = try #require(allSpaces["Desktop"] as? [String: Any])
+    let idle = try #require(allSpaces["Idle"] as? [String: Any])
+    #expect(String(describing: desktop).contains("user-wallpaper.jpg"))
+    #expect(String(describing: idle).contains("user-wallpaper.jpg"))
+    #expect(String(describing: restored).contains("last_frame") == false)
+}
+
 @Test func nativeSetSpeedAndScaleUpdateConfigAndCommand() throws {
     let fixture = try NativeRuntimeFixture("settings")
     defer { fixture.cleanup() }

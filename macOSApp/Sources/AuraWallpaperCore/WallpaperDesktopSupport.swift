@@ -14,7 +14,8 @@ public enum WallpaperDesktopSupport {
 
     @discardableResult
     public static func captureCurrentDesktopWallpaperBackup(
-        appSupportPath: String
+        appSupportPath: String,
+        includeRecoverySnapshot: Bool = false
     ) -> Bool {
         let managedPath = managedWallpaperPath(appSupportPath: appSupportPath)
 
@@ -27,18 +28,53 @@ public enum WallpaperDesktopSupport {
             appSupportPath: appSupportPath
         ),
            let existing = loadWallpaperBackup(appSupportPath: appSupportPath) {
-            guard let candidate = currentLiveExternalDesktopWallpaperCandidates()
+            if let candidate = currentLiveExternalDesktopWallpaperCandidates()
                 .first(where: {
                     $0.date > sessionStart
                         && isEligibleExternalWallpaperPath(
                             $0.path,
                             managedPath: managedPath
                         )
-                })
+                }) {
+                var updated = existing
+                var metadata = loadWallpaperBackupMetadata(
+                    appSupportPath: appSupportPath
+                )
+                for screen in NSScreen.screens {
+                    let identifier = screenIdentifier(screen)
+                    updated[identifier] = candidate.path
+                    metadata[identifier] = candidate.date.timeIntervalSince1970
+                }
+                guard let staged = stageWallpaperBackupFiles(
+                    updated,
+                    appSupportPath: appSupportPath
+                ) else {
+                    return false
+                }
+                let saved = saveWallpaperBackup(
+                    appSupportPath: appSupportPath,
+                    wallpapers: staged
+                )
+                if saved {
+                    saveWallpaperBackupMetadata(
+                        appSupportPath: appSupportPath,
+                        dates: metadata
+                    )
+                }
+                return saved
+            }
+
+            guard includeRecoverySnapshot,
+                  let candidate = currentExternalDesktopWallpaperCandidates()
+                    .first(where: {
+                        isEligibleExternalWallpaperPath(
+                            $0.path,
+                            managedPath: managedPath
+                        )
+                    })
             else {
                 return true
             }
-
             var updated = existing
             var metadata = loadWallpaperBackupMetadata(
                 appSupportPath: appSupportPath
@@ -96,13 +132,23 @@ public enum WallpaperDesktopSupport {
         // AuraFlow session an older Store entry may only seed an empty backup;
         // otherwise it must be newer than the session start so that an Aerial
         // snapshot cannot roll the user's return target backwards.
-        if let candidate = currentLiveExternalDesktopWallpaperCandidates()
+        let liveCandidate = currentLiveExternalDesktopWallpaperCandidates()
             .first(where: {
                 isEligibleExternalWallpaperPath(
                     $0.path,
                     managedPath: managedPath
                 )
-            }) {
+            })
+        let recoveryCandidate = includeRecoverySnapshot
+            ? currentExternalDesktopWallpaperCandidates()
+                .first(where: {
+                    isEligibleExternalWallpaperPath(
+                        $0.path,
+                        managedPath: managedPath
+                    )
+                })
+            : nil
+        if let candidate = liveCandidate ?? recoveryCandidate {
             for screen in NSScreen.screens {
                 let identifier = screenIdentifier(screen)
                 // Aerial owns Idle only. A normal image still present in the
@@ -413,6 +459,44 @@ public enum WallpaperDesktopSupport {
         )
     }
 
+    /// Pure Store transformation used by Remove. Both surfaces must point to
+    /// the restored external image before WallpaperAgent is restarted.
+    public static func wallpaperStoreDataWithRestoredImage(
+        data: Data,
+        imagePath: String,
+        date: Date
+    ) -> Data? {
+        guard var root = (
+            try? PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+            )
+        ) as? [String: Any]
+        else {
+            return nil
+        }
+
+        let imageMode = imageWallpaperStoreMode(
+            imagePath: imagePath,
+            date: date
+        )
+        root = mapWallpaperStoreContainers(in: root) { container in
+            var result = container
+            if result["Desktop"] != nil || result["Idle"] != nil {
+                result["Desktop"] = imageMode
+                result["Idle"] = imageMode
+                result["Type"] = "individual"
+            }
+            return result
+        }
+        return try? PropertyListSerialization.data(
+            fromPropertyList: root,
+            format: .binary,
+            options: 0
+        )
+    }
+
     @discardableResult
     public static func restoreFromBackupFiles(
         appSupportPath: String
@@ -455,10 +539,30 @@ public enum WallpaperDesktopSupport {
         guard repairWallpaperStoreForRestore(imagePath: path) else {
             return false
         }
-        discardAerialRecoveryState(appSupportPath: appSupportPath)
+
+        // WallpaperAgent may rewrite its cached provider after the first
+        // restart. Keep the backup until the final Store really contains the
+        // restored image in both Desktop and Idle slots.
         restartWallpaperAgent()
         Thread.sleep(forTimeInterval: 0.35)
         terminateAerialProvider()
+        var restorationVerified = false
+        for _ in 0..<3 {
+            guard repairWallpaperStoreForRestore(imagePath: path) else {
+                return false
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+            if wallpaperStoreImageDescriptorsAreValid(),
+               wallpaperStoreHasNoManagedDesktopReferences(),
+               !wallpaperStoreNeedsLockScreenSync() {
+                restorationVerified = true
+                break
+            }
+        }
+        guard restorationVerified else {
+            return false
+        }
+        discardAerialRecoveryState(appSupportPath: appSupportPath)
         removeWallpaperBackupFiles(appSupportPath: appSupportPath)
         return true
     }
@@ -492,6 +596,7 @@ public enum WallpaperDesktopSupport {
             Thread.sleep(forTimeInterval: 0.2)
             return wallpaperStoreImageDescriptorsAreValid()
                 && wallpaperStoreHasNoManagedDesktopReferences()
+                && !wallpaperStoreNeedsLockScreenSync()
         }
 
         // A system dynamic wallpaper (for example, an Aerial) has no user
@@ -1111,10 +1216,15 @@ public enum WallpaperDesktopSupport {
             return result
         }
 
-        guard let repairedData = try? PropertyListSerialization.data(
+        guard let filteredData = try? PropertyListSerialization.data(
             fromPropertyList: root,
             format: .binary,
             options: 0
+        ),
+        let repairedData = wallpaperStoreDataWithRestoredImage(
+            data: filteredData,
+            imagePath: imagePath,
+            date: Date()
         ) else {
             return false
         }
