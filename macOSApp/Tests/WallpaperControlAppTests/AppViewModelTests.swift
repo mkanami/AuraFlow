@@ -117,6 +117,58 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
+@Test func lastWallpaperPreviewSurvivesRestartAndRemove() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("preview-state-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let videoURL = root.appendingPathComponent("last-wallpaper.mp4")
+    FileManager.default.createFile(atPath: videoURL.path, contents: Data([1, 2, 3]))
+    let previewStateURL = root.appendingPathComponent("last_preview.json")
+
+    let firstViewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        previewStateURL: previewStateURL
+    )
+    firstViewModel.selectLocalVideoForPreview(videoURL)
+
+    let restartedController = MockNativeWallpaperController()
+    let restartedViewModel = AppViewModel(
+        controller: restartedController,
+        previewStateURL: previewStateURL
+    )
+
+    #expect(restartedViewModel.currentVideoURL == videoURL.standardizedFileURL)
+    #expect(restartedViewModel.previewPlayer?.currentItem != nil)
+
+    restartedViewModel.clearWallpaper()
+    for _ in 0..<20 {
+        if restartedController.clearCallCount == 1 && !restartedViewModel.isBusy {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(restartedController.clearCallCount == 1)
+    #expect(restartedViewModel.currentVideoURL == videoURL.standardizedFileURL)
+    #expect(restartedViewModel.previewPlayer?.currentItem != nil)
+}
+
+@MainActor
+@Test func firstLaunchWithoutWallpaperKeepsPreviewEmpty() {
+    let previewStateURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("missing-preview-\(UUID().uuidString).json")
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        previewStateURL: previewStateURL
+    )
+
+    #expect(viewModel.currentVideoURL == nil)
+    #expect(viewModel.previewPlayer == nil)
+}
+
+@MainActor
 @Test func localVideoSelectionReplacesRunningWallpaperImmediately() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.local-preview-start")!
@@ -874,6 +926,7 @@ final class MockNativeWallpaperController: WallpaperControlling {
     var configuredVideoURL: URL?
     var lastConfiguredVideoURL: URL?
     var startCallCount = 0
+    var clearCallCount = 0
     var resumeCallCount = 0
     var statusRunning = false
     var statusPaused: Bool?
@@ -914,6 +967,7 @@ final class MockNativeWallpaperController: WallpaperControlling {
     }
 
     func clearWallpaper() throws -> ControlStatus {
+        clearCallCount += 1
         statusRunning = false
         statusPaused = false
         configuredVideoURL = nil

@@ -705,6 +705,12 @@ final class NativeWallpaperController: WallpaperControlling {
 
 @MainActor
 final class AppViewModel: ObservableObject {
+    private struct WallpaperPreviewSeed: Codable, Equatable {
+        let video_path: String
+        let playback_speed: Double
+        let scale_mode: String?
+    }
+
     @Published private(set) var appliedVideoURL: URL?
     @Published private(set) var pendingPreviewVideoURL: URL?
     @Published var playbackSpeed: Double = 1.0
@@ -788,6 +794,10 @@ final class AppViewModel: ObservableObject {
     private static let appSupportDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/AuraFlow", isDirectory: true)
     private static let startupConfigURL = appSupportDirectoryURL.appendingPathComponent("config.json")
+    private static let defaultPreviewStateURL = appSupportDirectoryURL
+        .appendingPathComponent("last_preview.json")
+
+    private let previewStateURL: URL
 
     var isControllerAvailable: Bool {
         controllerAvailable
@@ -908,10 +918,12 @@ final class AppViewModel: ObservableObject {
     init(
         controller: WallpaperControlling? = nil,
         optimizationStore: VideoOptimizationStore = VideoOptimizationStore(),
-        catalogProvider: WallpaperCatalogProviding = ManagedWallpaperCatalogProvider()
+        catalogProvider: WallpaperCatalogProviding = ManagedWallpaperCatalogProvider(),
+        previewStateURL: URL? = nil
     ) {
         self.optimizationStore = optimizationStore
         self.catalogProvider = catalogProvider
+        self.previewStateURL = previewStateURL ?? Self.defaultPreviewStateURL
         if let controller {
             self.controller = controller
             self.controllerAvailable = true
@@ -1009,9 +1021,18 @@ final class AppViewModel: ObservableObject {
 
     private func restoreInitialPreviewFromSavedConfig() {
         guard pendingPreviewVideoURL == nil else { return }
-        guard let seed = Self.loadStartupPreviewSeed() else { return }
+        let seeds = [
+            Self.loadStartupPreviewSeed(),
+            loadSavedPreviewSeed(),
+        ].compactMap { $0 }
+        guard let seed = seeds.first(where: {
+            FileManager.default.fileExists(
+                atPath: URL(fileURLWithPath: $0.video_path).standardizedFileURL.path
+            )
+        }) else {
+            return
+        }
         let videoURL = URL(fileURLWithPath: seed.video_path).standardizedFileURL
-        guard FileManager.default.fileExists(atPath: videoURL.path) else { return }
 
         appliedVideoURL = videoURL
         playbackSpeed = seed.playback_speed
@@ -1022,9 +1043,43 @@ final class AppViewModel: ObservableObject {
         configurePreview(for: videoURL)
     }
 
-    private static func loadStartupPreviewSeed() -> ControlConfig? {
+    private func loadSavedPreviewSeed() -> WallpaperPreviewSeed? {
+        guard let data = try? Data(contentsOf: previewStateURL) else { return nil }
+        return try? JSONDecoder().decode(WallpaperPreviewSeed.self, from: data)
+    }
+
+    private func savePreviewSeed(for videoURL: URL) {
+        let normalizedURL = videoURL.standardizedFileURL
+        guard FileManager.default.fileExists(atPath: normalizedURL.path) else { return }
+        let seed = WallpaperPreviewSeed(
+            video_path: normalizedURL.path,
+            playback_speed: playbackSpeed,
+            scale_mode: scaleMode.rawValue
+        )
+        do {
+            try FileManager.default.createDirectory(
+                at: previewStateURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(seed)
+            try data.write(to: previewStateURL, options: .atomic)
+        } catch {
+            // Preview persistence is best-effort and must not block playback.
+        }
+    }
+
+    private static func loadStartupPreviewSeed() -> WallpaperPreviewSeed? {
         guard let data = try? Data(contentsOf: startupConfigURL) else { return nil }
-        return try? JSONDecoder().decode(ControlConfig.self, from: data)
+        guard let config = try? JSONDecoder().decode(ControlConfig.self, from: data),
+              !config.video_path.isEmpty
+        else {
+            return nil
+        }
+        return WallpaperPreviewSeed(
+            video_path: config.video_path,
+            playback_speed: config.playback_speed,
+            scale_mode: config.scale_mode
+        )
     }
 
     private func bootstrapControllerIfNeeded() {
@@ -1930,11 +1985,21 @@ final class AppViewModel: ObservableObject {
                refreshPreview && (hasVideoChanged || previewPlayer?.currentItem == nil || previousScaleMode != scaleMode) {
                 configurePreview(for: currentURL)
             }
-        } else {
-            Self.setIfChanged(&appliedVideoURL, to: nil)
             if pendingPreviewVideoURL == nil {
-                if previewPlayer != nil {
-                    previewPlayer = nil
+                savePreviewSeed(for: currentURL)
+            }
+        } else {
+            if pendingPreviewVideoURL == nil {
+                if let currentURL = appliedVideoURL?.standardizedFileURL,
+                   FileManager.default.fileExists(atPath: currentURL.path) {
+                    if refreshPreview && previewPlayer?.currentItem == nil {
+                        configurePreview(for: currentURL)
+                    }
+                } else {
+                    Self.setIfChanged(&appliedVideoURL, to: nil)
+                    if previewPlayer != nil {
+                        previewPlayer = nil
+                    }
                 }
             }
         }
@@ -2779,6 +2844,7 @@ final class AppViewModel: ObservableObject {
     private func selectVideoForPreview(_ url: URL, summary: String?) {
         pendingPreviewVideoURL = url
         configurePreview(for: url)
+        savePreviewSeed(for: url)
         statusMessage = summary
         alertMessage = nil
     }
