@@ -313,33 +313,21 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     private func recoverInterruptedWallpaperRemovalIfNeeded() {
-        guard store.appSupportURL.standardizedFileURL
+        let isCanonicalStore = store.appSupportURL.standardizedFileURL
             == WallpaperRuntimeStore.defaultAppSupportURL()
                 .standardizedFileURL
-        else {
-            return
-        }
         let config = store.loadConfig()
-        // A Lock Screen-only configuration deliberately has an empty desktop
-        // path. It is not an interrupted removal and must remain intact.
         guard config.video_path.isEmpty,
-              config.effectiveLockScreenPath.isEmpty
+              config.show_on_lock_screen != true
         else {
             return
         }
-        if lockScreenSaverInstaller.isInstalled {
-            try? lockScreenSaverInstaller.uninstall()
+        if store.restoreWallpaperBackup() {
+            store.removeManagedFallback()
+        } else if isCanonicalStore {
+            _ = WallpaperDesktopSupport
+                .repairCurrentDesktopWallpaperIfNeeded()
         }
-        WallpaperDesktopSupport.discardWallpaperBackups(
-            appSupportPath: store.appSupportURL.path
-        )
-        _ = try? updateConfig { config in
-            config.show_on_lock_screen = false
-            config.lock_screen_preference_configured = true
-            config.lock_screen_path = nil
-            config.lock_screen_runtime_path = nil
-        }
-        store.removeManagedFallback()
     }
 
     private func updateConfig(_ block: (inout ControlConfig) -> Void) throws -> ControlConfig {
@@ -385,24 +373,31 @@ final class NativeWallpaperController: WallpaperControlling {
             if let speed {
                 config.playback_speed = speed
             }
-            // The ordinary Start action always runs the selected wallpaper on
-            // both Desktop and Lock Screen. Settings may provide an
-            // independent `lock_screen_path`; that source remains untouched.
-            config.show_on_lock_screen = true
-            config.lock_screen_preference_configured = true
         }
         guard !config.video_path.isEmpty else {
-            throw NativeWallpaperControllerError.unavailable("No desktop wallpaper configured. Choose a wallpaper first.")
+            throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
         }
         guard FileManager.default.fileExists(atPath: config.video_path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
-        if config.show_on_lock_screen ?? false {
-            _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
+        // A previous AuraFlow run may have been interrupted after writing its
+        // recovery payload. Never let that stale payload become the next
+        // user's restore target. If the wallpaper agent is not alive there is
+        // no active session to protect, so the next capture must start from
+        // the wallpaper that macOS is showing right now.
+        if !store.processIsAlive(pid: store.loadPID()) {
+            WallpaperDesktopSupport.discardWallpaperBackups(
                 appSupportPath: store.appSupportURL.path
             )
-            let prepared = try prepareLockScreenConfig(config)
-            config = prepared
+        }
+        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
+            appSupportPath: store.appSupportURL.path
+        )
+        _ = WallpaperDesktopSupport.beginWallpaperBackupSession(
+            appSupportPath: store.appSupportURL.path
+        )
+        if config.show_on_lock_screen ?? false {
+            config = try prepareLockScreenConfig(config)
             try store.saveConfig(config)
             try installLockScreenSaver(
                 using: config,
@@ -417,32 +412,12 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func resume() throws -> ControlStatus {
-        var config = store.loadConfig()
+        let config = store.loadConfig()
         guard !config.video_path.isEmpty else {
-            throw NativeWallpaperControllerError.unavailable("No desktop wallpaper configured. Choose a wallpaper first.")
+            throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
         }
         guard FileManager.default.fileExists(atPath: config.video_path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
-        }
-
-        // Resume is the Start action for a paused wallpaper, so it follows
-        // the same Desktop + Lock Screen contract as a fresh start. An
-        // independent Settings source remains selected through
-        // `lock_screen_path`.
-        config.show_on_lock_screen = true
-        config.lock_screen_preference_configured = true
-        if config.show_on_lock_screen == true {
-            _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
-                appSupportPath: store.appSupportURL.path
-            )
-            let prepared = try prepareLockScreenConfig(config)
-            config = prepared
-            try store.saveConfig(config)
-            try installLockScreenSaver(
-                using: config,
-                activate: true,
-                normalStart: true
-            )
         }
         store.markPaused(false)
         try launchAgentIfNeeded()
@@ -465,6 +440,13 @@ final class NativeWallpaperController: WallpaperControlling {
 
     func clearWallpaper() throws -> ControlStatus {
         let currentConfig = store.loadConfig()
+        // Refresh the latest external wallpaper immediately before Remove.
+        // The user may have changed it outside AuraFlow while playback was
+        // active; the backup session keeps that newer choice without allowing
+        // the managed still frame to become the restore target.
+        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
+            appSupportPath: store.appSupportURL.path
+        )
         if store.processIsAlive(pid: store.loadPID()) {
             try? send(.terminate, config: currentConfig)
         }
@@ -475,33 +457,23 @@ final class NativeWallpaperController: WallpaperControlling {
         }
         store.removeCommand()
         store.removeHealth()
-        // `Remove` is the Desktop action. A separately selected Lock Screen
-        // source remains active; only a Lock Screen that falls back to the
-        // desktop source must be removed with the desktop wallpaper.
-        let keepsDedicatedLockScreen = currentConfig.lock_screen_path != nil
-        let mustRemoveDesktopFallbackLockScreen = !keepsDedicatedLockScreen
-            && (currentConfig.show_on_lock_screen == true
-                || lockScreenSaverInstaller.isInstalled)
-        if mustRemoveDesktopFallbackLockScreen {
+        if currentConfig.show_on_lock_screen == true
+            || lockScreenSaverInstaller.isInstalled {
             try lockScreenSaverInstaller.uninstall()
         }
-        // Modern Lock Screen uninstall restores only the system Idle slot.
-        // Restoring AuraFlow's old full-store snapshot here would overwrite
-        // desktop wallpapers that the user chose while Lock Screen was on.
-        WallpaperDesktopSupport.discardWallpaperBackups(
-            appSupportPath: store.appSupportURL.path
-        )
+        let restored = store.restoreWallpaperBackup()
+        (lockScreenSaverInstaller as? LockScreenWallpaperInstaller)?
+            .refreshAfterWallpaperRestore()
         _ = try updateConfig { config in
             config.video_path = ""
-            if !keepsDedicatedLockScreen {
-                config.lock_screen_path = nil
-                config.lock_screen_runtime_path = nil
-                config.show_on_lock_screen = false
-                config.lock_screen_preference_configured = true
-            }
+            config.show_on_lock_screen = false
+            config.lock_screen_path = nil
+            config.lock_screen_runtime_path = nil
         }
-        store.removeManagedFallback()
-        return store.status(wallpaperRestored: true)
+        if restored {
+            store.removeManagedFallback()
+        }
+        return store.status(wallpaperRestored: restored)
     }
 
     func setVideo(_ url: URL) throws -> ControlStatus {
@@ -716,16 +688,16 @@ final class NativeWallpaperController: WallpaperControlling {
         normalStart: Bool = false
     ) throws {
         let videoURL = URL(fileURLWithPath: config.effectiveLockScreenRuntimePath)
-        // A thumbnail improves the static transition frame, but it must never
-        // prevent the actual live video from being installed. AVFoundation can
-        // fail still extraction for codecs that the system Aerial provider can
-        // nevertheless decode and play correctly.
+        // A still frame improves transitions, but it must not block the live
+        // Lock Screen installation when AVFoundation cannot decode a frame
+        // from a source that the system provider can still play.
         _ = try? store.ensureCurrentStillFrame(from: videoURL)
-        if let modernInstaller = lockScreenSaverInstaller as? LockScreenWallpaperInstaller {
+        if let modernInstaller = lockScreenSaverInstaller
+            as? LockScreenWallpaperInstaller {
             if normalStart {
                 try modernInstaller.installForNormalStart(videoURL: videoURL)
             } else {
-                try modernInstaller.install(videoURL: videoURL, activate: activate)
+                try modernInstaller.install(videoURL: videoURL)
             }
         } else {
             try lockScreenSaverInstaller.install(videoURL: videoURL)

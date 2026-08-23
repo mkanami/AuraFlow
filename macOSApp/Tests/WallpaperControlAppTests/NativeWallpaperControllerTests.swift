@@ -73,7 +73,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(status.health?.available == false)
 }
 
-@Test func nativeStartWritesConfigAndLaunchesMockHelper() throws {
+@Test func nativeStartWritesConfigAndLaunchesMockHelperWithoutLockScreen() throws {
     let fixture = try NativeRuntimeFixture("start")
     defer { fixture.cleanup() }
 
@@ -93,6 +93,32 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.processIsAlive(pid: status.pid))
     #expect(command?.action == .reload)
     #expect(command?.config?.video_path == fixture.videoURL.path)
+    #expect(config.show_on_lock_screen == false)
+    #expect(installer.installedVideoURL == nil)
+}
+
+@Test func nativeStartInstallsEnabledLockScreenWithoutChangingPreference() throws {
+    let fixture = try NativeRuntimeFixture("start-with-lock-screen")
+    defer { fixture.cleanup() }
+
+    let installer = RecordingLockScreenSaverInstaller()
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: "",
+            playback_speed: 1.0,
+            show_on_lock_screen: true,
+            lock_screen_preference_configured: true
+        )
+    )
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    _ = try controller.start(videoURL: fixture.videoURL, speed: 1.0)
+
+    let config = fixture.store.loadConfig()
     #expect(config.show_on_lock_screen == true)
     #expect(installer.installedVideoURL == fixture.videoURL)
 }
@@ -147,6 +173,57 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 }
 
+@Test func damagedWallpaperBackupReturnsFalse() throws {
+    let fixture = try NativeRuntimeFixture("damaged-backup")
+    defer { fixture.cleanup() }
+
+    let backupURL = fixture.store.appSupportURL
+        .appendingPathComponent("wallpaper_backup.json")
+    try Data("not-json".utf8).write(to: backupURL, options: .atomic)
+
+    #expect(fixture.store.restoreWallpaperBackup() == false)
+}
+
+@Test func missingWallpaperBackupReturnsFalse() throws {
+    let fixture = try NativeRuntimeFixture("missing-backup")
+    defer { fixture.cleanup() }
+
+    #expect(fixture.store.restoreWallpaperBackup() == false)
+}
+
+@Test func interruptedRemovalBackupIsRecoveredOnNextControllerLaunch() throws {
+    let fixture = try NativeRuntimeFixture("interrupted-removal")
+    defer { fixture.cleanup() }
+
+    let baselineURL = fixture.root.appendingPathComponent("baseline.jpg")
+    FileManager.default.createFile(
+        atPath: baselineURL.path,
+        contents: Data([13, 14, 15]),
+        attributes: nil
+    )
+    #expect(WallpaperDesktopSupport.saveWallpaperBackup(
+        appSupportPath: fixture.store.appSupportURL.path,
+        wallpapers: ["screen-a": baselineURL.path]
+    ))
+    try fixture.store.saveConfig(ControlConfig(
+        video_path: "",
+        playback_speed: 1,
+        show_on_lock_screen: false,
+        lock_screen_preference_configured: true
+    ))
+
+    _ = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller()
+    )
+
+    #expect(!FileManager.default.fileExists(
+        atPath: fixture.store.appSupportURL
+            .appendingPathComponent("wallpaper_backup.json").path
+    ))
+}
+
 @Test func nativeStartIgnoresStaleTerminateCommandFromPreviousClear() throws {
     let fixture = try NativeRuntimeFixture("stale-terminate")
     defer { fixture.cleanup() }
@@ -166,6 +243,32 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(status.pid != nil)
     #expect(fixture.store.processIsAlive(pid: status.pid))
     #expect(fixture.store.loadCommand()?.action == .reload)
+}
+
+@Test func nativeResumeDoesNotReinstallOrEnableLockScreen() throws {
+    let fixture = try NativeRuntimeFixture("resume-lock-screen")
+    defer { fixture.cleanup() }
+
+    let installer = RecordingLockScreenSaverInstaller()
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: fixture.videoURL.path,
+            playback_speed: 1.0,
+            show_on_lock_screen: false,
+            lock_screen_preference_configured: true
+        )
+    )
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    _ = try controller.resume()
+
+    let config = fixture.store.loadConfig()
+    #expect(config.show_on_lock_screen == false)
+    #expect(installer.installedVideoURL == nil)
 }
 
 @Test func nativeAutostartPlistPointsToSwiftHelper() throws {
@@ -269,9 +372,9 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     _ = try controller.clearWallpaper()
     let clearedConfig = fixture.store.loadConfig()
     #expect(clearedConfig.video_path.isEmpty)
-    #expect(clearedConfig.lock_screen_path == fixture.videoURL.standardizedFileURL.path)
-    #expect(clearedConfig.show_on_lock_screen == true)
-    #expect(installer.uninstallCallCount == 0)
+    #expect(clearedConfig.lock_screen_path == nil)
+    #expect(clearedConfig.show_on_lock_screen == false)
+    #expect(installer.uninstallCallCount == 1)
 }
 
 @Test func desktopSourceIsAppliedImmediatelyWhenChosenForLockScreen() throws {
@@ -316,7 +419,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(config.lock_screen_preference_configured == false)
 }
 
-@Test func legacyLockScreenDefaultIsEnabledByNormalWallpaperStart() throws {
+@Test func legacyLockScreenDefaultRemainsDisabledOnNormalWallpaperStart() throws {
     let fixture = try NativeRuntimeFixture("legacy-lock-migration")
     defer { fixture.cleanup() }
     let installer = RecordingLockScreenSaverInstaller()
@@ -340,11 +443,11 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     let config = fixture.store.loadConfig()
-    #expect(config.show_on_lock_screen == true)
-    #expect(installer.installedVideoURL == fixture.videoURL)
+    #expect(config.show_on_lock_screen == false)
+    #expect(installer.installedVideoURL == nil)
 }
 
-@Test func normalWallpaperStartEnablesLockScreenAfterSettingsOptOut() throws {
+@Test func normalWallpaperStartPreservesSettingsOptOut() throws {
     let fixture = try NativeRuntimeFixture("lock-opt-out")
     defer { fixture.cleanup() }
     let installer = RecordingLockScreenSaverInstaller()
@@ -368,8 +471,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     let config = fixture.store.loadConfig()
-    #expect(config.show_on_lock_screen == true)
-    #expect(installer.installedVideoURL == fixture.videoURL)
+    #expect(config.show_on_lock_screen == false)
+    #expect(installer.installedVideoURL == nil)
 }
 
 @Test func enabledLockPreferenceWithoutVideoDoesNotAttemptSync() throws {
@@ -476,4 +579,72 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         JSONSerialization.jsonObject(with: repeatedData) as? [String: String]
     )
     #expect(repeatedBackup["screen-b"] == latestWallpaperURL.standardizedFileURL.path)
+}
+
+@Test func activeWallpaperSessionDoesNotReplaceItsBaselineFromCachedSystemState() throws {
+    let fixture = try NativeRuntimeFixture("backup-session-baseline")
+    defer { fixture.cleanup() }
+
+    let baselineURL = fixture.root.appendingPathComponent("baseline.jpg")
+    FileManager.default.createFile(
+        atPath: baselineURL.path,
+        contents: Data([7, 8, 9]),
+        attributes: nil
+    )
+    let appSupportPath = fixture.store.appSupportURL.path
+    #expect(WallpaperDesktopSupport.saveWallpaperBackup(
+        appSupportPath: appSupportPath,
+        wallpapers: ["screen-a": baselineURL.path]
+    ))
+    #expect(WallpaperDesktopSupport.beginWallpaperBackupSession(
+        appSupportPath: appSupportPath
+    ))
+
+    #expect(WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
+        appSupportPath: appSupportPath
+    ))
+
+    let backupURL = fixture.store.appSupportURL
+        .appendingPathComponent("wallpaper_backup.json")
+    let data = try Data(contentsOf: backupURL)
+    let backup = try #require(
+        JSONSerialization.jsonObject(with: data) as? [String: String]
+    )
+    #expect(backup == ["screen-a": baselineURL.standardizedFileURL.path])
+}
+
+@Test func disablingLockScreenKeepsBackupForLaterRemove() throws {
+    let fixture = try NativeRuntimeFixture("lock-toggle-keeps-backup")
+    defer { fixture.cleanup() }
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+    let baselineURL = fixture.root.appendingPathComponent("baseline.jpg")
+    FileManager.default.createFile(
+        atPath: baselineURL.path,
+        contents: Data([10, 11, 12]),
+        attributes: nil
+    )
+    #expect(WallpaperDesktopSupport.saveWallpaperBackup(
+        appSupportPath: fixture.store.appSupportURL.path,
+        wallpapers: ["screen-a": baselineURL.path]
+    ))
+    try fixture.store.saveConfig(ControlConfig(
+        video_path: fixture.videoURL.path,
+        playback_speed: 1,
+        show_on_lock_screen: true,
+        lock_screen_preference_configured: true
+    ))
+    try installer.install(videoURL: fixture.videoURL)
+
+    _ = try controller.setShowOnLockScreen(false)
+
+    #expect(installer.uninstallCallCount == 1)
+    #expect(FileManager.default.fileExists(
+        atPath: fixture.store.appSupportURL
+            .appendingPathComponent("wallpaper_backup.json").path
+    ))
 }
