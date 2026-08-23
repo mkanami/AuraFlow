@@ -327,6 +327,92 @@ public enum WallpaperDesktopSupport {
         return appliedAny
     }
 
+    /// The secure login Lock Screen on current macOS releases resolves its
+    /// wallpaper from the Desktop slot. The live AuraFlow agent cannot draw
+    /// over loginwindow, so keep the selected wallpaper's current frame in
+    /// that slot while the agent continues rendering the live desktop.
+    @discardableResult
+    public static func applyLockScreenFallbackFrame(imagePath: String) -> Bool {
+        let standardizedPath = URL(fileURLWithPath: imagePath)
+            .standardizedFileURL.path
+        guard FileManager.default.fileExists(atPath: standardizedPath) else {
+            return false
+        }
+
+        let storeURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Application Support/com.apple.wallpaper/Store",
+                isDirectory: true
+            )
+            .appendingPathComponent("Index.plist")
+        guard let data = try? Data(contentsOf: storeURL),
+              let repairedData = wallpaperStoreDataWithLockScreenFallbackFrame(
+                  data: data,
+                  imagePath: standardizedPath,
+                  date: Date()
+              )
+        else {
+            return false
+        }
+
+        do {
+            try repairedData.write(to: storeURL, options: .atomic)
+        } catch {
+            return false
+        }
+
+        restartWallpaperAgent()
+        Thread.sleep(forTimeInterval: 0.2)
+        // WallpaperAgent can rewrite its cached descriptor while restarting.
+        // Make the fallback frame the final Desktop state that loginwindow
+        // will see during the next lock transition.
+        do {
+            try repairedData.write(to: storeURL, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Pure Store transformation used by the runtime method and its tests.
+    /// It deliberately changes only Desktop modes and preserves Idle, which
+    /// is owned by the Aerial Lock Screen installer in this configuration.
+    public static func wallpaperStoreDataWithLockScreenFallbackFrame(
+        data: Data,
+        imagePath: String,
+        date: Date
+    ) -> Data? {
+        guard var root = (
+            try? PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+            )
+        ) as? [String: Any]
+        else {
+            return nil
+        }
+
+        let desktopMode = imageWallpaperStoreMode(
+            imagePath: imagePath,
+            date: date
+        )
+        root = mapWallpaperStoreContainers(in: root) { container in
+            var result = container
+            if result["Desktop"] != nil || result["Idle"] != nil {
+                result["Desktop"] = desktopMode
+                result["Type"] = "individual"
+            }
+            return result
+        }
+
+        return try? PropertyListSerialization.data(
+            fromPropertyList: root,
+            format: .binary,
+            options: 0
+        )
+    }
+
     @discardableResult
     public static func restoreFromBackupFiles(
         appSupportPath: String

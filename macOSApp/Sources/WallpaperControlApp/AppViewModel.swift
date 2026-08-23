@@ -216,11 +216,13 @@ final class NativeWallpaperController: WallpaperControlling {
     private let store: WallpaperRuntimeStore
     private let helperURL: URL
     private let lockScreenSaverInstaller: LockScreenSaverInstalling
+    private let applyLockScreenFallbackFrame: (String) -> Bool
 
     init(
         store: WallpaperRuntimeStore = WallpaperRuntimeStore(),
         helperURL: URL? = nil,
-        lockScreenSaverInstaller: LockScreenSaverInstalling? = nil
+        lockScreenSaverInstaller: LockScreenSaverInstalling? = nil,
+        applyLockScreenFallbackFrame: ((String) -> Bool)? = nil
     ) throws {
         self.store = store
         let helperResolution: RuntimeHelperResolution
@@ -235,6 +237,15 @@ final class NativeWallpaperController: WallpaperControlling {
         self.helperURL = helperResolution.url
         self.lockScreenSaverInstaller =
             lockScreenSaverInstaller ?? LockScreenWallpaperInstaller()
+        let isCanonicalStore = store.appSupportURL.standardizedFileURL
+            == WallpaperRuntimeStore.defaultAppSupportURL()
+                .standardizedFileURL
+        self.applyLockScreenFallbackFrame = applyLockScreenFallbackFrame
+            ?? { imagePath in
+                guard isCanonicalStore else { return true }
+                return WallpaperDesktopSupport
+                    .applyLockScreenFallbackFrame(imagePath: imagePath)
+            }
         if helperResolution.didUpdateInstalledCopy {
             try restartRunningAgentAfterHelperUpdate()
         }
@@ -579,6 +590,12 @@ final class NativeWallpaperController: WallpaperControlling {
             return store.status()
         } else {
             try lockScreenSaverInstaller.uninstall()
+            if store.appSupportURL.standardizedFileURL
+                == WallpaperRuntimeStore.defaultAppSupportURL()
+                    .standardizedFileURL {
+                _ = WallpaperDesktopSupport
+                    .repairCurrentDesktopWallpaperIfNeeded()
+            }
         }
 
         let config = try updateConfig { config in
@@ -674,15 +691,36 @@ final class NativeWallpaperController: WallpaperControlling {
         activate: Bool
     ) throws {
         let videoURL = URL(fileURLWithPath: config.effectiveLockScreenRuntimePath)
-        // A still frame improves transitions, but it must not block the live
-        // Lock Screen installation when AVFoundation cannot decode a frame
-        // from a source that the system provider can still play.
-        _ = try? store.ensureCurrentStillFrame(from: videoURL)
+        let isCanonicalStore = store.appSupportURL.standardizedFileURL
+            == WallpaperRuntimeStore.defaultAppSupportURL()
+                .standardizedFileURL
+        // The secure loginwindow surface cannot host AuraFlow's user-space
+        // agent. Keep a valid frame ready before changing the system Store;
+        // the live agent still owns the unlocked desktop.
+        let stillFrameURL: URL?
+        do {
+            stillFrameURL = try store.ensureCurrentStillFrame(from: videoURL)
+        } catch {
+            if isCanonicalStore {
+                throw NativeWallpaperControllerError.unavailable(
+                    "Could not prepare the Lock Screen wallpaper frame."
+                )
+            }
+            stillFrameURL = nil
+        }
         if let modernInstaller = lockScreenSaverInstaller
             as? LockScreenWallpaperInstaller {
             try modernInstaller.install(videoURL: videoURL, activate: activate)
         } else {
             try lockScreenSaverInstaller.install(videoURL: videoURL)
+        }
+        if isCanonicalStore {
+            guard let stillFrameURL,
+                  applyLockScreenFallbackFrame(stillFrameURL.path) else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "macOS did not keep the AuraFlow wallpaper for the Lock Screen."
+                )
+            }
         }
     }
 }

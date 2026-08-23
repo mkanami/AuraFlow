@@ -123,6 +123,77 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(installer.installedVideoURL == fixture.videoURL)
 }
 
+@Test func lockScreenFallbackFrameReplacesDesktopAndPreservesIdle() throws {
+    let originalDesktop: [String: Any] = [
+        "LastSet": Date(timeIntervalSince1970: 1),
+        "Content": [
+            "Choices": [[
+                "Provider": "com.apple.wallpaper.choice.sequoia",
+                "Files": [],
+            ]],
+        ],
+    ]
+    let originalIdle: [String: Any] = [
+        "LastSet": Date(timeIntervalSince1970: 1),
+        "Content": [
+            "Choices": [[
+                "Provider": "com.apple.wallpaper.choice.aerials",
+                "Files": [],
+            ]],
+        ],
+    ]
+    let store: [String: Any] = [
+        "AllSpacesAndDisplays": [
+            "Type": "individual",
+            "Desktop": originalDesktop,
+            "Idle": originalIdle,
+        ],
+        "SystemDefault": [
+            "Type": "individual",
+            "Desktop": originalDesktop,
+            "Idle": originalIdle,
+        ],
+    ]
+    let data = try PropertyListSerialization.data(
+        fromPropertyList: store,
+        format: .binary,
+        options: 0
+    )
+    let framePath = "/Users/test/Library/Application Support/AuraFlow/last_frame.png"
+    let transformedData = try #require(
+        WallpaperDesktopSupport.wallpaperStoreDataWithLockScreenFallbackFrame(
+            data: data,
+            imagePath: framePath,
+            date: Date(timeIntervalSince1970: 2)
+        )
+    )
+    let transformed = try #require(
+        PropertyListSerialization.propertyList(
+            from: transformedData,
+            options: [],
+            format: nil
+        ) as? [String: Any]
+    )
+    let allSpaces = try #require(
+        transformed["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let desktop = try #require(allSpaces["Desktop"] as? [String: Any])
+    let idle = try #require(allSpaces["Idle"] as? [String: Any])
+    let desktopContent = try #require(desktop["Content"] as? [String: Any])
+    let desktopChoices = try #require(
+        desktopContent["Choices"] as? [[String: Any]]
+    )
+    let desktopProvider = desktopChoices.first?["Provider"] as? String
+    #expect(desktopProvider == "com.apple.wallpaper.choice.image")
+    #expect(
+        String(describing: desktop).contains("last_frame.png")
+    )
+    let idleContent = try #require(idle["Content"] as? [String: Any])
+    let idleChoices = try #require(idleContent["Choices"] as? [[String: Any]])
+    let idleProvider = idleChoices.first?["Provider"] as? String
+    #expect(idleProvider == "com.apple.wallpaper.choice.aerials")
+}
+
 @Test func nativeSetSpeedAndScaleUpdateConfigAndCommand() throws {
     let fixture = try NativeRuntimeFixture("settings")
     defer { fixture.cleanup() }
