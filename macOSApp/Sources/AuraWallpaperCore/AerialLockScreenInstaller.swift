@@ -439,7 +439,19 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         operationLock.lock()
         defer { operationLock.unlock() }
         try withCrossProcessLock {
-            try uninstallLocked()
+            try uninstallLocked(restoreWallpaperStore: true)
+        }
+    }
+
+    /// Removes AuraFlow's Aerial journal and reserved asset without restoring
+    /// the wallpaper Store. Remove owns the final Store write: restoring the
+    /// Aerial snapshot here first makes macOS repaint the old wallpaper (and
+    /// sometimes a black frame) before AuraFlow can restore the user's image.
+    public func uninstallPreservingWallpaperStore() throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        try withCrossProcessLock {
+            try uninstallLocked(restoreWallpaperStore: false)
         }
     }
 
@@ -476,7 +488,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
     }
 
-    private func uninstallLocked() throws {
+    private func uninstallLocked(restoreWallpaperStore: Bool) throws {
         let marker: AerialLockScreenMarker
         if let installedMarker = loadMarker() {
             marker = installedMarker
@@ -504,19 +516,24 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
 
         do {
-            let originalStoreData = try Data(
-                contentsOf: wallpaperStoreBackupURL
-            )
-            let currentStoreData = storeBeforeAttempt ?? originalStoreData
-            let restoredStoreData = try restoreIdleSlots(
-                in: currentStoreData,
-                from: originalStoreData,
-                assetID: marker.assetID
-            )
-            try restoredStoreData.write(
-                to: wallpaperStoreURL,
-                options: .atomic
-            )
+            let restoredStoreData: Data?
+            if restoreWallpaperStore {
+                let originalStoreData = try Data(
+                    contentsOf: wallpaperStoreBackupURL
+                )
+                let currentStoreData = storeBeforeAttempt ?? originalStoreData
+                restoredStoreData = try restoreIdleSlots(
+                    in: currentStoreData,
+                    from: originalStoreData,
+                    assetID: marker.assetID
+                )
+                try restoredStoreData?.write(
+                    to: wallpaperStoreURL,
+                    options: .atomic
+                )
+            } else {
+                restoredStoreData = nil
+            }
             if fileManager.fileExists(atPath: assetBackupURL.path) {
                 try replaceFile(
                     at: assetURL,
@@ -535,24 +552,26 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                       marker.originalThumbnailExisted == false {
                 try? fileManager.removeItem(at: thumbnailURL)
             }
-            var restorationVerified = false
-            for _ in 0..<3 {
-                try restoredStoreData.write(
-                    to: wallpaperStoreURL,
-                    options: .atomic
-                )
-                try refreshSystem({ true })
-                Thread.sleep(forTimeInterval: 0.4)
-                if wallpaperStoreSemanticallyMatches(
-                    expectedData: restoredStoreData
-                ) {
-                    restorationVerified = true
-                    break
+            if let restoredStoreData {
+                var restorationVerified = false
+                for _ in 0..<3 {
+                    try restoredStoreData.write(
+                        to: wallpaperStoreURL,
+                        options: .atomic
+                    )
+                    try refreshSystem({ true })
+                    Thread.sleep(forTimeInterval: 0.4)
+                    if wallpaperStoreSemanticallyMatches(
+                        expectedData: restoredStoreData
+                    ) {
+                        restorationVerified = true
+                        break
+                    }
                 }
-            }
-            guard restorationVerified else {
-                throw AerialLockScreenInstallerError
-                    .wallpaperStoreUpdateFailed
+                guard restorationVerified else {
+                    throw AerialLockScreenInstallerError
+                        .wallpaperStoreUpdateFailed
+                }
             }
             try fileManager.removeItem(at: markerURL)
             try? fileManager.removeItem(at: wallpaperStoreBackupURL)
@@ -560,7 +579,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             try? fileManager.removeItem(at: thumbnailBackupURL)
             try? fileManager.removeItem(at: stateDirectoryURL)
         } catch {
-            if let storeBeforeAttempt {
+            if restoreWallpaperStore, let storeBeforeAttempt {
                 try? storeBeforeAttempt.write(
                     to: wallpaperStoreURL,
                     options: .atomic
@@ -578,7 +597,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                     options: .atomic
                 )
             }
-            try? refreshSystem({ true })
+            if restoreWallpaperStore {
+                try? refreshSystem({ true })
+            }
             throw error
         }
     }

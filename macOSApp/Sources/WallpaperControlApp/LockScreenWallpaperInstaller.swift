@@ -82,6 +82,22 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
         try legacy.uninstall()
     }
 
+    /// Remove uses a single final wallpaper Store transaction. When Aerial is
+    /// active, release its asset/journal without restoring its old Store
+    /// snapshot first; the caller restores the user's wallpaper afterward.
+    func uninstallForWallpaperRemoval() throws {
+        if let aerial = aerial as? AerialLockScreenInstaller,
+           aerial.isInstalled {
+            try aerial.uninstallPreservingWallpaperStore()
+            if modern.isInstalled {
+                try modern.uninstall()
+            }
+            try legacy.uninstall()
+            return
+        }
+        try uninstall()
+    }
+
     func refreshAfterWallpaperRestore() {
         (aerial as? AerialLockScreenInstaller)?.refreshAfterWallpaperRestore()
     }
