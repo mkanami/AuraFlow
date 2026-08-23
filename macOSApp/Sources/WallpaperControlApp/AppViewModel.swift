@@ -569,21 +569,19 @@ final class NativeWallpaperController: WallpaperControlling {
     func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus {
         let currentConfig = store.loadConfig()
         if enabled {
-            guard !currentConfig.effectiveLockScreenPath.isEmpty else {
-                throw NativeWallpaperControllerError.unavailable(
-                    "Choose a desktop or Lock Screen wallpaper before enabling Lock Screen."
-                )
-            }
             var prepared = currentConfig
             prepared.show_on_lock_screen = true
             prepared.lock_screen_preference_configured = true
             _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
                 appSupportPath: store.appSupportURL.path
             )
-            prepared = try prepareLockScreenConfig(prepared)
-            try installLockScreenSaver(using: prepared, activate: true)
+            if !prepared.effectiveLockScreenPath.isEmpty {
+                prepared = try prepareLockScreenConfig(prepared)
+                try installLockScreenSaver(using: prepared, activate: true)
+            }
             try store.saveConfig(prepared)
-            if store.processIsAlive(pid: store.loadPID()) {
+            if store.processIsAlive(pid: store.loadPID()),
+               !prepared.video_path.isEmpty {
                 try send(.update, config: prepared)
             }
             return store.status()
@@ -846,9 +844,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canToggleShowOnLockScreen: Bool {
-        isControllerAvailable
-            && !isBusy
-            && (lockScreenSourceURL != nil || appliedVideoURL != nil)
+        isControllerAvailable && !isBusy
     }
 
     var canChooseLockScreenMedia: Bool {
@@ -860,7 +856,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canPreviewLockScreen: Bool {
-        canToggleShowOnLockScreen
+        isPlaybackRunningForControls
             && showOnLockScreenEnabled
             && !isLockScreenPreviewActive
     }

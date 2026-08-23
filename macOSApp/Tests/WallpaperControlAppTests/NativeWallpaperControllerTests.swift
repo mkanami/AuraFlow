@@ -191,6 +191,25 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.restoreWallpaperBackup() == false)
 }
 
+@Test func enablingLockScreenWithoutWallpaperPersistsPreferenceForNextStart() throws {
+    let fixture = try NativeRuntimeFixture("lock-preference-before-start")
+    defer { fixture.cleanup() }
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    let status = try controller.setShowOnLockScreen(true)
+    let config = fixture.store.loadConfig()
+
+    #expect(status.config.show_on_lock_screen == true)
+    #expect(config.show_on_lock_screen == true)
+    #expect(config.lock_screen_preference_configured == true)
+    #expect(installer.installedVideoURL == nil)
+}
+
 @Test func interruptedRemovalBackupIsRecoveredOnNextControllerLaunch() throws {
     let fixture = try NativeRuntimeFixture("interrupted-removal")
     defer { fixture.cleanup() }

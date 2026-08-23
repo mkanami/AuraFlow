@@ -97,6 +97,26 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
+@Test func lockScreenToggleCanBeEnabledFromPreviewBeforeStart() throws {
+    let controller = MockNativeWallpaperController()
+    let viewModel = AppViewModel(controller: controller)
+    let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("lock-screen-preview-toggle.mp4")
+    FileManager.default.createFile(
+        atPath: tempURL.path,
+        contents: Data(),
+        attributes: nil
+    )
+    defer { try? FileManager.default.removeItem(at: tempURL) }
+
+    #expect(viewModel.canToggleShowOnLockScreen)
+    viewModel.selectLocalVideoForPreview(tempURL)
+
+    #expect(viewModel.canToggleShowOnLockScreen)
+    #expect(viewModel.canPreviewLockScreen == false)
+}
+
+@MainActor
 @Test func localVideoSelectionReplacesRunningWallpaperImmediately() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.local-preview-start")!
