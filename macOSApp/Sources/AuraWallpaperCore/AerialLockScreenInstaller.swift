@@ -9,7 +9,6 @@ private let auraFlowScreenSaverProvider =
 private enum AerialLockScreenOperationAbort: Error {
     case sessionChanged
 }
-
 private struct AerialLockScreenMarker: Codable {
     var assetID: String
     var assetPath: String
@@ -36,7 +35,7 @@ public enum AerialLockScreenInstallerError: LocalizedError {
         case .wallpaperStoreUnavailable:
             return "The macOS wallpaper store is not available."
         case .aerialAssetUnavailable:
-            return "This macOS Aerial provider does not expose a compatible wallpaper asset."
+            return "Download one Apple Aerial wallpaper before enabling Lock Screen."
         case .malformedWallpaperStore:
             return "The macOS wallpaper store could not be read safely."
         case .wallpaperStoreUpdateFailed:
@@ -242,22 +241,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         let thumbnailURL = aerialThumbnailsURL
             .appendingPathComponent(assetID)
             .appendingPathExtension("png")
-        let auraFlowStoreBackupData = WallpaperDesktopSupport
-            .wallpaperStoreBackupData(
-                appSupportPath: WallpaperRuntimeStore.defaultAppSupportURL().path
-            )
 
         if installationIsCurrent(videoURL: videoURL, assetID: assetID) {
-            // The desktop snapshot is refreshed independently from the Aerial
-            // session. Keep Aerial's recovery copy in sync even when the same
-            // live video is resumed, otherwise uninstall can restore an old
-            // wallpaper store from a previous session.
-            if let auraFlowStoreBackupData {
-                try? auraFlowStoreBackupData.write(
-                    to: wallpaperStoreBackupURL,
-                    options: .atomic
-                )
-            }
             guard forceRefresh, shouldProceed() else {
                 return false
             }
@@ -296,13 +281,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             )
 
         let originalStoreData: Data
-        if let auraFlowStoreBackupData {
-            originalStoreData = auraFlowStoreBackupData
-            try originalStoreData.write(
-                to: wallpaperStoreBackupURL,
-                options: .atomic
-            )
-        } else if fileManager.fileExists(atPath: wallpaperStoreBackupURL.path) {
+        if fileManager.fileExists(atPath: wallpaperStoreBackupURL.path) {
             originalStoreData = try Data(contentsOf: wallpaperStoreBackupURL)
         } else {
             let currentStoreData = try Data(contentsOf: wallpaperStoreURL)
@@ -464,6 +443,39 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
     }
 
+    /// The desktop restore is performed after the Aerial journal is removed.
+    /// Restart the system wallpaper owner once more so a provider that was
+    /// already holding an old Aerial frame cannot repaint it over the
+    /// restored user image.
+    public func refreshAfterWallpaperRestore() {
+        // The legacy uninstall path briefly restores the old Store before
+        // Remove writes the user's image back. WallpaperAgent can therefore
+        // relaunch Aerial after the first kill. Retry only that provider after
+        // the Store transaction has settled; never restart Dock/WallpaperAgent
+        // here, because that creates the grey → Golden Gate repaint race.
+        Self.terminateAerialProvider()
+        DispatchQueue.global(qos: .utility).async {
+            for delay in [0.75, 1.5, 3.0] {
+                Thread.sleep(forTimeInterval: delay)
+                Self.terminateAerialProvider()
+            }
+        }
+    }
+
+    private static func terminateAerialProvider() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        process.arguments = ["-x", "WallpaperAerialsExtension"]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            // The provider may already be gone.
+        }
+    }
+
     private func uninstallLocked() throws {
         let marker: AerialLockScreenMarker
         if let installedMarker = loadMarker() {
@@ -571,9 +583,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
     }
 
-    /// Restores only the Idle slot owned by AuraFlow. Desktop entries always
-    /// come from the current system store, so changing a desktop wallpaper
-    /// while Lock Screen is active cannot be undone during cleanup.
+    /// Restore only Lock Screen slots owned by AuraFlow. Desktop entries are
+    /// read from the current store so a wallpaper changed while AuraFlow was
+    /// active is not overwritten by the old installation snapshot.
     private func restoreIdleSlots(
         in currentData: Data,
         from originalData: Data,
@@ -760,14 +772,15 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     private func resolveAssetID() -> String? {
-        let supportedAssetIDs = supportedProviderAssetIDs
-        guard !supportedAssetIDs.isEmpty else {
-            return nil
-        }
         if let configuredAssetID {
-            return supportedAssetIDs.contains(configuredAssetID)
-                ? configuredAssetID
-                : nil
+            return configuredAssetID
+        }
+
+        let preferredURL = aerialVideosURL
+            .appendingPathComponent(Self.preferredAssetID)
+            .appendingPathExtension("mov")
+        if fileManager.fileExists(atPath: preferredURL.path) {
+            return Self.preferredAssetID
         }
 
         let candidates = (
@@ -777,28 +790,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 options: [.skipsHiddenFiles]
             )
         ) ?? []
-        let downloadedAssetIDs = candidates
+        return candidates
             .filter { $0.pathExtension.lowercased() == "mov" }
             .map { $0.deletingPathExtension().lastPathComponent }
-            .filter {
-                UUID(uuidString: $0) != nil
-                    && supportedAssetIDs.contains($0)
-            }
+            .filter { UUID(uuidString: $0) != nil }
             .sorted()
-        if downloadedAssetIDs.contains(Self.preferredAssetID) {
-            return Self.preferredAssetID
-        }
-        if let downloadedAssetID = downloadedAssetIDs.first {
-            return downloadedAssetID
-        }
-        if supportedAssetIDs.contains(Self.preferredAssetID) {
-            return Self.preferredAssetID
-        }
-        // A fresh account may not have downloaded any Aerial yet. Any asset
-        // declared by the signed system provider is a valid cache slot, so use
-        // a deterministic provider-specific fallback instead of depending on
-        // one asset ID being present on every macOS release and Mac model.
-        return supportedAssetIDs.sorted().first
+            .first
+            ?? supportedProviderAssetIDs.sorted().first
+            ?? Self.preferredAssetID
     }
 
     private func providerSupportsAsset(_ assetID: String) -> Bool {
@@ -903,6 +902,20 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             }
             return result
         }
+        if var allSpaces = root["AllSpacesAndDisplays"] as? [String: Any] {
+            if let desktop = allSpaces["Desktop"] as? [String: Any],
+               modeReferencesAuraFlow(desktop) {
+                allSpaces["Desktop"] = fallbackDesktop
+            }
+            if let desktop = allSpaces["Desktop"] as? [String: Any] {
+                allSpaces["Desktop"] = normalizeImageModeFiles(desktop)
+            }
+            if let idle = allSpaces["Idle"] as? [String: Any],
+               modeReferencesAuraFlow(idle) {
+                allSpaces["Idle"] = fallbackIdle
+            }
+            root["AllSpacesAndDisplays"] = allSpaces
+        }
         return try PropertyListSerialization.data(
             fromPropertyList: root,
             format: .binary,
@@ -925,15 +938,21 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         )
         root = mapWallpaperContainers(in: root) { container in
             var result = container
-            // `Idle` is the secure Lock Screen/screen-saver slot. Keep every
-            // `Desktop` entry byte-for-byte as selected by the user; changing
-            // it here would briefly replace ordinary desktop wallpapers on
-            // every Space while Lock Screen is being installed.
-            if result["Idle"] != nil {
+            if result["Desktop"] != nil || result["Idle"] != nil {
                 result["Idle"] = aerialMode
                 result["Type"] = "individual"
             }
             return result
+        }
+        // On current macOS versions the active Lock Screen is resolved from
+        // AllSpacesAndDisplays.Idle. Keep its Desktop slot untouched so a
+        // user wallpaper is not replaced, while selecting AuraFlow only for
+        // the secure Lock Screen slot.
+        if var allSpaces = root["AllSpacesAndDisplays"] as? [String: Any],
+           allSpaces["Desktop"] != nil || allSpaces["Idle"] != nil {
+            allSpaces["Idle"] = aerialMode
+            allSpaces["Type"] = "individual"
+            root["AllSpacesAndDisplays"] = allSpaces
         }
         return try PropertyListSerialization.data(
             fromPropertyList: root,
@@ -947,11 +966,6 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         transform: ([String: Any]) -> [String: Any]
     ) -> [String: Any] {
         var result = root
-        if let allSpacesAndDisplays =
-            result["AllSpacesAndDisplays"] as? [String: Any] {
-            result["AllSpacesAndDisplays"] =
-                transform(allSpacesAndDisplays)
-        }
         if let systemDefault = result["SystemDefault"] as? [String: Any] {
             result["SystemDefault"] = transform(systemDefault)
         }
@@ -1280,10 +1294,6 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
 
         var containers: [[String: Any]] = []
-        if let allSpacesAndDisplays =
-            root["AllSpacesAndDisplays"] as? [String: Any] {
-            containers.append(allSpacesAndDisplays)
-        }
         if let systemDefault = root["SystemDefault"] as? [String: Any] {
             containers.append(systemDefault)
         }
@@ -1309,14 +1319,19 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
 
         var inspectedModes = 0
         for container in containers {
-            // Only the secure Lock Screen/screen-saver slot is owned by this
-            // installer. Desktop mode is deliberately excluded so a user's
-            // ordinary wallpaper remains selected throughout the operation.
             guard let mode = container["Idle"] as? [String: Any] else {
                 continue
             }
             inspectedModes += 1
             guard modeFullySelectsAerial(mode, assetID: assetID) else {
+                return false
+            }
+        }
+
+        if let allSpaces = root["AllSpacesAndDisplays"] as? [String: Any],
+           let idle = allSpaces["Idle"] as? [String: Any] {
+            inspectedModes += 1
+            guard modeFullySelectsAerial(idle, assetID: assetID) else {
                 return false
             }
         }

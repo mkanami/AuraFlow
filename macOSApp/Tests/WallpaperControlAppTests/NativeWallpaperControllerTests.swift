@@ -363,7 +363,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadCommand()?.action == .previewUnlock)
 
     _ = try controller.clearWallpaper()
-    #expect(fixture.store.loadConfig().show_on_lock_screen == false)
+    #expect(fixture.store.loadConfig().show_on_lock_screen == true)
     #expect(fixture.store.loadConfig().video_path.isEmpty)
     #expect(fixture.store.loadConfig().lock_screen_path == nil)
     #expect(installer.uninstallCallCount == 1)
@@ -392,7 +392,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let clearedConfig = fixture.store.loadConfig()
     #expect(clearedConfig.video_path.isEmpty)
     #expect(clearedConfig.lock_screen_path == nil)
-    #expect(clearedConfig.show_on_lock_screen == false)
+    #expect(clearedConfig.show_on_lock_screen == true)
     #expect(installer.uninstallCallCount == 1)
 }
 
@@ -414,6 +414,39 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(config.lock_screen_path == nil)
     #expect(config.show_on_lock_screen == true)
     #expect(installer.installedVideoURL == fixture.videoURL)
+}
+
+@Test func realtimeDesktopChangeReplacesStaleDedicatedLockScreenSource() throws {
+    let fixture = try NativeRuntimeFixture("realtime-lock-screen-sync")
+    defer { fixture.cleanup() }
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+    let oldLockScreenURL = fixture.root.appendingPathComponent("old-lock-screen.mp4")
+    let newDesktopURL = fixture.root.appendingPathComponent("new-desktop.mp4")
+    FileManager.default.createFile(
+        atPath: oldLockScreenURL.path,
+        contents: Data([1, 2, 3]),
+        attributes: nil
+    )
+    FileManager.default.createFile(
+        atPath: newDesktopURL.path,
+        contents: Data([4, 5, 6]),
+        attributes: nil
+    )
+
+    _ = try controller.start(videoURL: fixture.videoURL, speed: 1.0)
+    _ = try controller.setLockScreenMedia(oldLockScreenURL)
+    _ = try controller.setVideo(newDesktopURL)
+
+    let config = fixture.store.loadConfig()
+    #expect(config.video_path == newDesktopURL.path)
+    #expect(config.lock_screen_path == nil)
+    #expect(config.lock_screen_runtime_path == nil)
+    #expect(installer.installedVideoURL == newDesktopURL)
 }
 
 @Test func runtimeNormalizationKeepsLegacyLockScreenSettingDisabledUntilExplicitlyEnabled() throws {

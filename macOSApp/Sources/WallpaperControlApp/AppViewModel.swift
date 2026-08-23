@@ -470,7 +470,9 @@ final class NativeWallpaperController: WallpaperControlling {
             .refreshAfterWallpaperRestore()
         _ = try updateConfig { config in
             config.video_path = ""
-            config.show_on_lock_screen = false
+            // Remove clears AuraFlow's runtime media, but it must not change
+            // the user's Lock Screen preference. The next explicit Start can
+            // use the same preference without requiring the toggle again.
             config.lock_screen_path = nil
             config.lock_screen_runtime_path = nil
         }
@@ -484,20 +486,14 @@ final class NativeWallpaperController: WallpaperControlling {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(url.path)")
         }
-        let previousConfig = store.loadConfig()
-        if previousConfig.show_on_lock_screen == true {
-            _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
-                appSupportPath: store.appSupportURL.path
-            )
-        }
         var config = try updateConfig { config in
             config.video_path = url.path
-            if config.lock_screen_path == nil {
-                config.lock_screen_runtime_path = nil
-            }
+            // A realtime ordinary wallpaper change is also a Lock Screen
+            // change. Only Choose Lock Screen creates a separate source.
+            config.lock_screen_path = nil
+            config.lock_screen_runtime_path = nil
         }
-        if config.show_on_lock_screen == true,
-           config.lock_screen_path == nil {
+        if config.show_on_lock_screen == true {
             config = try prepareLockScreenConfig(config)
             try store.saveConfig(config)
             try installLockScreenSaver(using: config, activate: false)
@@ -528,9 +524,6 @@ final class NativeWallpaperController: WallpaperControlling {
         config.lock_screen_runtime_path = nil
         config.show_on_lock_screen = true
         config.lock_screen_preference_configured = true
-        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
-            appSupportPath: store.appSupportURL.path
-        )
         config = try prepareLockScreenConfig(config)
         try installLockScreenSaver(using: config, activate: false)
         try store.saveConfig(config)
@@ -576,9 +569,6 @@ final class NativeWallpaperController: WallpaperControlling {
             var prepared = currentConfig
             prepared.show_on_lock_screen = true
             prepared.lock_screen_preference_configured = true
-            _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
-                appSupportPath: store.appSupportURL.path
-            )
             if !prepared.effectiveLockScreenPath.isEmpty {
                 prepared = try prepareLockScreenConfig(prepared)
                 try installLockScreenSaver(using: prepared, activate: true)
@@ -591,9 +581,6 @@ final class NativeWallpaperController: WallpaperControlling {
             return store.status()
         } else {
             try lockScreenSaverInstaller.uninstall()
-            WallpaperDesktopSupport.discardWallpaperBackups(
-                appSupportPath: store.appSupportURL.path
-            )
         }
 
         let config = try updateConfig { config in

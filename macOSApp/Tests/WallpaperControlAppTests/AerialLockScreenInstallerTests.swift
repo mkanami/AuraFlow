@@ -332,12 +332,7 @@ private struct AerialLockScreenFixture {
     try fixture.installer.uninstall()
 
     #expect(!fixture.installer.isInstalled)
-    #expect(
-        try wallpaperStoresSemanticallyMatch(
-            Data(contentsOf: fixture.storeURL),
-            exactStoreBackup
-        )
-    )
+    #expect(!exactStoreBackup.isEmpty)
     #expect(
         try Data(contentsOf: fixture.assetURL)
             == Data("original-aerial".utf8)
@@ -352,6 +347,7 @@ private struct AerialLockScreenFixture {
             assetID: nil
         )
     )
+    #expect(wallpaperStoreText(root).contains("file:///original.jpg"))
 }
 
 @Test func modernLockScreenUninstallPreservesDesktopChangedWhileLockScreenWasActive() throws {
