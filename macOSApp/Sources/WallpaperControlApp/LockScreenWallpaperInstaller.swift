@@ -65,28 +65,6 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
         }
     }
 
-    func installForNormalStart(videoURL: URL) throws {
-        if useExtensionPath {
-            guard modern.isAvailable else {
-                throw WallpaperExtensionLockScreenInstallerError.extensionNotBundled
-            }
-            try modern.install(videoURL: videoURL, activate: true)
-            if legacy.isInstalled {
-                try? legacy.uninstall()
-            }
-            return
-        }
-
-        if modern.isAvailable {
-            if legacy.isInstalled {
-                try legacy.uninstall()
-            }
-            try modern.install(videoURL: videoURL, activate: true)
-        } else {
-            try legacy.install(videoURL: videoURL)
-        }
-    }
-
     func uninstall() throws {
         if modern.isInstalled {
             try modern.uninstall()

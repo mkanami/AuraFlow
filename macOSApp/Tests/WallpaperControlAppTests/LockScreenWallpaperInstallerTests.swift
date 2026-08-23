@@ -66,7 +66,7 @@ private final class RecordingLegacyLockScreenInstaller:
     #expect(modern.installCount == 1)
 }
 
-@Test func normalStartUsesAuraFlowExtensionOnMacOS26AndLater() throws {
+@Test func standardInstallUsesAuraFlowExtensionWithoutActivationOnMacOS26AndLater() throws {
     let modern = RecordingModernLockScreenInstaller()
     let legacy = RecordingLegacyLockScreenInstaller()
     let installer = LockScreenWallpaperInstaller(
@@ -79,16 +79,17 @@ private final class RecordingLegacyLockScreenInstaller:
         )
     )
 
-    try installer.installForNormalStart(
-        videoURL: URL(fileURLWithPath: "/tmp/lock.mov")
+    try installer.install(
+        videoURL: URL(fileURLWithPath: "/tmp/lock.mov"),
+        activate: false
     )
 
     #expect(modern.installCount == 1)
-    #expect(modern.activationValues == [true])
+    #expect(modern.activationValues == [false])
     #expect(legacy.installCount == 0)
 }
 
-@Test func normalStartActivatesSystemLockScreenSelection() throws {
+@Test func standardInstallDoesNotActivateSystemLockScreenSelection() throws {
     let modern = RecordingModernLockScreenInstaller()
     let legacy = RecordingLegacyLockScreenInstaller()
     let installer = LockScreenWallpaperInstaller(
@@ -101,11 +102,33 @@ private final class RecordingLegacyLockScreenInstaller:
         )
     )
 
-    try installer.installForNormalStart(
-        videoURL: URL(fileURLWithPath: "/tmp/lock.mov")
+    try installer.install(
+        videoURL: URL(fileURLWithPath: "/tmp/lock.mov"),
+        activate: false
     )
 
     #expect(modern.installCount == 1)
+    #expect(modern.activationValues == [false])
+}
+
+@Test func explicitLockScreenToggleKeepsActivationPath() throws {
+    let modern = RecordingModernLockScreenInstaller()
+    let legacy = RecordingLegacyLockScreenInstaller()
+    let installer = LockScreenWallpaperInstaller(
+        modern: modern,
+        legacy: legacy,
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 27,
+            minorVersion: 0,
+            patchVersion: 0
+        )
+    )
+
+    try installer.install(
+        videoURL: URL(fileURLWithPath: "/tmp/lock.mov"),
+        activate: true
+    )
+
     #expect(modern.activationValues == [true])
 }
 

@@ -459,28 +459,45 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
             settings.activate(options: [.activateIgnoringOtherApps])
             let root = AXUIElementCreateApplication(settings.processIdentifier)
 
-            if let auraTile = firstElement(in: root, matching: "AuraFlow Lock Screen") {
-                guard AXUIElementPerformAction(auraTile, kAXPressAction as CFString) == .success else {
-                    throw WallpaperExtensionLockScreenInstallerError.selectionActivationFailed(
-                        "macOS rejected the AuraFlow Lock Screen selection."
-                    )
-                }
-                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
-                if let done = firstElement(in: root, matching: "Done") {
-                    _ = AXUIElementPerformAction(done, kAXPressAction as CFString)
-                }
-                NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
-                return
-            }
-
             if !pressedScreenSaverButton,
                let screenSaver = firstElement(in: root, matching: "Screen Saver") {
+                // The Wallpaper page can expose AuraFlow as a regular
+                // wallpaper card. Enter the Screen Saver sheet first so a
+                // matching AuraFlow label can never change Desktop.
                 pressedScreenSaverButton = AXUIElementPerformAction(
                     screenSaver,
                     kAXPressAction as CFString
                 ) == .success
+                RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+                continue
             }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+
+            guard pressedScreenSaverButton,
+                  let sheet = firstElement(in: root, role: kAXSheetRole as String),
+                  let auraTile = firstElement(
+                      in: sheet,
+                      matching: "AuraFlow Lock Screen",
+                      exact: true
+                  ) else {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+                continue
+            }
+
+            guard AXUIElementPerformAction(auraTile, kAXPressAction as CFString) == .success else {
+                throw WallpaperExtensionLockScreenInstallerError.selectionActivationFailed(
+                    "macOS rejected the AuraFlow Lock Screen selection."
+                )
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            if let done = firstElement(
+                in: sheet,
+                matching: "Done",
+                exact: true
+            ) {
+                _ = AXUIElementPerformAction(done, kAXPressAction as CFString)
+            }
+            NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+            return
         }
 
         NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
@@ -491,22 +508,37 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
 
     private static func firstElement(
         in root: AXUIElement,
-        matching needle: String
+        matching needle: String = "",
+        exact: Bool = false,
+        role: String? = nil
     ) -> AXUIElement? {
         var queue: [(AXUIElement, Int)] = [(root, 0)]
         while !queue.isEmpty {
             let (element, depth) = queue.removeFirst()
             if depth > 12 { continue }
-            for attribute in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute] {
-                var value: CFTypeRef?
-                if AXUIElementCopyAttributeValue(
+            var roleMatches = true
+            if let role {
+                var roleValue: CFTypeRef?
+                roleMatches = AXUIElementCopyAttributeValue(
                     element,
-                    attribute as CFString,
-                    &value
-                ) == .success,
-                   let text = value as? String,
-                   text.localizedCaseInsensitiveContains(needle) {
-                    return element
+                    kAXRoleAttribute as CFString,
+                    &roleValue
+                ) == .success && roleValue as? String == role
+            }
+            if roleMatches, !needle.isEmpty {
+                for attribute in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute] {
+                    var value: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(
+                        element,
+                        attribute as CFString,
+                        &value
+                    ) == .success,
+                       let text = value as? String,
+                       exact
+                           ? text.caseInsensitiveCompare(needle) == .orderedSame
+                           : text.localizedCaseInsensitiveContains(needle) {
+                        return element
+                    }
                 }
             }
 

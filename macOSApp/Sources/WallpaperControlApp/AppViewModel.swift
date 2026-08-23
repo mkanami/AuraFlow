@@ -403,11 +403,9 @@ final class NativeWallpaperController: WallpaperControlling {
         if config.show_on_lock_screen ?? false {
             config = try prepareLockScreenConfig(config)
             try store.saveConfig(config)
-            try installLockScreenSaver(
-                using: config,
-                activate: true,
-                normalStart: true
-            )
+            // Start installs the configured Lock Screen provider but never
+            // opens System Settings or changes the user's selected provider.
+            try installLockScreenSaver(using: config, activate: false)
         }
         store.markPaused(false)
         try launchAgentIfNeeded()
@@ -673,8 +671,7 @@ final class NativeWallpaperController: WallpaperControlling {
 
     private func installLockScreenSaver(
         using config: ControlConfig,
-        activate: Bool,
-        normalStart: Bool = false
+        activate: Bool
     ) throws {
         let videoURL = URL(fileURLWithPath: config.effectiveLockScreenRuntimePath)
         // A still frame improves transitions, but it must not block the live
@@ -683,11 +680,7 @@ final class NativeWallpaperController: WallpaperControlling {
         _ = try? store.ensureCurrentStillFrame(from: videoURL)
         if let modernInstaller = lockScreenSaverInstaller
             as? LockScreenWallpaperInstaller {
-            if normalStart {
-                try modernInstaller.installForNormalStart(videoURL: videoURL)
-            } else {
-                try modernInstaller.install(videoURL: videoURL, activate: activate)
-            }
+            try modernInstaller.install(videoURL: videoURL, activate: activate)
         } else {
             try lockScreenSaverInstaller.install(videoURL: videoURL)
         }
