@@ -45,7 +45,8 @@ private struct WallpaperExtensionFixture {
 
     func makeInstaller(
         restartAction: @escaping () -> Void = {},
-        notifyAction: @escaping () -> Void = {}
+        notifyAction: @escaping () -> Void = {},
+        activateAction: @escaping () throws -> Void = {}
     ) -> WallpaperExtensionLockScreenInstaller {
         WallpaperExtensionLockScreenInstaller(
             extensionBundleURL: extensionURL,
@@ -53,7 +54,8 @@ private struct WallpaperExtensionFixture {
             wallpaperStoreURL: storeURL,
             backupURL: backupURL,
             restartWallpaperAgentAction: restartAction,
-            notifyExtensionLibraryChangedAction: notifyAction
+            notifyExtensionLibraryChangedAction: notifyAction,
+            activateSelectionAction: activateAction
         )
     }
 
@@ -67,6 +69,23 @@ private struct WallpaperExtensionFixture {
     func cleanup() {
         try? FileManager.default.removeItem(at: root)
     }
+}
+
+@Test func wallpaperExtensionActivatesExactlyOnceUntilRemove() throws {
+    let fixture = try WallpaperExtensionFixture()
+    defer { fixture.cleanup() }
+    var activationCount = 0
+    let installer = fixture.makeInstaller(
+        activateAction: { activationCount += 1 }
+    )
+
+    try installer.install(videoURL: fixture.videoURL, activate: true)
+    try installer.install(videoURL: fixture.videoURL, activate: true)
+    #expect(activationCount == 1)
+
+    try installer.uninstall()
+    try installer.install(videoURL: fixture.videoURL, activate: true)
+    #expect(activationCount == 2)
 }
 
 @Test func wallpaperExtensionChangesIdleButPreservesDesktop() throws {
@@ -103,12 +122,33 @@ private struct WallpaperExtensionFixture {
     #expect(deployedFiles.contains(where: { $0.pathExtension == "mov" }))
 }
 
-@Test func wallpaperExtensionUninstallRestoresOnlyIdleSelection() throws {
+@Test func wallpaperExtensionUninstallCopiesCurrentDesktopToIdleAndNeverRestoresSavedAerial() throws {
     let fixture = try WallpaperExtensionFixture()
     defer { fixture.cleanup() }
     let installer = fixture.makeInstaller()
 
     try installer.install(videoURL: fixture.videoURL)
+
+    // Simulate a stale backup produced by an older AuraFlow release. Remove
+    // must ignore it even when it contains the Golden Gate/Aerial provider.
+    let staleBackup = [
+        "SystemDefault": [
+            "Desktop": ["Content": ["Choices": [[
+                "Provider": "com.apple.wallpaper.choice.image",
+                "Files": [["relative": "file:///old-desktop.jpg"]],
+            ]]]],
+            "Idle": ["Content": ["Choices": [[
+                "Provider": "com.apple.wallpaper.choice.aerials",
+                "Configuration": Data("golden-gate".utf8),
+            ]]]],
+        ],
+    ] as [String: Any]
+    let staleData = try PropertyListSerialization.data(
+        fromPropertyList: staleBackup,
+        format: .binary,
+        options: 0
+    )
+    try staleData.write(to: fixture.backupURL, options: .atomic)
     try installer.uninstall()
 
     let restored = try fixture.readStore()
@@ -121,7 +161,9 @@ private struct WallpaperExtensionFixture {
     let idle = try #require(systemDefault["Idle"] as? [String: Any])
     let idleContent = try #require(idle["Content"] as? [String: Any])
     let idleChoices = try #require(idleContent["Choices"] as? [[String: Any]])
-    #expect(idleChoices.first?["Provider"] as? String == "com.apple.wallpaper.choice.aerials")
+    #expect(idleChoices.first?["Provider"] as? String == "com.apple.wallpaper.choice.image")
+    let idleFiles = try #require(idleChoices.first?["Files"] as? [[String: Any]])
+    #expect(idleFiles.first?["relative"] as? String == "file:///original-desktop.jpg")
     #expect(!installer.isInstalled)
     #expect(!FileManager.default.fileExists(atPath: fixture.backupURL.path))
 }
@@ -150,4 +192,54 @@ private struct WallpaperExtensionFixture {
         .absoluteString)
     #expect(FileManager.default.fileExists(atPath: entryURL.appendingPathComponent("lock_screen.mov").path))
     #expect(!FileManager.default.fileExists(atPath: staleURL.path))
+}
+
+@Test func wallpaperExtensionUninstallRestoresEverySpaceFromItsOwnDesktop() throws {
+    let fixture = try WallpaperExtensionFixture()
+    defer { fixture.cleanup() }
+
+    func mode(_ path: String) -> [String: Any] {
+        ["Content": ["Choices": [[
+            "Provider": "com.apple.wallpaper.choice.image",
+            "Files": [["relative": path]],
+        ]]]]
+    }
+    let store = [
+        "Spaces": [
+            "space-one": [
+                "Desktop": mode("file:///user-one.jpg"),
+                "Idle": mode("file:///old-idle-one.jpg"),
+            ],
+            "space-two": [
+                "Displays": [
+                    "display-a": [
+                        "Desktop": mode("file:///user-two.jpg"),
+                        "Idle": mode("file:///old-idle-two.jpg"),
+                    ],
+                ],
+            ],
+        ],
+    ] as [String: Any]
+    let data = try PropertyListSerialization.data(
+        fromPropertyList: store,
+        format: .binary,
+        options: 0
+    )
+    try data.write(to: fixture.storeURL, options: .atomic)
+
+    let installer = fixture.makeInstaller()
+    try installer.install(videoURL: fixture.videoURL)
+    try installer.uninstall()
+
+    let restored = try fixture.readStore()
+    let spaces = try #require(restored["Spaces"] as? [String: Any])
+    let one = try #require(spaces["space-one"] as? [String: Any])
+    #expect(NSDictionary(dictionary: try #require(one["Idle"] as? [String: Any]))
+        .isEqual(to: try #require(one["Desktop"] as? [String: Any])))
+
+    let two = try #require(spaces["space-two"] as? [String: Any])
+    let displays = try #require(two["Displays"] as? [String: Any])
+    let display = try #require(displays["display-a"] as? [String: Any])
+    #expect(NSDictionary(dictionary: try #require(display["Idle"] as? [String: Any]))
+        .isEqual(to: try #require(display["Desktop"] as? [String: Any])))
 }

@@ -686,7 +686,7 @@ final class NativeWallpaperController: WallpaperControlling {
             if normalStart {
                 try modernInstaller.installForNormalStart(videoURL: videoURL)
             } else {
-                try modernInstaller.install(videoURL: videoURL)
+                try modernInstaller.install(videoURL: videoURL, activate: activate)
             }
         } else {
             try lockScreenSaverInstaller.install(videoURL: videoURL)

@@ -1,3 +1,5 @@
+import AppKit
+import ApplicationServices
 import CoreFoundation
 import Foundation
 
@@ -7,7 +9,6 @@ enum WallpaperExtensionLockScreenInstallerError: LocalizedError {
     case wallpaperStoreUnavailable
     case wallpaperStoreMalformed
     case noLockScreenSlot
-    case backupWriteFailed
     case selectionWriteFailed
     case selectionActivationFailed(String)
 
@@ -23,12 +24,10 @@ enum WallpaperExtensionLockScreenInstallerError: LocalizedError {
             return "macOS's wallpaper store has an unsupported format."
         case .noLockScreenSlot:
             return "macOS did not expose a Lock Screen slot to update."
-        case .backupWriteFailed:
-            return "AuraFlow could not save the previous Lock Screen wallpaper."
         case .selectionWriteFailed:
             return "macOS did not accept AuraFlow as the Lock Screen wallpaper."
         case .selectionActivationFailed(let detail):
-            return "AuraFlow could not commit the Lock Screen selection in System Settings: \(detail)"
+            return "AuraFlow could not activate its Lock Screen wallpaper: \(detail)"
         }
     }
 }
@@ -75,9 +74,9 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
             ?? Bundle.main.bundleURL
                 .appendingPathComponent("Contents/Extensions/AuraFlowWallpaperExtension.appex", isDirectory: true)
         self.extensionDocumentsURL = extensionDocumentsURL
-            // The Wallpaper extension is sandboxed. Its VideoLibrary reads
-            // this container directly, so deploying to a shared host-only
-            // directory makes Lock Screen acquire fall back to a blank frame.
+            // The extension is sandboxed. Its home directory is its own
+            // container, so the host deploys media into that container's
+            // Documents directory and the extension reads the same path.
             ?? fileManager.homeDirectoryForCurrentUser
                 .appendingPathComponent(
                     "Library/Containers/com.andrijvergeles.auraflow.wallpaper-extension/Data/Documents",
@@ -125,21 +124,13 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
         }
 
         var propertyList = try loadPropertyList()
+        let activationMarkerURL = backupURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("wallpaper_extension_activation_v2")
+        let shouldActivate = activate
+            && !fileManager.fileExists(atPath: activationMarkerURL.path)
         guard hasIdleSlot(in: propertyList) else {
             throw WallpaperExtensionLockScreenInstallerError.noLockScreenSlot
-        }
-
-        if !fileManager.fileExists(atPath: backupURL.path) {
-            let backupData = try propertyListData(propertyList)
-            do {
-                try fileManager.createDirectory(
-                    at: backupURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try backupData.write(to: backupURL, options: .atomic)
-            } catch {
-                throw WallpaperExtensionLockScreenInstallerError.backupWriteFailed
-            }
         }
 
         let deployedURL = try deploy(videoURL: videoURL)
@@ -159,10 +150,15 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
         guard currentPropertyList().map({ containsAuraFlowIdleSelection(in: $0) }) == true else {
             throw WallpaperExtensionLockScreenInstallerError.selectionWriteFailed
         }
+        // Old releases kept a snapshot of Idle and restored it on Remove.
+        // That snapshot commonly contains a macOS Aerial (for example Golden
+        // Gate), so it must never participate in restoration again.
+        try? fileManager.removeItem(at: backupURL)
         notifyExtensionLibraryChangedAction()
-        if activate {
+        if shouldActivate {
             do {
                 try activateSelectionAction()
+                try Data().write(to: activationMarkerURL, options: .atomic)
             } catch let error as WallpaperExtensionLockScreenInstallerError {
                 throw error
             } catch {
@@ -178,26 +174,28 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
         defer { operationLock.unlock() }
 
         var propertyList = try loadPropertyList()
-        let changed = removeAuraFlowIdleSelections(in: &propertyList)
-        guard changed > 0 else {
+        let activationMarkerURL = backupURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("wallpaper_extension_activation_v2")
+        let result = restoreAuraFlowIdleSelectionsFromDesktop(in: &propertyList)
+        guard result.managed > 0 else {
             removeDeployment()
             try? fileManager.removeItem(at: backupURL)
+            try? fileManager.removeItem(at: activationMarkerURL)
             return
         }
 
-        if fileManager.fileExists(atPath: backupURL.path),
-           let backup = try? loadPropertyList(from: backupURL) {
-            restoreIdleSelections(
-                in: &propertyList,
-                from: backup
-            )
-        } else {
-            clearAuraFlowIdleSelections(in: &propertyList)
+        // Never clear Idle and never fall back to a saved Aerial. Every
+        // AuraFlow Idle slot must have the sibling Desktop descriptor that
+        // macOS already uses for the same display/Space.
+        guard result.restored == result.managed else {
+            throw WallpaperExtensionLockScreenInstallerError.noLockScreenSlot
         }
 
         try propertyListData(propertyList).write(to: wallpaperStoreURL, options: .atomic)
         removeDeployment()
         try? fileManager.removeItem(at: backupURL)
+        try? fileManager.removeItem(at: activationMarkerURL)
         restartWallpaperAgentAction()
     }
 
@@ -250,6 +248,35 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
         )
         let metadataURL = entryURL.appendingPathComponent("metadata.json")
         try JSONEncoder().encode(metadata).write(to: metadataURL, options: .atomic)
+
+        // AppViewModel prepares this frame before invoking the installer.
+        // Supplying it here keeps WallpaperAgent's settings query fast and
+        // prevents the sandboxed extension from blocking while AVFoundation
+        // seeks a potentially large source video just to build its tile.
+        let preparedStillURL = WallpaperRuntimeStore.defaultAppSupportURL()
+            .appendingPathComponent("last_frame.png")
+        let thumbnailURL = entryURL.appendingPathComponent("thumbnail.jpg")
+        if fileManager.fileExists(atPath: preparedStillURL.path) {
+            let temporaryThumbnailURL = entryURL.appendingPathComponent(
+                ".thumbnail.tmp-\(UUID().uuidString)"
+            )
+            try? fileManager.removeItem(at: temporaryThumbnailURL)
+            do {
+                try fileManager.copyItem(at: preparedStillURL, to: temporaryThumbnailURL)
+                if fileManager.fileExists(atPath: thumbnailURL.path) {
+                    _ = try fileManager.replaceItemAt(
+                        thumbnailURL,
+                        withItemAt: temporaryThumbnailURL
+                    )
+                } else {
+                    try fileManager.moveItem(at: temporaryThumbnailURL, to: thumbnailURL)
+                }
+            } catch {
+                try? fileManager.removeItem(at: temporaryThumbnailURL)
+                // The video remains valid; a missing thumbnail must not turn
+                // Start into a failure.
+            }
+        }
         return destinationURL
     }
 
@@ -332,55 +359,31 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
         return changed
     }
 
-    @discardableResult
-    private func removeAuraFlowIdleSelections(in dictionary: inout [String: Any]) -> Int {
-        var changed = 0
+    private func restoreAuraFlowIdleSelectionsFromDesktop(
+        in dictionary: inout [String: Any]
+    ) -> (managed: Int, restored: Int) {
+        var managed = 0
+        var restored = 0
         if let idle = dictionary["Idle"] as? [String: Any],
            containsAuraFlowSelection(in: idle) {
-            changed += 1
+            managed += 1
+            if let desktop = dictionary["Desktop"] as? [String: Any] {
+                // Copy the complete macOS-owned descriptor verbatim. This
+                // preserves provider, files, configuration, shuffle data,
+                // timestamps, and any future fields for this exact Space.
+                dictionary["Idle"] = desktop
+                restored += 1
+            }
         }
 
-        for key in dictionary.keys where key != "Idle" {
+        for key in dictionary.keys where key != "Idle" && key != "Desktop" {
             guard var child = dictionary[key] as? [String: Any] else { continue }
-            changed += removeAuraFlowIdleSelections(in: &child)
+            let childResult = restoreAuraFlowIdleSelectionsFromDesktop(in: &child)
+            managed += childResult.managed
+            restored += childResult.restored
             dictionary[key] = child
         }
-        return changed
-    }
-
-    private func clearAuraFlowIdleSelections(in dictionary: inout [String: Any]) {
-        if var idle = dictionary["Idle"] as? [String: Any],
-           containsAuraFlowSelection(in: idle) {
-            var content = idle["Content"] as? [String: Any] ?? [:]
-            content["Choices"] = []
-            idle["Content"] = content
-            dictionary["Idle"] = idle
-        }
-
-        for key in dictionary.keys where key != "Idle" {
-            guard var child = dictionary[key] as? [String: Any] else { continue }
-            clearAuraFlowIdleSelections(in: &child)
-            dictionary[key] = child
-        }
-    }
-
-    private func restoreIdleSelections(
-        in dictionary: inout [String: Any],
-        from backup: [String: Any]
-    ) {
-        if let currentIdle = dictionary["Idle"] as? [String: Any],
-           containsAuraFlowSelection(in: currentIdle),
-           let originalIdle = backup["Idle"] as? [String: Any] {
-            dictionary["Idle"] = originalIdle
-        }
-
-        for key in dictionary.keys where key != "Idle" {
-            guard var child = dictionary[key] as? [String: Any],
-                  let originalChild = backup[key] as? [String: Any]
-            else { continue }
-            restoreIdleSelections(in: &child, from: originalChild)
-            dictionary[key] = child
-        }
+        return (managed, restored)
     }
 
     private func containsAuraFlowIdleSelection(in dictionary: [String: Any]) -> Bool {
@@ -423,68 +426,100 @@ final class WallpaperExtensionLockScreenInstaller: ModernLockScreenInstalling {
         )
     }
 
-    /// The wallpaper store is a cache; macOS commits the active Lock Screen
-    /// provider through the system-owned screen-saver selection sheet.
+    /// Index.plist is only WallpaperAgent's persisted cache. The active
+    /// Lock Screen provider is committed by the system-owned Screen Saver
+    /// sheet. This runs once per AuraFlow session; Remove never uses this UI
+    /// and restores Idle directly from the matching Desktop descriptor.
     private static func activateAuraFlowSelection() throws {
-        try commitSystemScreenSaverSelection()
+        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        guard AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary) else {
+            throw WallpaperExtensionLockScreenInstallerError.selectionActivationFailed(
+                "Allow AuraFlow in System Settings → Privacy & Security → Accessibility, then press Start again."
+            )
+        }
+
+        guard let settingsURL = URL(
+            string: "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension?ScreenSaver"
+        ) else {
+            throw WallpaperExtensionLockScreenInstallerError.selectionActivationFailed(
+                "The Screen Saver settings URL is unavailable."
+            )
+        }
+        NSWorkspace.shared.open(settingsURL)
+
+        let deadline = Date().addingTimeInterval(15)
+        var pressedScreenSaverButton = false
+        while Date() < deadline {
+            guard let settings = NSRunningApplication.runningApplications(
+                withBundleIdentifier: "com.apple.systempreferences"
+            ).first else {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+                continue
+            }
+            settings.activate(options: [.activateIgnoringOtherApps])
+            let root = AXUIElementCreateApplication(settings.processIdentifier)
+
+            if let auraTile = firstElement(in: root, matching: "AuraFlow Lock Screen") {
+                guard AXUIElementPerformAction(auraTile, kAXPressAction as CFString) == .success else {
+                    throw WallpaperExtensionLockScreenInstallerError.selectionActivationFailed(
+                        "macOS rejected the AuraFlow Lock Screen selection."
+                    )
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+                if let done = firstElement(in: root, matching: "Done") {
+                    _ = AXUIElementPerformAction(done, kAXPressAction as CFString)
+                }
+                NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+                return
+            }
+
+            if !pressedScreenSaverButton,
+               let screenSaver = firstElement(in: root, matching: "Screen Saver") {
+                pressedScreenSaverButton = AXUIElementPerformAction(
+                    screenSaver,
+                    kAXPressAction as CFString
+                ) == .success
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        }
+
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        throw WallpaperExtensionLockScreenInstallerError.selectionActivationFailed(
+            "AuraFlow Lock Screen was not listed in Screen Saver settings."
+        )
     }
 
-    private static func commitSystemScreenSaverSelection() throws {
-        let script = """
-        tell application "System Settings"
-            activate
-            open location "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension?ScreenSaver"
-        end tell
-        tell application "System Events"
-            tell process "System Settings"
-                repeat 60 times
-                    if exists sheet 1 of window 1 then exit repeat
-                    if exists button "Screen Saver…" of window 1 then
-                        click button "Screen Saver…" of window 1
-                        exit repeat
-                    end if
-                    delay 0.15
-                end repeat
-                repeat 60 times
-                    if exists sheet 1 of window 1 then exit repeat
-                    delay 0.15
-                end repeat
-                if not (exists sheet 1 of window 1) then error "Screen Saver settings did not open"
-                repeat 60 times
-                    if exists (first button of entire contents of sheet 1 of window 1 whose description is "AuraFlow Lock Screen") then exit repeat
-                    delay 0.15
-                end repeat
-                if not (exists (first button of entire contents of sheet 1 of window 1 whose description is "AuraFlow Lock Screen")) then error "AuraFlow Lock Screen was not listed"
-                click (first button of entire contents of sheet 1 of window 1 whose description is "AuraFlow Lock Screen")
-                delay 0.35
-                if exists button "Done" of sheet 1 of window 1 then click button "Done" of sheet 1 of window 1
-            end tell
-        end tell
-        """
+    private static func firstElement(
+        in root: AXUIElement,
+        matching needle: String
+    ) -> AXUIElement? {
+        var queue: [(AXUIElement, Int)] = [(root, 0)]
+        while !queue.isEmpty {
+            let (element, depth) = queue.removeFirst()
+            if depth > 12 { continue }
+            for attribute in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute] {
+                var value: CFTypeRef?
+                if AXUIElementCopyAttributeValue(
+                    element,
+                    attribute as CFString,
+                    &value
+                ) == .success,
+                   let text = value as? String,
+                   text.localizedCaseInsensitiveContains(needle) {
+                    return element
+                }
+            }
 
-        let task = Process()
-        let output = Pipe()
-        let error = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
-        task.standardOutput = output
-        task.standardError = error
-        do {
-            try task.run()
-        } catch {
-            throw WallpaperExtensionLockScreenInstallerError.selectionActivationFailed(
-                error.localizedDescription
-            )
+            var childrenValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                element,
+                kAXChildrenAttribute as CFString,
+                &childrenValue
+            ) == .success,
+            let children = childrenValue as? [AXUIElement] else { continue }
+            queue.append(contentsOf: children.map { ($0, depth + 1) })
         }
-        task.waitUntilExit()
-        guard task.terminationStatus == 0 else {
-            let errorData = error.fileHandleForReading.readDataToEndOfFile()
-            let detail = String(data: errorData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw WallpaperExtensionLockScreenInstallerError.selectionActivationFailed(
-                detail?.isEmpty == false ? detail! : "System Settings rejected the selection"
-            )
-        }
+        return nil
     }
 
 }
