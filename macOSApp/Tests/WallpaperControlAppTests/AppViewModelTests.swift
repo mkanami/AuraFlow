@@ -504,6 +504,41 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
+@Test func downloadedCatalogImageUsesCachedFileWithoutRedownload() async throws {
+    let controller = MockNativeWallpaperController()
+    let viewModel = AppViewModel(controller: controller)
+    let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("downloaded-catalog-image.jpg")
+    try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: tempURL, options: .atomic)
+    defer { try? FileManager.default.removeItem(at: tempURL) }
+
+    let wallpaper = DownloadedCatalogWallpaper(
+        id: "downloaded-catalog-image",
+        wallpaperID: "downloaded-catalog-image",
+        title: "Catalog Image Test",
+        category: "Scenic",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        localPreviewPath: nil,
+        sourcePageURL: nil,
+        localPath: tempURL.path,
+        downloadedAt: Date()
+    )
+
+    viewModel.applyDownloadedCatalogWallpaper(wallpaper)
+
+    for _ in 0..<40 {
+        if controller.startCallCount == 1 {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.startCallCount == 1)
+    #expect(controller.lastConfiguredVideoURL?.standardizedFileURL == tempURL.standardizedFileURL)
+}
+
+@MainActor
 @Test func catalogBackNavigatesDetailThenExitsCatalog() async throws {
     let controller = MockNativeWallpaperController()
     let expectedWallpaper = CatalogWallpaper(

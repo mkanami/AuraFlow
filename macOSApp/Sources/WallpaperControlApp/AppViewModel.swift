@@ -127,6 +127,7 @@ struct DownloadedCatalogWallpaper: Identifiable, Hashable, Codable {
 enum CatalogDownloadError: LocalizedError {
     case badStatus(url: URL, statusCode: Int)
     case htmlResponse(url: URL)
+    case unsupportedResponse(url: URL)
 
     var errorDescription: String? {
         switch self {
@@ -146,7 +147,10 @@ enum CatalogDownloadError: LocalizedError {
             }
         case .htmlResponse(let url):
             let host = url.host ?? "server"
-            return "\(host) returned an HTML page instead of a video file."
+            return "\(host) returned an HTML page instead of a wallpaper file."
+        case .unsupportedResponse(let url):
+            let host = url.host ?? "server"
+            return "\(host) returned an unsupported response instead of a wallpaper file."
         }
     }
 }
@@ -1257,7 +1261,11 @@ final class AppViewModel: ObservableObject {
                 let resolvedURL = try await resolveDownloadedCatalogWallpaperURL(wallpaper)
                 closeDownloadedWallpapers()
                 selectVideoForPreview(resolvedURL, summary: nil)
-                applySelectionImmediately(resolvedURL, failureContext: "start")
+                applySelectionImmediately(
+                    resolvedURL,
+                    failureContext: "start",
+                    catalogFastPath: true
+                )
             } catch {
                 alertMessage = "Failed to prepare downloaded wallpaper: \(error.localizedDescription)"
             }
@@ -1928,13 +1936,28 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func prepareDownloadedCatalogSourceForPlayback(_ sourceURL: URL) async throws -> URL {
-        if await isPreviewPlayableVideo(at: sourceURL) {
-            return sourceURL
+    private func prepareCatalogVideoURLForPlayback(_ sourceURL: URL) async throws -> (url: URL, summary: String?) {
+        if WallpaperMediaKind.forURL(sourceURL).isStaticImage {
+            return (sourceURL.standardizedFileURL, nil)
+        }
+
+        // GIF is deliberately kept on the compatibility path. AVPlayer can
+        // inspect it, but the desktop agent needs the optimizer's MP4 output
+        // for reliable looping.
+        let isGIF = sourceURL.pathExtension.lowercased() == "gif"
+        if !isGIF, await isPreviewPlayableVideo(at: sourceURL) {
+            // A native MP4/MOV/M4V source is already ready to render. Do not
+            // make a catalog download wait for the user's optional HEVC or
+            // 1080p optimization pass.
+            return (sourceURL.standardizedFileURL, nil)
         }
 
         var settings = currentOptimizationSettings()
         settings.enabled = true
+        // Catalog application should not transcode an otherwise playable
+        // H.264 source just because the global optimization preference is on.
+        // This flag still leaves WebM/MKV/GIF compatibility conversion active.
+        settings.transcodeH264ToHEVC = false
 
         let result = try await optimizer.optimizeIfNeeded(
             inputURL: sourceURL,
@@ -1942,11 +1965,25 @@ final class AppViewModel: ObservableObject {
             progress: { _ in }
         )
 
-        guard await isPreviewPlayableVideo(at: result.outputURL) else {
+        let outputIsPlayable: Bool
+        if WallpaperMediaKind.forURL(result.outputURL).isStaticImage {
+            outputIsPlayable = true
+        } else {
+            outputIsPlayable = await isPreviewPlayableVideo(at: result.outputURL)
+        }
+        guard outputIsPlayable else {
             throw URLError(.cannotDecodeContentData)
         }
 
-        return result.outputURL
+        switch result.decision {
+        case .passthrough(let reason):
+            return (result.outputURL, reason)
+        case .transcode(let reason):
+            let summary = result.fromCache
+                ? "Using cached compatible wallpaper. \(reason)"
+                : "Wallpaper converted for macOS playback. \(reason)"
+            return (result.outputURL, summary)
+        }
     }
 
     private func apply(
@@ -2220,10 +2257,9 @@ final class AppViewModel: ObservableObject {
 
     private func downloadCatalogVideo(for wallpaper: CatalogWallpaper) async throws -> URL {
         if let existing = downloadedCatalogWallpapers.first(where: { $0.wallpaperID == wallpaper.id }),
-           FileManager.default.fileExists(atPath: existing.localURL.path) {
-            if await isPreviewPlayableVideo(at: existing.localURL) {
-                return existing.localURL
-            }
+           hasUsableCatalogFile(at: existing.localURL) {
+            return existing.localURL.standardizedFileURL
+        } else if let existing = downloadedCatalogWallpapers.first(where: { $0.wallpaperID == wallpaper.id }) {
             try? FileManager.default.removeItem(at: existing.localURL)
         }
 
@@ -2239,20 +2275,29 @@ final class AppViewModel: ObservableObject {
             }
         }
 
+        do {
+            let sources = try await catalogSources(for: wallpaper)
+
+            for source in sources {
+                do {
+                    // Try the direct CDN URL first. This is much faster than
+                    // opening a WKWebView and still works with browser-style
+                    // headers/cookies for protected catalog hosts.
+                    return try await downloadCatalogSource(source, for: wallpaper)
+                } catch {
+                    lastError = error
+                }
+            }
+        } catch {
+            lastError = error
+        }
+
+        // MoeWalls' browser flow remains a compatibility fallback for pages
+        // whose direct CDN URL requires a token generated by JavaScript.
         if isMoeWallsWallpaper(wallpaper),
            let pageURL = wallpaper.sourcePageURL {
             do {
                 return try await downloadMoeWallsVideo(for: wallpaper, pageURL: pageURL)
-            } catch {
-                lastError = error
-            }
-        }
-
-        let sources = try await catalogSources(for: wallpaper)
-
-        for source in sources {
-            do {
-                return try await downloadCatalogSource(source, for: wallpaper)
             } catch {
                 lastError = error
             }
@@ -2276,23 +2321,18 @@ final class AppViewModel: ObservableObject {
     }
 
     private func downloadCatalogSource(_ source: CatalogVideoSource, for wallpaper: CatalogWallpaper) async throws -> URL {
-        if isMoeWallsWallpaper(wallpaper),
-           source.url.host?.lowercased() == "go.moewalls.com",
-           let sourcePageURL = wallpaper.sourcePageURL {
-            return try await downloadMoeWallsVideo(for: wallpaper, pageURL: sourcePageURL)
-        }
-
         let widthLabel = source.width > 0 ? String(source.width) : "auto"
         let heightLabel = source.height > 0 ? String(source.height) : "auto"
-        let destination = try catalogDirectoryURL().appendingPathComponent(
-            "\(wallpaper.id)-\(widthLabel)x\(heightLabel).\(downloadFileExtension(for: source.url))"
+        let directory = try catalogDirectoryURL()
+        let fileStem = "\(wallpaper.id)-\(widthLabel)x\(heightLabel)"
+        let cachedDestination = directory.appendingPathComponent(
+            "\(fileStem).\(downloadFileExtension(for: source.url))"
         )
 
-        if FileManager.default.fileExists(atPath: destination.path) {
-            if await isPreviewPlayableVideo(at: destination) {
-                return destination
-            }
-            try? FileManager.default.removeItem(at: destination)
+        if hasUsableCatalogFile(at: cachedDestination) {
+            return cachedDestination.standardizedFileURL
+        } else if FileManager.default.fileExists(atPath: cachedDestination.path) {
+            try? FileManager.default.removeItem(at: cachedDestination)
         }
 
         let useBrowserStyleHeaders = shouldUseBrowserStyleHeaders(for: source.url, wallpaper: wallpaper)
@@ -2332,6 +2372,7 @@ final class AppViewModel: ObservableObject {
             request: request,
             session: session
         )
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
         if let httpResponse = response as? HTTPURLResponse,
            !(200...299).contains(httpResponse.statusCode) {
             throw CatalogDownloadError.badStatus(url: source.url, statusCode: httpResponse.statusCode)
@@ -2340,11 +2381,20 @@ final class AppViewModel: ObservableObject {
            mimeType.hasPrefix("text/") || mimeType.contains("html") {
             throw CatalogDownloadError.htmlResponse(url: source.url)
         }
+        guard isLikelyCatalogMediaResponse(response: response, sourceURL: source.url) else {
+            throw CatalogDownloadError.unsupportedResponse(url: source.url)
+        }
 
-        try? FileManager.default.removeItem(at: destination)
+        let destination = directory.appendingPathComponent(
+            "\(fileStem).\(downloadFileExtension(for: source.url, response: response))"
+        )
+
+        if destination != cachedDestination {
+            try? FileManager.default.removeItem(at: destination)
+        }
         try FileManager.default.moveItem(at: temporaryURL, to: destination)
 
-        return try await prepareDownloadedCatalogSourceForPlayback(destination)
+        return destination.standardizedFileURL
     }
 
     private func downloadMoeWallsVideo(for wallpaper: CatalogWallpaper, pageURL: URL) async throws -> URL {
@@ -2386,17 +2436,50 @@ final class AppViewModel: ObservableObject {
         return ext
     }
 
-    private func isLikelyCatalogVideoResponse(response: URLResponse, sourceURL: URL) -> Bool {
+    private func downloadFileExtension(for url: URL, response: URLResponse) -> String {
+        let ext = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let knownExtensions = Set([
+            "mp4", "mov", "m4v", "webm", "mkv", "avi", "flv", "ts", "m2ts", "gif",
+            "png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "bmp", "webp"
+        ])
+        if knownExtensions.contains(ext) {
+            return ext
+        }
+
+        switch response.mimeType?.lowercased() {
+        case "image/jpeg": return "jpg"
+        case "image/png": return "png"
+        case "image/gif": return "gif"
+        case "image/heic": return "heic"
+        case "image/heif": return "heif"
+        case "image/webp": return "webp"
+        case "video/quicktime": return "mov"
+        case "video/webm": return "webm"
+        default: return "mp4"
+        }
+    }
+
+    private func isLikelyCatalogMediaResponse(response: URLResponse, sourceURL: URL) -> Bool {
         if let mime = response.mimeType?.lowercased() {
-            if mime.hasPrefix("video/") || mime == "application/octet-stream" || mime == "binary/octet-stream" {
+            if mime.hasPrefix("video/") || mime.hasPrefix("image/")
+                || mime == "application/octet-stream" || mime == "binary/octet-stream" {
                 return true
             }
-            if mime.hasPrefix("text/") {
+            if mime.hasPrefix("text/") || mime.contains("html") || mime.contains("json") {
                 return false
             }
         }
         let ext = sourceURL.pathExtension.lowercased()
-        return ["mp4", "webm", "mov", "m4v", "gif"].contains(ext)
+        return [
+            "mp4", "webm", "mov", "m4v", "mkv", "avi", "flv", "ts", "m2ts", "gif",
+            "png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "bmp", "webp"
+        ].contains(ext)
+    }
+
+    private func hasUsableCatalogFile(at url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0 > 0
     }
 
     private func isMoeWallsWallpaper(_ wallpaper: CatalogWallpaper) -> Bool {
@@ -2708,7 +2791,10 @@ final class AppViewModel: ObservableObject {
             return []
         }
 
-        let validExtensions = Set(["mp4", "mov", "m4v", "webm", "gif"])
+        let validExtensions = Set([
+            "mp4", "mov", "m4v", "webm", "mkv", "avi", "flv", "ts", "m2ts", "gif",
+            "png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "bmp", "webp"
+        ])
         let ignoredNames: Set<String> = [
             "waifu-anime-cache.json",
             "waifu-download-links.json",
@@ -2868,7 +2954,8 @@ final class AppViewModel: ObservableObject {
         do {
             try await startWallpaper(
                 using: localURL,
-                statusSummary: "Wallpaper downloaded and applied."
+                statusSummary: "Wallpaper downloaded and applied.",
+                catalogFastPath: true
             )
             syncDownloadedCatalogWallpaperAfterApply(
                 wallpaperID: wallpaper.id,
@@ -3036,7 +3123,8 @@ final class AppViewModel: ObservableObject {
         _ sourceURL: URL,
         failureContext: String,
         statusSummary: String = "Wallpaper started.",
-        successMessage: String? = nil
+        successMessage: String? = nil,
+        catalogFastPath: Bool = false
     ) {
         guard !isBusy else { return }
 
@@ -3044,7 +3132,11 @@ final class AppViewModel: ObservableObject {
             isBusy = true
             defer { isBusy = false }
             do {
-                try await startWallpaper(using: sourceURL, statusSummary: statusSummary)
+                try await startWallpaper(
+                    using: sourceURL,
+                    statusSummary: statusSummary,
+                    catalogFastPath: catalogFastPath
+                )
                 if let successMessage {
                     showSuccessBanner(successMessage)
                 }
@@ -3057,12 +3149,18 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func startWallpaper(using sourceURL: URL, statusSummary: String) async throws {
+    private func startWallpaper(
+        using sourceURL: URL,
+        statusSummary: String,
+        catalogFastPath: Bool = false
+    ) async throws {
         guard let controller else {
             throw NativeWallpaperControllerError.unavailable("Native wallpaper runtime unavailable.")
         }
 
-        let prepared = try await prepareVideoURLForPlayback(sourceURL)
+        let prepared = catalogFastPath
+            ? try await prepareCatalogVideoURLForPlayback(sourceURL)
+            : try await prepareVideoURLForPlayback(sourceURL)
         let finalStatus = try await runAsync { try controller.start(videoURL: prepared.url, speed: nil) }
 
         pendingPreviewVideoURL = nil
@@ -3088,20 +3186,11 @@ final class AppViewModel: ObservableObject {
     }
 
     private func resolveDownloadedCatalogWallpaperURL(_ wallpaper: DownloadedCatalogWallpaper) async throws -> URL {
-        if await isPreviewPlayableVideo(at: wallpaper.localURL) {
-            return wallpaper.localURL
-        }
-
-        let surrogate = CatalogWallpaper(
-            id: wallpaper.wallpaperID,
-            title: wallpaper.title,
-            category: wallpaper.category,
-            attribution: wallpaper.attribution,
-            previewImageURL: wallpaper.previewImageURL,
-            sourcePageURL: wallpaper.sourcePageURL,
-            sources: []
-        )
-        return try await downloadCatalogVideo(for: surrogate)
+        // The file was already downloaded and is managed by the catalog.
+        // Compatibility conversion, when needed, belongs to the catalog
+        // application path; never re-download a cached WebM/GIF/image just
+        // because AVFoundation cannot inspect it directly.
+        return wallpaper.localURL.standardizedFileURL
     }
 
     private func isPreviewPlayableVideo(at url: URL) async -> Bool {
