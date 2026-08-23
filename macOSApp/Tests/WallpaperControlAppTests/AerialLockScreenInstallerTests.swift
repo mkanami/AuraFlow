@@ -380,23 +380,6 @@ private struct AerialLockScreenFixture {
     )
 }
 
-@Test func modernLockScreenRemovalCanReleaseAerialWithoutChangingStore() throws {
-    let fixture = try AerialLockScreenFixture()
-    defer { fixture.cleanup() }
-
-    try fixture.installer.install(videoURL: fixture.videoURL)
-    let storeBeforeRemoval = try Data(contentsOf: fixture.storeURL)
-
-    try fixture.installer.uninstallPreservingWallpaperStore()
-
-    #expect(!fixture.installer.isInstalled)
-    #expect(try Data(contentsOf: fixture.storeURL) == storeBeforeRemoval)
-    #expect(
-        try Data(contentsOf: fixture.assetURL)
-            == Data("original-aerial".utf8)
-    )
-}
-
 @Test func healthyModernLockScreenSyncIsANoOp() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

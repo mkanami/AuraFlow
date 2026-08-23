@@ -472,12 +472,7 @@ final class NativeWallpaperController: WallpaperControlling {
         store.removeHealth()
         if currentConfig.show_on_lock_screen == true
             || lockScreenSaverInstaller.isInstalled {
-            if let installer = lockScreenSaverInstaller
-                as? LockScreenWallpaperInstaller {
-                try installer.uninstallForWallpaperRemoval()
-            } else {
-                try lockScreenSaverInstaller.uninstall()
-            }
+            try lockScreenSaverInstaller.uninstall()
         }
         let restored = store.restoreWallpaperBackup()
         (lockScreenSaverInstaller as? LockScreenWallpaperInstaller)?

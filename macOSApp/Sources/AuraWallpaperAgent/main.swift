@@ -65,10 +65,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let fullscreenConfirmationSamples = 2
     private let stallRecoveryThreshold = 2
 
-    private var shouldUseModernLockScreenPath: Bool {
-        ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 26
-    }
-
     override init() {
         self.config = store.loadConfig()
         self.lockScreenState = LockScreenStateMachine(
@@ -335,14 +331,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let wallpaperReloaded =
             command.action == .reload && !config.video_path.isEmpty
         if wallpaperReloaded {
-            // A rearm is tied to the exact video, not just the lock-session
-            // generation. Every reload gets a new revision so even replacing
-            // a file in-place cannot let an older provider completion win.
             wallpaperRevision &+= 1
             pendingRearmToken = nil
             lastRearmedToken = nil
         }
-
         switch command.action {
         case .reload:
             _ = lockScreenState.apply(
@@ -876,8 +868,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func repairModernLockScreenIfNeeded(force: Bool = false) {
-        guard shouldUseModernLockScreenPath,
-              config.show_on_lock_screen == true,
+        guard config.show_on_lock_screen == true,
               !config.effectiveLockScreenRuntimePath.isEmpty,
               lockScreenInstaller.isAvailable,
               !lockScreenRepairInProgress,
@@ -937,8 +928,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rearmModernLockScreenForNextSession() {
-        guard shouldUseModernLockScreenPath,
-              config.show_on_lock_screen == true,
+        guard config.show_on_lock_screen == true,
               !config.effectiveLockScreenRuntimePath.isEmpty,
               lockScreenInstaller.isAvailable,
               !sessionInactive,
