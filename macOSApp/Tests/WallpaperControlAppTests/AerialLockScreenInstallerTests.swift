@@ -322,6 +322,40 @@ private struct AerialLockScreenFixture {
     #expect(!wallpaperStoreText(root).contains("AuraFlowLockScreen"))
 }
 
+@Test func modernLockScreenOnlyPreservesDesktopWallpaperMode() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    let root = try readWallpaperStore(fixture.storeURL)
+    let allSpacesAndDisplays = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let desktop = try #require(
+        allSpacesAndDisplays["Desktop"] as? [String: Any]
+    )
+    let idle = try #require(
+        allSpacesAndDisplays["Idle"] as? [String: Any]
+    )
+
+    #expect(
+        wallpaperStoreContains(
+            desktop,
+            provider: "com.apple.wallpaper.choice.image",
+            assetID: nil
+        )
+    )
+    #expect(
+        wallpaperStoreContains(
+            idle,
+            provider: "com.apple.wallpaper.choice.aerials",
+            assetID: AerialLockScreenFixture.assetID
+        )
+    )
+    #expect(fixture.refreshCounter.count == 1)
+}
+
 @Test func modernLockScreenUninstallRestoresCleanStoreAndAerialAsset() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

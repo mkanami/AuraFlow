@@ -41,6 +41,7 @@ private struct NativeRuntimeFixture {
 
 private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling {
     private(set) var installedVideoURL: URL?
+    private(set) var installedLockScreenOnlyVideoURL: URL?
     private(set) var uninstallCallCount = 0
 
     var isInstalled: Bool {
@@ -49,6 +50,10 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
 
     func install(videoURL: URL) throws {
         installedVideoURL = videoURL
+    }
+
+    func installLockScreenOnly(videoURL: URL) throws {
+        installedLockScreenOnlyVideoURL = videoURL
     }
 
     func uninstall() throws {
@@ -126,7 +131,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(status.pid == nil)
     #expect(config.video_path == desktopURL.path)
     #expect(config.show_on_lock_screen == true)
-    #expect(installer.installedVideoURL == fixture.videoURL)
+    #expect(installer.installedVideoURL == nil)
+    #expect(installer.installedLockScreenOnlyVideoURL == fixture.videoURL)
     #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
     #expect(FileManager.default.fileExists(atPath: fixture.store.lastFrameURL.path) == false)
 }

@@ -507,7 +507,11 @@ final class NativeWallpaperController: WallpaperControlling {
             )
         }
 
-        try installLockScreenSaver(videoURL: normalizedURL, ensureStillFrame: false)
+        try installLockScreenSaver(
+            videoURL: normalizedURL,
+            ensureStillFrame: false,
+            lockScreenOnly: true
+        )
         try store.saveLockScreenOnlySource(normalizedURL)
         let config = try updateConfig { config in
             config.show_on_lock_screen = true
@@ -569,7 +573,8 @@ final class NativeWallpaperController: WallpaperControlling {
                 }
                 try installLockScreenSaver(
                     videoURL: sourceURL,
-                    ensureStillFrame: store.loadLockScreenOnlySource() == nil
+                    ensureStillFrame: store.loadLockScreenOnlySource() == nil,
+                    lockScreenOnly: store.loadLockScreenOnlySource() != nil
                 )
             }
         } else {
@@ -608,7 +613,8 @@ final class NativeWallpaperController: WallpaperControlling {
         }
         try installLockScreenSaver(
             videoURL: sourceURL,
-            ensureStillFrame: store.loadLockScreenOnlySource() == nil
+            ensureStillFrame: store.loadLockScreenOnlySource() == nil,
+            lockScreenOnly: store.loadLockScreenOnlySource() != nil
         )
     }
 
@@ -667,16 +673,28 @@ final class NativeWallpaperController: WallpaperControlling {
 
     private func installLockScreenSaver(using config: ControlConfig) throws {
         let videoURL = URL(fileURLWithPath: config.video_path)
-        try installLockScreenSaver(videoURL: videoURL, ensureStillFrame: true)
+        try installLockScreenSaver(
+            videoURL: videoURL,
+            ensureStillFrame: true,
+            lockScreenOnly: false
+        )
     }
 
-    private func installLockScreenSaver(videoURL: URL, ensureStillFrame: Bool) throws {
+    private func installLockScreenSaver(
+        videoURL: URL,
+        ensureStillFrame: Bool,
+        lockScreenOnly: Bool
+    ) throws {
         // Keep a cached frame for the app's desktop recovery path, but do not
         // replace macOS's live Lock Screen descriptor with an image wallpaper.
         if ensureStillFrame {
             _ = try store.ensureCurrentStillFrame(from: videoURL)
         }
-        try lockScreenSaverInstaller.install(videoURL: videoURL)
+        if lockScreenOnly {
+            try lockScreenSaverInstaller.installLockScreenOnly(videoURL: videoURL)
+        } else {
+            try lockScreenSaverInstaller.install(videoURL: videoURL)
+        }
     }
 }
 

@@ -11,6 +11,15 @@ private enum AerialLockScreenOperationAbort: Error {
     case sessionChanged
 }
 
+private enum AerialWallpaperStoreScope: Equatable {
+    case sharedWallpaper
+    case lockScreenOnly
+
+    var includesDesktop: Bool {
+        self == .sharedWallpaper
+    }
+}
+
 private struct AerialLockScreenMarker: Codable {
     var assetID: String
     var assetPath: String
@@ -22,6 +31,7 @@ private struct AerialLockScreenMarker: Codable {
     var assetSignature: String?
     var originalAssetExisted: Bool?
     var originalThumbnailExisted: Bool?
+    var desktopIncluded: Bool?
     var completed: Bool?
 }
 
@@ -201,6 +211,22 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 videoURL: videoURL,
                 forceRefresh: false,
                 refreshAction: rearmSystem,
+                scope: .sharedWallpaper,
+                rollbackAction: refreshSystem,
+                shouldProceed: { true }
+            )
+        }
+    }
+
+    public func installLockScreenOnly(videoURL: URL) throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        try withCrossProcessLock {
+            _ = try installLocked(
+                videoURL: videoURL,
+                forceRefresh: false,
+                refreshAction: rearmSystem,
+                scope: .lockScreenOnly,
                 rollbackAction: refreshSystem,
                 shouldProceed: { true }
             )
@@ -219,6 +245,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 videoURL: videoURL,
                 forceRefresh: false,
                 refreshAction: rearmSystem,
+                scope: currentWallpaperStoreScope(),
                 rollbackAction: refreshSystem,
                 shouldProceed: shouldProceed
             )
@@ -237,6 +264,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 videoURL: videoURL,
                 forceRefresh: true,
                 refreshAction: rearmSystem,
+                scope: currentWallpaperStoreScope(),
                 currentInstallationRefreshAction: usesCanonicalWallpaperStore
                     ? Self.prewarmLockScreenProvider
                     : rearmSystem,
@@ -250,6 +278,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         videoURL: URL,
         forceRefresh: Bool,
         refreshAction: ConditionalSystemAction,
+        scope: AerialWallpaperStoreScope,
         currentInstallationRefreshAction: ConditionalSystemAction? = nil,
         rollbackAction: ConditionalSystemAction,
         shouldProceed: @escaping () -> Bool
@@ -274,7 +303,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             .appendingPathComponent(assetID)
             .appendingPathExtension("png")
 
-        if installationIsCurrent(videoURL: videoURL, assetID: assetID) {
+        if installationIsCurrent(
+            videoURL: videoURL,
+            assetID: assetID,
+            scope: scope
+        ) {
             guard forceRefresh, shouldProceed() else {
                 return false
             }
@@ -348,7 +381,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
 
         let updatedStoreData = try aerialWallpaperStoreData(
             from: originalStoreData,
-            assetID: assetID
+            assetID: assetID,
+            scope: scope
         )
         let storeBeforeAttempt = try Data(contentsOf: wallpaperStoreURL)
         let assetBeforeAttempt = try? Data(contentsOf: assetURL)
@@ -361,7 +395,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             videoURL: videoURL,
             installedAssetURL: preparedVideoURL,
             originalAssetExisted: originalAssetExisted,
-            originalThumbnailExisted: originalThumbnailExisted
+            originalThumbnailExisted: originalThumbnailExisted,
+            scope: scope
         )
         let markerEncoder = JSONEncoder()
         markerEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -418,7 +453,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             } else {
                 didRefresh = false
             }
-            guard wallpaperStoreFullySelectsAerial(assetID: assetID) else {
+            guard wallpaperStoreFullySelectsAerial(
+                assetID: assetID,
+                scope: scope
+            ) else {
                 throw AerialLockScreenInstallerError
                     .wallpaperStoreUpdateFailed
             }
@@ -753,7 +791,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
 
     private func aerialWallpaperStoreData(
         from data: Data,
-        assetID: String
+        assetID: String,
+        scope: AerialWallpaperStoreScope
     ) throws -> Data {
         guard var root = try propertyListDictionary(from: data) else {
             throw AerialLockScreenInstallerError.malformedWallpaperStore
@@ -766,9 +805,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         )
         root = mapWallpaperContainers(in: root) { container in
             var result = container
-            if result["Desktop"] != nil || result["Idle"] != nil {
+            if scope.includesDesktop, result["Desktop"] != nil {
                 result["Desktop"] = aerialMode
+            }
+            if result["Idle"] != nil {
                 result["Idle"] = aerialMode
+            }
+            if result["Desktop"] != nil || result["Idle"] != nil {
                 result["Type"] = "individual"
             }
             return result
@@ -1058,11 +1101,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
 
     private func installationIsCurrent(
         videoURL: URL,
-        assetID: String
+        assetID: String,
+        scope: AerialWallpaperStoreScope
     ) -> Bool {
         guard let marker = loadMarker(),
               marker.completed == true,
               marker.assetID == assetID,
+              (marker.desktopIncluded ?? true) == scope.includesDesktop,
               URL(fileURLWithPath: marker.videoPath).standardizedFileURL
                 == videoURL.standardizedFileURL
         else {
@@ -1107,7 +1152,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
            markerSignature != sourceSignature {
             return false
         }
-        return wallpaperStoreFullySelectsAerial(assetID: assetID)
+        return wallpaperStoreFullySelectsAerial(assetID: assetID, scope: scope)
     }
 
     private func prepareAerialVideo(from sourceURL: URL) throws -> URL {
@@ -1196,7 +1241,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     private func wallpaperStoreFullySelectsAerial(
-        assetID: String
+        assetID: String,
+        scope: AerialWallpaperStoreScope
     ) -> Bool {
         guard let data = try? Data(contentsOf: wallpaperStoreURL),
               let root = try? propertyListDictionary(from: data)
@@ -1234,7 +1280,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
 
         var inspectedModes = 0
         for container in containers {
-            for key in ["Desktop", "Idle"] {
+            let modes = scope.includesDesktop ? ["Desktop", "Idle"] : ["Idle"]
+            for key in modes {
                 guard let mode = container[key] as? [String: Any] else {
                     continue
                 }
@@ -1352,7 +1399,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         videoURL: URL,
         installedAssetURL: URL,
         originalAssetExisted: Bool,
-        originalThumbnailExisted: Bool
+        originalThumbnailExisted: Bool,
+        scope: AerialWallpaperStoreScope
     ) throws -> AerialLockScreenMarker {
         let attributes = try fileManager.attributesOfItem(
             atPath: videoURL.path
@@ -1373,8 +1421,18 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             assetSignature: try fileSignature(at: installedAssetURL),
             originalAssetExisted: originalAssetExisted,
             originalThumbnailExisted: originalThumbnailExisted,
+            desktopIncluded: scope.includesDesktop,
             completed: false
         )
+    }
+
+    private func currentWallpaperStoreScope() -> AerialWallpaperStoreScope {
+        guard let marker = loadMarker(),
+              marker.desktopIncluded == false
+        else {
+            return .sharedWallpaper
+        }
+        return .lockScreenOnly
     }
 
     private func loadMarker() -> AerialLockScreenMarker? {
@@ -1418,6 +1476,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             originalThumbnailExisted: fileManager.fileExists(
                 atPath: thumbnailBackupURL.path
             ),
+            desktopIncluded: nil,
             completed: false
         )
     }
