@@ -275,6 +275,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func applySystemSessionState(locked: Bool) {
         if locked {
             guard !sessionInactive else { return }
+            if config.show_on_lock_screen == true {
+                // Reapply the still frame for every real lock. macOS may have
+                // restored the ordinary Desktop picture after the previous
+                // unlock even though the wallpaper store remains configured
+                // for AuraFlow.
+                _ = lockScreenInstaller.applyCurrentDesktopFallback()
+            }
             lockSessionGeneration &+= 1
             pendingRearmToken = nil
             sessionInactive = true
