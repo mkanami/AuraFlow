@@ -599,19 +599,10 @@ final class NativeWallpaperController: WallpaperControlling {
 
     private func installLockScreenSaver(using config: ControlConfig) throws {
         let videoURL = URL(fileURLWithPath: config.video_path)
-        let stillFrameURL = try store.ensureCurrentStillFrame(from: videoURL)
+        // Keep a cached frame for the app's desktop recovery path, but do not
+        // replace macOS's live Lock Screen descriptor with an image wallpaper.
+        _ = try store.ensureCurrentStillFrame(from: videoURL)
         try lockScreenSaverInstaller.install(videoURL: videoURL)
-        let isCanonicalStore = store.appSupportURL.standardizedFileURL
-            == WallpaperRuntimeStore.defaultAppSupportURL()
-                .standardizedFileURL
-        if isCanonicalStore,
-           !WallpaperDesktopSupport.applyToAllDesktops(
-                imagePath: stillFrameURL.path
-           ) {
-            throw NativeWallpaperControllerError.unavailable(
-                "macOS did not apply the AuraFlow frame to the Lock Screen desktop."
-            )
-        }
     }
 }
 
