@@ -31,6 +31,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var windows: [NSWindow] = []
     private var playerLayers: [AVPlayerLayer] = []
     private var fallbackImage: CGImage?
+    private var desktopCoverImage: CGImage?
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     private var playbackTimeObserver: Any?
@@ -88,10 +89,11 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if !lockScreenOnlyMode {
             rebuildPlayback(from: config, keepPaused: false)
         } else {
-            // Keep the user's Desktop configuration active while unlocked.
-            // The shared Aerial route is promoted only by the early shield
-            // callback immediately before loginwindow resolves Lock Screen.
-            restoreDesktopStoreAfterSession()
+            // macOS resolves the active Aerial descriptor for a direct
+            // manual Lock Screen. Keep that descriptor registered ahead of
+            // time and cover it with the user's saved Desktop image while
+            // unlocked; the cover is hidden at the secure Lock Screen.
+            rebuildLockScreenOnlyDesktopPresentation()
         }
         startTimers()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -250,7 +252,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     @objc private func screensChanged() {
         guard !isTerminating else { return }
         if lockScreenOnlyMode {
-            restoreDesktopStoreAfterSession()
+            rebuildLockScreenOnlyDesktopPresentation()
         } else {
             rebuildWindows()
         }
@@ -516,7 +518,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             manualPaused = false
             store.markPaused(false)
             if lockScreenOnlyMode {
-                restoreDesktopStoreAfterSession()
+                rebuildLockScreenOnlyDesktopPresentation()
             } else {
                 rebuildPlayback(from: config, keepPaused: false)
             }
@@ -527,7 +529,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         case .update:
             applyRuntimeSettings()
             if lockScreenOnlyMode {
-                restoreDesktopStoreAfterSession()
+                rebuildLockScreenOnlyDesktopPresentation()
             }
         case .resume:
             if !lockScreenOnlyMode {
@@ -607,6 +609,79 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             player.pause()
         } else {
             applyPlaybackRate()
+        }
+    }
+
+    private func prepareDesktopCoverImage() {
+        let imageURL = WallpaperDesktopSupport.desktopBackupImageURL(
+            appSupportPath: store.appSupportURL.path
+        )
+        guard let imageURL,
+              let image = NSImage(contentsOf: imageURL),
+              let cgImage = image.cgImage(
+                  forProposedRect: nil,
+                  context: nil,
+                  hints: nil
+              )
+        else {
+            desktopCoverImage = nil
+            return
+        }
+        desktopCoverImage = cgImage
+    }
+
+    private func rebuildLockScreenOnlyDesktopPresentation() {
+        guard lockScreenOnlyMode else { return }
+        tearDownPlayback()
+        prepareDesktopCoverImage()
+        rebuildDesktopCoverWindows()
+    }
+
+    private func rebuildDesktopCoverWindows() {
+        guard lockScreenOnlyMode else { return }
+        for window in windows {
+            window.orderOut(nil)
+        }
+        windows.removeAll()
+        playerLayers.removeAll()
+        guard let desktopCoverImage else { return }
+
+        let behavior: NSWindow.CollectionBehavior = [
+            .canJoinAllSpaces,
+            .stationary,
+            .ignoresCycle,
+            .fullScreenAuxiliary,
+        ]
+
+        for screen in NSScreen.screens {
+            let window = NSWindow(
+                contentRect: screen.frame,
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.backgroundColor = .black
+            window.level = windowLevel(for: .desktop)
+            window.isOpaque = true
+            window.hasShadow = false
+            window.collectionBehavior = behavior
+            window.ignoresMouseEvents = true
+            window.animationBehavior = .none
+            window.hidesOnDeactivate = false
+            window.canHide = false
+            window.isExcludedFromWindowsMenu = true
+
+            let content = WallpaperLayerView(
+                frame: NSRect(origin: .zero, size: screen.frame.size)
+            )
+            content.wantsLayer = true
+            content.autoresizingMask = [.width, .height]
+            content.layer?.contents = desktopCoverImage
+            content.layer?.contentsGravity = .resizeAspectFill
+            window.contentView = content
+            windows.append(window)
+            present(window, as: .desktop)
         }
     }
 
