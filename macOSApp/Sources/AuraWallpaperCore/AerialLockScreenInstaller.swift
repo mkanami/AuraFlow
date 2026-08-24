@@ -94,6 +94,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     private let configuredAssetID: String?
     private let refreshSystem: ConditionalSystemAction
     private let rearmSystem: ConditionalSystemAction
+    private let lockSessionHandoffSystem: ConditionalSystemAction
     private let operationLock = NSLock()
     private lazy var supportedProviderAssetIDs =
         loadSupportedProviderAssetIDs()
@@ -177,8 +178,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
         if let rearmSystem {
             self.rearmSystem = { _ in rearmSystem() }
+            self.lockSessionHandoffSystem = { _ in rearmSystem() }
         } else {
             self.rearmSystem = Self.refreshLockScreenProvider
+            self.lockSessionHandoffSystem = Self.prewarmLockScreenProvider
         }
     }
 
@@ -1231,7 +1234,12 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                     .wallpaperStoreUpdateFailed
             }
             if storeChanged || systemWallpaperURLChanged {
-                try rearmSystem({ true })
+                // The Aerial provider may already have a decoded first frame
+                // when loginwindow raises the shield. Killing WallpaperAgent
+                // here races that frame and leaves a forced lock on a blank
+                // surface while the replacement provider starts. Keep the
+                // current provider alive; only launch one when it is absent.
+                try lockSessionHandoffSystem({ true })
             }
             return storeChanged || systemWallpaperURLChanged
         }
