@@ -282,6 +282,7 @@ private struct AerialLockScreenFixture {
     try fixture.installer.install(videoURL: fixture.videoURL)
 
     #expect(fixture.installer.isInstalled)
+    #expect(fixture.installer.installationConfirmed)
     #expect(
         try Data(contentsOf: fixture.assetURL)
             == Data("new-wallpaper".utf8)
@@ -320,6 +321,18 @@ private struct AerialLockScreenFixture {
     )
     #expect(!wallpaperStoreText(root).contains("last_frame"))
     #expect(!wallpaperStoreText(root).contains("AuraFlowLockScreen"))
+}
+
+@Test func modernLockScreenConfirmationRejectsAStaleWallpaperStore() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    let originalStore = try Data(contentsOf: fixture.storeURL)
+    try fixture.installer.install(videoURL: fixture.videoURL)
+    #expect(fixture.installer.installationConfirmed)
+
+    try originalStore.write(to: fixture.storeURL, options: .atomic)
+    #expect(!fixture.installer.installationConfirmed)
 }
 
 @Test func modernLockScreenOnlyPreservesDesktopWallpaperMode() throws {

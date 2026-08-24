@@ -514,9 +514,9 @@ final class NativeWallpaperController: WallpaperControlling {
                 ensureStillFrame: true,
                 lockScreenOnly: true
             )
-            guard lockScreenSaverInstaller.isInstalled else {
+            guard lockScreenSaverInstaller.installationConfirmed else {
                 throw NativeWallpaperControllerError.unavailable(
-                    "macOS did not confirm the Lock Screen wallpaper installation."
+                    "macOS did not confirm the Lock Screen wallpaper configuration."
                 )
             }
         } catch {
@@ -1432,10 +1432,10 @@ final class AppViewModel: ObservableObject {
                 }
                 apply(status: status, refreshPreview: false)
                 recordBridgeSuccess()
-                showSuccessBanner("Live Lock Screen wallpaper installed.")
+                showSuccessBanner("Lock Screen wallpaper confirmed by macOS.")
                 statusMessage = prepared.summary.map {
-                    "Lock Screen wallpaper applied. \($0)"
-                } ?? "Live wallpaper applied to Lock Screen only."
+                    "Lock Screen wallpaper confirmed. \($0)"
+                } ?? "Lock Screen wallpaper confirmed by macOS."
                 alertMessage = nil
             } catch {
                 recordBridgeFailure(error, context: "lock-screen-only")

@@ -177,6 +177,28 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         fileManager.fileExists(atPath: markerURL.path)
     }
 
+    /// Confirms the system configuration, rather than only checking that our
+    /// recovery marker exists. A marker can survive a provider restart or an
+    /// incomplete hand-off to loginwindow, so the wallpaper store must still
+    /// select AuraFlow's Aerial asset for the installed scope.
+    public var installationConfirmed: Bool {
+        guard let marker = loadMarker(),
+              marker.completed == true,
+              fileManager.fileExists(atPath: marker.assetPath),
+              providerSupportsAsset(marker.assetID)
+        else {
+            return false
+        }
+        let scope: AerialWallpaperStoreScope =
+            marker.desktopIncluded == false
+            ? .lockScreenOnly
+            : .sharedWallpaper
+        return wallpaperStoreFullySelectsAerial(
+            assetID: marker.assetID,
+            scope: scope
+        )
+    }
+
     public var isAvailable: Bool {
         guard fileManager.fileExists(atPath: wallpaperStoreURL.path),
               let assetID = resolveAssetID()

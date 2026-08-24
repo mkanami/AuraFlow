@@ -903,13 +903,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func repairModernLockScreenIfNeeded(force: Bool = false) {
-        // Lock-only mode uses the bundled live Screen Saver route. Running the
-        // Aerial repair loop here would silently recreate the shared Desktop
-        // wallpaper store a moment after the button installed the isolated
-        // saver, which is exactly the intermittent "button worked, but no
-        // Lock Screen" failure seen on current macOS.
-        guard !lockScreenOnlyMode,
-              config.show_on_lock_screen == true,
+        guard config.show_on_lock_screen == true,
               let videoURL = effectiveLockScreenVideoURL(),
               lockScreenInstaller.isAvailable,
               !lockScreenRepairInProgress,
@@ -966,8 +960,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rearmModernLockScreenForNextSession() {
-        guard !lockScreenOnlyMode,
-              config.show_on_lock_screen == true,
+        guard config.show_on_lock_screen == true,
               let videoURL = effectiveLockScreenVideoURL(),
               lockScreenInstaller.isAvailable,
               !sessionInactive,
