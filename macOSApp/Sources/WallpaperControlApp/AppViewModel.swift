@@ -507,15 +507,12 @@ final class NativeWallpaperController: WallpaperControlling {
             )
         }
 
-        // Keep an already-running desktop agent alive. The modern route uses
-        // a shared Aerial descriptor internally, so save the exact visible
-        // Desktop image for the lock-only agent's unlocked cover.
+        // Keep the selected source dedicated to Lock Screen. The runtime
+        // temporarily promotes its Aerial route only during the lock handoff
+        // and restores the user's Desktop route after unlock.
 
         do {
             try store.saveLockScreenOnlySource(normalizedURL)
-            _ = WallpaperDesktopSupport.captureLockScreenDesktopWallpaperBackup(
-                appSupportPath: store.appSupportURL.path
-            )
             try installLockScreenSaver(
                 videoURL: normalizedURL,
                 ensureStillFrame: true,
