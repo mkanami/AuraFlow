@@ -74,6 +74,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     private lazy var supportedProviderAssetIDs =
         loadSupportedProviderAssetIDs()
 
+    private var usesCanonicalWallpaperStore: Bool {
+        wallpaperStoreURL.standardizedFileURL
+            == Self.defaultWallpaperStoreURL().standardizedFileURL
+    }
+
     private var markerURL: URL {
         stateDirectoryURL.appendingPathComponent("installation.json")
     }
@@ -252,6 +257,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             // and greatly narrows the next-lock race window.
             do {
                 try refreshAction({ shouldProceed() })
+                try restoreLockScreenDesktopFallbackIfNeeded()
             } catch is AerialLockScreenOperationAbort {
                 return false
             }
@@ -309,9 +315,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             )
         }
 
+        let stillFrameURL = currentStillFrameURL()
         let updatedStoreData = try aerialWallpaperStoreData(
             from: originalStoreData,
-            assetID: assetID
+            assetID: assetID,
+            fallbackImageURL: stillFrameURL
         )
         let storeBeforeAttempt = try Data(contentsOf: wallpaperStoreURL)
         let assetBeforeAttempt = try? Data(contentsOf: assetURL)
@@ -379,6 +387,21 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 didRefresh = true
             } else {
                 didRefresh = false
+            }
+            // WallpaperAgent may restore its cached Desktop descriptor while
+            // the Aerial provider is being restarted. Write the final
+            // Lock Screen descriptor after that restart so loginwindow sees
+            // AuraFlow's frame instead of the previous Sequoia wallpaper.
+            if stillFrameURL != nil {
+                try updatedStoreData.write(
+                    to: wallpaperStoreURL,
+                    options: .atomic
+                )
+                Thread.sleep(forTimeInterval: 0.15)
+                try updatedStoreData.write(
+                    to: wallpaperStoreURL,
+                    options: .atomic
+                )
             }
             guard wallpaperStoreFullySelectsAerial(assetID: assetID) else {
                 throw AerialLockScreenInstallerError
@@ -715,7 +738,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
 
     private func aerialWallpaperStoreData(
         from data: Data,
-        assetID: String
+        assetID: String,
+        fallbackImageURL: URL? = nil
     ) throws -> Data {
         guard var root = try propertyListDictionary(from: data) else {
             throw AerialLockScreenInstallerError.malformedWallpaperStore
@@ -732,6 +756,19 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 result["Desktop"] = aerialMode
                 result["Idle"] = aerialMode
                 result["Type"] = "individual"
+                if let fallbackImageURL {
+                    result["Desktop"] = makeMode(
+                        provider: auraFlowImageProvider,
+                        configuration: [
+                            "type": "imageFile",
+                            "url": [
+                                "relative": fallbackImageURL
+                                    .standardizedFileURL.absoluteString,
+                            ],
+                        ],
+                        date: now
+                    )
+                }
             }
             return result
         }
@@ -1113,7 +1150,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                     continue
                 }
                 inspectedModes += 1
-                guard modeFullySelectsAerial(mode, assetID: assetID) else {
+                let isDesktopFallback = key == "Desktop"
+                    && modeFullySelectsAuraFlowFallback(mode)
+                guard isDesktopFallback
+                    || modeFullySelectsAerial(mode, assetID: assetID) else {
                     return false
                 }
             }
@@ -1142,6 +1182,40 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             }
             return configuration["assetID"] as? String == assetID
         }
+    }
+
+    private func modeFullySelectsAuraFlowFallback(
+        _ mode: [String: Any]
+    ) -> Bool {
+        guard let stillFrameURL = currentStillFrameURL(),
+              let content = mode["Content"] as? [String: Any],
+              let choices = content["Choices"] as? [[String: Any]],
+              !choices.isEmpty
+        else {
+            return false
+        }
+        let expectedPath = stillFrameURL.standardizedFileURL.path
+        return choices.allSatisfy { choice in
+            guard choice["Provider"] as? String == auraFlowImageProvider,
+                  let data = choice["Configuration"] as? Data,
+                  let configuration = try? propertyListDictionary(from: data),
+                  let url = configuration["url"] as? [String: Any],
+                  let relative = url["relative"] as? String,
+                  let parsedURL = URL(string: relative)
+            else {
+                return false
+            }
+            return parsedURL.standardizedFileURL.path == expectedPath
+        }
+    }
+
+    private static func defaultWallpaperStoreURL() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Application Support/com.apple.wallpaper/Store",
+                isDirectory: true
+            )
+            .appendingPathComponent("Index.plist")
     }
 
     private func fileSignature(at url: URL) throws -> String {
@@ -1339,9 +1413,48 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     private func currentStillFrameURL() -> URL? {
+        guard usesCanonicalWallpaperStore else {
+            return nil
+        }
         let url = WallpaperRuntimeStore.defaultAppSupportURL()
             .appendingPathComponent("last_frame.png")
         return fileManager.fileExists(atPath: url.path) ? url : nil
+    }
+
+    private func restoreLockScreenDesktopFallbackIfNeeded() throws {
+        guard let stillFrameURL = currentStillFrameURL(),
+              let data = try? Data(contentsOf: wallpaperStoreURL),
+              let root = try propertyListDictionary(from: data)
+        else {
+            return
+        }
+
+        let imageMode = makeMode(
+            provider: auraFlowImageProvider,
+            configuration: [
+                "type": "imageFile",
+                "url": [
+                    "relative": stillFrameURL.standardizedFileURL.absoluteString,
+                ],
+            ],
+            date: Date()
+        )
+        let repairedRoot = mapWallpaperContainers(in: root) { container in
+            var result = container
+            if result["Desktop"] != nil || result["Idle"] != nil {
+                result["Desktop"] = imageMode
+                result["Type"] = "individual"
+            }
+            return result
+        }
+        let repairedData = try PropertyListSerialization.data(
+            fromPropertyList: repairedRoot,
+            format: .binary,
+            options: 0
+        )
+        try repairedData.write(to: wallpaperStoreURL, options: .atomic)
+        Thread.sleep(forTimeInterval: 0.15)
+        try repairedData.write(to: wallpaperStoreURL, options: .atomic)
     }
 
     private func removeIncompleteBackupsIfSafe() {
