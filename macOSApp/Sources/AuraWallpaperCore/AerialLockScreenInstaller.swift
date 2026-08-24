@@ -1216,6 +1216,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             )
             let storeChanged =
                 (try? Data(contentsOf: wallpaperStoreURL)) != activeStoreData
+            let systemWallpaperURLChanged =
+                !systemWallpaperURLMatches(assetID: marker.assetID)
             if storeChanged {
                 try activeStoreData.write(
                     to: wallpaperStoreURL,
@@ -1228,7 +1230,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 throw AerialLockScreenInstallerError
                     .wallpaperStoreUpdateFailed
             }
-            return storeChanged
+            if storeChanged || systemWallpaperURLChanged {
+                try rearmSystem({ true })
+            }
+            return storeChanged || systemWallpaperURLChanged
         }
     }
 

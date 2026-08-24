@@ -175,7 +175,6 @@ protocol WallpaperControlling {
     func stop() throws -> ControlStatus
     func clearWallpaper() throws -> ControlStatus
     func setVideo(_ url: URL) throws -> ControlStatus
-    func setLockScreenMedia(_ url: URL?) throws -> ControlStatus
     func installLockScreenOnly(videoURL: URL) throws -> ControlStatus
     func setSpeed(_ speed: Double) throws -> ControlStatus
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus
@@ -190,12 +189,6 @@ protocol WallpaperControlling {
 }
 
 extension WallpaperControlling {
-    func setLockScreenMedia(_ url: URL?) throws -> ControlStatus {
-        throw NativeWallpaperControllerError.unavailable(
-            "Lock Screen media selection is unavailable."
-        )
-    }
-
     func installLockScreenOnly(videoURL: URL) throws -> ControlStatus {
         throw NativeWallpaperControllerError.unavailable(
             "Lock Screen-only wallpaper is unavailable."
@@ -492,13 +485,6 @@ final class NativeWallpaperController: WallpaperControlling {
         return store.status()
     }
 
-    func setLockScreenMedia(_ url: URL?) throws -> ControlStatus {
-        if let url {
-            return try setVideo(url)
-        }
-        return store.status()
-    }
-
     func installLockScreenOnly(videoURL: URL) throws -> ControlStatus {
         let normalizedURL = videoURL.standardizedFileURL
         guard FileManager.default.fileExists(atPath: normalizedURL.path) else {
@@ -756,7 +742,6 @@ final class AppViewModel: ObservableObject {
     @Published var blendInterpolationEnabled: Bool = false
     @Published var pauseOnFullscreenEnabled: Bool = true
     @Published var showOnLockScreenEnabled: Bool = true
-    @Published private(set) var lockScreenSourceURL: URL?
     @Published private(set) var isLockScreenPreviewActive: Bool = false
     @Published var scaleMode: WallpaperScaleMode = .fill
     @Published var isSettingsOpen: Bool = false
@@ -843,10 +828,6 @@ final class AppViewModel: ObservableObject {
         selectedVideoURL?.lastPathComponent ?? "Not selected"
     }
 
-    var lockScreenSourceName: String {
-        lockScreenSourceURL?.lastPathComponent ?? "Uses desktop wallpaper"
-    }
-
     var currentVideoURL: URL? {
         selectedVideoURL
     }
@@ -895,14 +876,6 @@ final class AppViewModel: ObservableObject {
 
     var canToggleShowOnLockScreen: Bool {
         isControllerAvailable && !isBusy
-    }
-
-    var canChooseLockScreenMedia: Bool {
-        isControllerAvailable && !isBusy
-    }
-
-    var canUseDesktopWallpaperForLockScreen: Bool {
-        canChooseLockScreenMedia && appliedVideoURL != nil
     }
 
     var canPreviewLockScreen: Bool {
@@ -1181,32 +1154,6 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func chooseLockScreenMedia() {
-        guard canChooseLockScreenMedia else { return }
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [
-            .mpeg4Movie,
-            .quickTimeMovie,
-            .gif,
-            .png,
-            .jpeg,
-            .heic,
-            .tiff,
-            .bmp,
-        ]
-        if let webp = UTType(filenameExtension: "webp") {
-            panel.allowedContentTypes.append(webp)
-        }
-        configureMediaOpenPanel(
-            panel,
-            title: "Choose Lock Screen Wallpaper",
-            allowedContentTypes: panel.allowedContentTypes,
-            preferredDirectory: "Pictures"
-        )
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        setLockScreenMedia(url)
-    }
-
     private func configureMediaOpenPanel(
         _ panel: NSOpenPanel,
         title: String,
@@ -1231,10 +1178,6 @@ final class AppViewModel: ObservableObject {
         } else {
             panel.directoryURL = home
         }
-    }
-
-    func useDesktopWallpaperForLockScreen() {
-        setLockScreenMedia(nil)
     }
 
     func chooseVideoFromMenuBar() {
@@ -1672,35 +1615,6 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func setLockScreenMedia(_ url: URL?) {
-        guard !isBusy else { return }
-        let previous = lockScreenSourceURL
-        lockScreenSourceURL = url?.standardizedFileURL
-        guard let controller else { return }
-
-        Task {
-            isBusy = true
-            defer { isBusy = false }
-            do {
-                let status = try await runAsync {
-                    try controller.setLockScreenMedia(url)
-                }
-                apply(status: status, refreshPreview: false)
-                recordBridgeSuccess()
-                statusMessage = url == nil
-                    ? "Current wallpaper is used on Lock Screen."
-                    : "Wallpaper source applied to Desktop and Lock Screen."
-                alertMessage = nil
-            } catch {
-                lockScreenSourceURL = previous
-                recordBridgeFailure(error, context: "set-lock-screen-media")
-                if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to update Lock Screen source: \(error.localizedDescription)"
-                }
-            }
-        }
-    }
-
     func previewLockScreenTransition() {
         guard canPreviewLockScreen, let controller else { return }
 
@@ -2082,10 +1996,6 @@ final class AppViewModel: ObservableObject {
         Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
         Self.setIfChanged(&pauseOnFullscreenEnabled, to: status.config.pause_on_fullscreen ?? true)
         Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? true)
-        let configuredLockScreenURL: URL? = hasConfiguredVideo
-            ? URL(fileURLWithPath: status.config.video_path).standardizedFileURL
-            : nil
-        Self.setIfChanged(&lockScreenSourceURL, to: configuredLockScreenURL)
         let previousScaleMode = scaleMode
         let resolvedScaleMode = WallpaperScaleMode(rawValue: status.config.scale_mode ?? "fill") ?? .fill
         Self.setIfChanged(&scaleMode, to: resolvedScaleMode)

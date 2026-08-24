@@ -376,6 +376,7 @@ private struct AerialLockScreenFixture {
     #expect(fixture.installer.isLockScreenOnlyInstallation)
 
     _ = try fixture.installer.activateLockScreenForCurrentSession()
+    #expect(fixture.refreshCounter.count == 2)
     var root = try readWallpaperStore(fixture.storeURL)
     var allSpacesAndDisplays = try #require(
         root["AllSpacesAndDisplays"] as? [String: Any]

@@ -818,38 +818,6 @@ struct SettingsPopupCard: View {
             .disabled(!viewModel.canToggleShowOnLockScreen)
 
             HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Lock Screen wallpaper")
-                        .font(.caption.weight(.semibold))
-                    Text(viewModel.lockScreenSourceName)
-                        .font(.caption2)
-                        .foregroundStyle(
-                            adaptiveGlassAppearance.centerTextTone.secondaryTextColor
-                        )
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer(minLength: 8)
-                Button("Choose Lock Screen…") {
-                    viewModel.chooseLockScreenMedia()
-                }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .disabled(!viewModel.canChooseLockScreenMedia)
-                Button("Use Desktop") {
-                    viewModel.useDesktopWallpaperForLockScreen()
-                }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .disabled(!viewModel.canUseDesktopWallpaperForLockScreen || viewModel.lockScreenSourceURL == nil)
-            }
-
-            Text("Choosing a file for Lock Screen does not change Desktop. Start applies the selected wallpaper to Desktop.")
-                .font(.caption2)
-                .foregroundStyle(
-                    adaptiveGlassAppearance.centerTextTone.secondaryTextColor
-                )
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 10) {
                 Button {
                     viewModel.startSystemScreenSaver()
                 } label: {
