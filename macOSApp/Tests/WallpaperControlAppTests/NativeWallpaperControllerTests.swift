@@ -136,7 +136,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadCommand() == nil)
     #expect(fixture.store.loadConfig().video_path.isEmpty)
     #expect(
-        fixture.store.loadConfig().show_on_lock_screen == false
+        fixture.store.loadConfig().show_on_lock_screen == true
     )
 }
 
@@ -229,7 +229,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadCommand()?.action == .previewUnlock)
 
     _ = try controller.clearWallpaper()
-    #expect(fixture.store.loadConfig().show_on_lock_screen == false)
+    #expect(fixture.store.loadConfig().show_on_lock_screen == true)
     #expect(fixture.store.loadConfig().video_path.isEmpty)
     #expect(installer.uninstallCallCount == 1)
 }
@@ -272,7 +272,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(installer.installedVideoURL == nil)
 }
 
-@Test func runtimeNormalizationDefaultsLegacyLockScreenSettingToDisabled() throws {
+@Test func runtimeNormalizationDefaultsLegacyLockScreenSettingToEnabled() throws {
     let fixture = try NativeRuntimeFixture("legacy-lock-default")
     defer { fixture.cleanup() }
 
@@ -290,7 +290,28 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     let config = fixture.store.loadConfig()
-    #expect(config.show_on_lock_screen == false)
+    #expect(config.show_on_lock_screen == true)
+}
+
+@Test func legacyRemoveStateKeepsLockScreenEnabledForNextWallpaper() throws {
+    let fixture = try NativeRuntimeFixture("legacy-remove-lock-default")
+    defer { fixture.cleanup() }
+
+    let legacyJSON = """
+    {
+      "video_path": "",
+      "playback_speed": 1.0,
+      "pause_on_fullscreen": true,
+      "show_on_lock_screen": false,
+      "scale_mode": "fill"
+    }
+    """
+    try Data(legacyJSON.utf8).write(
+        to: fixture.store.configURL,
+        options: .atomic
+    )
+
+    #expect(fixture.store.loadConfig().show_on_lock_screen == true)
 }
 
 @Test func currentLockScreenOnlyConfigMigratesToDesktopSource() throws {

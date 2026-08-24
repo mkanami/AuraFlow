@@ -388,7 +388,7 @@ final class NativeWallpaperController: WallpaperControlling {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
         _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(appSupportPath: store.appSupportURL.path)
-        if config.show_on_lock_screen ?? false {
+        if config.show_on_lock_screen ?? true {
             try installLockScreenSaver(using: config)
         }
         store.markPaused(false)
@@ -444,7 +444,6 @@ final class NativeWallpaperController: WallpaperControlling {
         let restored = store.restoreWallpaperBackup()
         _ = try updateConfig { config in
             config.video_path = ""
-            config.show_on_lock_screen = false
         }
         if restored {
             store.removeManagedFallback()
@@ -536,7 +535,7 @@ final class NativeWallpaperController: WallpaperControlling {
 
     func syncLockScreenSaver() throws {
         let config = store.loadConfig()
-        guard config.show_on_lock_screen ?? false,
+        guard config.show_on_lock_screen ?? true,
               !config.video_path.isEmpty,
               FileManager.default.fileExists(atPath: config.video_path)
         else {
@@ -547,7 +546,7 @@ final class NativeWallpaperController: WallpaperControlling {
 
     func beginLockScreenPreview() throws -> ControlStatus {
         let config = store.loadConfig()
-        guard config.show_on_lock_screen ?? false else {
+        guard config.show_on_lock_screen ?? true else {
             throw NativeWallpaperControllerError.unavailable(
                 "Enable Lock Screen before previewing the transition."
             )
@@ -633,7 +632,7 @@ final class AppViewModel: ObservableObject {
     @Published var autostartEnabled: Bool = false
     @Published var blendInterpolationEnabled: Bool = false
     @Published var pauseOnFullscreenEnabled: Bool = true
-    @Published var showOnLockScreenEnabled: Bool = false
+    @Published var showOnLockScreenEnabled: Bool = true
     @Published private(set) var lockScreenSourceURL: URL?
     @Published private(set) var isLockScreenPreviewActive: Bool = false
     @Published var scaleMode: WallpaperScaleMode = .fill
@@ -906,7 +905,7 @@ final class AppViewModel: ObservableObject {
             let needsNormalizationURL = configuredVideoNeedingCompatibilityNormalization(from: status)
             recordBridgeSuccess()
             await startFromAutostartIfNeeded(using: status)
-            if status.config.show_on_lock_screen ?? false {
+            if status.config.show_on_lock_screen ?? true {
                 do {
                     try await runAsync {
                         try controller.syncLockScreenSaver()
@@ -1917,7 +1916,7 @@ final class AppViewModel: ObservableObject {
         Self.setIfChanged(&autostartEnabled, to: status.autostart ?? status.config.autostart ?? false)
         Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
         Self.setIfChanged(&pauseOnFullscreenEnabled, to: status.config.pause_on_fullscreen ?? true)
-        Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? false)
+        Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? true)
         let configuredLockScreenURL: URL? = hasConfiguredVideo
             ? URL(fileURLWithPath: status.config.video_path).standardizedFileURL
             : nil

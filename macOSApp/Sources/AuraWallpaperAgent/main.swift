@@ -68,7 +68,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     override init() {
         self.config = store.loadConfig()
         self.lockScreenState = LockScreenStateMachine(
-            isEnabled: self.config.show_on_lock_screen ?? false
+            isEnabled: self.config.show_on_lock_screen ?? true
         )
         super.init()
     }
@@ -349,7 +349,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         switch command.action {
         case .reload:
             _ = lockScreenState.apply(
-                .setEnabled(config.show_on_lock_screen ?? false)
+                .setEnabled(config.show_on_lock_screen ?? true)
             )
             manualPaused = false
             store.markPaused(false)
@@ -534,7 +534,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func syncLockScreenSetting(reason: String) {
         let previousMode = lockScreenState.presentationMode
         let stateChanged = lockScreenState.apply(
-            .setEnabled(config.show_on_lock_screen ?? false)
+            .setEnabled(config.show_on_lock_screen ?? true)
         )
         guard stateChanged else { return }
         if previousMode != lockScreenState.presentationMode {
