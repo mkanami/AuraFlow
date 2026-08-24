@@ -507,12 +507,17 @@ final class NativeWallpaperController: WallpaperControlling {
             )
         }
 
-        try installLockScreenSaver(
-            videoURL: normalizedURL,
-            ensureStillFrame: false,
-            lockScreenOnly: true
-        )
         try store.saveLockScreenOnlySource(normalizedURL)
+        do {
+            try installLockScreenSaver(
+                videoURL: normalizedURL,
+                ensureStillFrame: true,
+                lockScreenOnly: true
+            )
+        } catch {
+            store.clearLockScreenOnlySource()
+            throw error
+        }
         let config = try updateConfig { config in
             config.show_on_lock_screen = true
         }
@@ -688,7 +693,14 @@ final class NativeWallpaperController: WallpaperControlling {
         // Keep a cached frame for the app's desktop recovery path, but do not
         // replace macOS's live Lock Screen descriptor with an image wallpaper.
         if ensureStillFrame {
-            _ = try store.ensureCurrentStillFrame(from: videoURL)
+            if lockScreenOnly {
+                // A valid video is enough for the live saver. Treat frame
+                // capture as a warm-up so a transient AVFoundation failure
+                // cannot make the Lock button appear to do nothing.
+                _ = try? store.ensureCurrentStillFrame(from: videoURL)
+            } else {
+                _ = try store.ensureCurrentStillFrame(from: videoURL)
+            }
         }
         if lockScreenOnly {
             try lockScreenSaverInstaller.installLockScreenOnly(videoURL: videoURL)
@@ -1367,6 +1379,8 @@ final class AppViewModel: ObservableObject {
 
         Task {
             isBusy = true
+            statusMessage = "Starting wallpaper…"
+            alertMessage = nil
             defer { isBusy = false }
             do {
                 if isPlaybackPaused && pendingPreviewVideoURL == nil {
@@ -1403,6 +1417,8 @@ final class AppViewModel: ObservableObject {
 
         Task {
             isBusy = true
+            statusMessage = "Applying live wallpaper to Lock Screen…"
+            alertMessage = nil
             defer { isBusy = false }
             do {
                 let prepared = try await prepareVideoURLForPlayback(selectedVideoURL)

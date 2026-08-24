@@ -31,14 +31,16 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
     }
 
     func installLockScreenOnly(videoURL: URL) throws {
-        if modern.isAvailable {
-            if legacy.isInstalled {
-                try legacy.uninstall()
-            }
-            try modern.installLockScreenOnly(videoURL: videoURL)
-        } else {
-            try legacy.installLockScreenOnly(videoURL: videoURL)
+        // The modern Aerial store has one shared Desktop/Lock Screen
+        // descriptor on current macOS. Selecting it for a Lock-only action
+        // also changes the user's desktop wallpaper. Use the legacy saver
+        // for this isolated action: it is live, reads the runtime source,
+        // and leaves the desktop wallpaper store untouched.
+        let hadModernInstallation = modern.isInstalled
+        if hadModernInstallation {
+            try modern.uninstall()
         }
+        try legacy.installLockScreenOnly(videoURL: videoURL)
     }
 
     func uninstall() throws {

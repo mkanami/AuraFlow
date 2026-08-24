@@ -118,7 +118,21 @@ static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
     // resource uses video_file. Prefer a valid current app selection.
     NSURL *runtimeVideoURL =
         [self existingURLForConfiguredValue:runtimeConfig[@"video_path"]
-                                  relativeTo:applicationSupportURL];
+                                    relativeTo:applicationSupportURL];
+    if (runtimeVideoURL == nil) {
+        // Lock-only wallpapers intentionally do not write video_path: that
+        // field belongs to the desktop runtime. Resolve the isolated source
+        // saved by the app instead, so the live saver never changes desktop
+        // wallpaper state just to obtain its Lock Screen media.
+        NSURL *lockOnlySourceURL =
+            [applicationSupportURL URLByAppendingPathComponent:
+                @"lock_screen_only_source.json"];
+        NSDictionary *lockOnlySource =
+            [self JSONDictionaryAtURL:lockOnlySourceURL];
+        runtimeVideoURL =
+            [self existingURLForConfiguredValue:lockOnlySource[@"path"]
+                                        relativeTo:applicationSupportURL];
+    }
     if (runtimeVideoURL != nil) {
         videoURL = runtimeVideoURL;
     }
