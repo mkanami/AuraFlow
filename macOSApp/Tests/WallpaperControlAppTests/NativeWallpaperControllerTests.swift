@@ -95,6 +95,42 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(command?.config?.video_path == fixture.videoURL.path)
 }
 
+@Test func nativeLockScreenOnlyDoesNotChangeDesktopOrLaunchAgent() throws {
+    let fixture = try NativeRuntimeFixture("lock-screen-only")
+    defer { fixture.cleanup() }
+
+    let desktopURL = fixture.root.appendingPathComponent("desktop.mp4")
+    FileManager.default.createFile(
+        atPath: desktopURL.path,
+        contents: Data([1, 2, 3, 4]),
+        attributes: nil
+    )
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: desktopURL.path,
+            playback_speed: 1.0
+        )
+    )
+
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    let status = try controller.installLockScreenOnly(videoURL: fixture.videoURL)
+    let config = fixture.store.loadConfig()
+
+    #expect(status.running == false)
+    #expect(status.pid == nil)
+    #expect(config.video_path == desktopURL.path)
+    #expect(config.show_on_lock_screen == true)
+    #expect(installer.installedVideoURL == fixture.videoURL)
+    #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
+    #expect(FileManager.default.fileExists(atPath: fixture.store.lastFrameURL.path) == false)
+}
+
 @Test func nativeSetSpeedAndScaleUpdateConfigAndCommand() throws {
     let fixture = try NativeRuntimeFixture("settings")
     defer { fixture.cleanup() }

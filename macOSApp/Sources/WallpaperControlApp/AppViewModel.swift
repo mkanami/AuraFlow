@@ -176,6 +176,7 @@ protocol WallpaperControlling {
     func clearWallpaper() throws -> ControlStatus
     func setVideo(_ url: URL) throws -> ControlStatus
     func setLockScreenMedia(_ url: URL?) throws -> ControlStatus
+    func installLockScreenOnly(videoURL: URL) throws -> ControlStatus
     func setSpeed(_ speed: Double) throws -> ControlStatus
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus
@@ -192,6 +193,12 @@ extension WallpaperControlling {
     func setLockScreenMedia(_ url: URL?) throws -> ControlStatus {
         throw NativeWallpaperControllerError.unavailable(
             "Lock Screen media selection is unavailable."
+        )
+    }
+
+    func installLockScreenOnly(videoURL: URL) throws -> ControlStatus {
+        throw NativeWallpaperControllerError.unavailable(
+            "Lock Screen-only wallpaper is unavailable."
         )
     }
 }
@@ -302,17 +309,20 @@ final class NativeWallpaperController: WallpaperControlling {
     private func restartRunningAgentAfterHelperUpdate() throws {
         guard store.processIsAlive(pid: store.loadPID()) else { return }
         let config = store.loadConfig()
+        let lockScreenOnlyAgent = store.isLockScreenOnlyAgent()
         guard store.terminateDaemon(timeout: 1.0) else {
             throw NativeWallpaperControllerError.unavailable(
                 "The previous wallpaper agent did not stop during the update."
             )
         }
-        guard !config.video_path.isEmpty,
-              FileManager.default.fileExists(atPath: config.video_path)
+        guard lockScreenOnlyAgent
+            ? store.effectiveLockScreenSourceURL(for: config) != nil
+            : !config.video_path.isEmpty
+                && FileManager.default.fileExists(atPath: config.video_path)
         else {
             return
         }
-        try launchAgentIfNeeded()
+        try launchAgentIfNeeded(lockScreenOnly: lockScreenOnlyAgent)
         try send(.reload, config: config)
     }
 
@@ -354,7 +364,7 @@ final class NativeWallpaperController: WallpaperControlling {
         )
     }
 
-    private func launchAgentIfNeeded() throws {
+    private func launchAgentIfNeeded(lockScreenOnly: Bool = false) throws {
         if store.processIsAlive(pid: store.loadPID()) {
             return
         }
@@ -363,9 +373,13 @@ final class NativeWallpaperController: WallpaperControlling {
         store.removeHealth()
         let task = Process()
         task.executableURL = helperURL
-        task.arguments = ["--config", store.configURL.path]
+        task.arguments = [
+            "--config",
+            store.configURL.path,
+        ] + (lockScreenOnly ? ["--lock-screen-only"] : [])
         try task.run()
         try store.savePID(task.processIdentifier)
+        store.markLockScreenOnlyAgent(lockScreenOnly)
     }
 
     func status() throws -> ControlStatus {
@@ -373,6 +387,17 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func start(videoURL: URL?, speed: Double?) throws -> ControlStatus {
+        let wasLockScreenOnlyAgent = store.isLockScreenOnlyAgent()
+        if wasLockScreenOnlyAgent, store.processIsAlive(pid: store.loadPID()) {
+            guard store.terminateDaemon(timeout: 2.0) else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The Lock Screen agent did not stop before starting desktop wallpaper."
+                )
+            }
+            store.removeCommand()
+            store.removeHealth()
+        }
+        store.markLockScreenOnlyAgent(false)
         let config = try updateConfig { config in
             if let videoURL {
                 config.video_path = videoURL.path
@@ -387,6 +412,7 @@ final class NativeWallpaperController: WallpaperControlling {
         guard FileManager.default.fileExists(atPath: config.video_path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
+        store.clearLockScreenOnlySource()
         _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(appSupportPath: store.appSupportURL.path)
         if config.show_on_lock_screen ?? true {
             try installLockScreenSaver(using: config)
@@ -441,6 +467,8 @@ final class NativeWallpaperController: WallpaperControlling {
             || lockScreenSaverInstaller.isInstalled {
             try lockScreenSaverInstaller.uninstall()
         }
+        store.clearLockScreenOnlySource()
+        store.markLockScreenOnlyAgent(false)
         let restored = store.restoreWallpaperBackup()
         _ = try updateConfig { config in
             config.video_path = ""
@@ -467,6 +495,27 @@ final class NativeWallpaperController: WallpaperControlling {
     func setLockScreenMedia(_ url: URL?) throws -> ControlStatus {
         if let url {
             return try setVideo(url)
+        }
+        return store.status()
+    }
+
+    func installLockScreenOnly(videoURL: URL) throws -> ControlStatus {
+        let normalizedURL = videoURL.standardizedFileURL
+        guard FileManager.default.fileExists(atPath: normalizedURL.path) else {
+            throw NativeWallpaperControllerError.unavailable(
+                "Video file not found: \(normalizedURL.path)"
+            )
+        }
+
+        try installLockScreenSaver(videoURL: normalizedURL, ensureStillFrame: false)
+        try store.saveLockScreenOnlySource(normalizedURL)
+        let config = try updateConfig { config in
+            config.show_on_lock_screen = true
+        }
+        if store.processIsAlive(pid: store.loadPID()) {
+            try send(.update, config: config)
+        } else {
+            try launchAgentIfNeeded(lockScreenOnly: true)
         }
         return store.status()
     }
@@ -504,10 +553,10 @@ final class NativeWallpaperController: WallpaperControlling {
     func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus {
         let currentConfig = store.loadConfig()
         if enabled {
-            if !currentConfig.video_path.isEmpty {
-                guard FileManager.default.fileExists(atPath: currentConfig.video_path) else {
+            if let sourceURL = store.effectiveLockScreenSourceURL(for: currentConfig) {
+                guard FileManager.default.fileExists(atPath: sourceURL.path) else {
                     throw NativeWallpaperControllerError.unavailable(
-                        "Video file not found: \(currentConfig.video_path)"
+                        "Video file not found: \(sourceURL.path)"
                     )
                 }
                 let backupURL = store.appSupportURL
@@ -518,10 +567,26 @@ final class NativeWallpaperController: WallpaperControlling {
                             appSupportPath: store.appSupportURL.path
                         )
                 }
-                try installLockScreenSaver(using: currentConfig)
+                try installLockScreenSaver(
+                    videoURL: sourceURL,
+                    ensureStillFrame: store.loadLockScreenOnlySource() == nil
+                )
             }
         } else {
+            store.clearLockScreenOnlySource()
             try lockScreenSaverInstaller.uninstall()
+            if store.isLockScreenOnlyAgent() {
+                if store.processIsAlive(pid: store.loadPID()) {
+                    guard store.terminateDaemon(timeout: 2.0) else {
+                        throw NativeWallpaperControllerError.unavailable(
+                            "The Lock Screen agent did not stop after disabling Lock Screen wallpaper."
+                        )
+                    }
+                }
+                store.removeCommand()
+                store.removeHealth()
+                store.markLockScreenOnlyAgent(false)
+            }
         }
 
         let config = try updateConfig { config in
@@ -536,12 +601,15 @@ final class NativeWallpaperController: WallpaperControlling {
     func syncLockScreenSaver() throws {
         let config = store.loadConfig()
         guard config.show_on_lock_screen ?? true,
-              !config.video_path.isEmpty,
-              FileManager.default.fileExists(atPath: config.video_path)
+              let sourceURL = store.effectiveLockScreenSourceURL(for: config),
+              FileManager.default.fileExists(atPath: sourceURL.path)
         else {
             return
         }
-        try installLockScreenSaver(using: config)
+        try installLockScreenSaver(
+            videoURL: sourceURL,
+            ensureStillFrame: store.loadLockScreenOnlySource() == nil
+        )
     }
 
     func beginLockScreenPreview() throws -> ControlStatus {
@@ -599,9 +667,15 @@ final class NativeWallpaperController: WallpaperControlling {
 
     private func installLockScreenSaver(using config: ControlConfig) throws {
         let videoURL = URL(fileURLWithPath: config.video_path)
+        try installLockScreenSaver(videoURL: videoURL, ensureStillFrame: true)
+    }
+
+    private func installLockScreenSaver(videoURL: URL, ensureStillFrame: Bool) throws {
         // Keep a cached frame for the app's desktop recovery path, but do not
         // replace macOS's live Lock Screen descriptor with an image wallpaper.
-        _ = try store.ensureCurrentStillFrame(from: videoURL)
+        if ensureStillFrame {
+            _ = try store.ensureCurrentStillFrame(from: videoURL)
+        }
         try lockScreenSaverInstaller.install(videoURL: videoURL)
     }
 }
@@ -735,6 +809,10 @@ final class AppViewModel: ObservableObject {
 
     var canStart: Bool {
         isControllerAvailable && !isBusy && !isPlaybackRunningForControls && selectedVideoURL != nil
+    }
+
+    var canApplyLockScreenOnly: Bool {
+        isControllerAvailable && !isBusy && selectedVideoURL != nil
     }
 
     var canStop: Bool {
@@ -1289,6 +1367,40 @@ final class AppViewModel: ObservableObject {
                 recordBridgeFailure(error, context: "start")
                 if bridgeFailureCount < bridgeFailureThreshold {
                     alertMessage = "Failed to start: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func applyLockScreenOnly() {
+        guard !isBusy else { return }
+        guard let selectedVideoURL else {
+            alertMessage = "Choose a video before applying it to the Lock Screen."
+            return
+        }
+        guard let controller else {
+            alertMessage = "Native wallpaper runtime unavailable."
+            return
+        }
+
+        Task {
+            isBusy = true
+            defer { isBusy = false }
+            do {
+                let prepared = try await prepareVideoURLForPlayback(selectedVideoURL)
+                let status = try await runAsync {
+                    try controller.installLockScreenOnly(videoURL: prepared.url)
+                }
+                apply(status: status, refreshPreview: false)
+                recordBridgeSuccess()
+                statusMessage = prepared.summary.map {
+                    "Lock Screen wallpaper applied. \($0)"
+                } ?? "Live wallpaper applied to Lock Screen only."
+                alertMessage = nil
+            } catch {
+                recordBridgeFailure(error, context: "lock-screen-only")
+                if bridgeFailureCount < bridgeFailureThreshold {
+                    alertMessage = "Failed to apply Lock Screen wallpaper: \(error.localizedDescription)"
                 }
             }
         }

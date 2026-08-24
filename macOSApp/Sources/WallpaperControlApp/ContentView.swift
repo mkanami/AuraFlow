@@ -497,7 +497,7 @@ struct ControlPanel: View {
     }
 
     private var controlButtonsRowWidth: CGFloat {
-        (primaryButtonWidth * 2) + removeButtonWidth + (primarySpacing * 2)
+        (primaryButtonWidth * 3) + removeButtonWidth + (primarySpacing * 3)
     }
 
     private var actionButtonsRowWidth: CGFloat {
@@ -1267,6 +1267,8 @@ struct ControlButtons: View {
         HStack(spacing: spacing) {
             startButton
                 .frame(width: primaryButtonWidth)
+            lockScreenOnlyButton
+                .frame(width: primaryButtonWidth)
             stopButton
                 .frame(width: primaryButtonWidth)
             clearButton
@@ -1286,6 +1288,22 @@ struct ControlButtons: View {
         }
         .buttonStyle(AuraPanelButtonStyle())
         .disabled(!viewModel.canStart)
+    }
+
+    private var lockScreenOnlyButton: some View {
+        Button {
+            viewModel.applyLockScreenOnly()
+        } label: {
+            Label("Lock", systemImage: "lock.display")
+                .lineLimit(1)
+                .minimumScaleFactor(0.95)
+                .allowsTightening(true)
+                .frame(maxWidth: .infinity)
+        }
+        .accessibilityLabel("Apply wallpaper to Lock Screen only")
+        .help("Apply wallpaper to Lock Screen only")
+        .buttonStyle(AuraPanelButtonStyle())
+        .disabled(!viewModel.canApplyLockScreenOnly)
     }
 
     private var stopButton: some View {

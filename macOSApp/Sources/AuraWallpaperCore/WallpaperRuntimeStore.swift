@@ -44,6 +44,10 @@ public final class WallpaperRuntimeStore {
         var modifiedAt: Double?
     }
 
+    private struct LockScreenOnlySource: Codable, Equatable {
+        var path: String
+    }
+
     public let appSupportURL: URL
     private let launchAgentFileURL: URL
 
@@ -69,6 +73,12 @@ public final class WallpaperRuntimeStore {
     public var lastFrameURL: URL { appSupportURL.appendingPathComponent("last_frame.png") }
     public var lastFrameSourceURL: URL {
         appSupportURL.appendingPathComponent("last_frame_source.json")
+    }
+    public var lockScreenOnlySourceURL: URL {
+        appSupportURL.appendingPathComponent("lock_screen_only_source.json")
+    }
+    public var lockScreenOnlyAgentURL: URL {
+        appSupportURL.appendingPathComponent("lock_screen_only_agent")
     }
     public var launchAgentURL: URL { launchAgentFileURL }
 
@@ -105,6 +115,57 @@ public final class WallpaperRuntimeStore {
 
     public func saveConfig(_ config: ControlConfig) throws {
         try writeJSON(normalized(config), to: configURL)
+    }
+
+    public func loadLockScreenOnlySource() -> URL? {
+        guard let source = try? readJSON(
+            LockScreenOnlySource.self,
+            from: lockScreenOnlySourceURL
+        ) else {
+            return nil
+        }
+        let path = source.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path).standardizedFileURL
+    }
+
+    public func saveLockScreenOnlySource(_ url: URL) throws {
+        try ensureDirectories()
+        try writeJSON(
+            LockScreenOnlySource(path: url.standardizedFileURL.path),
+            to: lockScreenOnlySourceURL
+        )
+    }
+
+    public func clearLockScreenOnlySource() {
+        try? FileManager.default.removeItem(at: lockScreenOnlySourceURL)
+    }
+
+    public func markLockScreenOnlyAgent(_ enabled: Bool) {
+        if enabled {
+            try? ensureDirectories()
+            FileManager.default.createFile(
+                atPath: lockScreenOnlyAgentURL.path,
+                contents: Data(),
+                attributes: nil
+            )
+        } else {
+            try? FileManager.default.removeItem(at: lockScreenOnlyAgentURL)
+        }
+    }
+
+    public func isLockScreenOnlyAgent() -> Bool {
+        FileManager.default.fileExists(atPath: lockScreenOnlyAgentURL.path)
+    }
+
+    public func effectiveLockScreenSourceURL(for config: ControlConfig) -> URL? {
+        if let lockScreenOnlySource = loadLockScreenOnlySource(),
+           FileManager.default.fileExists(atPath: lockScreenOnlySource.path) {
+            return lockScreenOnlySource
+        }
+        let path = config.video_path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path).standardizedFileURL
     }
 
     public func loadHealth() -> DaemonHealth? {
@@ -182,11 +243,12 @@ public final class WallpaperRuntimeStore {
         let pid = loadPID()
         let alive = processIsAlive(pid: pid)
         let paused = isPaused()
+        let lockScreenOnly = isLockScreenOnlyAgent()
         let health = healthForStatus(alive: alive, paused: paused)
         return ControlStatus(
-            running: alive && !paused,
+            running: alive && !paused && !lockScreenOnly,
             config: config,
-            pid: alive ? pid : nil,
+            pid: alive && !lockScreenOnly ? pid : nil,
             autostart: launchAgentEnabled(),
             paused: paused,
             wallpaper_restored: wallpaperRestored,
@@ -199,9 +261,10 @@ public final class WallpaperRuntimeStore {
         let pid = loadPID()
         let alive = processIsAlive(pid: pid)
         let paused = isPaused()
+        let lockScreenOnly = isLockScreenOnlyAgent()
         return DaemonMetrics(
             updated_at: Date().timeIntervalSince1970,
-            running: alive && !paused,
+            running: alive && !paused && !lockScreenOnly,
             paused: paused,
             pid: alive ? pid : nil,
             daemon_pids: alive ? pid.map { [$0] } : [],

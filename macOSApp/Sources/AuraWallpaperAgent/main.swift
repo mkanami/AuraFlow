@@ -20,6 +20,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private let store = WallpaperRuntimeStore()
+    private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
     private let lockScreenInstaller = AerialLockScreenInstaller()
     private let lockScreenRepairQueue = DispatchQueue(
         label: "com.auraflow.lock-screen-repair",
@@ -78,7 +79,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         try? store.savePID()
         store.markPaused(false)
         installSignalHandlers()
-        rebuildPlayback(from: config, keepPaused: false)
+        if !lockScreenOnlyMode {
+            rebuildPlayback(from: config, keepPaused: false)
+        }
         startTimers()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             [weak self] in
@@ -109,6 +112,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         tearDownPlayback()
         store.removePID()
         store.markPaused(false)
+        if lockScreenOnlyMode {
+            store.markLockScreenOnlyAgent(false)
+        }
     }
 
     private func installSignalHandlers() {
@@ -211,12 +217,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func screensChanged() {
         guard !isTerminating else { return }
-        rebuildWindows()
+        if !lockScreenOnlyMode {
+            rebuildWindows()
+        }
         writeHealth(reason: "screen-change")
     }
 
     @objc private func activeSpaceDidChange() {
-        guard !isTerminating else { return }
+        guard !isTerminating, !lockScreenOnlyMode else { return }
         lastSpaceChangeUptime = ProcessInfo.processInfo.systemUptime
         consecutiveFullscreenSamples = 0
         consecutiveWindowedSamples = 0
@@ -292,8 +300,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         lastSessionTransitionUptime =
             ProcessInfo.processInfo.systemUptime
         handleLockScreenEvent(.sessionUnlocked, reason: "session-unlocked")
-        showWindows(forceOrder: true)
-        applyPlaybackRate()
+        if !lockScreenOnlyMode {
+            showWindows(forceOrder: true)
+            applyPlaybackRate()
+        }
         writeHealth(reason: "session-active")
         rearmModernLockScreenForNextSession()
     }
@@ -316,8 +326,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func recoverAfterWake(reason: String) {
         guard !isTerminating else { return }
         sleeping = false
-        showWindows(forceOrder: true)
-        applyPlaybackRate()
+        if !lockScreenOnlyMode {
+            showWindows(forceOrder: true)
+            applyPlaybackRate()
+        }
         writeHealth(reason: reason)
     }
 
@@ -346,7 +358,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             )
             manualPaused = false
             store.markPaused(false)
-            rebuildPlayback(from: config, keepPaused: false)
+            if !lockScreenOnlyMode {
+                rebuildPlayback(from: config, keepPaused: false)
+            }
             if wallpaperReloaded, config.show_on_lock_screen == true {
                 repairModernLockScreenIfNeeded(force: true)
                 rearmModernLockScreenForNextSession()
@@ -354,10 +368,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         case .update:
             applyRuntimeSettings()
         case .resume:
-            showWindows()
+            if !lockScreenOnlyMode {
+                showWindows()
+            }
             manualPaused = false
             store.markPaused(false)
-            applyPlaybackRate()
+            if !lockScreenOnlyMode {
+                applyPlaybackRate()
+            }
         case .pause:
             pauseAndCommitStillFrame()
         case .previewLock:
@@ -663,6 +681,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyFullscreenPolicy() {
+        guard !lockScreenOnlyMode else { return }
         if WallpaperMediaKind.forURL(URL(fileURLWithPath: config.video_path)).isStaticImage {
             fullscreenAppDetected = false
             consecutiveFullscreenSamples = 0
@@ -820,6 +839,11 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         repairModernLockScreenIfNeeded()
         rearmModernLockScreenForNextSession()
 
+        if lockScreenOnlyMode {
+            writeHealth(reason: "lock-screen-only")
+            return
+        }
+
         if WallpaperMediaKind.forURL(URL(fileURLWithPath: config.video_path)).isStaticImage {
             consecutiveStallPolls = 0
             writeHealth(reason: "ok")
@@ -880,7 +904,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func repairModernLockScreenIfNeeded(force: Bool = false) {
         guard config.show_on_lock_screen == true,
-              !config.video_path.isEmpty,
+              let videoURL = effectiveLockScreenVideoURL(),
               lockScreenInstaller.isAvailable,
               !lockScreenRepairInProgress,
               !sessionInactive,
@@ -890,10 +914,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 || ProcessInfo.processInfo.systemUptime
                     - lastSessionTransitionUptime > 1.0
         else {
-            return
-        }
-        let videoURL = URL(fileURLWithPath: config.video_path)
-        guard FileManager.default.fileExists(atPath: videoURL.path) else {
             return
         }
 
@@ -941,17 +961,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func rearmModernLockScreenForNextSession() {
         guard config.show_on_lock_screen == true,
-              !config.video_path.isEmpty,
+              let videoURL = effectiveLockScreenVideoURL(),
               lockScreenInstaller.isAvailable,
               !sessionInactive,
               lockScreenState.sessionState == .unlocked,
               lockScreenState.previewState == .inactive,
               systemSessionIsLocked() == false
         else {
-            return
-        }
-        let videoURL = URL(fileURLWithPath: config.video_path)
-        guard FileManager.default.fileExists(atPath: videoURL.path) else {
             return
         }
         let token = currentRearmToken()
@@ -1019,8 +1035,17 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         LockScreenRearmToken(
             sessionGeneration: lockSessionGeneration,
             wallpaperRevision: wallpaperRevision,
-            videoPath: config.video_path
+            videoPath: effectiveLockScreenVideoURL()?.path ?? ""
         )
+    }
+
+    private func effectiveLockScreenVideoURL() -> URL? {
+        guard let sourceURL = store.effectiveLockScreenSourceURL(for: config),
+              FileManager.default.fileExists(atPath: sourceURL.path)
+        else {
+            return nil
+        }
+        return sourceURL
     }
 
     private func repairCanProceed(
@@ -1034,7 +1059,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             && lockScreenState.sessionState == .unlocked
             && lockScreenState.previewState == .inactive
             && config.show_on_lock_screen == true
-            && config.video_path == videoURL.path
+            && effectiveLockScreenVideoURL()?.path == videoURL.path
             && systemSessionIsLocked() == false
             && (
                 allowRecentTransition
@@ -1054,7 +1079,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             && lockScreenState.sessionState == .unlocked
             && lockScreenState.previewState == .inactive
             && config.show_on_lock_screen == true
-            && config.video_path == videoURL.path
+            && effectiveLockScreenVideoURL()?.path == videoURL.path
             && systemSessionIsLocked() == false
     }
 
