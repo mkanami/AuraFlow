@@ -505,12 +505,14 @@ final class NativeWallpaperController: WallpaperControlling {
     func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus {
         let currentConfig = store.loadConfig()
         if enabled {
-            guard !currentConfig.video_path.isEmpty else {
-                throw NativeWallpaperControllerError.unavailable(
-                    "Choose and start a wallpaper before enabling Lock Screen."
-                )
+            if !currentConfig.video_path.isEmpty {
+                guard FileManager.default.fileExists(atPath: currentConfig.video_path) else {
+                    throw NativeWallpaperControllerError.unavailable(
+                        "Video file not found: \(currentConfig.video_path)"
+                    )
+                }
+                try installLockScreenSaver(using: currentConfig)
             }
-            try installLockScreenSaver(using: currentConfig)
         } else {
             try lockScreenSaverInstaller.uninstall()
         }
@@ -526,7 +528,12 @@ final class NativeWallpaperController: WallpaperControlling {
 
     func syncLockScreenSaver() throws {
         let config = store.loadConfig()
-        guard config.show_on_lock_screen ?? false else { return }
+        guard config.show_on_lock_screen ?? false,
+              !config.video_path.isEmpty,
+              FileManager.default.fileExists(atPath: config.video_path)
+        else {
+            return
+        }
         try installLockScreenSaver(using: config)
     }
 
@@ -1464,9 +1471,13 @@ final class AppViewModel: ObservableObject {
                 }
                 apply(status: status)
                 recordBridgeSuccess()
-                statusMessage = enabled
-                    ? "AuraFlow Lock Screen installed and selected."
-                    : "AuraFlow Lock Screen removed."
+                if enabled, status.config.video_path.isEmpty {
+                    statusMessage = "Lock Screen enabled; it will activate when wallpaper starts."
+                } else {
+                    statusMessage = enabled
+                        ? "AuraFlow Lock Screen installed and selected."
+                        : "AuraFlow Lock Screen removed."
+                }
                 alertMessage = nil
             } catch {
                 showOnLockScreenEnabled = previous
