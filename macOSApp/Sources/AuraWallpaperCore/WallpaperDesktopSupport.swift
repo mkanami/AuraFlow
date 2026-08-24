@@ -3,6 +3,7 @@ import Foundation
 
 public enum WallpaperDesktopSupport {
     private static let backupNames = ["wallpaper_backup.json", "wallpaper_backup_original.json"]
+    private static let lockScreenBackupName = "lock_screen_desktop_backup.json"
 
     @discardableResult
     public static func captureCurrentDesktopWallpaperBackup(
@@ -26,6 +27,45 @@ public enum WallpaperDesktopSupport {
         )
     }
 
+    /// Captures the Desktop image that must remain visible while the modern
+    /// shared Aerial route is active for Lock Screen only. This backup is
+    /// separate from the Start/Remove backup and is refreshed per install.
+    @discardableResult
+    public static func captureLockScreenDesktopWallpaperBackup(
+        appSupportPath: String
+    ) -> Bool {
+        let managedPath = managedWallpaperPath(appSupportPath: appSupportPath)
+        let aerialPath = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(
+                "Library/Application Support/com.apple.wallpaper/aerials",
+                isDirectory: true
+            )
+            .standardizedFileURL.path
+        var wallpapers: [String: String] = [:]
+
+        for screen in NSScreen.screens {
+            guard let url = NSWorkspace.shared.desktopImageURL(for: screen) else {
+                continue
+            }
+            let standardized = url.standardizedFileURL.path
+            guard !standardized.isEmpty,
+                  standardized != managedPath,
+                  !standardized.hasPrefix(aerialPath + "/")
+            else {
+                continue
+            }
+            wallpapers[screenIdentifier(screen)] = standardized
+        }
+
+        guard !wallpapers.isEmpty else { return false }
+        return saveWallpaperBackup(
+            appSupportPath: appSupportPath,
+            wallpapers: wallpapers,
+            fileNames: [lockScreenBackupName],
+            overwriteExisting: true
+        )
+    }
+
     /// Returns one captured Desktop image for the lock-only runtime cover.
     /// The cover is only used while the user is unlocked; it hides the
     /// temporary shared Aerial Desktop choice that keeps repeated Lock Screen
@@ -33,14 +73,23 @@ public enum WallpaperDesktopSupport {
     public static func desktopBackupImageURL(
         appSupportPath: String
     ) -> URL? {
-        guard let wallpapers = loadWallpaperBackup(
-            appSupportPath: appSupportPath
-        ) else {
-            return nil
+        for fileNames in [[lockScreenBackupName], backupNames] {
+            guard let wallpapers = loadWallpaperBackup(
+                appSupportPath: appSupportPath,
+                fileNames: fileNames
+            ) else {
+                continue
+            }
+            let imageURLs = wallpapers.values.map { value in
+                URL(fileURLWithPath: value).standardizedFileURL
+            }
+            if let imageURL = imageURLs.first(where: { url in
+                FileManager.default.fileExists(atPath: url.path)
+            }) {
+                return imageURL
+            }
         }
-        return wallpapers.values
-            .map { URL(fileURLWithPath: $0).standardizedFileURL }
-            .first { FileManager.default.fileExists(atPath: $0.path) }
+        return nil
     }
 
     @discardableResult
@@ -331,9 +380,12 @@ public enum WallpaperDesktopSupport {
         return url
     }
 
-    private static func loadWallpaperBackup(appSupportPath: String) -> [String: String]? {
+    private static func loadWallpaperBackup(
+        appSupportPath: String,
+        fileNames: [String] = backupNames
+    ) -> [String: String]? {
         let managedPath = managedWallpaperPath(appSupportPath: appSupportPath)
-        for fileName in backupNames {
+        for fileName in fileNames {
             let path = (appSupportPath as NSString).appendingPathComponent(fileName)
             guard
                 let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
@@ -360,8 +412,29 @@ public enum WallpaperDesktopSupport {
     }
 
     @discardableResult
-    public static func saveWallpaperBackup(appSupportPath: String, wallpapers: [String: String]) -> Bool {
-        if loadWallpaperBackup(appSupportPath: appSupportPath) != nil {
+    public static func saveWallpaperBackup(
+        appSupportPath: String,
+        wallpapers: [String: String]
+    ) -> Bool {
+        saveWallpaperBackup(
+            appSupportPath: appSupportPath,
+            wallpapers: wallpapers,
+            fileNames: backupNames,
+            overwriteExisting: false
+        )
+    }
+
+    private static func saveWallpaperBackup(
+        appSupportPath: String,
+        wallpapers: [String: String],
+        fileNames: [String],
+        overwriteExisting: Bool
+    ) -> Bool {
+        if !overwriteExisting,
+           loadWallpaperBackup(
+               appSupportPath: appSupportPath,
+               fileNames: fileNames
+           ) != nil {
             return true
         }
         let managedPath = managedWallpaperPath(appSupportPath: appSupportPath)
@@ -379,7 +452,7 @@ public enum WallpaperDesktopSupport {
                 withIntermediateDirectories: true
             )
             let data = try JSONSerialization.data(withJSONObject: sanitized, options: [.prettyPrinted, .sortedKeys])
-            for fileName in backupNames {
+            for fileName in fileNames {
                 let path = (appSupportPath as NSString).appendingPathComponent(fileName)
                 try data.write(to: URL(fileURLWithPath: path), options: .atomic)
             }
@@ -948,7 +1021,7 @@ public enum WallpaperDesktopSupport {
     private static func removeWallpaperBackupFiles(
         appSupportPath: String
     ) {
-        for fileName in backupNames {
+        for fileName in backupNames + [lockScreenBackupName] {
             let url = URL(
                 fileURLWithPath: appSupportPath,
                 isDirectory: true

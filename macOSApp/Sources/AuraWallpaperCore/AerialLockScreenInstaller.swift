@@ -195,9 +195,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             && (marker.lockScreenOnly == true || marker.desktopIncluded == false)
     }
 
-    /// macOS 26 resolves the Idle choice when loginwindow starts the real Lock
-    /// Screen, so dedicated installations need a short store/URL reassertion
-    /// during the lock transition and a restore immediately after unlock.
+    /// macOS resolves the active Aerial choice when loginwindow starts the
+    /// real Lock Screen. Dedicated installations therefore keep the Aerial
+    /// route registered ahead of time; the lock-only agent masks that route
+    /// with the saved Desktop image while the user is unlocked.
     public var requiresLockScreenSessionPromotion: Bool {
         guard let marker = loadMarker(), marker.completed == true else {
             return false
@@ -220,9 +221,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             return false
         }
         let scope: AerialWallpaperStoreScope =
-            marker.lockScreenOnly == true || marker.desktopIncluded == false
-            ? .lockScreenOnly
-            : .sharedWallpaper
+            markerStoreIncludesDesktop(marker)
+            ? .sharedWallpaper
+            : .lockScreenOnly
         guard !usesCanonicalWallpaperStore
             || systemWallpaperURLMatchesInstalledState(
                 assetID: marker.assetID,
@@ -286,7 +287,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 videoURL: videoURL,
                 forceRefresh: false,
                 refreshAction: rearmSystem,
-                scope: .lockScreenOnly,
+                // loginwindow resolves the active Desktop/Aerial descriptor,
+                // not the Idle descriptor, for a direct manual Lock Screen.
+                // Keep the shared Aerial route registered and let the
+                // lock-only agent cover it with the saved Desktop image.
+                scope: .sharedWallpaper,
                 lockScreenOnlyRoute: true,
                 rollbackAction: refreshSystem,
                 shouldProceed: { true }
@@ -306,7 +311,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 videoURL: videoURL,
                 forceRefresh: false,
                 refreshAction: rearmSystem,
-                scope: currentWallpaperStoreScope(),
+                scope: isLockScreenOnlyInstallation
+                    ? .sharedWallpaper
+                    : currentWallpaperStoreScope(),
                 lockScreenOnlyRoute: isLockScreenOnlyInstallation,
                 rollbackAction: refreshSystem,
                 shouldProceed: shouldProceed
@@ -326,7 +333,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 videoURL: videoURL,
                 forceRefresh: true,
                 refreshAction: rearmSystem,
-                scope: currentWallpaperStoreScope(),
+                scope: isLockScreenOnlyInstallation
+                    ? .sharedWallpaper
+                    : currentWallpaperStoreScope(),
                 currentInstallationRefreshAction: usesCanonicalWallpaperStore
                     ? (isLockScreenOnlyInstallation
                         ? Self.refreshLockScreenProvider
@@ -1178,9 +1187,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     /// Reasserts the dedicated Lock Screen choice immediately before
-    /// loginwindow resolves the secure Lock Screen. The lock-only route keeps
-    /// the user's Desktop slot untouched; macOS resolves the Aerial choice
-    /// from the Idle slot for the secure Lock Screen.
+    /// loginwindow resolves the secure Lock Screen. New lock-only installs
+    /// already keep this shared route active; the shield callback is retained
+    /// as a cheap repair path for older markers or external store changes.
     @discardableResult
     public func activateLockScreenForCurrentSession() throws -> Bool {
         operationLock.lock()
@@ -1192,11 +1201,19 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             else {
                 return false
             }
+            if markerStoreIncludesDesktop(marker),
+               wallpaperStoreFullySelectsAerial(
+                   assetID: marker.assetID,
+                   scope: .sharedWallpaper
+               ),
+               systemWallpaperURLMatches(assetID: marker.assetID) {
+                return false
+            }
             let originalStoreData = try Data(contentsOf: wallpaperStoreBackupURL)
             let activeStoreData = try aerialWallpaperStoreData(
                 from: originalStoreData,
                 assetID: marker.assetID,
-                scope: .lockScreenOnly
+                scope: .sharedWallpaper
             )
             let storeChanged =
                 (try? Data(contentsOf: wallpaperStoreURL)) != activeStoreData
@@ -1216,11 +1233,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
     }
 
-    /// Restores the user's Desktop choice while retaining AuraFlow's Aerial
-    /// choice in the Idle slot for the next lock. The canonical system
-    /// wallpaper URL must remain pointed at AuraFlow: restoring the original
-    /// Apple URL here makes the first lock work and every later lock fall back
-    /// to the user's old Lock Screen background.
+    /// Restores the pre-existing lock-only store after a session when using
+    /// the legacy lock-only descriptor. The current shared Aerial route stays
+    /// registered across sessions; its agent-side Desktop cover prevents it
+    /// from changing what the unlocked user sees.
     @discardableResult
     public func restoreDesktopAfterLockScreenSession() throws -> Bool {
         operationLock.lock()
@@ -1230,6 +1246,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                   let marker = loadMarker(),
                   marker.completed == true
             else {
+                return false
+            }
+            // New lock-only installations intentionally keep the shared
+            // Aerial descriptor registered before the next lock. The agent's
+            // Desktop cover protects the user's visible Desktop while this
+            // route remains active, so there is nothing to restore here.
+            if markerStoreIncludesDesktop(marker) {
                 return false
             }
             let originalStoreData = try Data(contentsOf: wallpaperStoreBackupURL)
@@ -1248,7 +1271,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             }
             if marker.systemWallpaperURLWasCaptured == true {
                 guard setSystemWallpaperURL(
-                    desiredSystemWallpaperURL(assetID: marker.assetID)
+                    marker.originalSystemWallpaperURL
                 ) else {
                     throw AerialLockScreenInstallerError
                         .wallpaperStoreUpdateFailed
@@ -1735,10 +1758,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     private func currentWallpaperStoreScope() -> AerialWallpaperStoreScope {
-        if isLockScreenOnlyInstallation {
-            return .lockScreenOnly
-        }
-        return .sharedWallpaper
+        guard let marker = loadMarker() else { return .sharedWallpaper }
+        return markerStoreIncludesDesktop(marker)
+            ? .sharedWallpaper
+            : .lockScreenOnly
     }
 
     private func markerStoreIncludesDesktop(

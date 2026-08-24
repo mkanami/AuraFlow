@@ -20,7 +20,7 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
     }
 
     var installationConfirmed: Bool {
-        if modern.isAvailable {
+        if modern.isInstalled {
             return modern.installationConfirmed
         }
         return legacy.installationConfirmed
@@ -39,10 +39,6 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
 
     func installLockScreenOnly(videoURL: URL) throws {
         if modern.isAvailable {
-            // On macOS 26+ loginwindow renders the real Lock Screen through
-            // Apple's Aerial wallpaper provider. The provider requires the
-            // selected Idle descriptor plus SystemWallpaperURL; the legacy
-            // saver is not consulted by that loginwindow path.
             if legacy.isInstalled {
                 try legacy.uninstall()
             }

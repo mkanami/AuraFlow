@@ -507,13 +507,13 @@ final class NativeWallpaperController: WallpaperControlling {
             )
         }
 
-        // Keep an already-running desktop agent alive. The lock-only route
-        // changes only macOS's Idle/Aerial choice, so the current Desktop
-        // wallpaper must remain exactly as the user left it.
+        // Keep an already-running desktop agent alive. The modern route uses
+        // a shared Aerial descriptor internally, so save the exact visible
+        // Desktop image for the lock-only agent's unlocked cover.
 
         do {
             try store.saveLockScreenOnlySource(normalizedURL)
-            _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
+            _ = WallpaperDesktopSupport.captureLockScreenDesktopWallpaperBackup(
                 appSupportPath: store.appSupportURL.path
             )
             try installLockScreenSaver(
@@ -533,8 +533,27 @@ final class NativeWallpaperController: WallpaperControlling {
         let config = try updateConfig { config in
             config.show_on_lock_screen = true
         }
-        if store.processIsAlive(pid: store.loadPID()) {
-            try send(.update, config: config)
+        if store.processIsAlive(pid: store.loadPID()),
+           !store.isLockScreenOnlyAgent() {
+            // A normal desktop agent cannot be repurposed by a reload: it
+            // would continue presenting AuraFlow windows on the Desktop.
+            // Replace it with the dedicated lock-only agent so this button
+            // never changes the user's Desktop wallpaper.
+            guard store.terminateDaemon(timeout: 2.0) else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The desktop wallpaper agent did not stop before enabling Lock Screen only mode."
+                )
+            }
+            store.removeCommand()
+            store.removeHealth()
+            store.markLockScreenOnlyAgent(false)
+        }
+        if store.processIsAlive(pid: store.loadPID()),
+           store.isLockScreenOnlyAgent() {
+            // The lock-only agent reads its source from the dedicated marker;
+            // reload it when the user replaces that source so the next lock
+            // cannot keep an old player item alive.
+            try send(.reload, config: config)
         } else {
             try launchAgentIfNeeded(lockScreenOnly: true)
         }

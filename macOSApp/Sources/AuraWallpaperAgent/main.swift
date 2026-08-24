@@ -2,6 +2,7 @@ import AppKit
 import AuraWallpaperCore
 import AVFoundation
 import Foundation
+import notify
 import QuartzCore
 
 private final class WallpaperLayerView: NSView {
@@ -30,12 +31,18 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var windows: [NSWindow] = []
     private var playerLayers: [AVPlayerLayer] = []
     private var fallbackImage: CGImage?
+    private var desktopCoverImage: CGImage?
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     private var playbackTimeObserver: Any?
     private var commandTimer: Timer?
     private var healthTimer: Timer?
     private var fullscreenTimer: Timer?
+    private let lockShieldQueue = DispatchQueue(
+        label: "com.auraflow.lock-shield",
+        qos: .userInitiated
+    )
+    private var lockShieldNotificationTokens: [Int32] = []
     private var lastCommandID: String?
     private var manualPaused = false
     private var sleeping = false
@@ -82,7 +89,11 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if !lockScreenOnlyMode {
             rebuildPlayback(from: config, keepPaused: false)
         } else {
-            restoreDesktopStoreAfterSession()
+            // macOS resolves the active Aerial descriptor for a direct
+            // manual Lock Screen. Keep that descriptor registered ahead of
+            // time and cover it with the user's saved Desktop image while
+            // unlocked; the cover is hidden at the secure Lock Screen.
+            rebuildLockScreenOnlyDesktopPresentation()
         }
         startTimers()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -111,6 +122,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             source.cancel()
         }
         signalSources.removeAll()
+        for token in lockShieldNotificationTokens {
+            notify_cancel(token)
+        }
+        lockShieldNotificationTokens.removeAll()
         tearDownPlayback()
         store.removePID()
         store.markPaused(false)
@@ -153,6 +168,23 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             suspensionBehavior: .deliverImmediately
         )
+        // loginwindow raises the secure shield before WallpaperAgent resolves
+        // the wallpaper for the lock surface. This notification is earlier
+        // than screenIsLocked and is the only reliable hand-off point for the
+        // temporary Aerial route on current macOS versions.
+        for name in [
+            Notification.Name("com.apple.shieldWindowRaised"),
+            Notification.Name("com.apple.sessionagent.shieldWindowRaised"),
+        ] {
+            DistributedNotificationCenter.default().addObserver(
+                self,
+                selector: #selector(lockShieldDidRaise),
+                name: name,
+                object: nil,
+                suspensionBehavior: .deliverImmediately
+            )
+        }
+        registerLockShieldDarwinNotifications()
 
         // Cross-process notifications handle the normal fast path. This low-frequency
         // timer is only a safety net for a notification missed during process startup.
@@ -219,7 +251,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func screensChanged() {
         guard !isTerminating else { return }
-        if !lockScreenOnlyMode {
+        if lockScreenOnlyMode {
+            rebuildLockScreenOnlyDesktopPresentation()
+        } else {
             rebuildWindows()
         }
         writeHealth(reason: "screen-change")
@@ -252,11 +286,38 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func sessionDidResignActive() {
+        activateLockScreenStoreForSession()
         handleSessionNotification(expectedLocked: true)
     }
 
     @objc private func sessionDidBecomeActive() {
         handleSessionNotification(expectedLocked: false)
+    }
+
+    @objc private func lockShieldDidRaise(_ notification: Notification) {
+        guard !isTerminating else { return }
+        activateLockScreenStoreForSession()
+    }
+
+    private func registerLockShieldDarwinNotifications() {
+        for name in [
+            "com.apple.shieldWindowRaised",
+            "com.apple.sessionagent.shieldWindowRaised",
+        ] {
+            var token: Int32 = 0
+            let status = name.withCString { namePointer in
+                notify_register_dispatch(
+                    namePointer,
+                    &token,
+                    lockShieldQueue
+                ) { [weak self] _ in
+                    self?.activateLockScreenStoreForSession()
+                }
+            }
+            if status == NOTIFY_STATUS_OK {
+                lockShieldNotificationTokens.append(token)
+            }
+        }
     }
 
     private func handleSessionNotification(expectedLocked: Bool) {
@@ -396,6 +457,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func systemWillSleep() {
         guard !isTerminating, !sleeping else { return }
+        if lockScreenOnlyMode {
+            // On a display-sleep lock, macOS sends willSleep before it raises
+            // the secure Lock Screen. Keep the prewarmed player running so
+            // the first visible frame is already available when the display
+            // wakes to the password surface.
+            activateLockScreenStoreForSession()
+            writeHealth(reason: "display-sleep-before-lock")
+            return
+        }
         sleeping = true
         player?.pause()
         writeHealth(reason: "sleeping")
@@ -412,7 +482,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func recoverAfterWake(reason: String) {
         guard !isTerminating else { return }
         sleeping = false
-        if !lockScreenOnlyMode {
+        if lockScreenOnlyMode {
+            showWindows(forceOrder: lockScreenState.presentationMode == .lockScreen)
+            applyPlaybackRate()
+        } else {
             showWindows(forceOrder: true)
             applyPlaybackRate()
         }
@@ -444,7 +517,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             )
             manualPaused = false
             store.markPaused(false)
-            if !lockScreenOnlyMode {
+            if lockScreenOnlyMode {
+                rebuildLockScreenOnlyDesktopPresentation()
+            } else {
                 rebuildPlayback(from: config, keepPaused: false)
             }
             if wallpaperReloaded, config.show_on_lock_screen == true {
@@ -453,6 +528,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             }
         case .update:
             applyRuntimeSettings()
+            if lockScreenOnlyMode {
+                rebuildLockScreenOnlyDesktopPresentation()
+            }
         case .resume:
             if !lockScreenOnlyMode {
                 showWindows()
@@ -480,12 +558,20 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func rebuildPlayback(from config: ControlConfig, keepPaused: Bool) {
         tearDownPlayback()
-        guard !config.video_path.isEmpty else {
-            writeHealth(reason: "missing-video")
-            return
+        let url: URL
+        if lockScreenOnlyMode {
+            guard let lockScreenURL = effectiveLockScreenVideoURL() else {
+                writeHealth(reason: "missing-lock-screen-video")
+                return
+            }
+            url = lockScreenURL
+        } else {
+            guard !config.video_path.isEmpty else {
+                writeHealth(reason: "missing-video")
+                return
+            }
+            url = URL(fileURLWithPath: config.video_path)
         }
-
-        let url = URL(fileURLWithPath: config.video_path)
         guard FileManager.default.fileExists(atPath: url.path) else {
             writeHealth(reason: "missing-video")
             return
@@ -523,6 +609,79 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             player.pause()
         } else {
             applyPlaybackRate()
+        }
+    }
+
+    private func prepareDesktopCoverImage() {
+        let imageURL = WallpaperDesktopSupport.desktopBackupImageURL(
+            appSupportPath: store.appSupportURL.path
+        )
+        guard let imageURL,
+              let image = NSImage(contentsOf: imageURL),
+              let cgImage = image.cgImage(
+                  forProposedRect: nil,
+                  context: nil,
+                  hints: nil
+              )
+        else {
+            desktopCoverImage = nil
+            return
+        }
+        desktopCoverImage = cgImage
+    }
+
+    private func rebuildLockScreenOnlyDesktopPresentation() {
+        guard lockScreenOnlyMode else { return }
+        tearDownPlayback()
+        prepareDesktopCoverImage()
+        rebuildDesktopCoverWindows()
+    }
+
+    private func rebuildDesktopCoverWindows() {
+        guard lockScreenOnlyMode else { return }
+        for window in windows {
+            window.orderOut(nil)
+        }
+        windows.removeAll()
+        playerLayers.removeAll()
+        guard let desktopCoverImage else { return }
+
+        let behavior: NSWindow.CollectionBehavior = [
+            .canJoinAllSpaces,
+            .stationary,
+            .ignoresCycle,
+            .fullScreenAuxiliary,
+        ]
+
+        for screen in NSScreen.screens {
+            let window = NSWindow(
+                contentRect: screen.frame,
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.backgroundColor = .black
+            window.level = windowLevel(for: .desktop)
+            window.isOpaque = true
+            window.hasShadow = false
+            window.collectionBehavior = behavior
+            window.ignoresMouseEvents = true
+            window.animationBehavior = .none
+            window.hidesOnDeactivate = false
+            window.canHide = false
+            window.isExcludedFromWindowsMenu = true
+
+            let content = WallpaperLayerView(
+                frame: NSRect(origin: .zero, size: screen.frame.size)
+            )
+            content.wantsLayer = true
+            content.autoresizingMask = [.width, .height]
+            content.layer?.contents = desktopCoverImage
+            content.layer?.contentsGravity = .resizeAspectFill
+            window.contentView = content
+            windows.append(window)
+            present(window, as: .desktop)
         }
     }
 
@@ -991,7 +1150,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func repairModernLockScreenIfNeeded(force: Bool = false) {
         guard config.show_on_lock_screen == true,
               let videoURL = effectiveLockScreenVideoURL(),
-              lockScreenInstaller.isAvailable,
+              lockScreenInstaller.isInstalled,
               !lockScreenRepairInProgress,
               !sessionInactive,
               lockScreenState.sessionState == .unlocked,
@@ -1048,7 +1207,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func rearmModernLockScreenForNextSession() {
         guard config.show_on_lock_screen == true,
               let videoURL = effectiveLockScreenVideoURL(),
-              lockScreenInstaller.isAvailable,
+              lockScreenInstaller.isInstalled,
               !sessionInactive,
               lockScreenState.sessionState == .unlocked,
               lockScreenState.previewState == .inactive,
