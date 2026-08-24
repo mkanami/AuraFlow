@@ -237,6 +237,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 videoURL: videoURL,
                 forceRefresh: true,
                 refreshAction: rearmSystem,
+                currentInstallationRefreshAction: usesCanonicalWallpaperStore
+                    ? Self.prewarmLockScreenProvider
+                    : rearmSystem,
                 rollbackAction: refreshSystem,
                 shouldProceed: shouldProceed
             )
@@ -247,6 +250,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         videoURL: URL,
         forceRefresh: Bool,
         refreshAction: ConditionalSystemAction,
+        currentInstallationRefreshAction: ConditionalSystemAction? = nil,
         rollbackAction: ConditionalSystemAction,
         shouldProceed: @escaping () -> Bool
     ) throws -> Bool {
@@ -278,7 +282,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             // already-verified asset and store untouched makes the rearm fast
             // and greatly narrows the next-lock race window.
             do {
-                try refreshAction({ shouldProceed() })
+                if let currentInstallationRefreshAction {
+                    try currentInstallationRefreshAction({ shouldProceed() })
+                } else {
+                    try refreshAction({ shouldProceed() })
+                }
                 try restoreLockScreenDesktopFallbackIfNeeded()
             } catch is AerialLockScreenOperationAbort {
                 return false
@@ -287,12 +295,6 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
 
         let preparedVideoURL = try prepareAerialVideo(from: videoURL)
-        defer {
-            if preparedVideoURL.standardizedFileURL
-                != videoURL.standardizedFileURL {
-                try? fileManager.removeItem(at: preparedVideoURL)
-            }
-        }
 
         guard shouldProceed() else {
             return false
@@ -1151,9 +1153,23 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             at: stateDirectoryURL,
             withIntermediateDirectories: true
         )
-        let outputURL = stateDirectoryURL.appendingPathComponent(
-            ".aerialflow-\(UUID().uuidString).mov"
+        // The Lock Screen provider only accepts HEVC in a QuickTime movie.
+        // Keep the prepared result keyed by the source signature so opening
+        // Settings, restarting the agent, or switching back to a wallpaper
+        // does not transcode the same file again.
+        let sourceSignature = try fileSignature(at: sourceURL)
+        let cacheURL = stateDirectoryURL.appendingPathComponent(
+            "prepared-\(sourceSignature).mov"
         )
+        if fileManager.fileExists(atPath: cacheURL.path),
+           aerialAssetIsCompatible(at: cacheURL) {
+            return cacheURL
+        }
+
+        let outputURL = stateDirectoryURL.appendingPathComponent(
+            ".prepared-\(UUID().uuidString).mov"
+        )
+        defer { try? fileManager.removeItem(at: outputURL) }
         let errorPipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/avconvert")
@@ -1191,7 +1207,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                         : "HEVC QuickTime conversion failed."
                 )
         }
-        return outputURL
+        if fileManager.fileExists(atPath: cacheURL.path) {
+            try fileManager.removeItem(at: cacheURL)
+        }
+        try fileManager.moveItem(at: outputURL, to: cacheURL)
+        return cacheURL
     }
 
     private func aerialAssetIsCompatible(at url: URL) -> Bool {
@@ -1533,6 +1553,17 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             return
         }
 
+        // The fallback is already part of the managed store after install.
+        // Avoid rewriting it on every unlock: those writes invalidate
+        // WallpaperAgent's cache and are one of the causes of a black frame
+        // during the next lock transition.
+        guard !wallpaperStoreHasDesktopFallback(
+            in: root,
+            imageURL: stillFrameURL
+        ) else {
+            return
+        }
+
         let imageMode = makeMode(
             provider: auraFlowImageProvider,
             configuration: [
@@ -1559,6 +1590,64 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         try repairedData.write(to: wallpaperStoreURL, options: .atomic)
         Thread.sleep(forTimeInterval: 0.15)
         try repairedData.write(to: wallpaperStoreURL, options: .atomic)
+    }
+
+    private func wallpaperStoreHasDesktopFallback(
+        in root: [String: Any],
+        imageURL: URL
+    ) -> Bool {
+        var foundWallpaperContainer = false
+        var allWallpaperContainersMatch = true
+        let expectedPath = imageURL.standardizedFileURL.path
+
+        func inspect(_ value: Any) {
+            if let dictionary = value as? [String: Any] {
+                if dictionary["Desktop"] != nil || dictionary["Idle"] != nil {
+                    foundWallpaperContainer = true
+                    if let desktop = dictionary["Desktop"] as? [String: Any],
+                       modeUsesImageFile(desktop, path: expectedPath) {
+                        // The current Desktop descriptor already points at
+                        // AuraFlow's still frame.
+                    } else {
+                        allWallpaperContainersMatch = false
+                    }
+                }
+                for nestedValue in dictionary.values {
+                    inspect(nestedValue)
+                }
+            } else if let array = value as? [Any] {
+                for item in array {
+                    inspect(item)
+                }
+            }
+        }
+
+        inspect(root)
+        return foundWallpaperContainer && allWallpaperContainersMatch
+    }
+
+    private func modeUsesImageFile(
+        _ mode: [String: Any],
+        path expectedPath: String
+    ) -> Bool {
+        guard let content = mode["Content"] as? [String: Any],
+              let choices = content["Choices"] as? [[String: Any]],
+              let choice = choices.first,
+              choice["Provider"] as? String == auraFlowImageProvider,
+              let configurationData = choice["Configuration"] as? Data,
+              let configuration = try? PropertyListSerialization.propertyList(
+                from: configurationData,
+                options: [],
+                format: nil
+              ) as? [String: Any],
+              configuration["type"] as? String == "imageFile",
+              let url = configuration["url"] as? [String: Any],
+              let relative = url["relative"] as? String,
+              let parsedURL = URL(string: relative)
+        else {
+            return false
+        }
+        return parsedURL.standardizedFileURL.path == expectedPath
     }
 
     private func removeIncompleteBackupsIfSafe() {
@@ -1641,6 +1730,37 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             ]
         )
         guard waitForFreshProvider(excluding: previousProviderPIDs) else {
+            throw AerialLockScreenInstallerError
+                .aerialProviderRestartFailed
+        }
+    }
+
+    /// Keeps the already-installed provider warm without killing it. This is
+    /// used between lock sessions; a destructive restart is reserved for an
+    /// actual wallpaper/store mutation. Restarting WallpaperAgent on every
+    /// unlock is visible as a black transition on slower Macs.
+    private static func prewarmLockScreenProvider(
+        shouldProceed: () -> Bool
+    ) throws {
+        guard shouldProceed() else {
+            throw AerialLockScreenOperationAbort.sessionChanged
+        }
+
+        let currentProviderPIDs = processIdentifiers(
+            named: "WallpaperAerialsExtension"
+        )
+        if !currentProviderPIDs.isEmpty {
+            return
+        }
+
+        runProcess(
+            "/usr/bin/open",
+            [
+                "-gja",
+                "/System/Library/CoreServices/WallpaperAgent.app",
+            ]
+        )
+        guard waitForFreshProvider(excluding: currentProviderPIDs) else {
             throw AerialLockScreenInstallerError
                 .aerialProviderRestartFailed
         }
