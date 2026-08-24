@@ -370,32 +370,30 @@ private struct AerialLockScreenFixture {
     #expect(fixture.refreshCounter.count == 1)
 }
 
-@Test func modernLockScreenOnlyPromotesDuringLockAndRestoresDesktopAfterUnlock() throws {
+@Test func modernLockScreenOnlyKeepsDesktopUntouchedAcrossLockAndUnlock() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
     try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
     #expect(fixture.installer.isLockScreenOnlyInstallation)
 
-    let activated = try fixture.installer.activateLockScreenForCurrentSession()
-    #expect(activated)
+    _ = try fixture.installer.activateLockScreenForCurrentSession()
     var root = try readWallpaperStore(fixture.storeURL)
     var allSpacesAndDisplays = try #require(
         root["AllSpacesAndDisplays"] as? [String: Any]
     )
-    let promotedDesktop = try #require(
+    let lockDesktop = try #require(
         allSpacesAndDisplays["Desktop"] as? [String: Any]
     )
     #expect(
         wallpaperStoreContains(
-            promotedDesktop,
-            provider: "com.apple.wallpaper.choice.aerials",
-            assetID: AerialLockScreenFixture.assetID
+            lockDesktop,
+            provider: "com.apple.wallpaper.choice.image",
+            assetID: nil
         )
     )
 
-    let restored = try fixture.installer.restoreDesktopAfterLockScreenSession()
-    #expect(restored)
+    _ = try fixture.installer.restoreDesktopAfterLockScreenSession()
     root = try readWallpaperStore(fixture.storeURL)
     allSpacesAndDisplays = try #require(
         root["AllSpacesAndDisplays"] as? [String: Any]
