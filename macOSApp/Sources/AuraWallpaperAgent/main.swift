@@ -83,8 +83,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if !lockScreenOnlyMode {
             rebuildPlayback(from: config, keepPaused: false)
         } else {
-            prepareDesktopCoverImage()
-            rebuildDesktopCoverWindows()
+            rebuildLockScreenOnlyDesktopPresentation()
         }
         startTimers()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -224,8 +223,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if !lockScreenOnlyMode {
             rebuildWindows()
         } else {
-            prepareDesktopCoverImage()
-            rebuildDesktopCoverWindows()
+            rebuildLockScreenOnlyDesktopPresentation()
         }
         writeHealth(reason: "screen-change")
     }
@@ -456,8 +454,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             if !lockScreenOnlyMode {
                 rebuildPlayback(from: config, keepPaused: false)
             } else {
-                prepareDesktopCoverImage()
-                rebuildDesktopCoverWindows()
+                rebuildLockScreenOnlyDesktopPresentation()
             }
             if wallpaperReloaded, config.show_on_lock_screen == true {
                 repairModernLockScreenIfNeeded(force: true)
@@ -466,8 +463,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         case .update:
             applyRuntimeSettings()
             if lockScreenOnlyMode {
-                prepareDesktopCoverImage()
-                rebuildDesktopCoverWindows()
+                rebuildLockScreenOnlyDesktopPresentation()
             }
         case .resume:
             if !lockScreenOnlyMode {
@@ -618,6 +614,28 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
         desktopCoverImage = cgImage
+    }
+
+    private func rebuildLockScreenOnlyDesktopPresentation() {
+        guard lockScreenOnlyMode else { return }
+        let desktopPath = config.video_path.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        if !desktopPath.isEmpty,
+           FileManager.default.fileExists(atPath: desktopPath) {
+            // When the user had ordinary live wallpaper running, its visible
+            // image came from this agent's window rather than from the
+            // NSWorkspace desktop-image URL. Keep that same source on the
+            // unlocked Desktop while the system Aerial slot serves Lock
+            // Screen; present() hides these windows during secure lock.
+            rebuildPlayback(from: config, keepPaused: false)
+        } else {
+            // Static/system Desktop fallback for a session that had no
+            // ordinary AuraFlow wallpaper configured.
+            tearDownPlayback()
+            prepareDesktopCoverImage()
+            rebuildDesktopCoverWindows()
+        }
     }
 
     private func rebuildDesktopCoverWindows() {
