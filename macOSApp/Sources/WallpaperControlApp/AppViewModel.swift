@@ -507,20 +507,9 @@ final class NativeWallpaperController: WallpaperControlling {
             )
         }
 
-        // The desktop and lock-only agents own different window policies. Do
-        // not leave the desktop agent alive while installing the lock-only
-        // route: its normal reload path would keep drawing over the desktop
-        // cover and would never render the lock-only presentation correctly.
-        if store.processIsAlive(pid: store.loadPID()),
-           !store.isLockScreenOnlyAgent() {
-            guard store.terminateDaemon(timeout: 2.0) else {
-                throw NativeWallpaperControllerError.unavailable(
-                    "The desktop wallpaper agent did not stop before starting Lock Screen wallpaper."
-                )
-            }
-            store.removeCommand()
-            store.removeHealth()
-        }
+        // Keep an already-running desktop agent alive. The lock-only route
+        // changes only macOS's Idle/Aerial choice, so the current Desktop
+        // wallpaper must remain exactly as the user left it.
 
         do {
             try store.saveLockScreenOnlySource(normalizedURL)

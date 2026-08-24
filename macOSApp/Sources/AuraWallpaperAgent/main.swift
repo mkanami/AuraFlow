@@ -30,7 +30,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var windows: [NSWindow] = []
     private var playerLayers: [AVPlayerLayer] = []
     private var fallbackImage: CGImage?
-    private var desktopCoverImage: CGImage?
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     private var playbackTimeObserver: Any?
@@ -82,8 +81,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         installSignalHandlers()
         if !lockScreenOnlyMode {
             rebuildPlayback(from: config, keepPaused: false)
-        } else {
-            rebuildLockScreenOnlyDesktopPresentation()
         }
         startTimers()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -222,8 +219,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminating else { return }
         if !lockScreenOnlyMode {
             rebuildWindows()
-        } else {
-            rebuildLockScreenOnlyDesktopPresentation()
         }
         writeHealth(reason: "screen-change")
     }
@@ -315,8 +310,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if !lockScreenOnlyMode {
             showWindows(forceOrder: true)
             applyPlaybackRate()
-        } else {
-            showWindows(forceOrder: true)
         }
         writeHealth(reason: "session-active")
         scheduleDesktopStoreRestoration()
@@ -420,8 +413,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if !lockScreenOnlyMode {
             showWindows(forceOrder: true)
             applyPlaybackRate()
-        } else {
-            showWindows(forceOrder: true)
         }
         writeHealth(reason: reason)
     }
@@ -453,8 +444,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             store.markPaused(false)
             if !lockScreenOnlyMode {
                 rebuildPlayback(from: config, keepPaused: false)
-            } else {
-                rebuildLockScreenOnlyDesktopPresentation()
             }
             if wallpaperReloaded, config.show_on_lock_screen == true {
                 repairModernLockScreenIfNeeded(force: true)
@@ -462,9 +451,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             }
         case .update:
             applyRuntimeSettings()
-            if lockScreenOnlyMode {
-                rebuildLockScreenOnlyDesktopPresentation()
-            }
         case .resume:
             if !lockScreenOnlyMode {
                 showWindows()
@@ -596,92 +582,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             if !manualPaused {
                 present(window, as: lockScreenState.presentationMode)
             }
-        }
-    }
-
-    private func prepareDesktopCoverImage() {
-        guard let imageURL = WallpaperDesktopSupport.desktopBackupImageURL(
-            appSupportPath: store.appSupportURL.path
-        ),
-              let image = NSImage(contentsOf: imageURL),
-              let cgImage = image.cgImage(
-                forProposedRect: nil,
-                context: nil,
-                hints: nil
-              )
-        else {
-            desktopCoverImage = nil
-            return
-        }
-        desktopCoverImage = cgImage
-    }
-
-    private func rebuildLockScreenOnlyDesktopPresentation() {
-        guard lockScreenOnlyMode else { return }
-        let desktopPath = config.video_path.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        if !desktopPath.isEmpty,
-           FileManager.default.fileExists(atPath: desktopPath) {
-            // When the user had ordinary live wallpaper running, its visible
-            // image came from this agent's window rather than from the
-            // NSWorkspace desktop-image URL. Keep that same source on the
-            // unlocked Desktop while the system Aerial slot serves Lock
-            // Screen; present() hides these windows during secure lock.
-            rebuildPlayback(from: config, keepPaused: false)
-        } else {
-            // Static/system Desktop fallback for a session that had no
-            // ordinary AuraFlow wallpaper configured.
-            tearDownPlayback()
-            prepareDesktopCoverImage()
-            rebuildDesktopCoverWindows()
-        }
-    }
-
-    private func rebuildDesktopCoverWindows() {
-        guard lockScreenOnlyMode else { return }
-        for window in windows {
-            window.orderOut(nil)
-        }
-        windows.removeAll()
-        playerLayers.removeAll()
-        guard let desktopCoverImage else { return }
-
-        let behavior: NSWindow.CollectionBehavior = [
-            .canJoinAllSpaces,
-            .stationary,
-            .ignoresCycle,
-            .fullScreenAuxiliary,
-        ]
-        for screen in NSScreen.screens {
-            let window = NSWindow(
-                contentRect: screen.frame,
-                styleMask: [.borderless],
-                backing: .buffered,
-                defer: false
-            )
-            window.isReleasedWhenClosed = false
-            window.backgroundColor = .black
-            window.level = windowLevel(for: .desktop)
-            window.isOpaque = true
-            window.hasShadow = false
-            window.collectionBehavior = behavior
-            window.ignoresMouseEvents = true
-            window.animationBehavior = .none
-            window.hidesOnDeactivate = false
-            window.canHide = false
-            window.isExcludedFromWindowsMenu = true
-
-            let content = WallpaperLayerView(
-                frame: NSRect(origin: .zero, size: screen.frame.size)
-            )
-            content.wantsLayer = true
-            content.autoresizingMask = [.width, .height]
-            content.layer?.contents = desktopCoverImage
-            content.layer?.contentsGravity = .resizeAspectFill
-            window.contentView = content
-            windows.append(window)
-            present(window, as: lockScreenState.presentationMode)
         }
     }
 

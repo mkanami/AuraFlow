@@ -187,17 +187,16 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     /// True for the dedicated Lock Screen route. Its Aerial asset is kept in
-    /// both macOS wallpaper slots for reliable repeated locks, while the
-    /// runtime agent covers the unlocked Desktop with the saved image.
+    /// the Idle slot only, leaving the user's Desktop choice untouched.
     public var isLockScreenOnlyInstallation: Bool {
         guard let marker = loadMarker() else { return false }
         return marker.completed == true
             && (marker.lockScreenOnly == true || marker.desktopIncluded == false)
     }
 
-    /// Older builds stored the lock-only state by leaving Desktop out of the
-    /// store. Such markers still need the transition helper; new markers do
-    /// not because both slots already select the managed Aerial asset.
+    /// Older builds stored the lock-only state without the dedicated marker.
+    /// Such markers still need the transition helper; current lock-only
+    /// markers keep the Idle choice active for every secure-lock transition.
     public var requiresLockScreenSessionPromotion: Bool {
         guard let marker = loadMarker(), marker.completed == true else {
             return false
@@ -218,9 +217,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             return false
         }
         let scope: AerialWallpaperStoreScope =
-            marker.lockScreenOnly == true || marker.desktopIncluded != false
-            ? .sharedWallpaper
-            : .lockScreenOnly
+            marker.lockScreenOnly == true || marker.desktopIncluded == false
+            ? .lockScreenOnly
+            : .sharedWallpaper
         guard !usesCanonicalWallpaperStore
             || systemWallpaperURLMatches(assetID: marker.assetID)
         else {
@@ -281,7 +280,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 videoURL: videoURL,
                 forceRefresh: false,
                 refreshAction: rearmSystem,
-                scope: .sharedWallpaper,
+                scope: .lockScreenOnly,
                 lockScreenOnlyRoute: true,
                 rollbackAction: refreshSystem,
                 shouldProceed: { true }
@@ -323,7 +322,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 refreshAction: rearmSystem,
                 scope: currentWallpaperStoreScope(),
                 currentInstallationRefreshAction: usesCanonicalWallpaperStore
-                    ? Self.prewarmLockScreenProvider
+                    ? (isLockScreenOnlyInstallation
+                        ? Self.refreshLockScreenProvider
+                        : Self.prewarmLockScreenProvider)
                     : rearmSystem,
                 lockScreenOnlyRoute: isLockScreenOnlyInstallation,
                 rollbackAction: refreshSystem,
@@ -372,9 +373,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             guard forceRefresh, shouldProceed() else {
                 return false
             }
-            // Unlock only needs a fresh Apple player process. Keeping the
-            // already-verified asset and store untouched makes the rearm fast
-            // and greatly narrows the next-lock race window.
+            // A lock-only provider can remain alive after unlock while its
+            // video reader has already failed. Recreate Apple's owner for the
+            // dedicated route so the next lock starts with a fresh reader.
             do {
                 if let currentInstallationRefreshAction {
                     try currentInstallationRefreshAction({ shouldProceed() })
@@ -1705,17 +1706,16 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     private func currentWallpaperStoreScope() -> AerialWallpaperStoreScope {
-        // Every current installation must keep Aerial active in both slots.
-        // Returning shared also upgrades legacy lock-only markers on repair.
+        if isLockScreenOnlyInstallation {
+            return .lockScreenOnly
+        }
         return .sharedWallpaper
     }
 
     private func markerStoreIncludesDesktop(
         _ marker: AerialLockScreenMarker
     ) -> Bool {
-        marker.lockScreenOnly == true
-            ? true
-            : marker.desktopIncluded ?? true
+        marker.desktopIncluded ?? (marker.lockScreenOnly != true)
     }
 
     private func loadMarker() -> AerialLockScreenMarker? {
@@ -1916,10 +1916,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
     }
 
-    /// Keeps the already-installed provider warm without killing it. This is
-    /// used between lock sessions; a destructive restart is reserved for an
-    /// actual wallpaper/store mutation. Restarting WallpaperAgent on every
-    /// unlock is visible as a black transition on slower Macs.
+    /// Keeps an already-installed provider warm without killing it. This is
+    /// used for the normal shared Desktop route; the dedicated lock-only
+    /// route uses refreshLockScreenProvider instead because macOS can leave a
+    /// live-but-unreadable Aerial video reader after unlock.
     private static func prewarmLockScreenProvider(
         shouldProceed: () -> Bool
     ) throws {

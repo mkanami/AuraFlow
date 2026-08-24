@@ -842,7 +842,7 @@ struct SettingsPopupCard: View {
                 .disabled(!viewModel.canUseDesktopWallpaperForLockScreen || viewModel.lockScreenSourceURL == nil)
             }
 
-            Text("Choosing a file makes it the common Desktop and Lock Screen source. Start applies the selected wallpaper to both.")
+            Text("Choosing a file for Lock Screen does not change Desktop. Start applies the selected wallpaper to Desktop.")
                 .font(.caption2)
                 .foregroundStyle(
                     adaptiveGlassAppearance.centerTextTone.secondaryTextColor
@@ -869,7 +869,7 @@ struct SettingsPopupCard: View {
                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             }
 
-            Text("On macOS 26 and later, AuraFlow uses Apple's Aerial wallpaper provider for the real Lock Screen. It uses the selected wallpaper for both Desktop and Lock Screen.")
+            Text("On macOS 26 and later, AuraFlow uses Apple's Aerial wallpaper provider for the real Lock Screen. Lock Screen-only mode leaves Desktop unchanged.")
                 .font(.caption2)
                 .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 .fixedSize(horizontal: false, vertical: true)
