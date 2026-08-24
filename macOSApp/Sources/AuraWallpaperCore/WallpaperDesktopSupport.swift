@@ -26,6 +26,23 @@ public enum WallpaperDesktopSupport {
         )
     }
 
+    /// Returns one captured Desktop image for the lock-only runtime cover.
+    /// The cover is only used while the user is unlocked; it hides the
+    /// temporary shared Aerial Desktop choice that keeps repeated Lock Screen
+    /// sessions reliable.
+    public static func desktopBackupImageURL(
+        appSupportPath: String
+    ) -> URL? {
+        guard let wallpapers = loadWallpaperBackup(
+            appSupportPath: appSupportPath
+        ) else {
+            return nil
+        }
+        return wallpapers.values
+            .map { URL(fileURLWithPath: $0).standardizedFileURL }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
     @discardableResult
     public static func applyToAllDesktops(imagePath: String, retryCount: Int = 3) -> Bool {
         let standardizedPath = URL(fileURLWithPath: imagePath).standardized.path

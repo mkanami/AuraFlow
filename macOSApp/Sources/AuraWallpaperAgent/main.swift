@@ -30,6 +30,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var windows: [NSWindow] = []
     private var playerLayers: [AVPlayerLayer] = []
     private var fallbackImage: CGImage?
+    private var desktopCoverImage: CGImage?
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     private var playbackTimeObserver: Any?
@@ -81,6 +82,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         installSignalHandlers()
         if !lockScreenOnlyMode {
             rebuildPlayback(from: config, keepPaused: false)
+        } else {
+            prepareDesktopCoverImage()
+            rebuildDesktopCoverWindows()
         }
         startTimers()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -219,12 +223,19 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminating else { return }
         if !lockScreenOnlyMode {
             rebuildWindows()
+        } else {
+            prepareDesktopCoverImage()
+            rebuildDesktopCoverWindows()
         }
         writeHealth(reason: "screen-change")
     }
 
     @objc private func activeSpaceDidChange() {
-        guard !isTerminating, !lockScreenOnlyMode else { return }
+        guard !isTerminating else { return }
+        if lockScreenOnlyMode {
+            showWindows(forceOrder: true)
+            return
+        }
         lastSpaceChangeUptime = ProcessInfo.processInfo.systemUptime
         consecutiveFullscreenSamples = 0
         consecutiveWindowedSamples = 0
@@ -288,14 +299,17 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             sessionInactive = true
             lastSessionTransitionUptime =
                 ProcessInfo.processInfo.systemUptime
+            activateLockScreenStoreForSession()
             syncLockScreenSetting(reason: "lock-setting")
             handleLockScreenEvent(.sessionLocked, reason: "session-locked")
+            scheduleLockScreenStoreReassertion()
             writeHealth(reason: "session-inactive")
             return
         }
 
         guard sessionInactive else { return }
         lockSessionGeneration &+= 1
+        restoreDesktopStoreAfterSession()
         sessionInactive = false
         lastSessionTransitionUptime =
             ProcessInfo.processInfo.systemUptime
@@ -303,9 +317,88 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if !lockScreenOnlyMode {
             showWindows(forceOrder: true)
             applyPlaybackRate()
+        } else {
+            showWindows(forceOrder: true)
         }
         writeHealth(reason: "session-active")
+        scheduleDesktopStoreRestoration()
         rearmModernLockScreenForNextSession()
+    }
+
+    private func activateLockScreenStoreForSession() {
+        guard config.show_on_lock_screen == true,
+              lockScreenInstaller.requiresLockScreenSessionPromotion
+        else {
+            return
+        }
+        do {
+            _ = try lockScreenInstaller.activateLockScreenForCurrentSession()
+        } catch {
+            writeHealth(
+                reason:
+                    "lock-screen-session-activation-failed: "
+                    + error.localizedDescription
+            )
+        }
+    }
+
+    private func scheduleLockScreenStoreReassertion() {
+        guard config.show_on_lock_screen == true,
+              lockScreenInstaller.requiresLockScreenSessionPromotion
+        else {
+            return
+        }
+        for delay in [0.15, 0.45, 1.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                [weak self] in
+                guard let self,
+                      !self.isTerminating,
+                      self.sessionInactive,
+                      self.systemSessionIsLocked() == true
+                else {
+                    return
+                }
+                self.activateLockScreenStoreForSession()
+            }
+        }
+    }
+
+    private func restoreDesktopStoreAfterSession() {
+        guard config.show_on_lock_screen == true,
+              lockScreenInstaller.requiresLockScreenSessionPromotion
+        else {
+            return
+        }
+        do {
+            _ = try lockScreenInstaller.restoreDesktopAfterLockScreenSession()
+        } catch {
+            writeHealth(
+                reason:
+                    "desktop-store-restoration-failed: "
+                    + error.localizedDescription
+            )
+        }
+    }
+
+    private func scheduleDesktopStoreRestoration() {
+        guard config.show_on_lock_screen == true,
+              lockScreenInstaller.requiresLockScreenSessionPromotion
+        else {
+            return
+        }
+        for delay in [0.15, 0.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                [weak self] in
+                guard let self,
+                      !self.isTerminating,
+                      !self.sessionInactive,
+                      self.systemSessionIsLocked() == false
+                else {
+                    return
+                }
+                self.restoreDesktopStoreAfterSession()
+            }
+        }
     }
 
     @objc private func systemWillSleep() {
@@ -329,6 +422,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if !lockScreenOnlyMode {
             showWindows(forceOrder: true)
             applyPlaybackRate()
+        } else {
+            showWindows(forceOrder: true)
         }
         writeHealth(reason: reason)
     }
@@ -360,6 +455,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             store.markPaused(false)
             if !lockScreenOnlyMode {
                 rebuildPlayback(from: config, keepPaused: false)
+            } else {
+                prepareDesktopCoverImage()
+                rebuildDesktopCoverWindows()
             }
             if wallpaperReloaded, config.show_on_lock_screen == true {
                 repairModernLockScreenIfNeeded(force: true)
@@ -367,6 +465,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             }
         case .update:
             applyRuntimeSettings()
+            if lockScreenOnlyMode {
+                prepareDesktopCoverImage()
+                rebuildDesktopCoverWindows()
+            }
         case .resume:
             if !lockScreenOnlyMode {
                 showWindows()
@@ -498,6 +600,70 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             if !manualPaused {
                 present(window, as: lockScreenState.presentationMode)
             }
+        }
+    }
+
+    private func prepareDesktopCoverImage() {
+        guard let imageURL = WallpaperDesktopSupport.desktopBackupImageURL(
+            appSupportPath: store.appSupportURL.path
+        ),
+              let image = NSImage(contentsOf: imageURL),
+              let cgImage = image.cgImage(
+                forProposedRect: nil,
+                context: nil,
+                hints: nil
+              )
+        else {
+            desktopCoverImage = nil
+            return
+        }
+        desktopCoverImage = cgImage
+    }
+
+    private func rebuildDesktopCoverWindows() {
+        guard lockScreenOnlyMode else { return }
+        for window in windows {
+            window.orderOut(nil)
+        }
+        windows.removeAll()
+        playerLayers.removeAll()
+        guard let desktopCoverImage else { return }
+
+        let behavior: NSWindow.CollectionBehavior = [
+            .canJoinAllSpaces,
+            .stationary,
+            .ignoresCycle,
+            .fullScreenAuxiliary,
+        ]
+        for screen in NSScreen.screens {
+            let window = NSWindow(
+                contentRect: screen.frame,
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.backgroundColor = .black
+            window.level = windowLevel(for: .desktop)
+            window.isOpaque = true
+            window.hasShadow = false
+            window.collectionBehavior = behavior
+            window.ignoresMouseEvents = true
+            window.animationBehavior = .none
+            window.hidesOnDeactivate = false
+            window.canHide = false
+            window.isExcludedFromWindowsMenu = true
+
+            let content = WallpaperLayerView(
+                frame: NSRect(origin: .zero, size: screen.frame.size)
+            )
+            content.wantsLayer = true
+            content.autoresizingMask = [.width, .height]
+            content.layer?.contents = desktopCoverImage
+            content.layer?.contentsGravity = .resizeAspectFill
+            window.contentView = content
+            windows.append(window)
+            present(window, as: lockScreenState.presentationMode)
         }
     }
 
