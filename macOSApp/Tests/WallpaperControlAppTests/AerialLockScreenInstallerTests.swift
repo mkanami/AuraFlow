@@ -169,7 +169,7 @@ private struct AerialLockScreenFixture {
             "Idle": managedIdle,
         ]
         let store: [String: Any] = [
-            "AllSpacesAndDisplays": "$null",
+            "AllSpacesAndDisplays": originalContainer,
             "SystemDefault": originalContainer,
             "Displays": [
                 Self.displayID: managedContainer,
@@ -287,6 +287,16 @@ private struct AerialLockScreenFixture {
             == Data("new-wallpaper".utf8)
     )
     let root = try readWallpaperStore(fixture.storeURL)
+    let allSpacesAndDisplays = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    #expect(
+        wallpaperStoreContains(
+            allSpacesAndDisplays,
+            provider: "com.apple.wallpaper.choice.aerials",
+            assetID: AerialLockScreenFixture.assetID
+        )
+    )
     let spaces = try #require(root["Spaces"] as? [String: Any])
     #expect(Set(spaces.keys) == [AerialLockScreenFixture.activeSpaceID])
     let displays = try #require(root["Displays"] as? [String: Any])

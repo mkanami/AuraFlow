@@ -747,6 +747,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         transform: ([String: Any]) -> [String: Any]
     ) -> [String: Any] {
         var result = root
+        if let allSpacesAndDisplays =
+            result["AllSpacesAndDisplays"] as? [String: Any] {
+            result["AllSpacesAndDisplays"] = transform(allSpacesAndDisplays)
+        }
         if let systemDefault = result["SystemDefault"] as? [String: Any] {
             result["SystemDefault"] = transform(systemDefault)
         }
@@ -1075,6 +1079,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
 
         var containers: [[String: Any]] = []
+        if let allSpacesAndDisplays =
+            root["AllSpacesAndDisplays"] as? [String: Any] {
+            containers.append(allSpacesAndDisplays)
+        }
         if let systemDefault = root["SystemDefault"] as? [String: Any] {
             containers.append(systemDefault)
         }
