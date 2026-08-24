@@ -335,7 +335,7 @@ private struct AerialLockScreenFixture {
     #expect(!fixture.installer.installationConfirmed)
 }
 
-@Test func modernLockScreenOnlyRegistersSharedAerialRoute() throws {
+@Test func modernLockScreenOnlyPreservesDesktopRoute() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
@@ -352,13 +352,11 @@ private struct AerialLockScreenFixture {
         allSpacesAndDisplays["Idle"] as? [String: Any]
     )
 
-    #expect(
-        wallpaperStoreContains(
-            desktop,
-            provider: "com.apple.wallpaper.choice.aerials",
-            assetID: AerialLockScreenFixture.assetID
-        )
-    )
+    #expect(wallpaperStoreContains(
+        desktop,
+        provider: "com.apple.wallpaper.choice.image",
+        assetID: nil
+    ))
     #expect(
         wallpaperStoreContains(
             idle,
@@ -370,7 +368,7 @@ private struct AerialLockScreenFixture {
     #expect(fixture.refreshCounter.count == 1)
 }
 
-@Test func modernLockScreenOnlyKeepsSharedRouteAcrossLockAndUnlock() throws {
+@Test func modernLockScreenOnlyPromotesAndRestoresDesktopRoute() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
@@ -401,13 +399,11 @@ private struct AerialLockScreenFixture {
     let restoredDesktop = try #require(
         allSpacesAndDisplays["Desktop"] as? [String: Any]
     )
-    #expect(
-        wallpaperStoreContains(
-            restoredDesktop,
-            provider: "com.apple.wallpaper.choice.aerials",
-            assetID: AerialLockScreenFixture.assetID
-        )
-    )
+    #expect(wallpaperStoreContains(
+        restoredDesktop,
+        provider: "com.apple.wallpaper.choice.image",
+        assetID: nil
+    ))
     #expect(fixture.installer.isLockScreenOnlyInstallation)
 }
 
