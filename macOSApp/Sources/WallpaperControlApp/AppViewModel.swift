@@ -507,13 +507,18 @@ final class NativeWallpaperController: WallpaperControlling {
             )
         }
 
-        try store.saveLockScreenOnlySource(normalizedURL)
         do {
+            try store.saveLockScreenOnlySource(normalizedURL)
             try installLockScreenSaver(
                 videoURL: normalizedURL,
                 ensureStillFrame: true,
                 lockScreenOnly: true
             )
+            guard lockScreenSaverInstaller.isInstalled else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "macOS did not confirm the Lock Screen wallpaper installation."
+                )
+            }
         } catch {
             store.clearLockScreenOnlySource()
             throw error
@@ -1427,15 +1432,15 @@ final class AppViewModel: ObservableObject {
                 }
                 apply(status: status, refreshPreview: false)
                 recordBridgeSuccess()
+                showSuccessBanner("Live Lock Screen wallpaper installed.")
                 statusMessage = prepared.summary.map {
                     "Lock Screen wallpaper applied. \($0)"
                 } ?? "Live wallpaper applied to Lock Screen only."
                 alertMessage = nil
             } catch {
                 recordBridgeFailure(error, context: "lock-screen-only")
-                if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to apply Lock Screen wallpaper: \(error.localizedDescription)"
-                }
+                alertMessage = "Failed to apply Lock Screen wallpaper: \(error.localizedDescription)"
+                statusMessage = "Lock Screen wallpaper was not installed."
             }
         }
     }

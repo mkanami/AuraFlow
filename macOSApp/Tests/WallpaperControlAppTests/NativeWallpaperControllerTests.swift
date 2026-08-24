@@ -45,7 +45,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     private(set) var uninstallCallCount = 0
 
     var isInstalled: Bool {
-        installedVideoURL != nil && uninstallCallCount == 0
+        (installedVideoURL != nil || installedLockScreenOnlyVideoURL != nil)
+            && uninstallCallCount == 0
     }
 
     func install(videoURL: URL) throws {
