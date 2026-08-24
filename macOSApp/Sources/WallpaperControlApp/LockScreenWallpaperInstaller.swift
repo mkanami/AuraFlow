@@ -47,7 +47,7 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
             if legacy.isInstalled {
                 try legacy.uninstall()
             }
-            try modern.install(videoURL: videoURL)
+            try modern.installLockScreenOnly(videoURL: videoURL)
         } else {
             try legacy.installLockScreenOnly(videoURL: videoURL)
         }

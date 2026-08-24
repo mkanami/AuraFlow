@@ -244,14 +244,25 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         operationLock.lock()
         defer { operationLock.unlock() }
         try withCrossProcessLock {
-            _ = try installLocked(
-                videoURL: videoURL,
-                forceRefresh: false,
-                refreshAction: rearmSystem,
-                scope: .lockScreenOnly,
-                rollbackAction: refreshSystem,
-                shouldProceed: { true }
-            )
+            do {
+                _ = try installLocked(
+                    videoURL: videoURL,
+                    forceRefresh: false,
+                    refreshAction: rearmSystem,
+                    // loginwindow on current macOS only accepts a newly
+                    // reserved Aerial asset after the shared Desktop + Idle
+                    // descriptor has been selected once. We immediately
+                    // restore Desktop below, leaving the live asset only in
+                    // the Idle/Lock Screen mode.
+                    scope: .sharedWallpaper,
+                    rollbackAction: refreshSystem,
+                    shouldProceed: { true }
+                )
+                try restoreDesktopAfterLockScreenReservation()
+            } catch {
+                try? uninstallLocked()
+                throw error
+            }
         }
     }
 
@@ -842,6 +853,42 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             fromPropertyList: root,
             format: .binary,
             options: 0
+        )
+    }
+
+    private func restoreDesktopAfterLockScreenReservation() throws {
+        guard let marker = loadMarker(),
+              marker.completed == true
+        else {
+            throw AerialLockScreenInstallerError
+                .wallpaperStoreUnavailable
+        }
+        let originalStoreData = try Data(contentsOf: wallpaperStoreBackupURL)
+        let lockScreenOnlyStoreData = try aerialWallpaperStoreData(
+            from: originalStoreData,
+            assetID: marker.assetID,
+            scope: .lockScreenOnly
+        )
+        try lockScreenOnlyStoreData.write(
+            to: wallpaperStoreURL,
+            options: .atomic
+        )
+        try refreshSystem({ true })
+        guard wallpaperStoreFullySelectsAerial(
+            assetID: marker.assetID,
+            scope: .lockScreenOnly
+        ) else {
+            throw AerialLockScreenInstallerError
+                .wallpaperStoreUpdateFailed
+        }
+
+        var lockScreenMarker = marker
+        lockScreenMarker.desktopIncluded = false
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(lockScreenMarker).write(
+            to: markerURL,
+            options: .atomic
         )
     }
 

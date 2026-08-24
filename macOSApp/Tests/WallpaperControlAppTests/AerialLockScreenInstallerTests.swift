@@ -366,7 +366,8 @@ private struct AerialLockScreenFixture {
             assetID: AerialLockScreenFixture.assetID
         )
     )
-    #expect(fixture.refreshCounter.count == 1)
+    #expect(fixture.installer.installationConfirmed)
+    #expect(fixture.refreshCounter.count == 2)
 }
 
 @Test func modernLockScreenUninstallRestoresCleanStoreAndAerialAsset() throws {
