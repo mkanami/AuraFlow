@@ -181,7 +181,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             self.lockSessionHandoffSystem = { _ in rearmSystem() }
         } else {
             self.rearmSystem = Self.refreshLockScreenProvider
-            self.lockSessionHandoffSystem = Self.prewarmLockScreenProvider
+            // The lock-only installation leaves the user's Desktop choice
+            // active while unlocked. Once the shield is raised, the store is
+            // promoted to Aerial, so an existing WallpaperAgent still has a
+            // cached Desktop resolver and cannot see that promotion by merely
+            // being prewarmed. Recreate the owner after the route changes so
+            // it reads the Aerial choice before loginwindow renders the lock.
+            self.lockSessionHandoffSystem = Self.refreshLockScreenProvider
         }
     }
 
@@ -1981,9 +1987,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     /// Keeps an already-installed provider warm without killing it. This is
-    /// used for the normal shared Desktop route; the dedicated lock-only
-    /// route uses refreshLockScreenProvider instead because macOS can leave a
-    /// live-but-unreadable Aerial video reader after unlock.
+    /// used while the user is unlocked, when the Desktop route must remain
+    /// untouched. The real lock handoff uses refreshLockScreenProvider after
+    /// promoting the route so WallpaperAgent rereads the new Lock Screen
+    /// choice.
     private static func prewarmLockScreenProvider(
         shouldProceed: () -> Bool
     ) throws {
