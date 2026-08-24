@@ -340,9 +340,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                     ? .lockScreenOnly
                     : currentWallpaperStoreScope(),
                 currentInstallationRefreshAction: usesCanonicalWallpaperStore
-                    ? (isLockScreenOnlyInstallation
-                        ? Self.refreshLockScreenProvider
-                        : Self.prewarmLockScreenProvider)
+                    ? Self.prewarmLockScreenProvider
                     : rearmSystem,
                 lockScreenOnlyRoute: isLockScreenOnlyInstallation,
                 rollbackAction: refreshSystem,
