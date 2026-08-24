@@ -41,9 +41,8 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
         if modern.isAvailable {
             // On macOS 26+ loginwindow renders the real Lock Screen through
             // Apple's Aerial wallpaper provider. The provider requires the
-            // shared Desktop + Idle descriptor to be selected, even for the
-            // Lock-only action; the legacy saver is not consulted by that
-            // loginwindow path.
+            // selected Idle descriptor plus SystemWallpaperURL; the legacy
+            // saver is not consulted by that loginwindow path.
             if legacy.isInstalled {
                 try legacy.uninstall()
             }

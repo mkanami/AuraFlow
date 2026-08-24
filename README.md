@@ -57,8 +57,10 @@ Runtime state is stored in:
 **Play AuraFlow on Lock Screen** is opt-in and disabled by default. When you
 turn it on in Playback Settings, AuraFlow uses the selected wallpaper through
 macOS's Aerial provider for both the Desktop and the real Lock Screen. The
-original Aerial asset and complete wallpaper configuration are backed up before
-the first change and restored when this feature is disabled.
+original Aerial asset, wallpaper configuration, and system Lock Screen URL are
+backed up before the first change and restored when this feature is disabled.
+The Lock Screen-only action updates only macOS's Idle/Lock Screen selection and
+keeps the current Desktop wallpaper unchanged.
 
 The current wallpaper, thumbnail, active Spaces, and displays are synchronized each
 time the wallpaper starts. Deleted Space records and old AuraFlow

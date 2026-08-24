@@ -1,11 +1,16 @@
 import Darwin
 import AVFoundation
+import CoreFoundation
 import Foundation
 
 private let auraFlowAerialProvider = "com.apple.wallpaper.choice.aerials"
 private let auraFlowImageProvider = "com.apple.wallpaper.choice.image"
 private let auraFlowScreenSaverProvider =
     "com.apple.wallpaper.choice.screen-saver"
+private let wallpaperPreferencesApplicationID =
+    "com.apple.wallpaper" as CFString
+private let systemWallpaperURLPreferenceKey =
+    "SystemWallpaperURL" as CFString
 
 private enum AerialLockScreenOperationAbort: Error {
     case sessionChanged
@@ -31,6 +36,9 @@ private struct AerialLockScreenMarker: Codable {
     var assetSignature: String?
     var originalAssetExisted: Bool?
     var originalThumbnailExisted: Bool?
+    var originalSystemWallpaperURL: String?
+    var systemWallpaperURLWasCaptured: Bool?
+    var systemWallpaperURLCaptureVersion: Int?
     var desktopIncluded: Bool?
     var completed: Bool?
 }
@@ -193,6 +201,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             marker.desktopIncluded == false
             ? .lockScreenOnly
             : .sharedWallpaper
+        guard !usesCanonicalWallpaperStore
+            || systemWallpaperURLMatches(assetID: marker.assetID)
+        else {
+            return false
+        }
         return wallpaperStoreFullySelectsAerial(
             assetID: marker.assetID,
             scope: scope
@@ -244,25 +257,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         operationLock.lock()
         defer { operationLock.unlock() }
         try withCrossProcessLock {
-            do {
-                _ = try installLocked(
-                    videoURL: videoURL,
-                    forceRefresh: false,
-                    refreshAction: rearmSystem,
-                    // loginwindow on current macOS only accepts a newly
-                    // reserved Aerial asset after the shared Desktop + Idle
-                    // descriptor has been selected once. We immediately
-                    // restore Desktop below, leaving the live asset only in
-                    // the Idle/Lock Screen mode.
-                    scope: .sharedWallpaper,
-                    rollbackAction: refreshSystem,
-                    shouldProceed: { true }
-                )
-                try restoreDesktopAfterLockScreenReservation()
-            } catch {
-                try? uninstallLocked()
-                throw error
-            }
+            _ = try installLocked(
+                videoURL: videoURL,
+                forceRefresh: false,
+                refreshAction: rearmSystem,
+                scope: .lockScreenOnly,
+                rollbackAction: refreshSystem,
+                shouldProceed: { true }
+            )
         }
     }
 
@@ -335,6 +337,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         let thumbnailURL = aerialThumbnailsURL
             .appendingPathComponent(assetID)
             .appendingPathExtension("png")
+        let systemWallpaperURLBeforeAttempt = currentSystemWallpaperURL()
 
         if installationIsCurrent(
             videoURL: videoURL,
@@ -371,6 +374,20 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         )
 
         let existingMarker = loadMarker()
+        let originalSystemWallpaperURL: String?
+        let systemWallpaperURLWasCaptured: Bool
+        if usesCanonicalWallpaperStore {
+            systemWallpaperURLWasCaptured = true
+            if existingMarker?.systemWallpaperURLCaptureVersion == 1 {
+                originalSystemWallpaperURL =
+                    existingMarker?.originalSystemWallpaperURL
+            } else {
+                originalSystemWallpaperURL = systemWallpaperURLBeforeAttempt
+            }
+        } else {
+            systemWallpaperURLWasCaptured = false
+            originalSystemWallpaperURL = nil
+        }
         let originalAssetExisted =
             existingMarker?.originalAssetExisted
             ?? (
@@ -429,6 +446,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             installedAssetURL: preparedVideoURL,
             originalAssetExisted: originalAssetExisted,
             originalThumbnailExisted: originalThumbnailExisted,
+            originalSystemWallpaperURL: originalSystemWallpaperURL,
+            systemWallpaperURLWasCaptured: systemWallpaperURLWasCaptured,
             scope: scope
         )
         let markerEncoder = JSONEncoder()
@@ -442,6 +461,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         var assetMutated = false
         var thumbnailMutated = false
         var storeMutated = false
+        var systemWallpaperURLMutated = false
         do {
             // The marker is a recovery journal: it must exist before the first
             // system mutation so an interrupted install can always be undone.
@@ -478,6 +498,15 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             storeMutated = true
             guard shouldProceed() else {
                 throw AerialLockScreenOperationAbort.sessionChanged
+            }
+            if usesCanonicalWallpaperStore {
+                guard setSystemWallpaperURL(
+                    desiredSystemWallpaperURL(assetID: assetID)
+                ) else {
+                    throw AerialLockScreenInstallerError
+                        .wallpaperStoreUpdateFailed
+                }
+                systemWallpaperURLMutated = true
             }
             let didRefresh: Bool
             if shouldProceed() {
@@ -524,6 +553,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 } else {
                     try? fileManager.removeItem(at: thumbnailURL)
                 }
+            }
+            if systemWallpaperURLMutated {
+                _ = setSystemWallpaperURL(systemWallpaperURLBeforeAttempt)
             }
             if markerMutated {
                 if let markerBeforeAttempt {
@@ -579,6 +611,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         let thumbnailBeforeAttempt = thumbnailURL.flatMap {
             try? Data(contentsOf: $0)
         }
+        let systemWallpaperURLBeforeAttempt = currentSystemWallpaperURL()
+        var systemWallpaperURLMutated = false
 
         do {
             let originalStoreData = try Data(
@@ -605,6 +639,15 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             } else if let thumbnailURL,
                       marker.originalThumbnailExisted == false {
                 try? fileManager.removeItem(at: thumbnailURL)
+            }
+            if marker.systemWallpaperURLWasCaptured == true {
+                guard setSystemWallpaperURL(
+                    marker.originalSystemWallpaperURL
+                ) else {
+                    throw AerialLockScreenInstallerError
+                        .wallpaperStoreUpdateFailed
+                }
+                systemWallpaperURLMutated = true
             }
             var restorationVerified = false
             for _ in 0..<3 {
@@ -648,6 +691,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                     to: thumbnailURL,
                     options: .atomic
                 )
+            }
+            if systemWallpaperURLMutated {
+                _ = setSystemWallpaperURL(systemWallpaperURLBeforeAttempt)
             }
             try? refreshSystem({ true })
             throw error
@@ -853,42 +899,6 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             fromPropertyList: root,
             format: .binary,
             options: 0
-        )
-    }
-
-    private func restoreDesktopAfterLockScreenReservation() throws {
-        guard let marker = loadMarker(),
-              marker.completed == true
-        else {
-            throw AerialLockScreenInstallerError
-                .wallpaperStoreUnavailable
-        }
-        let originalStoreData = try Data(contentsOf: wallpaperStoreBackupURL)
-        let lockScreenOnlyStoreData = try aerialWallpaperStoreData(
-            from: originalStoreData,
-            assetID: marker.assetID,
-            scope: .lockScreenOnly
-        )
-        try lockScreenOnlyStoreData.write(
-            to: wallpaperStoreURL,
-            options: .atomic
-        )
-        try refreshSystem({ true })
-        guard wallpaperStoreFullySelectsAerial(
-            assetID: marker.assetID,
-            scope: .lockScreenOnly
-        ) else {
-            throw AerialLockScreenInstallerError
-                .wallpaperStoreUpdateFailed
-        }
-
-        var lockScreenMarker = marker
-        lockScreenMarker.desktopIncluded = false
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(lockScreenMarker).write(
-            to: markerURL,
-            options: .atomic
         )
     }
 
@@ -1168,6 +1178,88 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         ) as? [String: Any]
     }
 
+    private func currentSystemWallpaperURL() -> String? {
+        guard usesCanonicalWallpaperStore else { return nil }
+        return CFPreferencesCopyValue(
+            systemWallpaperURLPreferenceKey,
+            wallpaperPreferencesApplicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesAnyHost
+        ) as? String
+    }
+
+    @discardableResult
+    private func setSystemWallpaperURL(_ value: String?) -> Bool {
+        guard usesCanonicalWallpaperStore else { return true }
+        CFPreferencesSetValue(
+            systemWallpaperURLPreferenceKey,
+            value as CFPropertyList?,
+            wallpaperPreferencesApplicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesAnyHost
+        )
+        let synchronized = CFPreferencesSynchronize(
+            wallpaperPreferencesApplicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesAnyHost
+        )
+        return synchronized && clearManagedCurrentHostOverride()
+    }
+
+    private func clearManagedCurrentHostOverride() -> Bool {
+        guard let currentHostValue = CFPreferencesCopyValue(
+            systemWallpaperURLPreferenceKey,
+            wallpaperPreferencesApplicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesCurrentHost
+        ) as? String,
+        let currentHostURL = URL(string: currentHostValue),
+        currentHostURL.isFileURL
+        else {
+            return true
+        }
+
+        let managedRoot = aerialVideosURL.standardizedFileURL.path
+        guard currentHostURL.standardizedFileURL.path
+            .hasPrefix(managedRoot + "/")
+        else {
+            return true
+        }
+
+        CFPreferencesSetValue(
+            systemWallpaperURLPreferenceKey,
+            nil,
+            wallpaperPreferencesApplicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesCurrentHost
+        )
+        return CFPreferencesSynchronize(
+            wallpaperPreferencesApplicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesCurrentHost
+        )
+    }
+
+    private func desiredSystemWallpaperURL(assetID: String) -> String {
+        let assetURL = aerialVideosURL
+            .appendingPathComponent(assetID)
+            .appendingPathExtension("mov")
+        return assetURL.standardizedFileURL.absoluteString
+    }
+
+    private func systemWallpaperURLMatches(assetID: String) -> Bool {
+        guard let currentURLString = currentSystemWallpaperURL(),
+              let currentURL = URL(string: currentURLString),
+              currentURL.isFileURL,
+              let expectedURL = URL(
+                  string: desiredSystemWallpaperURL(assetID: assetID)
+              )
+        else {
+            return false
+        }
+        return currentURL.standardizedFileURL == expectedURL.standardizedFileURL
+    }
+
     private func installationIsCurrent(
         videoURL: URL,
         assetID: String,
@@ -1219,6 +1311,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
         if let markerSignature = marker.videoSignature,
            markerSignature != sourceSignature {
+            return false
+        }
+        guard !usesCanonicalWallpaperStore
+            || systemWallpaperURLMatches(assetID: assetID)
+        else {
             return false
         }
         return wallpaperStoreFullySelectsAerial(assetID: assetID, scope: scope)
@@ -1469,6 +1566,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         installedAssetURL: URL,
         originalAssetExisted: Bool,
         originalThumbnailExisted: Bool,
+        originalSystemWallpaperURL: String?,
+        systemWallpaperURLWasCaptured: Bool,
         scope: AerialWallpaperStoreScope
     ) throws -> AerialLockScreenMarker {
         let attributes = try fileManager.attributesOfItem(
@@ -1490,6 +1589,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             assetSignature: try fileSignature(at: installedAssetURL),
             originalAssetExisted: originalAssetExisted,
             originalThumbnailExisted: originalThumbnailExisted,
+            originalSystemWallpaperURL: originalSystemWallpaperURL,
+            systemWallpaperURLWasCaptured: systemWallpaperURLWasCaptured,
+            systemWallpaperURLCaptureVersion: systemWallpaperURLWasCaptured
+                ? 1
+                : nil,
             desktopIncluded: scope.includesDesktop,
             completed: false
         )
@@ -1545,6 +1649,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             originalThumbnailExisted: fileManager.fileExists(
                 atPath: thumbnailBackupURL.path
             ),
+            originalSystemWallpaperURL: nil,
+            systemWallpaperURLWasCaptured: false,
+            systemWallpaperURLCaptureVersion: nil,
             desktopIncluded: nil,
             completed: false
         )
