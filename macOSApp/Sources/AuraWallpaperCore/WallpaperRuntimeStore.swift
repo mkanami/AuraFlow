@@ -1,8 +1,6 @@
 import AppKit
 import AVFoundation
-import Darwin
 import Foundation
-import ImageIO
 
 public enum WallpaperRuntimeNotifications {
     public static let commandDidChange = Notification.Name(
@@ -83,8 +81,16 @@ public final class WallpaperRuntimeStore {
     }
 
     public func loadConfig() -> ControlConfig {
-        guard let config: ControlConfig = try? readJSON(ControlConfig.self, from: configURL) else {
+        guard let data = try? Data(contentsOf: configURL),
+              var config = try? JSONDecoder().decode(ControlConfig.self, from: data)
+        else {
             return .defaultConfig
+        }
+        if config.video_path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let legacyLockScreenPath = object["lock_screen_path"] as? String,
+           !legacyLockScreenPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            config.video_path = legacyLockScreenPath
         }
         return normalized(config)
     }
@@ -151,32 +157,12 @@ public final class WallpaperRuntimeStore {
 
     public func normalized(_ config: ControlConfig) -> ControlConfig {
         var normalized = config
-        normalized.lock_screen_path = normalized.lock_screen_path?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.lock_screen_path?.isEmpty == true {
-            normalized.lock_screen_path = nil
-        }
-        normalized.lock_screen_runtime_path = normalized.lock_screen_runtime_path?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.lock_screen_runtime_path?.isEmpty == true {
-            normalized.lock_screen_runtime_path = nil
-        }
         normalized.playback_speed = max(0.1, min(config.playback_speed, 4.0))
         normalized.volume = max(0, min(config.volume ?? 0, 1))
         normalized.autostart = config.autostart ?? false
         normalized.blend_interpolation = config.blend_interpolation ?? false
         normalized.pause_on_fullscreen = config.pause_on_fullscreen ?? true
-        let lockScreenPreferenceConfigured =
-            config.lock_screen_preference_configured == true
-        normalized.lock_screen_preference_configured = lockScreenPreferenceConfigured
-        // Earlier versions enabled the Aerial-based Lock Screen integration
-        // for every existing configuration. That integration rewrites the
-        // system wallpaper store, so an implicit legacy default must never
-        // modify a user's desktop. The toggle remains fully available once
-        // the user explicitly enables it.
-        normalized.show_on_lock_screen = lockScreenPreferenceConfigured
-            ? (config.show_on_lock_screen ?? false)
-            : false
+        normalized.show_on_lock_screen = config.show_on_lock_screen ?? false
         if WallpaperScaleMode(rawValue: config.scale_mode ?? "") == nil {
             normalized.scale_mode = WallpaperScaleMode.fill.rawValue
         }
@@ -205,153 +191,19 @@ public final class WallpaperRuntimeStore {
         let pid = loadPID()
         let alive = processIsAlive(pid: pid)
         let paused = isPaused()
-        let daemonPIDs = alive ? liveDaemonPIDs(rootPID: pid) : []
-        let processMetrics = liveProcessMetrics(pid: alive ? pid : nil)
         return DaemonMetrics(
             updated_at: Date().timeIntervalSince1970,
             running: alive && !paused,
             paused: paused,
             pid: alive ? pid : nil,
-            daemon_pids: daemonPIDs,
-            process_count: daemonPIDs.count,
-            cpu_percent: processMetrics.cpuPercent,
-            memory_mb: processMetrics.memoryMB,
-            virtual_memory_mb: processMetrics.virtualMemoryMB,
-            thread_count: processMetrics.threadCount,
+            daemon_pids: alive ? pid.map { [$0] } : [],
+            process_count: alive ? 1 : 0,
+            cpu_percent: nil,
+            memory_mb: nil,
+            virtual_memory_mb: nil,
+            thread_count: nil,
             health: healthForStatus(alive: alive, paused: paused)
         )
-    }
-
-    private func liveDaemonPIDs(rootPID: Int?) -> [Int] {
-        guard let rootPID, rootPID > 0 else { return [] }
-
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-axo", "pid=,ppid="]
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return [rootPID]
-        }
-
-        guard process.terminationStatus == 0,
-              let text = String(
-                  data: output.fileHandleForReading.readDataToEndOfFile(),
-                  encoding: .utf8
-              ) else {
-            return [rootPID]
-        }
-
-        var parentByPID: [Int: Int] = [:]
-        for line in text.split(whereSeparator: \.isNewline) {
-            let values = line.split(whereSeparator: \.isWhitespace)
-            guard values.count >= 2,
-                  let pid = Int(values[0]),
-                  let parentPID = Int(values[1]),
-                  pid > 0 else {
-                continue
-            }
-            parentByPID[pid] = parentPID
-        }
-
-        var daemonPIDs: Set<Int> = [rootPID]
-        var didAddProcess = true
-        while didAddProcess {
-            didAddProcess = false
-            for (pid, parentPID) in parentByPID where daemonPIDs.contains(parentPID) {
-                if daemonPIDs.insert(pid).inserted {
-                    didAddProcess = true
-                }
-            }
-        }
-        return daemonPIDs.sorted()
-    }
-
-    private struct LiveProcessMetrics {
-        var cpuPercent: Double?
-        var memoryMB: Double?
-        var virtualMemoryMB: Double?
-        var threadCount: Int?
-    }
-
-    /// Reads metrics for the daemon itself instead of reporting placeholders.
-    ///
-    /// `proc_pidinfo` is the native macOS process API and gives us memory and
-    /// thread data without scraping a UI or assuming a particular display. CPU
-    /// percentage is read from the system `ps` snapshot because it already
-    /// applies macOS's process CPU accounting and does not require mutable
-    /// sampling state in this store.
-    private func liveProcessMetrics(pid: Int?) -> LiveProcessMetrics {
-        guard let pid, pid > 0 else {
-            return LiveProcessMetrics(
-                cpuPercent: nil,
-                memoryMB: nil,
-                virtualMemoryMB: nil,
-                threadCount: nil
-            )
-        }
-
-        var taskInfo = proc_taskinfo()
-        let taskInfoSize = Int32(MemoryLayout<proc_taskinfo>.size)
-        let taskInfoResult = proc_pidinfo(
-            pid_t(pid),
-            PROC_PIDTASKINFO,
-            0,
-            &taskInfo,
-            taskInfoSize
-        )
-
-        let memoryMB: Double?
-        let virtualMemoryMB: Double?
-        let threadCount: Int?
-        if taskInfoResult == taskInfoSize {
-            memoryMB = Double(taskInfo.pti_resident_size) / 1_048_576.0
-            virtualMemoryMB = Double(taskInfo.pti_virtual_size) / 1_048_576.0
-            threadCount = taskInfo.pti_threadnum > 0 ? Int(taskInfo.pti_threadnum) : nil
-        } else {
-            memoryMB = nil
-            virtualMemoryMB = nil
-            threadCount = nil
-        }
-
-        return LiveProcessMetrics(
-            cpuPercent: processCPUPercent(pid: pid),
-            memoryMB: memoryMB,
-            virtualMemoryMB: virtualMemoryMB,
-            threadCount: threadCount
-        )
-    }
-
-    private func processCPUPercent(pid: Int) -> Double? {
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-p", String(pid), "-o", "pcpu="]
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return nil
-        }
-
-        guard process.terminationStatus == 0,
-              let text = String(
-                  data: output.fileHandleForReading.readDataToEndOfFile(),
-                  encoding: .utf8
-              ),
-              let value = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)),
-              value.isFinite else {
-            return nil
-        }
-        return max(value, 0)
     }
 
     public func healthForStatus(alive: Bool, paused: Bool) -> DaemonHealth {
@@ -477,255 +329,6 @@ public final class WallpaperRuntimeStore {
         return lastFrameURL
     }
 
-    /// Converts a static image into a tiny H.264 movie for Apple's Lock Screen
-    /// providers. The desktop agent renders images natively and never needs
-    /// this conversion. The cached movie is keyed by the image's file
-    /// revision, so selecting a different image cannot reuse stale pixels.
-    public func ensureLockScreenVideo(from sourceURL: URL) throws -> URL {
-        if sourceURL.pathExtension.lowercased() == "gif" {
-            return try ensureAnimatedGIFVideo(from: sourceURL)
-        }
-        guard WallpaperMediaKind.forURL(sourceURL).isStaticImage else {
-            return sourceURL.standardizedFileURL
-        }
-        try ensureDirectories()
-
-        let sourceRevisionURL = appSupportURL
-            .appendingPathComponent("lock_screen_video_source.json")
-        let outputURL = appSupportURL
-            .appendingPathComponent("lock_screen_video.mov")
-        let revision = imageSourceRevision(for: sourceURL)
-        if FileManager.default.fileExists(atPath: outputURL.path),
-           (try? readJSON(ImageSourceRevision.self, from: sourceRevisionURL)) == revision {
-            return outputURL
-        }
-
-        guard let imageSource = CGImageSourceCreateWithURL(
-            sourceURL as CFURL,
-            nil
-        ),
-        let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil)
-        else {
-            throw WallpaperRuntimeError.unavailable(
-                "Could not read the selected Lock Screen image."
-            )
-        }
-
-        let width = max(2, cgImage.width - (cgImage.width % 2))
-        let height = max(2, cgImage.height - (cgImage.height % 2))
-        let temporaryURL = appSupportURL
-            .appendingPathComponent(".lock_screen_video.\(UUID().uuidString).mov")
-        defer { try? FileManager.default.removeItem(at: temporaryURL) }
-
-        let writer = try AVAssetWriter(outputURL: temporaryURL, fileType: .mov)
-        let input = AVAssetWriterInput(
-            mediaType: .video,
-            outputSettings: [
-                AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: width,
-                AVVideoHeightKey: height,
-            ]
-        )
-        input.expectsMediaDataInRealTime = false
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: input,
-            sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
-                kCVPixelBufferWidthKey as String: width,
-                kCVPixelBufferHeightKey as String: height,
-            ]
-        )
-        guard writer.canAdd(input) else {
-            throw WallpaperRuntimeError.unavailable(
-                "Could not prepare the Lock Screen image encoder."
-            )
-        }
-        writer.add(input)
-        guard writer.startWriting() else {
-            throw writer.error ?? WallpaperRuntimeError.unavailable(
-                "Could not start the Lock Screen image encoder."
-            )
-        }
-        writer.startSession(atSourceTime: .zero)
-
-        guard let pixelBuffer = makePixelBuffer(
-            from: cgImage,
-            width: width,
-            height: height
-        ) else {
-            writer.cancelWriting()
-            throw WallpaperRuntimeError.unavailable(
-                "Could not prepare the Lock Screen image frame."
-            )
-        }
-        guard input.isReadyForMoreMediaData,
-              adaptor.append(pixelBuffer, withPresentationTime: .zero),
-              adaptor.append(pixelBuffer, withPresentationTime: CMTime(seconds: 1, preferredTimescale: 600))
-        else {
-            writer.cancelWriting()
-            throw writer.error ?? WallpaperRuntimeError.unavailable(
-                "Could not encode the Lock Screen image frame."
-            )
-        }
-        input.markAsFinished()
-        let semaphore = DispatchSemaphore(value: 0)
-        writer.finishWriting { semaphore.signal() }
-        semaphore.wait()
-        guard writer.status == .completed else {
-            throw writer.error ?? WallpaperRuntimeError.unavailable(
-                "Could not finish the Lock Screen image movie."
-            )
-        }
-
-        if FileManager.default.fileExists(atPath: outputURL.path) {
-            _ = try FileManager.default.replaceItemAt(outputURL, withItemAt: temporaryURL)
-        } else {
-            try FileManager.default.moveItem(at: temporaryURL, to: outputURL)
-        }
-        try writeJSON(revision, to: sourceRevisionURL)
-        return outputURL
-    }
-
-    private func ensureAnimatedGIFVideo(from sourceURL: URL) throws -> URL {
-        try ensureDirectories()
-
-        let sourceRevisionURL = appSupportURL
-            .appendingPathComponent("lock_screen_video_source.json")
-        let outputURL = appSupportURL
-            .appendingPathComponent("lock_screen_video.mov")
-        let revision = imageSourceRevision(for: sourceURL)
-        if FileManager.default.fileExists(atPath: outputURL.path),
-           (try? readJSON(ImageSourceRevision.self, from: sourceRevisionURL)) == revision {
-            return outputURL
-        }
-
-        guard let imageSource = CGImageSourceCreateWithURL(sourceURL as CFURL, nil) else {
-            throw WallpaperRuntimeError.unavailable(
-                "Could not read the selected Lock Screen GIF."
-            )
-        }
-
-        let frameCount = max(1, CGImageSourceGetCount(imageSource))
-        var frames: [(image: CGImage, duration: Double)] = []
-        frames.reserveCapacity(frameCount)
-        for index in 0..<frameCount {
-            guard let image = CGImageSourceCreateImageAtIndex(imageSource, index, nil) else {
-                continue
-            }
-            let properties = CGImageSourceCopyPropertiesAtIndex(
-                imageSource,
-                index,
-                nil
-            ) as? [String: Any]
-            let gifProperties = properties?[kCGImagePropertyGIFDictionary as String] as? [String: Any]
-            let unclampedDelay = (gifProperties?[kCGImagePropertyGIFUnclampedDelayTime as String] as? NSNumber)?.doubleValue
-            let clampedDelay = (gifProperties?[kCGImagePropertyGIFDelayTime as String] as? NSNumber)?.doubleValue
-            let duration = max(0.04, unclampedDelay ?? clampedDelay ?? 0.1)
-            frames.append((image: image, duration: duration))
-        }
-        guard let firstFrame = frames.first else {
-            throw WallpaperRuntimeError.unavailable(
-                "The selected Lock Screen GIF contains no readable frames."
-            )
-        }
-
-        let width = max(2, firstFrame.image.width - (firstFrame.image.width % 2))
-        let height = max(2, firstFrame.image.height - (firstFrame.image.height % 2))
-        let temporaryURL = appSupportURL
-            .appendingPathComponent(".lock_screen_gif_video.\(UUID().uuidString).mov")
-        defer { try? FileManager.default.removeItem(at: temporaryURL) }
-
-        let writer = try AVAssetWriter(outputURL: temporaryURL, fileType: .mov)
-        let input = AVAssetWriterInput(
-            mediaType: .video,
-            outputSettings: [
-                AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: width,
-                AVVideoHeightKey: height,
-            ]
-        )
-        input.expectsMediaDataInRealTime = false
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: input,
-            sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
-                kCVPixelBufferWidthKey as String: width,
-                kCVPixelBufferHeightKey as String: height,
-            ]
-        )
-        guard writer.canAdd(input) else {
-            throw WallpaperRuntimeError.unavailable(
-                "Could not prepare the Lock Screen GIF encoder."
-            )
-        }
-        writer.add(input)
-        guard writer.startWriting() else {
-            throw writer.error ?? WallpaperRuntimeError.unavailable(
-                "Could not start the Lock Screen GIF encoder."
-            )
-        }
-        writer.startSession(atSourceTime: .zero)
-
-        var presentationTime = CMTime.zero
-        for frame in frames {
-            guard let pixelBuffer = makePixelBuffer(
-                from: frame.image,
-                width: width,
-                height: height
-            ) else {
-                writer.cancelWriting()
-                throw WallpaperRuntimeError.unavailable(
-                    "Could not prepare a Lock Screen GIF frame."
-                )
-            }
-            while !input.isReadyForMoreMediaData {
-                if writer.status == .failed {
-                    throw writer.error ?? WallpaperRuntimeError.unavailable(
-                        "The Lock Screen GIF encoder stopped unexpectedly."
-                    )
-                }
-                Thread.sleep(forTimeInterval: 0.01)
-            }
-            guard adaptor.append(pixelBuffer, withPresentationTime: presentationTime) else {
-                writer.cancelWriting()
-                throw writer.error ?? WallpaperRuntimeError.unavailable(
-                    "Could not encode a Lock Screen GIF frame."
-                )
-            }
-            presentationTime = CMTimeAdd(
-                presentationTime,
-                CMTime(seconds: frame.duration, preferredTimescale: 600)
-            )
-        }
-
-        input.markAsFinished()
-        let semaphore = DispatchSemaphore(value: 0)
-        writer.finishWriting { semaphore.signal() }
-        semaphore.wait()
-        guard writer.status == .completed else {
-            throw writer.error ?? WallpaperRuntimeError.unavailable(
-                "Could not finish the Lock Screen GIF movie."
-            )
-        }
-
-        if FileManager.default.fileExists(atPath: outputURL.path) {
-            _ = try FileManager.default.replaceItemAt(outputURL, withItemAt: temporaryURL)
-        } else {
-            try FileManager.default.moveItem(at: temporaryURL, to: outputURL)
-        }
-        try writeJSON(revision, to: sourceRevisionURL)
-        return outputURL
-    }
-
-    public func removeManagedLockScreenVideo() {
-        try? FileManager.default.removeItem(
-            at: appSupportURL.appendingPathComponent("lock_screen_video.mov")
-        )
-        try? FileManager.default.removeItem(
-            at: appSupportURL.appendingPathComponent("lock_screen_video_source.json")
-        )
-    }
-
     public func ensureCurrentStillFrame(from videoURL: URL) throws -> URL {
         let expectedRevision = sourceRevision(for: videoURL)
         let savedRevision: LastFrameSourceRevision? =
@@ -791,68 +394,6 @@ public final class WallpaperRuntimeStore {
             modifiedAt: (attributes?[.modificationDate] as? Date)?
                 .timeIntervalSince1970
         )
-    }
-
-    private struct ImageSourceRevision: Codable, Equatable {
-        var path: String
-        var size: UInt64?
-        var modifiedAt: Double?
-    }
-
-    private func imageSourceRevision(for imageURL: URL) -> ImageSourceRevision {
-        let standardizedURL = imageURL.standardizedFileURL
-        let attributes = try? FileManager.default.attributesOfItem(
-            atPath: standardizedURL.path
-        )
-        return ImageSourceRevision(
-            path: standardizedURL.path,
-            size: (attributes?[.size] as? NSNumber)?.uint64Value,
-            modifiedAt: (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970
-        )
-    }
-
-    private func makePixelBuffer(
-        from image: CGImage,
-        width: Int,
-        height: Int
-    ) -> CVPixelBuffer? {
-        var pixelBuffer: CVPixelBuffer?
-        let attributes: [String: Any] = [
-            kCVPixelBufferCGImageCompatibilityKey as String: true,
-            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
-        ]
-        guard CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            kCVPixelFormatType_32ARGB,
-            attributes as CFDictionary,
-            &pixelBuffer
-        ) == kCVReturnSuccess,
-        let pixelBuffer
-        else {
-            return nil
-        }
-
-        CVPixelBufferLockBaseAddress(pixelBuffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
-        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer),
-              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                  data: baseAddress,
-                  width: width,
-                  height: height,
-                  bitsPerComponent: 8,
-                  bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
-                  space: colorSpace,
-                  bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
-              )
-        else {
-            return nil
-        }
-        context.interpolationQuality = .high
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return pixelBuffer
     }
 
     private func runLaunchctl(_ arguments: [String]) -> Bool {

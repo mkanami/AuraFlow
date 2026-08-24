@@ -125,40 +125,34 @@ struct ScreenSaverSelectionCoordinator {
     private struct Backup: Codable {
         var module: ScreenSaverModulePreference?
         var idleTime: Int
-        var wallpaperStoreData: Data?
     }
 
     private let fileManager: FileManager
     private let preferences: ScreenSaverPreferenceManaging
     private let destinationURL: URL
     private let backupURL: URL
-    private let wallpaperStoreURL: URL?
 
     init(
         fileManager: FileManager,
         preferences: ScreenSaverPreferenceManaging,
         destinationURL: URL,
-        backupURL: URL,
-        wallpaperStoreURL: URL? = nil
+        backupURL: URL
     ) {
         self.fileManager = fileManager
         self.preferences = preferences
         self.destinationURL = destinationURL
         self.backupURL = backupURL
-        self.wallpaperStoreURL = wallpaperStoreURL
     }
 
     func activate() throws {
         let previousModule = preferences.selectedModule
         let previousIdleTime = preferences.idleTime
-        let previousWallpaperStoreData = try currentWallpaperStoreData()
         var createdBackup = false
         if previousModule?.pointsTo(destinationURL) != true,
            !fileManager.fileExists(atPath: backupURL.path) {
             let backup = Backup(
                 module: previousModule,
-                idleTime: previousIdleTime,
-                wallpaperStoreData: previousWallpaperStoreData
+                idleTime: previousIdleTime
             )
             let data = try JSONEncoder.auraFlowPretty.encode(backup)
             try fileManager.createDirectory(
@@ -179,35 +173,25 @@ struct ScreenSaverSelectionCoordinator {
             module: desiredModule,
             idleTime: desiredIdleTime
         )
-        do {
-            guard accepted,
-                  preferences.selectedModule?.pointsTo(destinationURL) == true,
-                  preferences.idleTime > 0
-            else {
-                throw LockScreenSaverInstallerError.preferenceUpdateFailed
-            }
-            try writeAuraFlowWallpaperStoreIfAvailable()
-            guard wallpaperStoreSelectsAuraFlowIfAvailable() else {
-                throw LockScreenSaverInstallerError.preferenceUpdateFailed
-            }
-        } catch {
+        let verified = accepted
+            && preferences.selectedModule?.pointsTo(destinationURL) == true
+            && preferences.idleTime > 0
+        guard verified else {
             _ = preferences.apply(
                 module: previousModule,
                 idleTime: previousIdleTime
             )
-            restoreWallpaperStore(previousWallpaperStoreData)
             if createdBackup {
                 try? fileManager.removeItem(at: backupURL)
             }
-            throw error
+            throw LockScreenSaverInstallerError.preferenceUpdateFailed
         }
     }
 
     func restoreIfNeeded() throws {
         let preferencesSelectAuraFlow =
             preferences.selectedModule?.pointsTo(destinationURL) == true
-        let storeSelectsAuraFlow = wallpaperStoreSelectsAuraFlowIfAvailable()
-        guard preferencesSelectAuraFlow || storeSelectsAuraFlow else {
+        guard preferencesSelectAuraFlow else {
             try? fileManager.removeItem(at: backupURL)
             return
         }
@@ -221,257 +205,16 @@ struct ScreenSaverSelectionCoordinator {
         )
         let previousModule = backup?.module ?? fallbackModule
         let previousIdleTime = backup?.idleTime ?? 300
-        let currentModule = preferences.selectedModule
-        let currentIdleTime = preferences.idleTime
-        let currentWallpaperStoreData = try currentWallpaperStoreData()
-        do {
-            guard preferences.apply(
-                module: previousModule,
-                idleTime: previousIdleTime
-            ),
-            preferences.selectedModule == previousModule,
-            preferences.idleTime == previousIdleTime
-            else {
-                throw LockScreenSaverInstallerError.preferenceUpdateFailed
-            }
-            try restoreManagedWallpaperStore(
-                savedData: backup?.wallpaperStoreData,
-                currentData: currentWallpaperStoreData,
-                isManaged: storeSelectsAuraFlow
-            )
-        } catch {
-            _ = preferences.apply(
-                module: currentModule,
-                idleTime: currentIdleTime
-            )
-            if let currentWallpaperStoreData,
-               let wallpaperStoreURL {
-                try? currentWallpaperStoreData.write(
-                    to: wallpaperStoreURL,
-                    options: .atomic
-                )
-            }
-            throw error
+        guard preferences.apply(
+            module: previousModule,
+            idleTime: previousIdleTime
+        ),
+        preferences.selectedModule == previousModule,
+        preferences.idleTime == previousIdleTime
+        else {
+            throw LockScreenSaverInstallerError.preferenceUpdateFailed
         }
         try? fileManager.removeItem(at: backupURL)
-    }
-
-    private func currentWallpaperStoreData() throws -> Data? {
-        guard let wallpaperStoreURL,
-              fileManager.fileExists(atPath: wallpaperStoreURL.path)
-        else {
-            return nil
-        }
-        return try Data(contentsOf: wallpaperStoreURL)
-    }
-
-    private func writeAuraFlowWallpaperStoreIfAvailable() throws {
-        guard let wallpaperStoreURL,
-              fileManager.fileExists(atPath: wallpaperStoreURL.path)
-        else {
-            return
-        }
-        let data = try Data(contentsOf: wallpaperStoreURL)
-        guard let root = try PropertyListSerialization.propertyList(
-            from: data,
-            options: [],
-            format: nil
-        ) as? [String: Any]
-        else {
-            throw LockScreenSaverInstallerError.preferenceUpdateFailed
-        }
-        guard let updatedRoot = replaceIdleModes(in: root) as? [String: Any]
-        else {
-            throw LockScreenSaverInstallerError.preferenceUpdateFailed
-        }
-        let updatedData = try PropertyListSerialization.data(
-            fromPropertyList: updatedRoot,
-            format: .binary,
-            options: 0
-        )
-        try updatedData.write(to: wallpaperStoreURL, options: .atomic)
-    }
-
-    private func restoreWallpaperStore(_ data: Data?) {
-        guard let data,
-              let wallpaperStoreURL
-        else {
-            return
-        }
-        try? data.write(to: wallpaperStoreURL, options: .atomic)
-    }
-
-    private func restoreManagedWallpaperStore(
-        savedData: Data?,
-        currentData: Data?,
-        isManaged: Bool
-    ) throws {
-        guard isManaged,
-              let wallpaperStoreURL
-        else {
-            return
-        }
-        if let savedData {
-            try savedData.write(to: wallpaperStoreURL, options: .atomic)
-            return
-        }
-        guard let currentData,
-              let root = try PropertyListSerialization.propertyList(
-                  from: currentData,
-                  options: [],
-                  format: nil
-              ) as? [String: Any],
-              let restoredRoot = restoreAuraFlowIdleModes(in: root) as? [String: Any]
-        else {
-            throw LockScreenSaverInstallerError.preferenceUpdateFailed
-        }
-        let restoredData = try PropertyListSerialization.data(
-            fromPropertyList: restoredRoot,
-            format: .binary,
-            options: 0
-        )
-        try restoredData.write(to: wallpaperStoreURL, options: .atomic)
-    }
-
-    private func wallpaperStoreSelectsAuraFlowIfAvailable() -> Bool {
-        guard let wallpaperStoreURL,
-              fileManager.fileExists(atPath: wallpaperStoreURL.path),
-              let data = try? Data(contentsOf: wallpaperStoreURL),
-              let root = try? PropertyListSerialization.propertyList(
-                  from: data,
-                  options: [],
-                  format: nil
-              )
-        else {
-            return wallpaperStoreURL == nil
-                || !fileManager.fileExists(
-                    atPath: wallpaperStoreURL?.path ?? ""
-                )
-        }
-        return containsAuraFlowReference(root)
-    }
-
-    private func replaceIdleModes(in value: Any) -> Any {
-        if var dictionary = value as? [String: Any] {
-            if dictionary["Desktop"] != nil || dictionary["Idle"] != nil {
-                dictionary["Idle"] = auraFlowScreenSaverMode()
-                dictionary["Type"] = "individual"
-            }
-            for key in dictionary.keys where key != "Desktop" && key != "Idle" {
-                if let nested = dictionary[key] {
-                    dictionary[key] = replaceIdleModes(in: nested)
-                }
-            }
-            return dictionary
-        }
-        if let array = value as? [Any] {
-            return array.map { replaceIdleModes(in: $0) }
-        }
-        return value
-    }
-
-    private func restoreAuraFlowIdleModes(in value: Any) -> Any {
-        if var dictionary = value as? [String: Any] {
-            if let idle = dictionary["Idle"] as? [String: Any],
-               containsAuraFlowReference(idle) {
-                if let desktop = dictionary["Desktop"] as? [String: Any] {
-                    dictionary["Idle"] = desktop
-                } else {
-                    dictionary["Idle"] = defaultScreenSaverMode()
-                }
-            }
-            for key in dictionary.keys where key != "Desktop" && key != "Idle" {
-                if let nested = dictionary[key] {
-                    dictionary[key] = restoreAuraFlowIdleModes(in: nested)
-                }
-            }
-            return dictionary
-        }
-        if let array = value as? [Any] {
-            return array.map { restoreAuraFlowIdleModes(in: $0) }
-        }
-        return value
-    }
-
-    private func auraFlowScreenSaverMode() -> [String: Any] {
-        let configuration: [String: Any] = [
-            "module": [
-                "relative": destinationURL.standardizedFileURL.absoluteString,
-            ],
-        ]
-        let configurationData = (
-            try? PropertyListSerialization.data(
-                fromPropertyList: configuration,
-                format: .binary,
-                options: 0
-            )
-        ) ?? Data()
-        return [
-            "LastSet": Date(),
-            "LastUse": Date(),
-            "Content": [
-                "Choices": [[
-                    "Provider": "com.apple.wallpaper.choice.screen-saver",
-                    "Files": [],
-                    "Configuration": configurationData,
-                ]],
-                "Shuffle": "$null",
-                "EncodedOptionValues": "$null",
-            ],
-        ]
-    }
-
-    private func defaultScreenSaverMode() -> [String: Any] {
-        let configuration: [String: Any] = [
-            "module": [
-                "relative":
-                    "file:///System/Library/ExtensionKit/Extensions/Ventura.appex",
-            ],
-        ]
-        let configurationData = (
-            try? PropertyListSerialization.data(
-                fromPropertyList: configuration,
-                format: .binary,
-                options: 0
-            )
-        ) ?? Data()
-        return [
-            "LastSet": Date(),
-            "LastUse": Date(),
-            "Content": [
-                "Choices": [[
-                    "Provider": "com.apple.wallpaper.choice.screen-saver",
-                    "Files": [],
-                    "Configuration": configurationData,
-                ]],
-                "Shuffle": "$null",
-                "EncodedOptionValues": "$null",
-            ],
-        ]
-    }
-
-    private func containsAuraFlowReference(_ value: Any) -> Bool {
-        if let string = value as? String {
-            return string.localizedCaseInsensitiveContains("AuraFlow")
-        }
-        if let data = value as? Data,
-           let propertyList = try? PropertyListSerialization.propertyList(
-               from: data,
-               options: [],
-               format: nil
-           ) {
-            return containsAuraFlowReference(propertyList)
-        }
-        if let dictionary = value as? [String: Any] {
-            return dictionary.contains {
-                containsAuraFlowReference($0.key)
-                    || containsAuraFlowReference($0.value)
-            }
-        }
-        if let array = value as? [Any] {
-            return array.contains(where: containsAuraFlowReference)
-        }
-        return false
     }
 }
 
@@ -507,11 +250,7 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
             fileManager: fileManager,
             preferences: preferences,
             destinationURL: resolvedDestinationURL,
-            backupURL: resolvedBackupURL,
-            wallpaperStoreURL: fileManager.homeDirectoryForCurrentUser
-                .appendingPathComponent(
-                    "Library/Application Support/com.apple.wallpaper/Store/Index.plist"
-                )
+            backupURL: resolvedBackupURL
         )
     }
 

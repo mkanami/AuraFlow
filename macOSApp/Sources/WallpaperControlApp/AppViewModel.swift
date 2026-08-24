@@ -216,13 +216,11 @@ final class NativeWallpaperController: WallpaperControlling {
     private let store: WallpaperRuntimeStore
     private let helperURL: URL
     private let lockScreenSaverInstaller: LockScreenSaverInstalling
-    private let applyLockScreenFallbackFrame: (String) -> Bool
 
     init(
         store: WallpaperRuntimeStore = WallpaperRuntimeStore(),
         helperURL: URL? = nil,
-        lockScreenSaverInstaller: LockScreenSaverInstalling? = nil,
-        applyLockScreenFallbackFrame: ((String) -> Bool)? = nil
+        lockScreenSaverInstaller: LockScreenSaverInstalling? = nil
     ) throws {
         self.store = store
         let helperResolution: RuntimeHelperResolution
@@ -237,15 +235,6 @@ final class NativeWallpaperController: WallpaperControlling {
         self.helperURL = helperResolution.url
         self.lockScreenSaverInstaller =
             lockScreenSaverInstaller ?? LockScreenWallpaperInstaller()
-        let isCanonicalStore = store.appSupportURL.standardizedFileURL
-            == WallpaperRuntimeStore.defaultAppSupportURL()
-                .standardizedFileURL
-        self.applyLockScreenFallbackFrame = applyLockScreenFallbackFrame
-            ?? { imagePath in
-                guard isCanonicalStore else { return true }
-                return WallpaperDesktopSupport
-                    .applyLockScreenFallbackFrame(imagePath: imagePath)
-            }
         if helperResolution.didUpdateInstalledCopy {
             try restartRunningAgentAfterHelperUpdate()
         }
@@ -328,9 +317,12 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     private func recoverInterruptedWallpaperRemovalIfNeeded() {
-        let isCanonicalStore = store.appSupportURL.standardizedFileURL
+        guard store.appSupportURL.standardizedFileURL
             == WallpaperRuntimeStore.defaultAppSupportURL()
                 .standardizedFileURL
+        else {
+            return
+        }
         let config = store.loadConfig()
         guard config.video_path.isEmpty,
               config.show_on_lock_screen != true
@@ -339,7 +331,7 @@ final class NativeWallpaperController: WallpaperControlling {
         }
         if store.restoreWallpaperBackup() {
             store.removeManagedFallback()
-        } else if isCanonicalStore {
+        } else {
             _ = WallpaperDesktopSupport
                 .repairCurrentDesktopWallpaperIfNeeded()
         }
@@ -381,7 +373,7 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func start(videoURL: URL?, speed: Double?) throws -> ControlStatus {
-        var config = try updateConfig { config in
+        let config = try updateConfig { config in
             if let videoURL {
                 config.video_path = videoURL.path
             }
@@ -395,28 +387,9 @@ final class NativeWallpaperController: WallpaperControlling {
         guard FileManager.default.fileExists(atPath: config.video_path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
-        // A previous AuraFlow run may have been interrupted after writing its
-        // recovery payload. Never let that stale payload become the next
-        // user's restore target. If the wallpaper agent is not alive there is
-        // no active session to protect, so the next capture must start from
-        // the wallpaper that macOS is showing right now.
-        if !store.processIsAlive(pid: store.loadPID()) {
-            WallpaperDesktopSupport.discardWallpaperBackups(
-                appSupportPath: store.appSupportURL.path
-            )
-        }
-        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
-            appSupportPath: store.appSupportURL.path
-        )
-        _ = WallpaperDesktopSupport.beginWallpaperBackupSession(
-            appSupportPath: store.appSupportURL.path
-        )
+        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(appSupportPath: store.appSupportURL.path)
         if config.show_on_lock_screen ?? false {
-            config = try prepareLockScreenConfig(config)
-            try store.saveConfig(config)
-            // Start installs the configured Lock Screen provider but never
-            // opens System Settings or changes the user's selected provider.
-            try installLockScreenSaver(using: config, activate: false)
+            try installLockScreenSaver(using: config)
         }
         store.markPaused(false)
         try launchAgentIfNeeded()
@@ -432,6 +405,7 @@ final class NativeWallpaperController: WallpaperControlling {
         guard FileManager.default.fileExists(atPath: config.video_path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
+
         store.markPaused(false)
         try launchAgentIfNeeded()
         if store.processIsAlive(pid: store.loadPID()) {
@@ -453,13 +427,6 @@ final class NativeWallpaperController: WallpaperControlling {
 
     func clearWallpaper() throws -> ControlStatus {
         let currentConfig = store.loadConfig()
-        // Refresh the latest external wallpaper immediately before Remove.
-        // The user may have changed it outside AuraFlow while playback was
-        // active; the backup session keeps that newer choice without allowing
-        // the managed still frame to become the restore target.
-        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
-            appSupportPath: store.appSupportURL.path
-        )
         if store.processIsAlive(pid: store.loadPID()) {
             try? send(.terminate, config: currentConfig)
         }
@@ -475,15 +442,9 @@ final class NativeWallpaperController: WallpaperControlling {
             try lockScreenSaverInstaller.uninstall()
         }
         let restored = store.restoreWallpaperBackup()
-        (lockScreenSaverInstaller as? LockScreenWallpaperInstaller)?
-            .refreshAfterWallpaperRestore()
         _ = try updateConfig { config in
             config.video_path = ""
-            // Remove clears AuraFlow's runtime media, but it must not change
-            // the user's Lock Screen preference. The next explicit Start can
-            // use the same preference without requiring the toggle again.
-            config.lock_screen_path = nil
-            config.lock_screen_runtime_path = nil
+            config.show_on_lock_screen = false
         }
         if restored {
             store.removeManagedFallback()
@@ -495,17 +456,8 @@ final class NativeWallpaperController: WallpaperControlling {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(url.path)")
         }
-        var config = try updateConfig { config in
+        let config = try updateConfig { config in
             config.video_path = url.path
-            // A realtime ordinary wallpaper change is also a Lock Screen
-            // change. Only Choose Lock Screen creates a separate source.
-            config.lock_screen_path = nil
-            config.lock_screen_runtime_path = nil
-        }
-        if config.show_on_lock_screen == true {
-            config = try prepareLockScreenConfig(config)
-            try store.saveConfig(config)
-            try installLockScreenSaver(using: config, activate: false)
         }
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.reload, config: config)
@@ -515,29 +467,7 @@ final class NativeWallpaperController: WallpaperControlling {
 
     func setLockScreenMedia(_ url: URL?) throws -> ControlStatus {
         if let url {
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                throw NativeWallpaperControllerError.unavailable(
-                    "Lock Screen media file not found: \(url.path)"
-                )
-            }
-        }
-
-        var config = store.loadConfig()
-        if url == nil,
-           config.video_path.isEmpty {
-            throw NativeWallpaperControllerError.unavailable(
-                "Choose a desktop wallpaper before using it for Lock Screen."
-            )
-        }
-        config.lock_screen_path = url?.standardizedFileURL.path
-        config.lock_screen_runtime_path = nil
-        config.show_on_lock_screen = true
-        config.lock_screen_preference_configured = true
-        config = try prepareLockScreenConfig(config)
-        try installLockScreenSaver(using: config, activate: false)
-        try store.saveConfig(config)
-        if store.processIsAlive(pid: store.loadPID()) {
-            try send(.update, config: config)
+            return try setVideo(url)
         }
         return store.status()
     }
@@ -575,32 +505,18 @@ final class NativeWallpaperController: WallpaperControlling {
     func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus {
         let currentConfig = store.loadConfig()
         if enabled {
-            var prepared = currentConfig
-            prepared.show_on_lock_screen = true
-            prepared.lock_screen_preference_configured = true
-            if !prepared.effectiveLockScreenPath.isEmpty {
-                prepared = try prepareLockScreenConfig(prepared)
-                try installLockScreenSaver(using: prepared, activate: true)
+            guard !currentConfig.video_path.isEmpty else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "Choose and start a wallpaper before enabling Lock Screen."
+                )
             }
-            try store.saveConfig(prepared)
-            if store.processIsAlive(pid: store.loadPID()),
-               !prepared.video_path.isEmpty {
-                try send(.update, config: prepared)
-            }
-            return store.status()
+            try installLockScreenSaver(using: currentConfig)
         } else {
             try lockScreenSaverInstaller.uninstall()
-            if store.appSupportURL.standardizedFileURL
-                == WallpaperRuntimeStore.defaultAppSupportURL()
-                    .standardizedFileURL {
-                _ = WallpaperDesktopSupport
-                    .repairCurrentDesktopWallpaperIfNeeded()
-            }
         }
 
         let config = try updateConfig { config in
             config.show_on_lock_screen = enabled
-            config.lock_screen_preference_configured = true
         }
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.update, config: config)
@@ -610,17 +526,8 @@ final class NativeWallpaperController: WallpaperControlling {
 
     func syncLockScreenSaver() throws {
         let config = store.loadConfig()
-        guard config.show_on_lock_screen ?? false,
-              !config.effectiveLockScreenPath.isEmpty,
-              FileManager.default.fileExists(atPath: config.effectiveLockScreenPath)
-        else {
-            return
-        }
-        let prepared = try prepareLockScreenConfig(config)
-        if prepared != config {
-            try store.saveConfig(prepared)
-        }
-        try installLockScreenSaver(using: prepared, activate: false)
+        guard config.show_on_lock_screen ?? false else { return }
+        try installLockScreenSaver(using: config)
     }
 
     func beginLockScreenPreview() throws -> ControlStatus {
@@ -676,52 +583,10 @@ final class NativeWallpaperController: WallpaperControlling {
         store.metrics()
     }
 
-    private func prepareLockScreenConfig(_ config: ControlConfig) throws -> ControlConfig {
-        var prepared = config
-        let sourceURL = URL(fileURLWithPath: config.effectiveLockScreenPath)
-        let runtimeURL = try store.ensureLockScreenVideo(from: sourceURL)
-        prepared.lock_screen_runtime_path = runtimeURL.path == sourceURL.path
-            ? nil
-            : runtimeURL.path
-        return prepared
-    }
-
-    private func installLockScreenSaver(
-        using config: ControlConfig,
-        activate: Bool
-    ) throws {
-        let videoURL = URL(fileURLWithPath: config.effectiveLockScreenRuntimePath)
-        let isCanonicalStore = store.appSupportURL.standardizedFileURL
-            == WallpaperRuntimeStore.defaultAppSupportURL()
-                .standardizedFileURL
-        // The secure loginwindow surface cannot host AuraFlow's user-space
-        // agent. Keep a valid frame ready before changing the system Store;
-        // the live agent still owns the unlocked desktop.
-        let stillFrameURL: URL?
-        do {
-            stillFrameURL = try store.ensureCurrentStillFrame(from: videoURL)
-        } catch {
-            if isCanonicalStore {
-                throw NativeWallpaperControllerError.unavailable(
-                    "Could not prepare the Lock Screen wallpaper frame."
-                )
-            }
-            stillFrameURL = nil
-        }
-        if let modernInstaller = lockScreenSaverInstaller
-            as? LockScreenWallpaperInstaller {
-            try modernInstaller.install(videoURL: videoURL, activate: activate)
-        } else {
-            try lockScreenSaverInstaller.install(videoURL: videoURL)
-        }
-        if isCanonicalStore {
-            guard let stillFrameURL,
-                  applyLockScreenFallbackFrame(stillFrameURL.path) else {
-                throw NativeWallpaperControllerError.unavailable(
-                    "macOS did not keep the AuraFlow wallpaper for the Lock Screen."
-                )
-            }
-        }
+    private func installLockScreenSaver(using config: ControlConfig) throws {
+        let videoURL = URL(fileURLWithPath: config.video_path)
+        _ = try store.ensureCurrentStillFrame(from: videoURL)
+        try lockScreenSaverInstaller.install(videoURL: videoURL)
     }
 }
 
@@ -799,6 +664,7 @@ final class AppViewModel: ObservableObject {
     private var catalogDownloadTask: Task<Void, Never>?
     private var localWallpaperImportTask: Task<Void, Never>?
     private var localWallpaperImportGeneration = 0
+    private var catalogNavigationLockedUntil: Date = .distantPast
     private var lastCatalogRefreshAt: Date?
     private var successBannerTask: Task<Void, Never>?
     private var controllerBootstrapTask: Task<Void, Never>?
@@ -1014,8 +880,7 @@ final class AppViewModel: ObservableObject {
             let needsNormalizationURL = configuredVideoNeedingCompatibilityNormalization(from: status)
             recordBridgeSuccess()
             await startFromAutostartIfNeeded(using: status)
-            if status.config.show_on_lock_screen ?? false,
-               !status.config.effectiveLockScreenPath.isEmpty {
+            if status.config.show_on_lock_screen ?? false {
                 do {
                     try await runAsync {
                         try controller.syncLockScreenSaver()
@@ -1291,6 +1156,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func openCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
+        guard Date() >= catalogNavigationLockedUntil else { return }
         catalogScrollTargetID = wallpaper.id
         selectedCatalogWallpaper = wallpaper
     }
@@ -1298,11 +1164,13 @@ final class AppViewModel: ObservableObject {
     func navigateBackFromCatalog() {
         if selectedCatalogWallpaper != nil {
             selectedCatalogWallpaper = nil
+            catalogNavigationLockedUntil = Date().addingTimeInterval(0.35)
             return
         }
         selectedCatalogWallpaper = nil
         catalogScrollTargetID = nil
         isCatalogOpen = false
+        catalogNavigationLockedUntil = Date().addingTimeInterval(0.2)
     }
 
     func isDownloading(_ wallpaper: CatalogWallpaper) -> Bool {
@@ -1626,8 +1494,8 @@ final class AppViewModel: ObservableObject {
                 apply(status: status, refreshPreview: false)
                 recordBridgeSuccess()
                 statusMessage = url == nil
-                    ? "Desktop wallpaper applied to Lock Screen."
-                    : "Lock Screen source applied. Desktop wallpaper was not changed."
+                    ? "Current wallpaper is used on Lock Screen."
+                    : "Wallpaper source applied to Desktop and Lock Screen."
                 alertMessage = nil
             } catch {
                 lockScreenSourceURL = previous
@@ -2020,14 +1888,9 @@ final class AppViewModel: ObservableObject {
         Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
         Self.setIfChanged(&pauseOnFullscreenEnabled, to: status.config.pause_on_fullscreen ?? true)
         Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? false)
-        let configuredLockScreenURL: URL?
-        if status.config.lock_screen_path?.isEmpty == false {
-            configuredLockScreenURL = URL(
-                fileURLWithPath: status.config.lock_screen_path!
-            ).standardizedFileURL
-        } else {
-            configuredLockScreenURL = nil
-        }
+        let configuredLockScreenURL: URL? = hasConfiguredVideo
+            ? URL(fileURLWithPath: status.config.video_path).standardizedFileURL
+            : nil
         Self.setIfChanged(&lockScreenSourceURL, to: configuredLockScreenURL)
         let previousScaleMode = scaleMode
         let resolvedScaleMode = WallpaperScaleMode(rawValue: status.config.scale_mode ?? "fill") ?? .fill
@@ -2168,20 +2031,28 @@ final class AppViewModel: ObservableObject {
     }
 
     private func loadDownloadedCatalogWallpapers() {
+        let inMemory = downloadedCatalogWallpapers
         let loaded: [DownloadedCatalogWallpaper]
         do {
             let manifestURL = try downloadedCatalogManifestURL()
             guard let data = try? Data(contentsOf: manifestURL) else {
                 let inferred = inferredDownloadedCatalogWallpapersFromDisk()
-                downloadedCatalogWallpapers = inferred
-                if !inferred.isEmpty {
-                    try? persistDownloadedCatalogWallpapers(inferred)
+                let merged = mergeDownloadedCatalogWallpapers(
+                    inferred,
+                    preserving: inMemory
+                )
+                downloadedCatalogWallpapers = merged
+                if !merged.isEmpty {
+                    try? persistDownloadedCatalogWallpapers(merged)
                 }
                 return
             }
             loaded = try JSONDecoder().decode([DownloadedCatalogWallpaper].self, from: data)
         } catch {
-            downloadedCatalogWallpapers = inferredDownloadedCatalogWallpapersFromDisk()
+            downloadedCatalogWallpapers = mergeDownloadedCatalogWallpapers(
+                inferredDownloadedCatalogWallpapersFromDisk(),
+                preserving: inMemory
+            )
             return
         }
 
@@ -2213,11 +2084,27 @@ final class AppViewModel: ObservableObject {
         if sorted.isEmpty {
             sorted = inferredDownloadedCatalogWallpapersFromDisk()
         }
+        sorted = mergeDownloadedCatalogWallpapers(sorted, preserving: inMemory)
         downloadedCatalogWallpapers = sorted
 
         if existing.count != loaded.count {
             try? persistDownloadedCatalogWallpapers(sorted)
         }
+    }
+
+    private func mergeDownloadedCatalogWallpapers(
+        _ loaded: [DownloadedCatalogWallpaper],
+        preserving inMemory: [DownloadedCatalogWallpaper]
+    ) -> [DownloadedCatalogWallpaper] {
+        var merged = loaded
+        let loadedIDs = Set(loaded.map(\.id))
+        merged.append(contentsOf: inMemory.filter { item in
+            !loadedIDs.contains(item.id)
+                && FileManager.default.fileExists(atPath: item.localURL.path)
+        })
+        return merged.sorted(by: { lhs, rhs in
+            lhs.downloadedAt > rhs.downloadedAt
+        })
     }
 
     private func refreshCatalogIfNeeded(force: Bool = false) {
@@ -2376,15 +2263,19 @@ final class AppViewModel: ObservableObject {
             }
         }
 
-        let session: URLSession
+        let configuration = useBrowserStyleHeaders
+            ? URLSessionConfiguration.ephemeral
+            : URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 180
+        configuration.httpMaximumConnectionsPerHost = 4
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         if useBrowserStyleHeaders {
-            let configuration = URLSessionConfiguration.ephemeral
             configuration.httpCookieAcceptPolicy = .always
             configuration.httpShouldSetCookies = true
-            session = URLSession(configuration: configuration)
-        } else {
-            session = .shared
         }
+        let session = URLSession(configuration: configuration)
 
         let (temporaryURL, response) = try await CatalogFileDownloader.download(
             request: request,

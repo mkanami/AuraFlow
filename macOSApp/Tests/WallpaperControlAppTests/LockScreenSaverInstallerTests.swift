@@ -34,8 +34,6 @@ private struct ScreenSaverSelectionFixture {
     let root: URL
     let destinationURL: URL
     let backupURL: URL
-    let wallpaperStoreURL: URL
-    let originalWallpaperStoreData: Data
     let previousModule: ScreenSaverModulePreference
     let preferences: InMemoryScreenSaverPreferences
     let coordinator: ScreenSaverSelectionCoordinator
@@ -55,7 +53,6 @@ private struct ScreenSaverSelectionFixture {
             isDirectory: true
         )
         backupURL = root.appendingPathComponent("screen_saver_backup.json")
-        wallpaperStoreURL = root.appendingPathComponent("Index.plist")
         previousModule = ScreenSaverModulePreference(
             moduleName: "Ventura",
             path: "/System/Library/ExtensionKit/Extensions/Ventura.appex",
@@ -65,54 +62,11 @@ private struct ScreenSaverSelectionFixture {
             selectedModule: previousModule,
             idleTime: idleTime
         )
-        let previousStoreConfiguration: [String: Any] = [
-            "module": [
-                "relative":
-                    "file:///System/Library/ExtensionKit/Extensions/Ventura.appex",
-            ],
-        ]
-        let previousStoreConfigurationData = try PropertyListSerialization.data(
-            fromPropertyList: previousStoreConfiguration,
-            format: .binary,
-            options: 0
-        )
-        let previousIdleMode: [String: Any] = [
-            "LastSet": Date(timeIntervalSince1970: 1),
-            "LastUse": Date(timeIntervalSince1970: 1),
-            "Content": [
-                "Choices": [[
-                    "Provider": "com.apple.wallpaper.choice.screen-saver",
-                    "Files": [],
-                    "Configuration": previousStoreConfigurationData,
-                ]],
-            ],
-        ]
-        let previousDesktopMode: [String: Any] = [
-            "LastSet": Date(timeIntervalSince1970: 1),
-            "LastUse": Date(timeIntervalSince1970: 1),
-            "Content": ["Choices": []],
-        ]
-        originalWallpaperStoreData = try PropertyListSerialization.data(
-            fromPropertyList: [
-                "AllSpacesAndDisplays": [
-                    "Desktop": previousDesktopMode,
-                    "Idle": previousIdleMode,
-                ],
-                "SystemDefault": [
-                    "Desktop": previousDesktopMode,
-                    "Idle": previousIdleMode,
-                ],
-            ],
-            format: .binary,
-            options: 0
-        )
-        try originalWallpaperStoreData.write(to: wallpaperStoreURL)
         coordinator = ScreenSaverSelectionCoordinator(
             fileManager: .default,
             preferences: preferences,
             destinationURL: destinationURL,
-            backupURL: backupURL,
-            wallpaperStoreURL: wallpaperStoreURL
+            backupURL: backupURL
         )
     }
 
@@ -131,11 +85,6 @@ private struct ScreenSaverSelectionFixture {
     #expect(fixture.preferences.selectedModule?.pointsTo(fixture.destinationURL) == true)
     #expect(fixture.preferences.idleTime == 300)
     #expect(FileManager.default.fileExists(atPath: fixture.backupURL.path))
-    let storeData = try Data(contentsOf: fixture.wallpaperStoreURL)
-    #expect(
-        String(decoding: storeData, as: UTF8.self)
-            .contains("AuraFlowLockScreen.saver")
-    )
 }
 
 @Test func screenSaverDeactivationRestoresPreviousSettings() throws {
@@ -148,10 +97,6 @@ private struct ScreenSaverSelectionFixture {
     #expect(fixture.preferences.selectedModule == fixture.previousModule)
     #expect(fixture.preferences.idleTime == 0)
     #expect(!FileManager.default.fileExists(atPath: fixture.backupURL.path))
-    #expect(
-        try Data(contentsOf: fixture.wallpaperStoreURL)
-            == fixture.originalWallpaperStoreData
-    )
 }
 
 @Test func screenSaverActivationPreservesExistingPositiveTimeout() throws {

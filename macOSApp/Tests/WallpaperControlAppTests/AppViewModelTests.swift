@@ -868,19 +868,6 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
-@Test func enabledLockPreferenceWithoutVideoDoesNotSyncOnLoad() async {
-    let controller = MockNativeWallpaperController()
-    controller.statusShowOnLockScreen = true
-    let viewModel = AppViewModel(controller: controller)
-
-    await viewModel.loadStatus()
-
-    #expect(controller.syncLockScreenCallCount == 0)
-    #expect(viewModel.alertMessage == nil)
-    #expect(viewModel.showOnLockScreenEnabled)
-}
-
-@MainActor
 @Test func startForcesPlaybackWhenSetVideoReturnsSuspiciousRunningState() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.suspicious-start")!

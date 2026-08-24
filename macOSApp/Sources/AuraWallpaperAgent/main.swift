@@ -331,10 +331,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let wallpaperReloaded =
             command.action == .reload && !config.video_path.isEmpty
         if wallpaperReloaded {
+            // A rearm is tied to the exact video, not just the lock-session
+            // generation. Every reload gets a new revision so even replacing
+            // a file in-place cannot let an older provider completion win.
             wallpaperRevision &+= 1
             pendingRearmToken = nil
             lastRearmedToken = nil
         }
+
         switch command.action {
         case .reload:
             _ = lockScreenState.apply(
@@ -385,9 +389,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
         prepareFallbackImage(from: url)
         if WallpaperMediaKind.forURL(url).isStaticImage {
-            // A static desktop wallpaper is rendered by the same desktop-level
-            // overlay windows as motion wallpapers. It never writes to
-            // macOS's system Wallpaper Store.
             rebuildWindows()
             if keepPaused || manualPaused {
                 showWindows()
@@ -660,6 +661,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             writeHealth(reason: "ok")
             return
         }
+
         if lockScreenState.presentationMode == .lockScreen {
             fullscreenAppDetected = false
             consecutiveFullscreenSamples = 0
@@ -809,17 +811,17 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         repairModernLockScreenIfNeeded()
         rearmModernLockScreenForNextSession()
 
-        guard !manualPaused,
-              !sleeping,
-              !autoPausedForFullscreen
-        else {
-            lastPlaybackProgressUptime = nil
+        if WallpaperMediaKind.forURL(URL(fileURLWithPath: config.video_path)).isStaticImage {
             consecutiveStallPolls = 0
             writeHealth(reason: "ok")
             return
         }
 
-        if WallpaperMediaKind.forURL(URL(fileURLWithPath: config.video_path)).isStaticImage {
+        guard !manualPaused,
+              !sleeping,
+              !autoPausedForFullscreen
+        else {
+            lastPlaybackProgressUptime = nil
             consecutiveStallPolls = 0
             writeHealth(reason: "ok")
             return
@@ -869,7 +871,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func repairModernLockScreenIfNeeded(force: Bool = false) {
         guard config.show_on_lock_screen == true,
-              !config.effectiveLockScreenRuntimePath.isEmpty,
+              !config.video_path.isEmpty,
               lockScreenInstaller.isAvailable,
               !lockScreenRepairInProgress,
               !sessionInactive,
@@ -881,7 +883,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         else {
             return
         }
-        guard let videoURL = lockScreenVideoURL() else {
+        let videoURL = URL(fileURLWithPath: config.video_path)
+        guard FileManager.default.fileExists(atPath: videoURL.path) else {
             return
         }
 
@@ -929,7 +932,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func rearmModernLockScreenForNextSession() {
         guard config.show_on_lock_screen == true,
-              !config.effectiveLockScreenRuntimePath.isEmpty,
+              !config.video_path.isEmpty,
               lockScreenInstaller.isAvailable,
               !sessionInactive,
               lockScreenState.sessionState == .unlocked,
@@ -938,7 +941,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         else {
             return
         }
-        guard let videoURL = lockScreenVideoURL() else {
+        let videoURL = URL(fileURLWithPath: config.video_path)
+        guard FileManager.default.fileExists(atPath: videoURL.path) else {
             return
         }
         let token = currentRearmToken()
@@ -1006,19 +1010,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         LockScreenRearmToken(
             sessionGeneration: lockSessionGeneration,
             wallpaperRevision: wallpaperRevision,
-            videoPath: lockScreenVideoURL()?.path
-                ?? config.effectiveLockScreenRuntimePath
+            videoPath: config.video_path
         )
-    }
-
-    private func lockScreenVideoURL() -> URL? {
-        let sourcePath = config.effectiveLockScreenRuntimePath
-        guard !sourcePath.isEmpty else { return nil }
-        let sourceURL = URL(fileURLWithPath: sourcePath)
-        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
-            return nil
-        }
-        return try? store.ensureLockScreenVideo(from: sourceURL)
     }
 
     private func repairCanProceed(
@@ -1032,7 +1025,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             && lockScreenState.sessionState == .unlocked
             && lockScreenState.previewState == .inactive
             && config.show_on_lock_screen == true
-            && lockScreenVideoURL()?.path == videoURL.path
+            && config.video_path == videoURL.path
             && systemSessionIsLocked() == false
             && (
                 allowRecentTransition
@@ -1052,7 +1045,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             && lockScreenState.sessionState == .unlocked
             && lockScreenState.previewState == .inactive
             && config.show_on_lock_screen == true
-            && lockScreenVideoURL()?.path == videoURL.path
+            && config.video_path == videoURL.path
             && systemSessionIsLocked() == false
     }
 

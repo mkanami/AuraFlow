@@ -718,6 +718,7 @@ struct ControlPanel: View {
 struct SettingsPopupOverlay: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         GeometryReader { proxy in
@@ -746,9 +747,7 @@ struct SettingsPopupOverlay: View {
 
 struct SettingsPopupCard: View {
     @ObservedObject var viewModel: AppViewModel
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
-
     var body: some View {
         ScrollView(.vertical) {
             settingsContents
@@ -843,7 +842,7 @@ struct SettingsPopupCard: View {
                 .disabled(!viewModel.canUseDesktopWallpaperForLockScreen || viewModel.lockScreenSourceURL == nil)
             }
 
-            Text("Choosing a file applies it to Lock Screen immediately. Start controls the desktop wallpaper.")
+            Text("Choosing a file makes it the common Desktop and Lock Screen source. Start applies the selected wallpaper to both.")
                 .font(.caption2)
                 .foregroundStyle(
                     adaptiveGlassAppearance.centerTextTone.secondaryTextColor
@@ -870,7 +869,7 @@ struct SettingsPopupCard: View {
                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             }
 
-            Text("On macOS 26 and later, AuraFlow uses a Wallpaper Extension for the real Lock Screen. It changes only the Lock Screen wallpaper; your Desktop wallpaper stays separate.")
+            Text("On macOS 26 and later, AuraFlow uses Apple's Aerial wallpaper provider for the real Lock Screen. It uses the selected wallpaper for both Desktop and Lock Screen.")
                 .font(.caption2)
                 .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1043,24 +1042,24 @@ struct MonitoringPopupCard: View {
             Divider()
 
             if let metrics = viewModel.monitoringSnapshot {
-                let cpu = metrics.cpu_percent ?? 0
-                let memory = metrics.memory_mb ?? 0
-                let virtualMemory = metrics.virtual_memory_mb ?? 0
-                let threads = metrics.thread_count ?? 0
+                let cpu = metrics.cpu_percent.map { String(format: "%.1f%%", $0) } ?? "n/a"
+                let memory = metrics.memory_mb.map { String(format: "%.1f MB", $0) } ?? "n/a"
+                let virtualMemory = metrics.virtual_memory_mb.map { String(format: "%.1f MB", $0) } ?? "n/a"
+                let threads = metrics.thread_count.map(String.init) ?? "n/a"
                 let processCount = metrics.process_count ?? metrics.daemon_pids?.count ?? (metrics.pid == nil ? 0 : 1)
-                let screens = metrics.health?.screens ?? 0
-                let windows = metrics.health?.windows ?? 0
-                let rate = metrics.health?.player_rate ?? 0
+                let screens = metrics.health?.screens.map(String.init) ?? "n/a"
+                let windows = metrics.health?.windows.map(String.init) ?? "n/a"
+                let rate = metrics.health?.player_rate.map { String(format: "%.2fx", $0) } ?? "n/a"
 
                 MonitoringRow(label: "Daemon PID", value: metrics.pid.map(String.init) ?? "n/a")
                 MonitoringRow(label: "Daemon Processes", value: "\(processCount)")
                 MonitoringRow(label: "Running", value: metrics.running ? "Yes" : "No")
-                MonitoringRow(label: "CPU", value: String(format: "%.1f%%", cpu))
-                MonitoringRow(label: "Memory", value: String(format: "%.1f MB", memory))
-                MonitoringRow(label: "Virtual Memory", value: String(format: "%.1f MB", virtualMemory))
-                MonitoringRow(label: "Threads", value: "\(threads)")
+                MonitoringRow(label: "CPU", value: cpu)
+                MonitoringRow(label: "Memory", value: memory)
+                MonitoringRow(label: "Virtual Memory", value: virtualMemory)
+                MonitoringRow(label: "Threads", value: threads)
                 MonitoringRow(label: "Screens/Windows", value: "\(screens)/\(windows)")
-                MonitoringRow(label: "Player Rate", value: String(format: "%.2fx", rate))
+                MonitoringRow(label: "Player Rate", value: rate)
 
                 if let pids = metrics.daemon_pids, !pids.isEmpty {
                     let rendered = pids.prefix(4).map(String.init).joined(separator: ", ")
@@ -1374,15 +1373,7 @@ struct WallpaperCatalogView: View {
 
             if viewModel.selectedCatalogWallpaper == nil {
                 HStack(spacing: 10) {
-                    ForEach(CatalogWallpaperGroup.allCases) { group in
-                        CatalogGroupFilterButton(
-                            group: group,
-                            count: viewModel.catalogWallpaperCount(in: group),
-                            isSelected: viewModel.selectedCatalogGroup == group
-                        ) {
-                            viewModel.toggleCatalogGroup(group)
-                        }
-                    }
+                    catalogGroupFilterButtons
 
                     Spacer(minLength: 8)
 
@@ -1430,6 +1421,19 @@ struct WallpaperCatalogView: View {
         .shadow(color: Color.black.opacity(0.26), radius: 12, x: 0, y: 7)
         .environment(\.colorScheme, .dark)
     }
+
+    @ViewBuilder
+    private var catalogGroupFilterButtons: some View {
+        ForEach(CatalogWallpaperGroup.allCases) { group in
+            CatalogGroupFilterButton(
+                group: group,
+                count: viewModel.catalogWallpaperCount(in: group),
+                isSelected: viewModel.selectedCatalogGroup == group
+            ) {
+                viewModel.toggleCatalogGroup(group)
+            }
+        }
+    }
 }
 
 struct CatalogGroupFilterButton: View {
@@ -1437,9 +1441,6 @@ struct CatalogGroupFilterButton: View {
     let count: Int
     let isSelected: Bool
     let action: () -> Void
-
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         Button(action: action) {
@@ -1450,25 +1451,14 @@ struct CatalogGroupFilterButton: View {
                     .lineLimit(1)
             }
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(
-                isSelected
-                    ? adaptiveGlassAppearance.bottomTextTone.primaryTextColor
-                    : adaptiveGlassAppearance.bottomTextTone.secondaryTextColor
-            )
-            .padding(.vertical, 6)
-            .padding(.horizontal, 9)
-            .background(AuraGlassInsetCard(cornerRadius: 9, emphasized: isSelected))
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(
-                        isSelected
-                            ? adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.55)
-                            : adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.10),
-                        lineWidth: isSelected ? 1.1 : 0.9
-                    )
-            )
         }
-        .buttonStyle(AuraPlainPressButtonStyle())
+        .buttonStyle(
+            AuraPanelButtonStyle(
+                fillWidth: false,
+                emphasized: isSelected,
+                selected: isSelected
+            )
+        )
         .accessibilityLabel("\(group.title) wallpapers")
         .accessibilityValue(isSelected ? "Selected, \(count)" : "\(count)")
     }
@@ -1593,6 +1583,7 @@ struct CatalogPreviewImage: View {
     let url: URL?
     let title: String
     let referer: URL?
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @StateObject private var loader = CatalogPreviewImageLoader()
 
     var body: some View {
@@ -1629,7 +1620,7 @@ struct CatalogPreviewImage: View {
             )
             Text(title)
                 .font(.caption.weight(.semibold))
-                .foregroundColor(.white)
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
                 .padding(8)
                 .lineLimit(2)
         }
@@ -1764,6 +1755,7 @@ struct SpeedOverlay: View {
         HStack(spacing: 4) {
             Label("Speed", systemImage: "speedometer")
                 .labelStyle(.titleAndIcon)
+                .font(.body.weight(.semibold))
                 .foregroundStyle(adaptiveGlassAppearance.topTextTone.primaryTextColor)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
@@ -1785,6 +1777,7 @@ struct SpeedOverlay: View {
             .frame(maxWidth: .infinity)
 
             Text(String(format: "%.2fx", viewModel.playbackSpeed))
+                .font(.body.weight(.semibold))
                 .monospacedDigit()
                 .foregroundStyle(adaptiveGlassAppearance.topTextTone.secondaryTextColor)
                 .lineLimit(1)
@@ -1816,6 +1809,7 @@ private struct AuraLegacySpeedSlider: View {
     let onValueChanged: (Double) -> Void
     let onEditingChanged: (Bool) -> Void
 
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @State private var isDragging = false
 
     private var normalizedValue: CGFloat {
@@ -1828,6 +1822,7 @@ private struct AuraLegacySpeedSlider: View {
         GeometryReader { proxy in
             let trackHeight: CGFloat = 4
             let knobSize = CGSize(width: 10, height: 24)
+            let knobShape = RoundedRectangle(cornerRadius: knobSize.width * 0.5, style: .continuous)
             let usableWidth = max(proxy.size.width - knobSize.width, 1)
             let knobX = normalizedValue * usableWidth
 
@@ -1839,13 +1834,26 @@ private struct AuraLegacySpeedSlider: View {
                     )
                     .frame(height: trackHeight)
 
-                RoundedRectangle(cornerRadius: knobSize.width * 0.5, style: .continuous)
-                    .fill(Color.white.opacity(0.78))
+                Group {
+                    if #available(macOS 26.0, *) {
+                        knobShape
+                            .fill(Color.clear)
+                            .glassEffect(.clear.interactive(), in: knobShape)
+                    } else {
+                        knobShape
+                            .fill(Color.white.opacity(0.78))
+                    }
+                }
                     .frame(width: knobSize.width, height: knobSize.height)
                     .shadow(color: Color.black.opacity(0.20), radius: 2, x: 0, y: 1)
                     .overlay(
-                        RoundedRectangle(cornerRadius: knobSize.width * 0.5, style: .continuous)
-                            .stroke(Color.white.opacity(0.26), lineWidth: 0.8)
+                        knobShape
+                            .stroke(
+                                adaptiveGlassAppearance.topTextTone.primaryTextColor.opacity(
+                                    isDragging ? 0.34 : 0.24
+                                ),
+                                lineWidth: 0.8
+                            )
                     )
                     .offset(x: knobX, y: 0)
             }
@@ -2005,13 +2013,25 @@ struct DisabledOverlay: View {
 }
 
 struct AuraPanelButtonStyle: ButtonStyle {
+    var fillWidth = true
+    var emphasized = false
+    var selected = false
+
     func makeBody(configuration: Configuration) -> some View {
-        AuraPanelButton(configuration: configuration)
+        AuraPanelButton(
+            configuration: configuration,
+            fillWidth: fillWidth,
+            emphasized: emphasized,
+            selected: selected
+        )
     }
 }
 
 private struct AuraPanelButton: View {
     let configuration: ButtonStyle.Configuration
+    let fillWidth: Bool
+    let emphasized: Bool
+    let selected: Bool
 
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @Environment(\.isEnabled) private var isEnabled
@@ -2053,6 +2073,10 @@ private struct AuraPanelButton: View {
     private var labelColor: Color {
         let tone = adaptiveGlassAppearance.bottomTextTone
         guard isEnabled else { return tone.disabledTextColor }
+        if !fillWidth {
+            let crispColor: Color = tone == .dark ? .black : .white
+            return crispColor.opacity(configuration.isPressed ? 0.94 : 1.0)
+        }
         return tone.primaryTextColor.opacity(configuration.isPressed ? 0.96 : 1.0)
     }
 
@@ -2060,19 +2084,31 @@ private struct AuraPanelButton: View {
         adaptiveGlassAppearance.bottomTextTone
     }
 
+    @ViewBuilder
+    private var labelContent: some View {
+        if fillWidth {
+            configuration.label
+                .frame(maxWidth: .infinity, alignment: .center)
+        } else {
+            configuration.label
+                .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
     var body: some View {
-        configuration.label
-            .font(.body.weight(.semibold))
+        labelContent
+            .font(fillWidth ? .body.weight(.semibold) : .caption2.weight(.semibold))
             .foregroundStyle(labelColor)
             .shadow(
-                color: adaptiveGlassAppearance.bottomTextTone.textShadowColor.opacity(isEnabled ? 1.0 : 0.35),
-                radius: 1,
+                color: adaptiveGlassAppearance.bottomTextTone.textShadowColor.opacity(
+                    fillWidth && isEnabled ? 1.0 : 0.0
+                ),
+                radius: fillWidth ? 1 : 0,
                 x: 0,
                 y: 1
             )
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 3)
-            .padding(.horizontal, 12)
+            .padding(.vertical, fillWidth ? 3 : 6)
+            .padding(.horizontal, fillWidth ? 12 : 9)
             .background {
                 ZStack {
                     if #available(macOS 26.0, *) {
@@ -2081,7 +2117,11 @@ private struct AuraPanelButton: View {
                             .glassEffect(.clear.interactive(), in: shape)
                         shape.fill(
                             textTone.contrastSurfaceColor.opacity(
-                                isEnabled ? (configuration.isPressed ? 0.045 : 0.022) : 0.012
+                                isEnabled
+                                    ? (configuration.isPressed
+                                        ? 0.045
+                                        : (selected ? 0.065 : (emphasized ? 0.045 : 0.022)))
+                                    : 0.012
                             )
                         )
                     } else {
@@ -2104,7 +2144,11 @@ private struct AuraPanelButton: View {
                 if #available(macOS 26.0, *) {
                     shape.strokeBorder(
                         adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(
-                            isEnabled ? (isHovering ? 0.24 : 0.16) : 0.08
+                            isEnabled
+                                ? (selected
+                                    ? 0.28
+                                    : (emphasized ? 0.22 : (isHovering ? 0.24 : 0.16)))
+                                : 0.08
                         ),
                         lineWidth: 0.8
                     )
@@ -2143,7 +2187,11 @@ struct AuraGlassButtonStyle: ButtonStyle {
         // A separate live glass surface for every button multiplies the number of
         // compositor passes over the video. This lightweight treatment keeps the
         // same visual language while reserving real glass for the containing panel.
-        AuraGlassButton(configuration: configuration, tone: tone, fillWidth: fillWidth)
+        AuraGlassButton(
+            configuration: configuration,
+            tone: tone,
+            fillWidth: fillWidth
+        )
     }
 }
 
@@ -2260,12 +2308,16 @@ private struct AuraGlassButton: View {
                             .glassEffect(.clear.interactive(), in: shape)
                         shape.fill(
                             adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(
-                                isEnabled ? (configuration.isPressed ? 0.045 : 0.022) : 0.012
+                                isEnabled
+                                    ? (configuration.isPressed ? 0.045 : 0.022)
+                                    : 0.012
                             )
                         )
                     } else {
                         shape.fill(backdropColor)
-                        shape.fill(baseTint.opacity(tintOpacity))
+                        shape.fill(
+                            baseTint.opacity(tintOpacity)
+                        )
                         LinearGradient(
                             colors: [
                                 adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.12),

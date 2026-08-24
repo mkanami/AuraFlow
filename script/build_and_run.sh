@@ -16,13 +16,21 @@ APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_PLUGINS="$APP_CONTENTS/PlugIns"
-APP_EXTENSIONS="$APP_CONTENTS/Extensions"
 APP_BINARY="$APP_MACOS/$PROCESS_NAME"
 HELPER_NAME="AuraWallpaperAgent"
-SIGNING_IDENTITY="${CODESIGN_IDENTITY:--}"
+if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+  SIGNING_IDENTITY="$CODESIGN_IDENTITY"
+else
+  SIGNING_IDENTITY="$(/usr/bin/security find-identity -v -p codesigning 2>/dev/null | awk -F'\"' '/Apple Development:/ {print $2; exit}')"
+  SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
+fi
+APP_ENTITLEMENTS="$SWIFT_DIR/Sources/WallpaperControlApp/WallpaperControlApp.entitlements"
 
 SWIFT_BIN="${AURAFLOW_SWIFT_BIN:-swift}"
 SWIFT_ARGS=()
+if [[ "${AURAFLOW_DISABLE_SANDBOX:-0}" == "1" ]]; then
+  SWIFT_ARGS+=(--disable-sandbox)
+fi
 XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 if [[ -x "$XCODE_DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift" ]]; then
   export DEVELOPER_DIR="$XCODE_DEVELOPER_DIR"
@@ -38,7 +46,7 @@ BUILD_DIR="$("$SWIFT_BIN" build "${SWIFT_ARGS[@]}" --show-bin-path)"
 popd >/dev/null
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS" "$APP_RESOURCES" "$APP_PLUGINS" "$APP_EXTENSIONS"
+mkdir -p "$APP_MACOS" "$APP_RESOURCES" "$APP_PLUGINS"
 cp "$BUILD_DIR/$PROCESS_NAME" "$APP_BINARY"
 cp "$BUILD_DIR/$HELPER_NAME" "$APP_MACOS/$HELPER_NAME"
 chmod +x "$APP_BINARY" "$APP_MACOS/$HELPER_NAME"
@@ -56,10 +64,6 @@ AURAFLOW_BUILD="$APP_BUILD" \
 BUILD_UNIVERSAL=0 \
   "$ROOT_DIR/scripts/build_screensaver.sh" "$APP_PLUGINS"
 
-AURAFLOW_VERSION="$APP_VERSION" \
-AURAFLOW_BUILD="$APP_BUILD" \
-  "$ROOT_DIR/scripts/build_wallpaper_extension.sh" "$APP_EXTENSIONS"
-
 cat >"$APP_CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -69,6 +73,8 @@ cat >"$APP_CONTENTS/Info.plist" <<PLIST
   <string>$PROCESS_NAME</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>AuraFlow saves your current wallpaper so Remove can restore it.</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
   <key>CFBundleDisplayName</key>
@@ -91,7 +97,9 @@ PLIST
 
 codesign --force --sign "$SIGNING_IDENTITY" "$APP_MACOS/$HELPER_NAME"
 codesign --force --sign "$SIGNING_IDENTITY" "$APP_BINARY"
-codesign --force --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
+codesign --force --options runtime --timestamp=none \
+  --entitlements "$APP_ENTITLEMENTS" \
+  --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
 
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"

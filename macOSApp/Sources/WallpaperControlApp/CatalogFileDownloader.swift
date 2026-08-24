@@ -6,7 +6,7 @@ enum CatalogFileDownloader {
     // Four requests keep range-capable CDNs fast without triggering the
     // throttling that made the previous six-request version intermittent.
     private static let maximumConcurrentChunks = 4
-    private static let chunkWriteBufferSize = 64 * 1024
+    private static let maximumDownloadAttempts = 3
 
     static func download(
         request: URLRequest,
@@ -19,7 +19,10 @@ enum CatalogFileDownloader {
             throw CancellationError()
         } catch {
             try Task.checkCancellation()
-            return try await session.download(for: request)
+            return try await regularDownloadWithRetry(
+                request: request,
+                session: session
+            )
         }
 
         // A server that ignores Range can make every parallel chunk download
@@ -34,7 +37,10 @@ enum CatalogFileDownloader {
               totalBytes >= parallelThreshold else {
             try? FileManager.default.removeItem(at: rangeProbe.temporaryURL)
             try Task.checkCancellation()
-            return try await session.download(for: request)
+            return try await regularDownloadWithRetry(
+                request: request,
+                session: session
+            )
         }
 
         try? FileManager.default.removeItem(at: rangeProbe.temporaryURL)
@@ -52,7 +58,42 @@ enum CatalogFileDownloader {
             // Some CDNs advertise range support but reject larger ranges.
             // Keep those servers working with the regular downloader.
             try Task.checkCancellation()
-            return try await session.download(for: request)
+            return try await regularDownloadWithRetry(
+                request: request,
+                session: session
+            )
+        }
+    }
+
+    private static func regularDownloadWithRetry(
+        request: URLRequest,
+        session: URLSession
+    ) async throws -> (temporaryURL: URL, response: URLResponse) {
+        var attempt = 0
+        while true {
+            do {
+                let (temporaryURL, response) = try await session.download(
+                    for: request
+                )
+                if let httpResponse = response as? HTTPURLResponse,
+                   isRetryableStatus(httpResponse.statusCode),
+                   attempt + 1 < maximumDownloadAttempts {
+                    try? FileManager.default.removeItem(at: temporaryURL)
+                    try await retryDelay(after: attempt)
+                    attempt += 1
+                    continue
+                }
+                return (temporaryURL, response)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard attempt + 1 < maximumDownloadAttempts,
+                      isRetryableDownloadError(error) else {
+                    throw error
+                }
+                try await retryDelay(after: attempt)
+                attempt += 1
+            }
         }
     }
 
@@ -62,8 +103,8 @@ enum CatalogFileDownloader {
     ) async throws -> RangeProbeResult {
         var probeRequest = request
         probeRequest.timeoutInterval = request.timeoutInterval > 0
-            ? min(request.timeoutInterval, 4)
-            : 4
+            ? min(request.timeoutInterval, 8)
+            : 8
         probeRequest.setValue("bytes=0-0", forHTTPHeaderField: "Range")
         probeRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         let (temporaryURL, response) = try await session.download(for: probeRequest)
@@ -132,7 +173,7 @@ enum CatalogFileDownloader {
                 let chunkIndex = chunks.count + activeCount
                 let chunkURL = temporaryDirectory.appendingPathComponent("chunk-\(chunkIndex)")
                 group.addTask {
-                    try await downloadChunk(
+                    try await downloadChunkWithRetry(
                         request: request,
                         session: session,
                         range: range,
@@ -193,51 +234,92 @@ enum CatalogFileDownloader {
         // download(for:) here would then write a complete video to every
         // chunk before we could detect the bad response.
         chunkRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        let (bytes, response) = try await session.bytes(for: chunkRequest)
+        let (data, response) = try await session.data(for: chunkRequest)
         guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 206,
-              contentRange(httpResponse) == range else {
+              httpResponse.statusCode == 206 else {
+            if let httpResponse = response as? HTTPURLResponse,
+               isRetryableStatus(httpResponse.statusCode) {
+                throw RangeDownloadError.transientHTTPStatus(
+                    httpResponse.statusCode
+                )
+            }
             throw RangeDownloadError.rangeUnsupported
         }
 
-        guard FileManager.default.createFile(
-            atPath: destinationURL.path,
-            contents: nil
-        ) else {
+        guard contentRange(httpResponse) == range,
+              Int64(data.count) == range.count else {
             throw RangeDownloadError.incompleteDownload
         }
-        let handle = try FileHandle(forWritingTo: destinationURL)
-        defer { try? handle.close() }
-
-        var buffer = Data()
-        buffer.reserveCapacity(chunkWriteBufferSize)
-        var receivedBytes: Int64 = 0
-
-        for try await byte in bytes {
-            guard receivedBytes + Int64(buffer.count) < range.count else {
-                throw RangeDownloadError.incompleteDownload
-            }
-            buffer.append(byte)
-            if buffer.count >= chunkWriteBufferSize {
-                try handle.write(contentsOf: buffer)
-                receivedBytes += Int64(buffer.count)
-                buffer.removeAll(keepingCapacity: true)
-            }
-        }
-
-        if !buffer.isEmpty {
-            try handle.write(contentsOf: buffer)
-            receivedBytes += Int64(buffer.count)
-        }
-
-        guard receivedBytes == range.count else {
-            throw RangeDownloadError.incompleteDownload
-        }
+        try data.write(to: destinationURL, options: .atomic)
         return DownloadedChunk(range: range, url: destinationURL)
+    }
+
+    private static func downloadChunkWithRetry(
+        request: URLRequest,
+        session: URLSession,
+        range: ClosedRange<Int64>,
+        destinationURL: URL
+    ) async throws -> DownloadedChunk {
+        var attempt = 0
+        while true {
+            do {
+                return try await downloadChunk(
+                    request: request,
+                    session: session,
+                    range: range,
+                    destinationURL: destinationURL
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard attempt + 1 < maximumDownloadAttempts,
+                      isRetryableDownloadError(error) else {
+                    throw error
+                }
+                try await retryDelay(after: attempt)
+                attempt += 1
+            }
+        }
     }
 
     private static func contentRange(_ response: HTTPURLResponse) -> ClosedRange<Int64>? {
         contentRangeComponents(response)?.range
+    }
+
+    private static func retryDelay(after attempt: Int) async throws {
+        let milliseconds = UInt64(250 * (attempt + 1))
+        try await Task.sleep(nanoseconds: milliseconds * 1_000_000)
+    }
+
+    private static func isRetryableDownloadError(_ error: Error) -> Bool {
+        if let rangeError = error as? RangeDownloadError {
+            switch rangeError {
+            case .rangeUnsupported:
+                return false
+            case .incompleteDownload, .transientHTTPStatus:
+                return true
+            }
+        }
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .timedOut,
+             .networkConnectionLost,
+             .notConnectedToInternet,
+             .cannotConnectToHost,
+             .cannotFindHost,
+             .dnsLookupFailed,
+             .resourceUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isRetryableStatus(_ statusCode: Int) -> Bool {
+        statusCode == 408
+            || statusCode == 425
+            || statusCode == 429
+            || (500...599).contains(statusCode)
     }
 
     private static func contentRangeComponents(
@@ -285,5 +367,6 @@ enum CatalogFileDownloader {
     private enum RangeDownloadError: Error {
         case rangeUnsupported
         case incompleteDownload
+        case transientHTTPStatus(Int)
     }
 }

@@ -3,75 +3,39 @@ import Foundation
 
 public struct ControlConfig: Codable, Equatable {
     public var video_path: String
-    /// Optional independent Lock Screen source. When absent, the desktop
-    /// source remains the backwards-compatible Lock Screen source.
-    public var lock_screen_path: String?
-    /// A cached, playable `.mov` used by the legacy saver/Aerial provider when
-    /// `lock_screen_path` points at a static image.
-    public var lock_screen_runtime_path: String?
     public var playback_speed: Double
     public var volume: Double?
     public var autostart: Bool?
     public var blend_interpolation: Bool?
     public var pause_on_fullscreen: Bool?
     public var show_on_lock_screen: Bool?
-    public var lock_screen_preference_configured: Bool?
     public var scale_mode: String?
 
     public init(
         video_path: String,
-        lock_screen_path: String? = nil,
-        lock_screen_runtime_path: String? = nil,
         playback_speed: Double,
         volume: Double? = 0,
         autostart: Bool? = false,
         blend_interpolation: Bool? = false,
         pause_on_fullscreen: Bool? = true,
         show_on_lock_screen: Bool? = false,
-        lock_screen_preference_configured: Bool? = false,
         scale_mode: String? = WallpaperScaleMode.fill.rawValue
     ) {
         self.video_path = video_path
-        self.lock_screen_path = lock_screen_path
-        self.lock_screen_runtime_path = lock_screen_runtime_path
         self.playback_speed = playback_speed
         self.volume = volume
         self.autostart = autostart
         self.blend_interpolation = blend_interpolation
         self.pause_on_fullscreen = pause_on_fullscreen
         self.show_on_lock_screen = show_on_lock_screen
-        self.lock_screen_preference_configured =
-            lock_screen_preference_configured
         self.scale_mode = scale_mode
     }
 
-    public static let defaultConfig = ControlConfig(
-        video_path: "",
-        playback_speed: 1.0,
-        show_on_lock_screen: false,
-        lock_screen_preference_configured: false
-    )
-
-    /// The explicit Lock Screen source, or the legacy desktop source when the
-    /// user has not selected a separate Lock Screen asset.
-    public var effectiveLockScreenPath: String {
-        if let lock_screen_path,
-           !lock_screen_path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return lock_screen_path
-        }
-        return video_path
-    }
-
-    /// The path that can be handed directly to a screen-saver provider.
-    public var effectiveLockScreenRuntimePath: String {
-        if let lock_screen_runtime_path,
-           !lock_screen_runtime_path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return lock_screen_runtime_path
-        }
-        return effectiveLockScreenPath
-    }
+    public static let defaultConfig = ControlConfig(video_path: "", playback_speed: 1.0)
 }
 
+/// Media classification retained for the catalog's static-image playback path.
+/// Lock Screen still follows the v1.3.1 video/screen-saver contract.
 public enum WallpaperMediaKind: String, Codable, Equatable {
     case motion
     case image

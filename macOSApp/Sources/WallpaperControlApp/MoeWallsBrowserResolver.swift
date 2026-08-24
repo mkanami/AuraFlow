@@ -281,6 +281,11 @@ final class MoeWallsBrowserResolver: NSObject {
         }
 
         let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 180
+        configuration.httpMaximumConnectionsPerHost = 4
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpShouldSetCookies = true
         configuration.httpCookieStorage = HTTPCookieStorage()
         cookies.forEach { configuration.httpCookieStorage?.setCookie($0) }
@@ -290,6 +295,7 @@ final class MoeWallsBrowserResolver: NSObject {
             request: request,
             session: session
         )
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
         if let httpResponse = response as? HTTPURLResponse,
            !(200...299).contains(httpResponse.statusCode) {
             throw CatalogDownloadError.badStatus(url: downloadURL, statusCode: httpResponse.statusCode)
