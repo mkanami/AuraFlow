@@ -187,24 +187,24 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     /// True for the dedicated Lock Screen route. Its Aerial asset is kept in
-    /// both macOS wallpaper slots so loginwindow reliably resolves the live
-    /// provider on every secure lock; the lock-only agent covers the unlocked
-    /// Desktop with the saved original image.
+    /// the Idle slot while unlocked and promoted to both slots only for the
+    /// secure lock transition, leaving the user's Desktop configuration intact.
     public var isLockScreenOnlyInstallation: Bool {
         guard let marker = loadMarker() else { return false }
         return marker.completed == true
             && (marker.lockScreenOnly == true || marker.desktopIncluded == false)
     }
 
-    /// Older direct lock-only installations kept Desktop out of the store and
-    /// still need a transition-time promotion. Current lock-only installs use
-    /// the shared Aerial route continuously so loginwindow can start the live
-    /// provider without a gray or black hand-off.
+    /// macOS 26 resolves the Desktop choice when loginwindow starts the real
+    /// Lock Screen, so dedicated installations need a short promotion during
+    /// the lock transition and a restore immediately after unlock.
     public var requiresLockScreenSessionPromotion: Bool {
         guard let marker = loadMarker(), marker.completed == true else {
             return false
         }
-        return marker.lockScreenOnly != true && marker.desktopIncluded == false
+        return marker.lockScreenOnly == true
+            || (marker.lockScreenOnly != true
+                && marker.desktopIncluded == false)
     }
 
     /// Confirms the system configuration, rather than only checking that our
@@ -220,11 +220,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             return false
         }
         let scope: AerialWallpaperStoreScope =
-            marker.lockScreenOnly == true || marker.desktopIncluded != false
-            ? .sharedWallpaper
-            : .lockScreenOnly
+            marker.lockScreenOnly == true || marker.desktopIncluded == false
+            ? .lockScreenOnly
+            : .sharedWallpaper
         guard !usesCanonicalWallpaperStore
-            || systemWallpaperURLMatches(assetID: marker.assetID)
+            || systemWallpaperURLMatchesInstalledState(
+                assetID: marker.assetID,
+                marker: marker
+            )
         else {
             return false
         }
@@ -283,7 +286,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 videoURL: videoURL,
                 forceRefresh: false,
                 refreshAction: rearmSystem,
-                scope: .sharedWallpaper,
+                scope: .lockScreenOnly,
                 lockScreenOnlyRoute: true,
                 rollbackAction: refreshSystem,
                 shouldProceed: { true }
@@ -1212,9 +1215,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
     }
 
-    /// Compatibility counterpart for older direct lock-only installations.
-    /// Current shared-store installations leave the Aerial choice active after
-    /// unlock and hide it behind the saved Desktop cover when needed.
+    /// Restores the user's Desktop choice while retaining AuraFlow's Aerial
+    /// choice in the Idle slot for the next lock.
     @discardableResult
     public func restoreDesktopAfterLockScreenSession() throws -> Bool {
         operationLock.lock()
@@ -1240,11 +1242,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                     options: .atomic
                 )
             }
-            guard setSystemWallpaperURL(
-                desiredSystemWallpaperURL(assetID: marker.assetID)
-            ) else {
-                throw AerialLockScreenInstallerError
-                    .wallpaperStoreUpdateFailed
+            if marker.systemWallpaperURLWasCaptured == true {
+                guard setSystemWallpaperURL(
+                    marker.originalSystemWallpaperURL
+                ) else {
+                    throw AerialLockScreenInstallerError
+                        .wallpaperStoreUpdateFailed
+                }
             }
             return storeChanged
         }
@@ -1366,6 +1370,20 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         return currentURL.standardizedFileURL == expectedURL.standardizedFileURL
     }
 
+    private func systemWallpaperURLMatchesInstalledState(
+        assetID: String,
+        marker: AerialLockScreenMarker
+    ) -> Bool {
+        if systemWallpaperURLMatches(assetID: assetID) {
+            return true
+        }
+        guard marker.lockScreenOnly == true || marker.desktopIncluded == false
+        else {
+            return false
+        }
+        return currentSystemWallpaperURL() == marker.originalSystemWallpaperURL
+    }
+
     private func installationIsCurrent(
         videoURL: URL,
         assetID: String,
@@ -1422,7 +1440,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             return false
         }
         guard !usesCanonicalWallpaperStore
-            || systemWallpaperURLMatches(assetID: assetID)
+            || systemWallpaperURLMatchesInstalledState(
+                assetID: assetID,
+                marker: marker
+            )
         else {
             return false
         }
@@ -1710,15 +1731,16 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     private func currentWallpaperStoreScope() -> AerialWallpaperStoreScope {
+        if isLockScreenOnlyInstallation {
+            return .lockScreenOnly
+        }
         return .sharedWallpaper
     }
 
     private func markerStoreIncludesDesktop(
         _ marker: AerialLockScreenMarker
     ) -> Bool {
-        marker.lockScreenOnly == true
-            ? true
-            : marker.desktopIncluded ?? true
+        marker.desktopIncluded ?? (marker.lockScreenOnly != true)
     }
 
     private func loadMarker() -> AerialLockScreenMarker? {
