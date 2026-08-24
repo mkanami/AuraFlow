@@ -275,13 +275,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func applySystemSessionState(locked: Bool) {
         if locked {
             guard !sessionInactive else { return }
-            if config.show_on_lock_screen == true {
-                // Reapply the still frame for every real lock. macOS may have
-                // restored the ordinary Desktop picture after the previous
-                // unlock even though the wallpaper store remains configured
-                // for AuraFlow.
-                _ = lockScreenInstaller.applyCurrentDesktopFallback()
-            }
             lockSessionGeneration &+= 1
             pendingRearmToken = nil
             sessionInactive = true
@@ -570,6 +563,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         _ window: NSWindow,
         as mode: WallpaperPresentationMode
     ) {
+        // The secure Lock Screen is rendered by macOS's Aerial/legacy saver
+        // route. An app-owned .screenSaver window is not composited reliably
+        // by loginwindow and can cover the real wallpaper with black. Keep
+        // the app window available for the in-app preview, but never place it
+        // above the actual authentication surface.
+        guard lockScreenState.sessionState != .locked else {
+            window.orderOut(nil)
+            return
+        }
         window.level = windowLevel(for: mode)
         switch mode {
         case .desktop:

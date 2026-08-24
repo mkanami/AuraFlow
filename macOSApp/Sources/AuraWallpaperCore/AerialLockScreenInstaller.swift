@@ -1,4 +1,5 @@
 import Darwin
+import AVFoundation
 import Foundation
 
 private let auraFlowAerialProvider = "com.apple.wallpaper.choice.aerials"
@@ -18,6 +19,7 @@ private struct AerialLockScreenMarker: Codable {
     var videoSize: UInt64
     var videoModifiedAt: TimeInterval
     var videoSignature: String?
+    var assetSignature: String?
     var originalAssetExisted: Bool?
     var originalThumbnailExisted: Bool?
     var completed: Bool?
@@ -29,6 +31,7 @@ public enum AerialLockScreenInstallerError: LocalizedError {
     case malformedWallpaperStore
     case wallpaperStoreUpdateFailed
     case aerialProviderRestartFailed
+    case aerialVideoPreparationFailed(String)
     case videoMissing(String)
 
     public var errorDescription: String? {
@@ -43,6 +46,8 @@ public enum AerialLockScreenInstallerError: LocalizedError {
             return "macOS did not keep the new Lock Screen wallpaper configuration."
         case .aerialProviderRestartFailed:
             return "macOS did not restart the Lock Screen wallpaper provider."
+        case .aerialVideoPreparationFailed(let detail):
+            return "AuraFlow could not prepare the Lock Screen video: \(detail)"
         case .videoMissing(let path):
             return "Lock Screen video was not found: \(path)"
         }
@@ -281,6 +286,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             return true
         }
 
+        let preparedVideoURL = try prepareAerialVideo(from: videoURL)
+        defer {
+            if preparedVideoURL.standardizedFileURL
+                != videoURL.standardizedFileURL {
+                try? fileManager.removeItem(at: preparedVideoURL)
+            }
+        }
+
         guard shouldProceed() else {
             return false
         }
@@ -347,6 +360,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             assetURL: assetURL,
             thumbnailURL: thumbnailURL,
             videoURL: videoURL,
+            installedAssetURL: preparedVideoURL,
             originalAssetExisted: originalAssetExisted,
             originalThumbnailExisted: originalThumbnailExisted
         )
@@ -371,7 +385,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             }
             try replaceFile(
                 at: assetURL,
-                withContentsOf: videoURL,
+                withContentsOf: preparedVideoURL,
                 shouldProceed: shouldProceed
             )
             assetMutated = true
@@ -1112,7 +1126,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
 
         guard let sourceSignature = try? fileSignature(at: videoURL),
               let assetSignature = try? fileSignature(at: assetURL),
-              sourceSignature == assetSignature
+              usesCanonicalWallpaperStore
+                ? marker.assetSignature == assetSignature
+                    && aerialAssetIsCompatible(at: assetURL)
+                : sourceSignature == assetSignature
         else {
             return false
         }
@@ -1121,6 +1138,73 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             return false
         }
         return wallpaperStoreFullySelectsAerial(assetID: assetID)
+    }
+
+    private func prepareAerialVideo(from sourceURL: URL) throws -> URL {
+        guard usesCanonicalWallpaperStore,
+              !aerialAssetIsCompatible(at: sourceURL)
+        else {
+            return sourceURL
+        }
+
+        try fileManager.createDirectory(
+            at: stateDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        let outputURL = stateDirectoryURL.appendingPathComponent(
+            ".aerialflow-\(UUID().uuidString).mov"
+        )
+        let errorPipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/avconvert")
+        process.arguments = [
+            "--source", sourceURL.path,
+            "--preset", "PresetHEVCHighestQuality",
+            "--output", outputURL.path,
+            "--replace",
+        ]
+        process.standardOutput = Pipe()
+        process.standardError = errorPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            try? fileManager.removeItem(at: outputURL)
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(error.localizedDescription)
+        }
+
+        guard process.terminationStatus == 0,
+              fileManager.fileExists(atPath: outputURL.path),
+              aerialAssetIsCompatible(at: outputURL)
+        else {
+            let detail = String(
+                data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            )?.trimmingCharacters(in: .whitespacesAndNewlines)
+            try? fileManager.removeItem(at: outputURL)
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    detail?.isEmpty == false
+                        ? detail!
+                        : "HEVC QuickTime conversion failed."
+                )
+        }
+        return outputURL
+    }
+
+    private func aerialAssetIsCompatible(at url: URL) -> Bool {
+        let asset = AVURLAsset(url: url)
+        guard let track = asset.tracks(withMediaType: .video).first,
+              let formatDescription = track.formatDescriptions.first
+        else {
+            return false
+        }
+        return CMFormatDescriptionGetMediaSubType(
+            formatDescription as! CMFormatDescription
+        )
+            == kCMVideoCodecType_HEVC
     }
 
     private func wallpaperStoreFullySelectsAerial(
@@ -1306,6 +1390,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         assetURL: URL,
         thumbnailURL: URL,
         videoURL: URL,
+        installedAssetURL: URL,
         originalAssetExisted: Bool,
         originalThumbnailExisted: Bool
     ) throws -> AerialLockScreenMarker {
@@ -1325,6 +1410,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             videoSize: size,
             videoModifiedAt: modifiedAt,
             videoSignature: try fileSignature(at: videoURL),
+            assetSignature: try fileSignature(at: installedAssetURL),
             originalAssetExisted: originalAssetExisted,
             originalThumbnailExisted: originalThumbnailExisted,
             completed: false
@@ -1365,6 +1451,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             videoSize: 0,
             videoModifiedAt: 0,
             videoSignature: nil,
+            assetSignature: nil,
             originalAssetExisted: fileManager.fileExists(
                 atPath: assetBackupURL.path
             ),
