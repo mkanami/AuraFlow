@@ -1087,6 +1087,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         rearmModernLockScreenForNextSession()
 
         if lockScreenOnlyMode {
+            if !sessionInactive,
+               systemSessionIsLocked() == false,
+               lockScreenInstaller.requiresLockScreenSessionPromotion {
+                // The Test Lock Screen button uses display sleep. That path
+                // can omit screenIsUnlocked and screensDidWake, so the
+                // periodic health pass is the final restoration safety net.
+                restoreDesktopStoreAfterSession()
+            }
             writeHealth(reason: "lock-screen-only")
             return
         }

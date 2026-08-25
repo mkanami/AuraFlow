@@ -187,8 +187,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             // cached Desktop resolver and cannot see that promotion by merely
             // being prewarmed. Recreate the owner after the route changes so
             // it reads the Aerial choice before loginwindow renders the lock.
-            self.lockSessionHandoffSystem =
-                Self.refreshLockScreenProviderForLockSession
+            self.lockSessionHandoffSystem = Self.refreshLockScreenProvider
         }
     }
 
@@ -1995,20 +1994,6 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
     }
 
-    private static func refreshLockScreenProviderForLockSession(
-        shouldProceed: () -> Bool
-    ) throws {
-        try refreshLockScreenProvider(shouldProceed: shouldProceed)
-        guard shouldProceed() else {
-            throw AerialLockScreenOperationAbort.sessionChanged
-        }
-        // The provider process appears before its first HEVC frame is
-        // decoded. This handoff happens before display-sleep lock, so give
-        // Apple's provider a short decode window while the user's Desktop is
-        // still visible instead of exposing its initial black surface.
-        Thread.sleep(forTimeInterval: 1.0)
-    }
-
     /// Keeps an already-installed provider warm without killing it. This is
     /// used while the user is unlocked, when the Desktop route must remain
     /// untouched. The real lock handoff uses refreshLockScreenProvider after
@@ -2044,7 +2029,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     private static func waitForFreshProvider(
         excluding previousPIDs: Set<Int32>
     ) -> Bool {
-        for _ in 0..<40 {
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
             let currentPIDs = processIdentifiers(
                 named: "WallpaperAerialsExtension"
             )
@@ -2057,6 +2043,19 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         return false
     }
 
+    private static func waitForProcessExit(
+        _ process: Process,
+        timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        guard process.isRunning else { return true }
+        process.terminate()
+        return false
+    }
+
     private static func processIdentifiers(named name: String) -> Set<Int32> {
         let process = Process()
         let output = Pipe()
@@ -2066,7 +2065,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         process.standardError = Pipe()
         do {
             try process.run()
-            process.waitUntilExit()
+            guard waitForProcessExit(process, timeout: 0.25) else {
+                return []
+            }
         } catch {
             return []
         }
@@ -2091,7 +2092,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         process.standardError = Pipe()
         do {
             try process.run()
-            process.waitUntilExit()
+            _ = waitForProcessExit(process, timeout: 1.0)
         } catch {
             return
         }
