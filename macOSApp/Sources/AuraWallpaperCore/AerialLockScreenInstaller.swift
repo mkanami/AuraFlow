@@ -187,7 +187,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             // cached Desktop resolver and cannot see that promotion by merely
             // being prewarmed. Recreate the owner after the route changes so
             // it reads the Aerial choice before loginwindow renders the lock.
-            self.lockSessionHandoffSystem = Self.refreshLockScreenProvider
+            self.lockSessionHandoffSystem =
+                Self.refreshLockScreenProviderForLockSession
         }
     }
 
@@ -1992,6 +1993,20 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             throw AerialLockScreenInstallerError
                 .aerialProviderRestartFailed
         }
+    }
+
+    private static func refreshLockScreenProviderForLockSession(
+        shouldProceed: () -> Bool
+    ) throws {
+        try refreshLockScreenProvider(shouldProceed: shouldProceed)
+        guard shouldProceed() else {
+            throw AerialLockScreenOperationAbort.sessionChanged
+        }
+        // The provider process appears before its first HEVC frame is
+        // decoded. This handoff happens before display-sleep lock, so give
+        // Apple's provider a short decode window while the user's Desktop is
+        // still visible instead of exposing its initial black surface.
+        Thread.sleep(forTimeInterval: 1.0)
     }
 
     /// Keeps an already-installed provider warm without killing it. This is

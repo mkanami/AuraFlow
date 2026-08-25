@@ -45,6 +45,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var lastCommandID: String?
     private var manualPaused = false
     private var sleeping = false
+    private var displaySleepRestorePending = false
     private var sessionInactive = false
     private var autoPausedForFullscreen = false
     private var fullscreenAppDetected = false
@@ -435,6 +436,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
         do {
             _ = try lockScreenInstaller.restoreDesktopAfterLockScreenSession()
+            displaySleepRestorePending = false
         } catch {
             writeHealth(
                 reason:
@@ -472,6 +474,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // the secure Lock Screen. Keep the prewarmed player running so
             // the first visible frame is already available when the display
             // wakes to the password surface.
+            displaySleepRestorePending = true
             activateLockScreenStoreForSession()
             writeHealth(reason: "display-sleep-before-lock")
             return
@@ -493,6 +496,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminating else { return }
         sleeping = false
         if lockScreenOnlyMode {
+            scheduleDesktopRestoreAfterDisplayWake()
             showWindows(forceOrder: lockScreenState.presentationMode == .lockScreen)
             applyPlaybackRate()
         } else {
@@ -500,6 +504,30 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             applyPlaybackRate()
         }
         writeHealth(reason: reason)
+    }
+
+    private func scheduleDesktopRestoreAfterDisplayWake() {
+        guard lockScreenOnlyMode, displaySleepRestorePending else {
+            return
+        }
+        // A display-sleep lock does not reliably emit screenIsUnlocked. Poll
+        // the session state after wake instead, but never restore while the
+        // secure Lock Screen still owns the session.
+        pollDesktopRestoreAfterDisplayWake()
+    }
+
+    private func pollDesktopRestoreAfterDisplayWake() {
+        guard !isTerminating, displaySleepRestorePending else {
+            return
+        }
+        guard !sessionInactive, systemSessionIsLocked() == false else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                [weak self] in
+                self?.pollDesktopRestoreAfterDisplayWake()
+            }
+            return
+        }
+        restoreDesktopStoreAfterSession()
     }
 
     private func pollCommand() {
