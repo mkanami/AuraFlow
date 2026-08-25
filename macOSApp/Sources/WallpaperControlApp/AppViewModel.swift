@@ -364,6 +364,9 @@ final class NativeWallpaperController: WallpaperControlling {
 
         store.removeCommand()
         store.removeHealth()
+        if lockScreenOnly {
+            store.markLockScreenAgentReady(false)
+        }
         let task = Process()
         task.executableURL = helperURL
         task.arguments = [
@@ -373,6 +376,35 @@ final class NativeWallpaperController: WallpaperControlling {
         try task.run()
         try store.savePID(task.processIdentifier)
         store.markLockScreenOnlyAgent(lockScreenOnly)
+    }
+
+    private func waitForLockScreenAgentReady() throws {
+        // Test fixtures use lightweight helper processes instead of the real
+        // lock-only agent. The readiness handshake is required only for the
+        // production runtime, where returning Applied before the agent has
+        // registered the shield callback creates the immediate-lock race.
+        guard store.appSupportURL.standardizedFileURL
+            == WallpaperRuntimeStore.defaultAppSupportURL()
+                .standardizedFileURL
+        else {
+            return
+        }
+
+        let deadline = Date().addingTimeInterval(6.0)
+        while Date() < deadline {
+            guard store.processIsAlive(pid: store.loadPID()) else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The Lock Screen agent stopped during initialization."
+                )
+            }
+            if store.isLockScreenAgentReady() {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        throw NativeWallpaperControllerError.unavailable(
+            "The Lock Screen agent did not finish initializing."
+        )
     }
 
     func status() throws -> ControlStatus {
@@ -536,10 +568,12 @@ final class NativeWallpaperController: WallpaperControlling {
             // The lock-only agent reads its source from the dedicated marker;
             // reload it when the user replaces that source so the next lock
             // cannot keep an old player item alive.
+            store.markLockScreenAgentReady(false)
             try send(.reload, config: config)
         } else {
             try launchAgentIfNeeded(lockScreenOnly: true)
         }
+        try waitForLockScreenAgentReady()
         return store.status()
     }
 

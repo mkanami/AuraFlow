@@ -80,6 +80,9 @@ public final class WallpaperRuntimeStore {
     public var lockScreenOnlyAgentURL: URL {
         appSupportURL.appendingPathComponent("lock_screen_only_agent")
     }
+    public var lockScreenAgentReadyURL: URL {
+        appSupportURL.appendingPathComponent("lock_screen_agent_ready")
+    }
     public var launchAgentURL: URL { launchAgentFileURL }
 
     public func ensureDirectories() throws {
@@ -151,11 +154,29 @@ public final class WallpaperRuntimeStore {
             )
         } else {
             try? FileManager.default.removeItem(at: lockScreenOnlyAgentURL)
+            markLockScreenAgentReady(false)
         }
     }
 
     public func isLockScreenOnlyAgent() -> Bool {
         FileManager.default.fileExists(atPath: lockScreenOnlyAgentURL.path)
+    }
+
+    public func markLockScreenAgentReady(_ ready: Bool) {
+        if ready {
+            try? ensureDirectories()
+            FileManager.default.createFile(
+                atPath: lockScreenAgentReadyURL.path,
+                contents: Data(),
+                attributes: nil
+            )
+        } else {
+            try? FileManager.default.removeItem(at: lockScreenAgentReadyURL)
+        }
+    }
+
+    public func isLockScreenAgentReady() -> Bool {
+        FileManager.default.fileExists(atPath: lockScreenAgentReadyURL.path)
     }
 
     public func effectiveLockScreenSourceURL(for config: ControlConfig) -> URL? {

@@ -88,16 +88,25 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if !lockScreenOnlyMode {
             rebuildPlayback(from: config, keepPaused: false)
         } else {
+            store.markLockScreenAgentReady(false)
             // Keep the user's Desktop configuration active while unlocked.
             // The shared Aerial route is promoted only by the early shield
             // callback immediately before loginwindow resolves Lock Screen.
             restoreDesktopStoreAfterSession()
         }
         startTimers()
+        if lockScreenOnlyMode {
+            // Do this before advertising the agent as ready. The Apply button
+            // waits for this handshake so an immediate direct-lock cannot
+            // arrive while the first provider rearm is still in flight.
+            prepareLockScreenOnlyAgent()
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             [weak self] in
             self?.reconcileSystemSessionState()
-            self?.rearmModernLockScreenForNextSession()
+            if self?.lockScreenOnlyMode == false {
+                self?.rearmModernLockScreenForNextSession()
+            }
         }
     }
 
@@ -124,6 +133,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             notify_cancel(token)
         }
         lockShieldNotificationTokens.removeAll()
+        if lockScreenOnlyMode {
+            store.markLockScreenAgentReady(false)
+        }
         tearDownPlayback()
         store.removePID()
         store.markPaused(false)
@@ -521,8 +533,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 rebuildPlayback(from: config, keepPaused: false)
             }
             if wallpaperReloaded, config.show_on_lock_screen == true {
-                repairModernLockScreenIfNeeded(force: true)
-                rearmModernLockScreenForNextSession()
+                if lockScreenOnlyMode {
+                    store.markLockScreenAgentReady(false)
+                    prepareLockScreenOnlyAgent()
+                } else {
+                    repairModernLockScreenIfNeeded(force: true)
+                    rearmModernLockScreenForNextSession()
+                }
             }
         case .update:
             applyRuntimeSettings()
@@ -552,6 +569,33 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
 
         writeHealth(reason: "ok")
+    }
+
+    private func prepareLockScreenOnlyAgent() {
+        guard lockScreenOnlyMode else { return }
+        guard config.show_on_lock_screen == true,
+              let videoURL = effectiveLockScreenVideoURL(),
+              lockScreenInstaller.isInstalled,
+              !sessionInactive,
+              systemSessionIsLocked() != true
+        else {
+            store.markLockScreenAgentReady(false)
+            writeHealth(reason: "lock-screen-agent-not-ready")
+            return
+        }
+
+        do {
+            _ = try lockScreenInstaller.rearmForNextLock(videoURL: videoURL)
+            store.markLockScreenAgentReady(true)
+            writeHealth(reason: "lock-screen-agent-ready")
+        } catch {
+            store.markLockScreenAgentReady(false)
+            writeHealth(
+                reason:
+                    "lock-screen-agent-prepare-failed: "
+                    + error.localizedDescription
+            )
+        }
     }
 
     private func rebuildPlayback(from config: ControlConfig, keepPaused: Bool) {
