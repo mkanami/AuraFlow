@@ -1284,6 +1284,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                         .wallpaperStoreUpdateFailed
                 }
             }
+            if storeChanged, usesCanonicalWallpaperStore {
+                // WallpaperAgent keeps the temporary Aerial route in memory
+                // across unlock and can write that stale route back over the
+                // restored store. Restart its owner only after the user's
+                // Desktop/Idle data is written so it resolves the original
+                // Desktop choice instead of leaving the desktop black.
+                try rearmSystem { true }
+            }
             if markerStoreIncludesDesktop(marker) {
                 var migratedMarker = marker
                 migratedMarker.desktopIncluded = false
