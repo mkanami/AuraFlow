@@ -532,14 +532,19 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             } else {
                 rebuildPlayback(from: config, keepPaused: false)
             }
-            if wallpaperReloaded, config.show_on_lock_screen == true {
-                if lockScreenOnlyMode {
-                    store.markLockScreenAgentReady(false)
+            if lockScreenOnlyMode {
+                // Lock-only media lives in its dedicated source marker, so
+                // config.video_path is intentionally empty. Do not use
+                // wallpaperReloaded as the readiness gate: applying a new
+                // Lock Screen source sends reload with an empty video_path,
+                // and otherwise the agent stays permanently not-ready.
+                store.markLockScreenAgentReady(false)
+                if config.show_on_lock_screen == true {
                     prepareLockScreenOnlyAgent()
-                } else {
-                    repairModernLockScreenIfNeeded(force: true)
-                    rearmModernLockScreenForNextSession()
                 }
+            } else if wallpaperReloaded, config.show_on_lock_screen == true {
+                repairModernLockScreenIfNeeded(force: true)
+                rearmModernLockScreenForNextSession()
             }
         case .update:
             applyRuntimeSettings()
