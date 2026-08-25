@@ -20,6 +20,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let videoPath: String
     }
 
+    private struct RearmGuardState {
+        var sessionGeneration: UInt64 = 0
+        var wallpaperRevision: UInt64 = 0
+        var sessionInactive = false
+        var showOnLockScreen = true
+        var terminating = false
+        var lastSessionTransitionUptime = -Double.infinity
+    }
+
     private let store = WallpaperRuntimeStore()
     private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
     private let lockScreenInstaller = AerialLockScreenInstaller()
@@ -57,6 +66,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var transitionGeneration = 0
     private var lockSessionGeneration: UInt64 = 0
     private var wallpaperRevision: UInt64 = 0
+    private let rearmGuardLock = NSLock()
+    private var rearmGuardState = RearmGuardState()
     private var pendingRearmToken: LockScreenRearmToken?
     private var lastRearmedToken: LockScreenRearmToken?
     private var lastSessionTransitionUptime = -Double.infinity
@@ -83,6 +94,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        publishRearmGuardState()
         try? store.savePID()
         store.markPaused(false)
         installSignalHandlers()
@@ -115,6 +127,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         isTerminating = true
         transitionGeneration += 1
         lockSessionGeneration &+= 1
+        publishRearmGuardState()
         pendingRearmToken = nil
         writeHealth(reason: "terminating")
         DistributedNotificationCenter.default().removeObserver(self)
@@ -366,6 +379,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             sessionInactive = true
             lastSessionTransitionUptime =
                 ProcessInfo.processInfo.systemUptime
+            publishRearmGuardState()
             activateLockScreenStoreForSession()
             syncLockScreenSetting(reason: "lock-setting")
             handleLockScreenEvent(.sessionLocked, reason: "session-locked")
@@ -376,10 +390,19 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
         guard sessionInactive else { return }
         lockSessionGeneration &+= 1
-        restoreDesktopStoreAfterSession()
         sessionInactive = false
         lastSessionTransitionUptime =
             ProcessInfo.processInfo.systemUptime
+        publishRearmGuardState()
+        restoreDesktopStoreAfterSession()
+        if lockScreenOnlyMode,
+           !store.isLockScreenAgentReady() {
+            // The app can be relaunched while the Mac is already locked. The
+            // initial preparation is intentionally skipped in that state, so
+            // complete the provider warm-up as soon as the first unlock
+            // arrives before advertising the next Lock transition as ready.
+            prepareLockScreenOnlyAgent()
+        }
         handleLockScreenEvent(.sessionUnlocked, reason: "session-unlocked")
         if !lockScreenOnlyMode {
             showWindows(forceOrder: true)
@@ -496,6 +519,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminating else { return }
         sleeping = false
         if lockScreenOnlyMode {
+            // A display-sleep lock can reset SystemWallpaperURL while the
+            // password surface is waking. Reassert the dedicated Aerial
+            // route after wake, while the secure session still owns the
+            // screen; otherwise loginwindow falls back to the user's static
+            // Lock Screen background even though Index.plist is correct.
+            if sessionInactive || systemSessionIsLocked() == true {
+                activateLockScreenStoreForSession()
+                scheduleLockScreenStoreReassertion()
+            }
             scheduleDesktopRestoreAfterDisplayWake()
             showWindows(forceOrder: lockScreenState.presentationMode == .lockScreen)
             applyPlaybackRate()
@@ -536,6 +568,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         lastCommandID = command.id
         if let newConfig = command.config {
             config = store.normalized(newConfig)
+            publishRearmGuardState()
         }
         let wallpaperReloaded =
             command.action == .reload && !config.video_path.isEmpty
@@ -544,6 +577,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // generation. Every reload gets a new revision so even replacing
             // a file in-place cannot let an older provider completion win.
             wallpaperRevision &+= 1
+            publishRearmGuardState()
             pendingRearmToken = nil
             lastRearmedToken = nil
         }
@@ -1182,13 +1216,11 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     videoURL: videoURL,
                     shouldProceed: { [weak self] in
                         guard let self else { return false }
-                        return DispatchQueue.main.sync {
-                            self.repairCanProceed(
-                                token: token,
-                                videoURL: videoURL,
-                                allowRecentTransition: force
-                            )
-                        }
+                        return self.backgroundRepairCanProceed(
+                            token: token,
+                            videoURL: videoURL,
+                            allowRecentTransition: force
+                        )
                     }
                 )
                 repairError = nil
@@ -1246,12 +1278,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     videoURL: videoURL,
                     shouldProceed: { [weak self] in
                         guard let self else { return false }
-                        return DispatchQueue.main.sync {
-                            self.rearmCanProceed(
-                                token: token,
-                                videoURL: videoURL
-                            )
-                        }
+                        return self.backgroundRearmCanProceed(
+                            token: token,
+                            videoURL: videoURL
+                        )
                     }
                 )
                 rearmError = nil
@@ -1317,38 +1347,58 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         return sourceURL
     }
 
-    private func repairCanProceed(
+    private func publishRearmGuardState() {
+        rearmGuardLock.lock()
+        rearmGuardState = RearmGuardState(
+            sessionGeneration: lockSessionGeneration,
+            wallpaperRevision: wallpaperRevision,
+            sessionInactive: sessionInactive,
+            showOnLockScreen: config.show_on_lock_screen == true,
+            terminating: isTerminating,
+            lastSessionTransitionUptime: lastSessionTransitionUptime
+        )
+        rearmGuardLock.unlock()
+    }
+
+    private func currentRearmGuardState() -> RearmGuardState {
+        rearmGuardLock.lock()
+        let state = rearmGuardState
+        rearmGuardLock.unlock()
+        return state
+    }
+
+    private func backgroundRepairCanProceed(
         token: LockScreenRearmToken,
         videoURL: URL,
         allowRecentTransition: Bool
     ) -> Bool {
-        !isTerminating
-            && currentRearmToken() == token
-            && !sessionInactive
-            && lockScreenState.sessionState == .unlocked
-            && lockScreenState.previewState == .inactive
-            && config.show_on_lock_screen == true
-            && effectiveLockScreenVideoURL()?.path == videoURL.path
-            && systemSessionIsLocked() == false
-            && (
-                allowRecentTransition
-                    || ProcessInfo.processInfo.systemUptime
-                        - lastSessionTransitionUptime > 1.0
-            )
+        let state = currentRearmGuardState()
+        guard !state.terminating,
+              state.sessionGeneration == token.sessionGeneration,
+              state.wallpaperRevision == token.wallpaperRevision,
+              !state.sessionInactive,
+              state.showOnLockScreen,
+              videoURL.path == token.videoPath,
+              systemSessionIsLocked() == false
+        else {
+            return false
+        }
+        return allowRecentTransition
+            || ProcessInfo.processInfo.systemUptime
+                - state.lastSessionTransitionUptime > 1.0
     }
 
-    private func rearmCanProceed(
+    private func backgroundRearmCanProceed(
         token: LockScreenRearmToken,
         videoURL: URL
     ) -> Bool {
-        !isTerminating
-            && pendingRearmToken == token
-            && currentRearmToken() == token
-            && !sessionInactive
-            && lockScreenState.sessionState == .unlocked
-            && lockScreenState.previewState == .inactive
-            && config.show_on_lock_screen == true
-            && effectiveLockScreenVideoURL()?.path == videoURL.path
+        let state = currentRearmGuardState()
+        return !state.terminating
+            && state.sessionGeneration == token.sessionGeneration
+            && state.wallpaperRevision == token.wallpaperRevision
+            && !state.sessionInactive
+            && state.showOnLockScreen
+            && videoURL.path == token.videoPath
             && systemSessionIsLocked() == false
     }
 

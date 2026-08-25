@@ -94,6 +94,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     private let configuredAssetID: String?
     private let refreshSystem: ConditionalSystemAction
     private let rearmSystem: ConditionalSystemAction
+    private let desktopRestoreSystem: ConditionalSystemAction
     private let lockSessionHandoffSystem: ConditionalSystemAction
     private let operationLock = NSLock()
     private lazy var supportedProviderAssetIDs =
@@ -178,16 +179,20 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
         if let rearmSystem {
             self.rearmSystem = { _ in rearmSystem() }
+            self.desktopRestoreSystem = { _ in rearmSystem() }
             self.lockSessionHandoffSystem = { _ in rearmSystem() }
         } else {
             self.rearmSystem = Self.refreshLockScreenProvider
-            // The lock-only installation leaves the user's Desktop choice
-            // active while unlocked. Once the shield is raised, the store is
-            // promoted to Aerial, so an existing WallpaperAgent still has a
-            // cached Desktop resolver and cannot see that promotion by merely
-            // being prewarmed. Recreate the owner after the route changes so
-            // it reads the Aerial choice before loginwindow renders the lock.
-            self.lockSessionHandoffSystem = Self.refreshLockScreenProvider
+            // Unlock only needs the provider to remain available while
+            // WallpaperAgent rereads the restored Desktop route. Restarting
+            // the owner here causes a visible black Desktop during unlock.
+            self.desktopRestoreSystem = Self.prewarmLockScreenProvider
+            // The provider is already warmed on the dedicated Idle route while
+            // the user is unlocked. Do not kill WallpaperAgent after the
+            // shield is raised: that leaves loginwindow with a blank surface
+            // while the replacement provider is still starting. If the
+            // provider is missing, prewarmLockScreenProvider launches it.
+            self.lockSessionHandoffSystem = Self.prewarmLockScreenProvider
         }
     }
 
@@ -1285,12 +1290,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 }
             }
             if storeChanged, usesCanonicalWallpaperStore {
-                // WallpaperAgent keeps the temporary Aerial route in memory
-                // across unlock and can write that stale route back over the
-                // restored store. Restart its owner only after the user's
-                // Desktop/Idle data is written so it resolves the original
-                // Desktop choice instead of leaving the desktop black.
-                try rearmSystem { true }
+                // WallpaperAgent can keep the temporary Aerial route in
+                // memory across unlock. Keep its provider warm only after
+                // the user's Desktop/Idle data is written so it rereads the
+                // original Desktop choice without a destructive restart.
+                try desktopRestoreSystem { true }
             }
             if markerStoreIncludesDesktop(marker) {
                 var migratedMarker = marker
@@ -1996,9 +2000,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
 
     /// Keeps an already-installed provider warm without killing it. This is
     /// used while the user is unlocked, when the Desktop route must remain
-    /// untouched. The real lock handoff uses refreshLockScreenProvider after
-    /// promoting the route so WallpaperAgent rereads the new Lock Screen
-    /// choice.
+    /// untouched. The lock handoff also keeps the existing provider alive;
+    /// the route promotion is written directly to the store before loginwindow
+    /// resolves the secure Lock Screen.
     private static func prewarmLockScreenProvider(
         shouldProceed: () -> Bool
     ) throws {
