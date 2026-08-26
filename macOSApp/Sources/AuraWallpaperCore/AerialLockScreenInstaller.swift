@@ -676,7 +676,41 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             let originalStoreData = try Data(
                 contentsOf: wallpaperStoreBackupURL
             )
-            try originalStoreData.write(
+            var restorationStoreData = originalStoreData
+            var preserveCurrentSystemWallpaperURL = false
+            if marker.lockScreenOnly == true
+                || marker.desktopIncluded == false {
+                // The Desktop belongs to the user in lock-only mode. Merge
+                // the newest user choices into the clean pre-Aura store so
+                // Remove never rolls back a wallpaper changed while AuraFlow
+                // was active. A session backup is the fallback when Remove
+                // races the temporary shared Aerial lock handoff; the current
+                // unlocked store wins whenever it contains user Desktop data.
+                if let sessionData = try? Data(
+                    contentsOf: lockSessionStoreBackupURL
+                ) {
+                    restorationStoreData = try
+                        wallpaperStoreDataByOverlayingUserDesktops(
+                            onto: restorationStoreData,
+                            from: sessionData,
+                            managedAssetID: marker.assetID
+                        )
+                }
+                if let storeBeforeAttempt {
+                    preserveCurrentSystemWallpaperURL =
+                        wallpaperStoreHasUserDesktop(
+                            storeBeforeAttempt,
+                            managedAssetID: marker.assetID
+                        )
+                    restorationStoreData = try
+                        wallpaperStoreDataByOverlayingUserDesktops(
+                            onto: restorationStoreData,
+                            from: storeBeforeAttempt,
+                            managedAssetID: marker.assetID
+                        )
+                }
+            }
+            try restorationStoreData.write(
                 to: wallpaperStoreURL,
                 options: .atomic
             )
@@ -698,7 +732,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                       marker.originalThumbnailExisted == false {
                 try? fileManager.removeItem(at: thumbnailURL)
             }
-            if marker.systemWallpaperURLWasCaptured == true {
+            if marker.systemWallpaperURLWasCaptured == true,
+               !preserveCurrentSystemWallpaperURL {
                 guard setSystemWallpaperURL(
                     marker.originalSystemWallpaperURL
                 ) else {
@@ -709,14 +744,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             }
             var restorationVerified = false
             for _ in 0..<3 {
-                try originalStoreData.write(
+                try restorationStoreData.write(
                     to: wallpaperStoreURL,
                     options: .atomic
                 )
                 try refreshSystem({ true })
                 Thread.sleep(forTimeInterval: 0.4)
                 if wallpaperStoreSemanticallyMatches(
-                    expectedData: originalStoreData
+                    expectedData: restorationStoreData
                 ) {
                     restorationVerified = true
                     break
@@ -1003,6 +1038,121 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             }
         }
         return result
+    }
+
+    private func wallpaperStoreDataByOverlayingUserDesktops(
+        onto baseData: Data,
+        from latestData: Data,
+        managedAssetID: String
+    ) throws -> Data {
+        guard var base = try propertyListDictionary(from: baseData),
+              let latest = try propertyListDictionary(from: latestData)
+        else {
+            throw AerialLockScreenInstallerError.malformedWallpaperStore
+        }
+        let fallbackContainer =
+            base["AllSpacesAndDisplays"] as? [String: Any] ?? [:]
+
+        func mergeContainer(_ baseValue: Any?, _ latestValue: Any?) -> Any? {
+            guard let latestContainer = latestValue as? [String: Any],
+                  let latestDesktop = latestContainer["Desktop"]
+                    as? [String: Any],
+                  !modeReferencesAuraFlow(latestDesktop),
+                  !modeFullySelectsAerial(
+                    latestDesktop,
+                    assetID: managedAssetID
+                  )
+            else {
+                return baseValue
+            }
+            var result = baseValue as? [String: Any]
+                ?? fallbackContainer
+            result["Desktop"] = normalizeImageModeFiles(latestDesktop)
+            return result
+        }
+
+        for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+            if let merged = mergeContainer(base[key], latest[key]) {
+                base[key] = merged
+            }
+        }
+
+        var baseDisplays = base["Displays"] as? [String: Any] ?? [:]
+        for (displayID, latestContainer) in
+            latest["Displays"] as? [String: Any] ?? [:] {
+            if let merged = mergeContainer(
+                baseDisplays[displayID],
+                latestContainer
+            ) {
+                baseDisplays[displayID] = merged
+            }
+        }
+        if !baseDisplays.isEmpty {
+            base["Displays"] = baseDisplays
+        }
+
+        var baseSpaces = base["Spaces"] as? [String: Any] ?? [:]
+        for (spaceID, latestSpaceValue) in
+            latest["Spaces"] as? [String: Any] ?? [:] {
+            guard let latestSpace = latestSpaceValue as? [String: Any] else {
+                continue
+            }
+            var baseSpace = baseSpaces[spaceID] as? [String: Any] ?? [:]
+            if let merged = mergeContainer(
+                baseSpace["Default"],
+                latestSpace["Default"]
+            ) {
+                baseSpace["Default"] = merged
+            }
+            var spaceDisplays =
+                baseSpace["Displays"] as? [String: Any] ?? [:]
+            for (displayID, latestContainer) in
+                latestSpace["Displays"] as? [String: Any] ?? [:] {
+                if let merged = mergeContainer(
+                    spaceDisplays[displayID],
+                    latestContainer
+                ) {
+                    spaceDisplays[displayID] = merged
+                }
+            }
+            if !spaceDisplays.isEmpty {
+                baseSpace["Displays"] = spaceDisplays
+            }
+            if !baseSpace.isEmpty {
+                baseSpaces[spaceID] = baseSpace
+            }
+        }
+        if !baseSpaces.isEmpty {
+            base["Spaces"] = baseSpaces
+        }
+
+        return try PropertyListSerialization.data(
+            fromPropertyList: base,
+            format: .binary,
+            options: 0
+        )
+    }
+
+    private func wallpaperStoreHasUserDesktop(
+        _ data: Data,
+        managedAssetID: String
+    ) -> Bool {
+        guard let root = try? propertyListDictionary(from: data) else {
+            return false
+        }
+        var foundUserDesktop = false
+        _ = mapWallpaperContainers(in: root) { container in
+            if let desktop = container["Desktop"] as? [String: Any],
+               !modeReferencesAuraFlow(desktop),
+               !modeFullySelectsAerial(
+                    desktop,
+                    assetID: managedAssetID
+               ) {
+                foundUserDesktop = true
+            }
+            return container
+        }
+        return foundUserDesktop
     }
 
     private func safeDesktopMode(

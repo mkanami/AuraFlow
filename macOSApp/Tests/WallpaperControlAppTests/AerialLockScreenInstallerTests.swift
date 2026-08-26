@@ -454,6 +454,48 @@ private struct AerialLockScreenFixture {
     ))
 }
 
+@Test func modernLockScreenOnlyUninstallKeepsDesktopChangedByUser() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    var changedRoot = try readWallpaperStore(fixture.storeURL)
+    var changedContainer = try #require(
+        changedRoot["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    changedContainer["Desktop"] = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.sequoia",
+        configuration: [:]
+    )
+    changedRoot["AllSpacesAndDisplays"] = changedContainer
+    try writeWallpaperStore(changedRoot, to: fixture.storeURL)
+
+    try fixture.installer.uninstall()
+
+    let restoredRoot = try readWallpaperStore(fixture.storeURL)
+    let restoredContainer = try #require(
+        restoredRoot["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let restoredDesktop = try #require(
+        restoredContainer["Desktop"] as? [String: Any]
+    )
+    let restoredIdle = try #require(
+        restoredContainer["Idle"] as? [String: Any]
+    )
+    #expect(wallpaperStoreContains(
+        restoredDesktop,
+        provider: "com.apple.wallpaper.choice.sequoia",
+        assetID: nil
+    ))
+    #expect(wallpaperStoreContains(
+        restoredIdle,
+        provider: "com.apple.wallpaper.choice.screen-saver",
+        assetID: nil
+    ))
+    #expect(!wallpaperStoreText(restoredRoot).contains("AuraFlow"))
+}
+
 @Test func modernLockScreenUninstallRestoresCleanStoreAndAerialAsset() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
