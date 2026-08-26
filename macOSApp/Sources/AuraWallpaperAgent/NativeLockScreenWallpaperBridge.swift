@@ -1,10 +1,13 @@
 import AppKit
 import CoreGraphics
+import Darwin
 import OSLog
 import QuartzCore
 import Wallpaper
 
 final class NativeLockScreenWallpaperBridge {
+    private typealias StartScreenSaverFunction = @convention(c) () -> Int32
+
     private static let logger = Logger(
         subsystem: "com.auraflow.wallpaper",
         category: "native-lock-screen"
@@ -13,7 +16,6 @@ final class NativeLockScreenWallpaperBridge {
     private var displayAssertion: WallpaperDisplayAssertion?
     private var presentationAssertion: WallpaperPresentationModeAssertion?
     private var window: NSWindow?
-    private var launchedScreenSaverApplication: NSRunningApplication?
     private var preparing = false
     private var showing = false
     private var pendingCompletions: [(Bool) -> Void] = []
@@ -68,7 +70,7 @@ final class NativeLockScreenWallpaperBridge {
     func showForLockTransition() {
         guard !showing else { return }
         showing = true
-        startSystemScreenSaverIfNeeded()
+        startSystemScreenSaverNow()
         guard let displayAssertion, let window else { return }
         window.alphaValue = 1
         window.orderFrontRegardless()
@@ -90,8 +92,6 @@ final class NativeLockScreenWallpaperBridge {
     func hideAfterUnlock() {
         showing = false
         window?.alphaValue = 0
-        launchedScreenSaverApplication?.terminate()
-        launchedScreenSaverApplication = nil
         guard let displayAssertion else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -107,47 +107,35 @@ final class NativeLockScreenWallpaperBridge {
         window = nil
         presentationAssertion = nil
         displayAssertion = nil
-        launchedScreenSaverApplication?.terminate()
-        launchedScreenSaverApplication = nil
         pendingCompletions.removeAll()
         preparing = false
         showing = false
     }
 
-    private func startSystemScreenSaverIfNeeded() {
-        let bundleIdentifier = "com.apple.ScreenSaver.Engine"
-        guard NSRunningApplication.runningApplications(
-            withBundleIdentifier: bundleIdentifier
-        ).isEmpty else {
+    private func startSystemScreenSaverNow() {
+        guard let function = Self.startScreenSaverFunction else {
+            Self.logger.error("SACScreenSaverStartNow is unavailable")
             return
         }
-        let url = URL(
-            fileURLWithPath:
-                "/System/Library/CoreServices/ScreenSaverEngine.app"
-        )
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = false
-        configuration.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(
-            at: url,
-            configuration: configuration
-        ) { [weak self] application, error in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if let error {
-                    Self.logger.error(
-                        "ScreenSaverEngine launch failed: \(error.localizedDescription, privacy: .public)"
-                    )
-                    return
-                }
-                guard self.showing else {
-                    application?.terminate()
-                    return
-                }
-                self.launchedScreenSaverApplication = application
-            }
+        let result = function()
+        if result != 0 {
+            Self.logger.error(
+                "SACScreenSaverStartNow failed: \(result, privacy: .public)"
+            )
         }
     }
+
+    private static let startScreenSaverFunction: StartScreenSaverFunction? = {
+        guard let handle = dlopen(
+            "/System/Library/PrivateFrameworks/login.framework/login",
+            RTLD_NOW | RTLD_LOCAL
+        ),
+        let symbol = dlsym(handle, "SACScreenSaverStartNow")
+        else {
+            return nil
+        }
+        return unsafeBitCast(symbol, to: StartScreenSaverFunction.self)
+    }()
 
     private func makeWindow(for wallpaperLayer: CALayer) -> NSWindow {
         let frame = NSScreen.main?.frame
