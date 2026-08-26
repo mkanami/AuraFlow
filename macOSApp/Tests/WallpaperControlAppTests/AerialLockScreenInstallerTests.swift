@@ -461,33 +461,102 @@ private struct AerialLockScreenFixture {
     try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
 
     var changedRoot = try readWallpaperStore(fixture.storeURL)
-    var changedContainer = try #require(
-        changedRoot["AllSpacesAndDisplays"] as? [String: Any]
+    func withDesktop(_ value: Any?, provider: String) throws -> [String: Any] {
+        var container = try #require(value as? [String: Any])
+        container["Desktop"] = AerialLockScreenFixture.makeMode(
+            provider: provider,
+            configuration: [:]
+        )
+        return container
+    }
+    changedRoot["AllSpacesAndDisplays"] = try withDesktop(
+        changedRoot["AllSpacesAndDisplays"],
+        provider: "com.apple.wallpaper.choice.sequoia"
     )
-    changedContainer["Desktop"] = AerialLockScreenFixture.makeMode(
-        provider: "com.apple.wallpaper.choice.sequoia",
-        configuration: [:]
+    changedRoot["SystemDefault"] = try withDesktop(
+        changedRoot["SystemDefault"],
+        provider: "com.apple.wallpaper.choice.ventura"
     )
-    changedRoot["AllSpacesAndDisplays"] = changedContainer
+    var changedDisplays = try #require(
+        changedRoot["Displays"] as? [String: Any]
+    )
+    changedDisplays[AerialLockScreenFixture.displayID] = try withDesktop(
+        changedDisplays[AerialLockScreenFixture.displayID],
+        provider: "com.apple.wallpaper.choice.sonoma"
+    )
+    changedRoot["Displays"] = changedDisplays
+    var changedSpaces = try #require(
+        changedRoot["Spaces"] as? [String: Any]
+    )
+    var changedSpace = try #require(
+        changedSpaces[AerialLockScreenFixture.activeSpaceID]
+            as? [String: Any]
+    )
+    changedSpace["Default"] = try withDesktop(
+        changedSpace["Default"],
+        provider: "com.apple.wallpaper.choice.monterey"
+    )
+    var changedSpaceDisplays = try #require(
+        changedSpace["Displays"] as? [String: Any]
+    )
+    changedSpaceDisplays[AerialLockScreenFixture.displayID] = try withDesktop(
+        changedSpaceDisplays[AerialLockScreenFixture.displayID],
+        provider: "com.apple.wallpaper.choice.big-sur"
+    )
+    changedSpace["Displays"] = changedSpaceDisplays
+    changedSpaces[AerialLockScreenFixture.activeSpaceID] = changedSpace
+    changedRoot["Spaces"] = changedSpaces
     try writeWallpaperStore(changedRoot, to: fixture.storeURL)
 
     try fixture.installer.uninstall()
 
     let restoredRoot = try readWallpaperStore(fixture.storeURL)
+    func expectDesktop(_ value: Any?, provider: String) throws {
+        let container = try #require(value as? [String: Any])
+        let desktop = try #require(container["Desktop"] as? [String: Any])
+        #expect(wallpaperStoreContains(
+            desktop,
+            provider: provider,
+            assetID: nil
+        ))
+    }
     let restoredContainer = try #require(
         restoredRoot["AllSpacesAndDisplays"] as? [String: Any]
     )
-    let restoredDesktop = try #require(
-        restoredContainer["Desktop"] as? [String: Any]
+    try expectDesktop(
+        restoredContainer,
+        provider: "com.apple.wallpaper.choice.sequoia"
     )
-    let restoredIdle = try #require(
-        restoredContainer["Idle"] as? [String: Any]
+    try expectDesktop(
+        restoredRoot["SystemDefault"],
+        provider: "com.apple.wallpaper.choice.ventura"
     )
-    #expect(wallpaperStoreContains(
-        restoredDesktop,
-        provider: "com.apple.wallpaper.choice.sequoia",
-        assetID: nil
-    ))
+    let restoredDisplays = try #require(
+        restoredRoot["Displays"] as? [String: Any]
+    )
+    try expectDesktop(
+        restoredDisplays[AerialLockScreenFixture.displayID],
+        provider: "com.apple.wallpaper.choice.sonoma"
+    )
+    let restoredSpaces = try #require(
+        restoredRoot["Spaces"] as? [String: Any]
+    )
+    let restoredSpace = try #require(
+        restoredSpaces[AerialLockScreenFixture.activeSpaceID]
+            as? [String: Any]
+    )
+    try expectDesktop(
+        restoredSpace["Default"],
+        provider: "com.apple.wallpaper.choice.monterey"
+    )
+    let restoredSpaceDisplays = try #require(
+        restoredSpace["Displays"] as? [String: Any]
+    )
+    try expectDesktop(
+        restoredSpaceDisplays[AerialLockScreenFixture.displayID],
+        provider: "com.apple.wallpaper.choice.big-sur"
+    )
+    let restoredIdle = try #require(restoredContainer["Idle"] as? [String: Any])
     #expect(wallpaperStoreContains(
         restoredIdle,
         provider: "com.apple.wallpaper.choice.screen-saver",
