@@ -92,6 +92,46 @@ public enum WallpaperDesktopSupport {
         return nil
     }
 
+    /// Reapplies the per-display Desktop URLs captured immediately before a
+    /// lock-only removal. WallpaperAgent can display a newly selected image
+    /// before its private Index store is flushed, so the plist snapshot alone
+    /// is not always the latest visible user choice.
+    @discardableResult
+    public static func restoreLockScreenDesktopWallpaperBackup(
+        appSupportPath: String
+    ) -> Bool {
+        guard let wallpapers = loadWallpaperBackup(
+            appSupportPath: appSupportPath,
+            fileNames: [lockScreenBackupName]
+        ) else {
+            return false
+        }
+        let fallbackPath = wallpapers.values.first
+        var restoredAny = false
+        for screen in NSScreen.screens {
+            guard let path = wallpapers[screenIdentifier(screen)]
+                    ?? fallbackPath,
+                  FileManager.default.fileExists(atPath: path)
+            else {
+                continue
+            }
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            if NSWorkspace.shared.desktopImageURL(for: screen)?
+                .standardizedFileURL == url {
+                restoredAny = true
+                continue
+            }
+            if (try? NSWorkspace.shared.setDesktopImageURL(
+                url,
+                for: screen,
+                options: [:]
+            )) != nil {
+                restoredAny = true
+            }
+        }
+        return restoredAny
+    }
+
     @discardableResult
     public static func applyToAllDesktops(imagePath: String, retryCount: Int = 3) -> Bool {
         let standardizedPath = URL(fileURLWithPath: imagePath).standardized.path

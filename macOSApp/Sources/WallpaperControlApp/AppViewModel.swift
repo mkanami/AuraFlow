@@ -485,6 +485,11 @@ final class NativeWallpaperController: WallpaperControlling {
         let removingLockScreenOnly =
             store.isLockScreenOnlyAgent()
             || store.loadLockScreenOnlySource() != nil
+        let capturedLatestUserDesktop = removingLockScreenOnly
+            && WallpaperDesktopSupport
+                .captureLockScreenDesktopWallpaperBackup(
+                    appSupportPath: store.appSupportURL.path
+                )
         if store.processIsAlive(pid: store.loadPID()) {
             try? send(.terminate, config: currentConfig)
         }
@@ -506,6 +511,12 @@ final class NativeWallpaperController: WallpaperControlling {
             // Lock-only mode never owns Desktop. The modern uninstaller has
             // already preserved the latest user Desktop modes; applying the
             // legacy Start backup here would roll them back.
+            if capturedLatestUserDesktop {
+                _ = WallpaperDesktopSupport
+                    .restoreLockScreenDesktopWallpaperBackup(
+                        appSupportPath: store.appSupportURL.path
+                    )
+            }
             WallpaperDesktopSupport.discardWallpaperBackupFiles(
                 appSupportPath: store.appSupportURL.path
             )
