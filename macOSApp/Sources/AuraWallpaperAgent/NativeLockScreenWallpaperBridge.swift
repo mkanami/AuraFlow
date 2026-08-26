@@ -13,6 +13,7 @@ final class NativeLockScreenWallpaperBridge {
     private var displayAssertion: WallpaperDisplayAssertion?
     private var presentationAssertion: WallpaperPresentationModeAssertion?
     private var window: NSWindow?
+    private var launchedScreenSaverApplication: NSRunningApplication?
     private var preparing = false
     private var showing = false
     private var pendingCompletions: [(Bool) -> Void] = []
@@ -65,8 +66,10 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     func showForLockTransition() {
-        guard !showing, let displayAssertion, let window else { return }
+        guard !showing else { return }
         showing = true
+        startSystemScreenSaverIfNeeded()
+        guard let displayAssertion, let window else { return }
         window.alphaValue = 1
         window.orderFrontRegardless()
         Task { @MainActor [weak self] in
@@ -87,6 +90,8 @@ final class NativeLockScreenWallpaperBridge {
     func hideAfterUnlock() {
         showing = false
         window?.alphaValue = 0
+        launchedScreenSaverApplication?.terminate()
+        launchedScreenSaverApplication = nil
         guard let displayAssertion else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -102,9 +107,46 @@ final class NativeLockScreenWallpaperBridge {
         window = nil
         presentationAssertion = nil
         displayAssertion = nil
+        launchedScreenSaverApplication?.terminate()
+        launchedScreenSaverApplication = nil
         pendingCompletions.removeAll()
         preparing = false
         showing = false
+    }
+
+    private func startSystemScreenSaverIfNeeded() {
+        let bundleIdentifier = "com.apple.ScreenSaver.Engine"
+        guard NSRunningApplication.runningApplications(
+            withBundleIdentifier: bundleIdentifier
+        ).isEmpty else {
+            return
+        }
+        let url = URL(
+            fileURLWithPath:
+                "/System/Library/CoreServices/ScreenSaverEngine.app"
+        )
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(
+            at: url,
+            configuration: configuration
+        ) { [weak self] application, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let error {
+                    Self.logger.error(
+                        "ScreenSaverEngine launch failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                    return
+                }
+                guard self.showing else {
+                    application?.terminate()
+                    return
+                }
+                self.launchedScreenSaverApplication = application
+            }
+        }
     }
 
     private func makeWindow(for wallpaperLayer: CALayer) -> NSWindow {

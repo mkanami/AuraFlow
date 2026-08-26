@@ -22,16 +22,17 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
     var installationConfirmed: Bool {
         if modern.isInstalled {
             return modern.installationConfirmed
+                && legacy.installationConfirmed
         }
         return legacy.installationConfirmed
     }
 
     func install(videoURL: URL) throws {
         if modern.isAvailable {
-            if legacy.isInstalled {
-                try legacy.uninstall()
-            }
-            try modern.install(videoURL: videoURL)
+            try installModernAndScreenSaver(
+                videoURL: videoURL,
+                lockScreenOnly: false
+            )
         } else {
             try legacy.install(videoURL: videoURL)
         }
@@ -39,10 +40,10 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
 
     func installLockScreenOnly(videoURL: URL) throws {
         if modern.isAvailable {
-            if legacy.isInstalled {
-                try legacy.uninstall()
-            }
-            try modern.installLockScreenOnly(videoURL: videoURL)
+            try installModernAndScreenSaver(
+                videoURL: videoURL,
+                lockScreenOnly: true
+            )
         } else {
             try legacy.installLockScreenOnly(videoURL: videoURL)
         }
@@ -53,5 +54,26 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
             try modern.uninstall()
         }
         try legacy.uninstall()
+    }
+
+    private func installModernAndScreenSaver(
+        videoURL: URL,
+        lockScreenOnly: Bool
+    ) throws {
+        if lockScreenOnly {
+            try legacy.installLockScreenOnly(videoURL: videoURL)
+        } else {
+            try legacy.install(videoURL: videoURL)
+        }
+        do {
+            if lockScreenOnly {
+                try modern.installLockScreenOnly(videoURL: videoURL)
+            } else {
+                try modern.install(videoURL: videoURL)
+            }
+        } catch {
+            try? legacy.uninstall()
+            throw error
+        }
     }
 }
