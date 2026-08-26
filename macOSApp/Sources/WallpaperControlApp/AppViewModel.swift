@@ -482,6 +482,9 @@ final class NativeWallpaperController: WallpaperControlling {
 
     func clearWallpaper() throws -> ControlStatus {
         let currentConfig = store.loadConfig()
+        let removingLockScreenOnly =
+            store.isLockScreenOnlyAgent()
+            || store.loadLockScreenOnlySource() != nil
         if store.processIsAlive(pid: store.loadPID()) {
             try? send(.terminate, config: currentConfig)
         }
@@ -498,7 +501,18 @@ final class NativeWallpaperController: WallpaperControlling {
         }
         store.clearLockScreenOnlySource()
         store.markLockScreenOnlyAgent(false)
-        let restored = store.restoreWallpaperBackup()
+        let restored: Bool
+        if removingLockScreenOnly {
+            // Lock-only mode never owns Desktop. The modern uninstaller has
+            // already preserved the latest user Desktop modes; applying the
+            // legacy Start backup here would roll them back.
+            WallpaperDesktopSupport.discardWallpaperBackupFiles(
+                appSupportPath: store.appSupportURL.path
+            )
+            restored = false
+        } else {
+            restored = store.restoreWallpaperBackup()
+        }
         _ = try updateConfig { config in
             config.video_path = ""
         }

@@ -237,6 +237,35 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 }
 
+@Test func nativeLockScreenOnlyRemoveDiscardsOldDesktopBackup() throws {
+    let fixture = try NativeRuntimeFixture("remove-lock-screen-only")
+    defer { fixture.cleanup() }
+
+    let installer = RecordingLockScreenSaverInstaller()
+    try installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+    let oldDesktopURL = fixture.root.appendingPathComponent("old.jpg")
+    try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: oldDesktopURL)
+    let backupURL = fixture.store.appSupportURL
+        .appendingPathComponent("wallpaper_backup.json")
+    let backupData = try JSONSerialization.data(
+        withJSONObject: ["display": oldDesktopURL.path]
+    )
+    try backupData.write(to: backupURL)
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    let removed = try controller.clearWallpaper()
+
+    #expect(removed.wallpaper_restored == false)
+    #expect(installer.uninstallCallCount == 1)
+    #expect(!FileManager.default.fileExists(atPath: backupURL.path))
+    #expect(FileManager.default.fileExists(atPath: oldDesktopURL.path))
+}
+
 @Test func nativeStartIgnoresStaleTerminateCommandFromPreviousClear() throws {
     let fixture = try NativeRuntimeFixture("stale-terminate")
     defer { fixture.cleanup() }

@@ -245,6 +245,15 @@ public enum WallpaperDesktopSupport {
         return true
     }
 
+    /// Deletes legacy Desktop snapshots without applying them. Lock-screen-
+    /// only mode never owns the Desktop, so its Remove path must preserve the
+    /// user's current wallpaper instead of restoring a pre-Aura snapshot.
+    public static func discardWallpaperBackupFiles(
+        appSupportPath: String
+    ) {
+        removeWallpaperBackupFiles(appSupportPath: appSupportPath)
+    }
+
     /// Recovers a wallpaper store left by an older or interrupted AuraFlow
     /// removal even after the JSON backup has already been consumed.
     @discardableResult
