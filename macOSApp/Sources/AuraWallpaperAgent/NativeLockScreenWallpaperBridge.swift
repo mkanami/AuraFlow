@@ -71,9 +71,11 @@ final class NativeLockScreenWallpaperBridge {
         guard !showing else { return }
         showing = true
         startSystemScreenSaverNow()
-        guard let displayAssertion, let window else { return }
-        window.alphaValue = 1
-        window.orderFrontRegardless()
+        guard let displayAssertion else { return }
+        // Keep the prewarmed layer hidden. Making it visible here creates a
+        // three-frame transition: Aura, loginwindow's Desktop snapshot, then
+        // the real Aura Lock Screen. loginwindow owns the secure surface and
+        // presents the prepared screen-saver route itself.
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
