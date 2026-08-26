@@ -113,6 +113,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         stateDirectoryURL.appendingPathComponent("Index.before-auraflow.plist")
     }
 
+    private var lockSessionStoreBackupURL: URL {
+        stateDirectoryURL.appendingPathComponent("Index.before-lock-session.plist")
+    }
+
     private var assetBackupURL: URL {
         stateDirectoryURL.appendingPathComponent("aerial.before-auraflow.mov")
     }
@@ -1212,6 +1216,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             else {
                 return false
             }
+            let currentStoreData = try Data(contentsOf: wallpaperStoreURL)
             if markerStoreIncludesDesktop(marker),
                wallpaperStoreFullySelectsAerial(
                    assetID: marker.assetID,
@@ -1220,9 +1225,17 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                systemWallpaperURLMatches(assetID: marker.assetID) {
                 return false
             }
-            let originalStoreData = try Data(contentsOf: wallpaperStoreBackupURL)
+            if !wallpaperStoreFullySelectsAerial(
+                assetID: marker.assetID,
+                scope: .sharedWallpaper
+            ) {
+                try currentStoreData.write(
+                    to: lockSessionStoreBackupURL,
+                    options: .atomic
+                )
+            }
             let activeStoreData = try aerialWallpaperStoreData(
-                from: originalStoreData,
+                from: currentStoreData,
                 assetID: marker.assetID,
                 scope: .sharedWallpaper
             )
@@ -1267,9 +1280,12 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             else {
                 return false
             }
-            let originalStoreData = try Data(contentsOf: wallpaperStoreBackupURL)
+            let desktopStoreURL = fileManager.fileExists(
+                atPath: lockSessionStoreBackupURL.path
+            ) ? lockSessionStoreBackupURL : wallpaperStoreBackupURL
+            let desktopStoreData = try Data(contentsOf: desktopStoreURL)
             let lockOnlyStoreData = try aerialWallpaperStoreData(
-                from: originalStoreData,
+                from: desktopStoreData,
                 assetID: marker.assetID,
                 scope: .lockScreenOnly
             )

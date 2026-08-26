@@ -1,5 +1,12 @@
 // swift-tools-version: 5.9
 import PackageDescription
+import Foundation
+
+let packageDirectory = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+let privateWallpaperModulesDirectory = packageDirectory
+    .appendingPathComponent("Sources/PrivateWallpaperModules")
+    .path
 
 let package = Package(
     name: "WallpaperControlApp",
@@ -18,7 +25,22 @@ let package = Package(
         .executableTarget(
             name: "AuraWallpaperAgent",
             dependencies: ["AuraWallpaperCore"],
-            path: "Sources/AuraWallpaperAgent"
+            path: "Sources/AuraWallpaperAgent",
+            swiftSettings: [
+                .unsafeFlags([
+                    "-I",
+                    privateWallpaperModulesDirectory,
+                ]),
+            ],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-F/System/Library/PrivateFrameworks",
+                    "-framework",
+                    "Wallpaper",
+                    "-framework",
+                    "WallpaperTypes",
+                ]),
+            ]
         ),
         .executableTarget(
             name: "WallpaperControlApp",

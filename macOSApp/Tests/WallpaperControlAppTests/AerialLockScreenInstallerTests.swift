@@ -408,6 +408,52 @@ private struct AerialLockScreenFixture {
     #expect(fixture.installer.isLockScreenOnlyInstallation)
 }
 
+@Test func modernLockScreenOnlyRestoresLatestUserDesktopRoute() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    var changedRoot = try readWallpaperStore(fixture.storeURL)
+    var changedContainer = try #require(
+        changedRoot["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    var changedDesktop = try #require(
+        changedContainer["Desktop"] as? [String: Any]
+    )
+    var changedContent = try #require(
+        changedDesktop["Content"] as? [String: Any]
+    )
+    var changedChoices = try #require(
+        changedContent["Choices"] as? [[String: Any]]
+    )
+    changedChoices[0]["Provider"] = "com.apple.wallpaper.choice.sequoia"
+    changedChoices[0]["Configuration"] = Data()
+    changedChoices[0]["Files"] = []
+    changedContent["Choices"] = changedChoices
+    changedDesktop["Content"] = changedContent
+    changedContainer["Desktop"] = changedDesktop
+    changedRoot["AllSpacesAndDisplays"] = changedContainer
+    try writeWallpaperStore(changedRoot, to: fixture.storeURL)
+
+    _ = try fixture.installer.activateLockScreenForCurrentSession()
+    _ = try fixture.installer.restoreDesktopAfterLockScreenSession()
+    _ = try fixture.installer.restoreDesktopAfterLockScreenSession()
+
+    let restoredRoot = try readWallpaperStore(fixture.storeURL)
+    let restoredContainer = try #require(
+        restoredRoot["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let restoredDesktop = try #require(
+        restoredContainer["Desktop"] as? [String: Any]
+    )
+    #expect(wallpaperStoreContains(
+        restoredDesktop,
+        provider: "com.apple.wallpaper.choice.sequoia",
+        assetID: nil
+    ))
+}
+
 @Test func modernLockScreenUninstallRestoresCleanStoreAndAerialAsset() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

@@ -32,6 +32,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let store = WallpaperRuntimeStore()
     private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
     private let lockScreenInstaller = AerialLockScreenInstaller()
+    private let nativeLockScreenBridge = NativeLockScreenWallpaperBridge()
     private let lockScreenRepairQueue = DispatchQueue(
         label: "com.auraflow.lock-screen-repair",
         qos: .utility
@@ -55,6 +56,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var manualPaused = false
     private var sleeping = false
     private var displaySleepRestorePending = false
+    private var displaySleepLockObserved = false
     private var sessionInactive = false
     private var autoPausedForFullscreen = false
     private var fullscreenAppDetected = false
@@ -93,6 +95,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ProcessInfo.processInfo.disableAutomaticTermination(
+            "AuraFlow wallpaper agent is active"
+        )
         NSApp.setActivationPolicy(.accessory)
         publishRearmGuardState()
         try? store.savePID()
@@ -102,9 +107,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             rebuildPlayback(from: config, keepPaused: false)
         } else {
             store.markLockScreenAgentReady(false)
-            // Keep the user's Desktop configuration active while unlocked.
-            // The shared Aerial route is promoted only by the early shield
-            // callback immediately before loginwindow resolves Lock Screen.
+            // Recover the user's Desktop first, then pre-arm WallpaperAgent's
+            // next assertion without leaving the Aerial route in Index.plist.
             restoreDesktopStoreAfterSession()
         }
         startTimers()
@@ -125,6 +129,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
+        if lockScreenOnlyMode {
+            restoreDesktopStoreAfterSession()
+            nativeLockScreenBridge.shutdown()
+        }
         transitionGeneration += 1
         lockSessionGeneration &+= 1
         publishRearmGuardState()
@@ -156,6 +164,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if lockScreenOnlyMode {
             store.markLockScreenOnlyAgent(false)
         }
+        ProcessInfo.processInfo.enableAutomaticTermination(
+            "AuraFlow wallpaper agent is active"
+        )
     }
 
     private func installSignalHandlers() {
@@ -262,6 +273,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         )
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
+            selector: #selector(screensWillSleep),
+            name: NSWorkspace.screensDidSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
             selector: #selector(screensDidWake),
             name: NSWorkspace.screensDidWakeNotification,
             object: nil
@@ -275,9 +292,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func screensChanged() {
         guard !isTerminating else { return }
-        if lockScreenOnlyMode {
-            restoreDesktopStoreAfterSession()
-        } else {
+        if !lockScreenOnlyMode {
             rebuildWindows()
         }
         writeHealth(reason: "screen-change")
@@ -310,7 +325,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func sessionDidResignActive() {
-        activateLockScreenStoreForSession()
+        nativeLockScreenBridge.showForLockTransition()
         handleSessionNotification(expectedLocked: true)
     }
 
@@ -320,7 +335,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func lockShieldDidRaise(_ notification: Notification) {
         guard !isTerminating else { return }
-        activateLockScreenStoreForSession()
+        nativeLockScreenBridge.showForLockTransition()
     }
 
     private func registerLockShieldDarwinNotifications() {
@@ -335,7 +350,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     &token,
                     lockShieldQueue
                 ) { [weak self] _ in
-                    self?.activateLockScreenStoreForSession()
+                    DispatchQueue.main.async {
+                        self?.nativeLockScreenBridge
+                            .showForLockTransition()
+                    }
                 }
             }
             if status == NOTIFY_STATUS_OK {
@@ -379,11 +397,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             sessionInactive = true
             lastSessionTransitionUptime =
                 ProcessInfo.processInfo.systemUptime
+            displaySleepLockObserved = true
             publishRearmGuardState()
-            activateLockScreenStoreForSession()
+            nativeLockScreenBridge.showForLockTransition()
             syncLockScreenSetting(reason: "lock-setting")
             handleLockScreenEvent(.sessionLocked, reason: "session-locked")
-            scheduleLockScreenStoreReassertion()
+            scheduleLockedDesktopRestoration()
             writeHealth(reason: "session-inactive")
             return
         }
@@ -394,6 +413,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         lastSessionTransitionUptime =
             ProcessInfo.processInfo.systemUptime
         publishRearmGuardState()
+        nativeLockScreenBridge.hideAfterUnlock()
         restoreDesktopStoreAfterSession()
         if lockScreenOnlyMode,
            !store.isLockScreenAgentReady() {
@@ -413,41 +433,25 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         rearmModernLockScreenForNextSession()
     }
 
-    private func activateLockScreenStoreForSession() {
+    private func scheduleLockedDesktopRestoration() {
         guard config.show_on_lock_screen == true,
               lockScreenInstaller.requiresLockScreenSessionPromotion
         else {
             return
         }
-        do {
-            _ = try lockScreenInstaller.activateLockScreenForCurrentSession()
-        } catch {
-            writeHealth(
-                reason:
-                    "lock-screen-session-activation-failed: "
-                    + error.localizedDescription
-            )
-        }
-    }
-
-    private func scheduleLockScreenStoreReassertion() {
-        guard config.show_on_lock_screen == true,
-              lockScreenInstaller.requiresLockScreenSessionPromotion
-        else {
-            return
-        }
-        for delay in [0.15, 0.45, 1.0] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                [weak self] in
-                guard let self,
-                      !self.isTerminating,
-                      self.sessionInactive,
-                      self.systemSessionIsLocked() == true
-                else {
-                    return
-                }
-                self.activateLockScreenStoreForSession()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) {
+            [weak self] in
+            guard let self,
+                  !self.isTerminating,
+                  self.sessionInactive,
+                  self.systemSessionIsLocked() == true
+            else {
+                return
             }
+            // Clean up a stale backup from the legacy temporary-promotion
+            // path. The native Lock Screen assertion is independent of the
+            // user's Desktop route and remains active while locked.
+            self.restoreDesktopStoreAfterSession()
         }
     }
 
@@ -460,6 +464,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         do {
             _ = try lockScreenInstaller.restoreDesktopAfterLockScreenSession()
             displaySleepRestorePending = false
+            displaySleepLockObserved = false
         } catch {
             writeHealth(
                 reason:
@@ -498,13 +503,22 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // the first visible frame is already available when the display
             // wakes to the password surface.
             displaySleepRestorePending = true
-            activateLockScreenStoreForSession()
+            displaySleepLockObserved = false
+            nativeLockScreenBridge.showForLockTransition()
             writeHealth(reason: "display-sleep-before-lock")
             return
         }
         sleeping = true
         player?.pause()
         writeHealth(reason: "sleeping")
+    }
+
+    @objc private func screensWillSleep() {
+        guard !isTerminating, lockScreenOnlyMode else { return }
+        displaySleepRestorePending = true
+        displaySleepLockObserved = sessionInactive
+        nativeLockScreenBridge.showForLockTransition()
+        writeHealth(reason: "screens-sleep-before-lock")
     }
 
     @objc private func systemDidWake() {
@@ -525,8 +539,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // screen; otherwise loginwindow falls back to the user's static
             // Lock Screen background even though Index.plist is correct.
             if sessionInactive || systemSessionIsLocked() == true {
-                activateLockScreenStoreForSession()
-                scheduleLockScreenStoreReassertion()
+                nativeLockScreenBridge.showForLockTransition()
+                scheduleLockedDesktopRestoration()
             }
             scheduleDesktopRestoreAfterDisplayWake()
             showWindows(forceOrder: lockScreenState.presentationMode == .lockScreen)
@@ -552,7 +566,16 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminating, displaySleepRestorePending else {
             return
         }
-        guard !sessionInactive, systemSessionIsLocked() == false else {
+        if !displaySleepLockObserved,
+           !sessionInactive,
+           systemSessionIsLocked() == false {
+            displaySleepRestorePending = false
+            return
+        }
+        guard displaySleepLockObserved,
+              !sessionInactive,
+              systemSessionIsLocked() == false
+        else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 [weak self] in
                 self?.pollDesktopRestoreAfterDisplayWake()
@@ -653,8 +676,21 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
         do {
             _ = try lockScreenInstaller.rearmForNextLock(videoURL: videoURL)
-            store.markLockScreenAgentReady(true)
-            writeHealth(reason: "lock-screen-agent-ready")
+            nativeLockScreenBridge.prepare { [weak self] succeeded in
+                guard let self,
+                      !self.isTerminating,
+                      !self.sessionInactive,
+                      self.systemSessionIsLocked() != true
+                else {
+                    return
+                }
+                self.store.markLockScreenAgentReady(succeeded)
+                self.writeHealth(
+                    reason: succeeded
+                        ? "lock-screen-agent-ready"
+                        : "lock-screen-agent-not-ready"
+                )
+            }
         } catch {
             store.markLockScreenAgentReady(false)
             writeHealth(
@@ -1121,14 +1157,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         rearmModernLockScreenForNextSession()
 
         if lockScreenOnlyMode {
-            if !sessionInactive,
-               systemSessionIsLocked() == false,
-               lockScreenInstaller.requiresLockScreenSessionPromotion {
-                // The Test Lock Screen button uses display sleep. That path
-                // can omit screenIsUnlocked and screensDidWake, so the
-                // periodic health pass is the final restoration safety net.
-                restoreDesktopStoreAfterSession()
-            }
             writeHealth(reason: "lock-screen-only")
             return
         }
