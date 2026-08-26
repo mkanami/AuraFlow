@@ -613,6 +613,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             manualPaused = false
             store.markPaused(false)
             if lockScreenOnlyMode {
+                nativeLockScreenBridge.resumeAfterPause()
                 restoreDesktopStoreAfterSession()
             } else {
                 rebuildPlayback(from: config, keepPaused: false)
@@ -637,6 +638,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 restoreDesktopStoreAfterSession()
             }
         case .resume:
+            if lockScreenOnlyMode {
+                nativeLockScreenBridge.resumeAfterPause()
+            }
             if !lockScreenOnlyMode {
                 showWindows()
             }
@@ -646,7 +650,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 applyPlaybackRate()
             }
         case .pause:
-            pauseAndCommitStillFrame()
+            if lockScreenOnlyMode {
+                manualPaused = true
+                store.markPaused(true)
+                nativeLockScreenBridge.pause()
+            } else {
+                pauseAndCommitStillFrame()
+            }
         case .previewLock:
             syncLockScreenSetting(reason: "lock-setting")
             handleLockScreenEvent(.beginPreview, reason: "lock-preview")

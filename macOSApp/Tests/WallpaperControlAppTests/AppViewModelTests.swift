@@ -868,6 +868,36 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
+@Test func activeLockScreenOnlyWallpaperKeepsStopAvailable() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.statusRunning = false
+    controller.statusPaused = false
+    controller.statusHealth = DaemonHealth(
+        available: true,
+        fresh: true,
+        suspicious: false,
+        reason: "ok"
+    )
+    let viewModel = AppViewModel(controller: controller)
+
+    await viewModel.loadStatus()
+
+    #expect(viewModel.isLockScreenOnlyActive)
+    #expect(viewModel.canStop)
+
+    viewModel.stop()
+    for _ in 0..<20 {
+        if controller.stopCallCount == 1 { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.stopCallCount == 1)
+    #expect(viewModel.isLockScreenOnlyActive == false)
+    #expect(viewModel.canStop == false)
+    #expect(viewModel.statusMessage == "Lock Screen wallpaper stopped.")
+}
+
+@MainActor
 @Test func startForcesPlaybackWhenSetVideoReturnsSuspiciousRunningState() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.suspicious-start")!
@@ -950,6 +980,7 @@ final class MockNativeWallpaperController: WallpaperControlling {
     var startCallCount = 0
     var clearCallCount = 0
     var resumeCallCount = 0
+    var stopCallCount = 0
     var statusRunning = false
     var statusPaused: Bool?
     var statusHealth: DaemonHealth?
@@ -982,6 +1013,7 @@ final class MockNativeWallpaperController: WallpaperControlling {
     }
 
     func stop() throws -> ControlStatus {
+        stopCallCount += 1
         statusRunning = false
         statusPaused = true
         statusHealth = nil

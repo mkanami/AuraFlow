@@ -209,6 +209,34 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 }
 
+@Test func nativeStopDisablesActiveLockScreenOnlyWallpaper() throws {
+    let fixture = try NativeRuntimeFixture("stop-lock-screen-only")
+    defer { fixture.cleanup() }
+
+    let installer = RecordingLockScreenSaverInstaller()
+    try installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+    let agent = Process()
+    agent.executableURL = fixture.helperURL
+    try agent.run()
+    try fixture.store.savePID(agent.processIdentifier)
+    fixture.store.markLockScreenOnlyAgent(true)
+
+    let stopped = try controller.stop()
+
+    #expect(stopped.running == false)
+    #expect(stopped.paused == true)
+    #expect(fixture.store.loadCommand()?.action == .pause)
+    #expect(installer.uninstallCallCount == 1)
+    #expect(
+        fixture.store.processIsAlive(pid: Int(agent.processIdentifier))
+    )
+}
+
 @Test func nativeStartIgnoresStaleTerminateCommandFromPreviousClear() throws {
     let fixture = try NativeRuntimeFixture("stale-terminate")
     defer { fixture.cleanup() }

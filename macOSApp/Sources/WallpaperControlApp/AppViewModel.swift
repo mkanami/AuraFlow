@@ -469,9 +469,13 @@ final class NativeWallpaperController: WallpaperControlling {
 
     func stop() throws -> ControlStatus {
         let config = store.loadConfig()
+        let stoppingLockScreenOnly = store.isLockScreenOnlyAgent()
         store.markPaused(true)
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.pause, config: config)
+        }
+        if stoppingLockScreenOnly, lockScreenSaverInstaller.isInstalled {
+            try lockScreenSaverInstaller.uninstall()
         }
         return store.status()
     }
@@ -772,6 +776,7 @@ final class AppViewModel: ObservableObject {
     @Published var isRunning: Bool = false
     @Published private(set) var isPlaybackActive: Bool = false
     @Published private(set) var isPlaybackPaused: Bool = false
+    @Published private(set) var isLockScreenOnlyActive: Bool = false
     @Published var autostartEnabled: Bool = false
     @Published var blendInterpolationEnabled: Bool = false
     @Published var pauseOnFullscreenEnabled: Bool = true
@@ -889,7 +894,9 @@ final class AppViewModel: ObservableObject {
     }
 
     var canStop: Bool {
-        isControllerAvailable && !isBusy && isPlaybackRunningForControls
+        isControllerAvailable
+            && !isBusy
+            && (isPlaybackRunningForControls || isLockScreenOnlyActive)
     }
 
     var canClearWallpaper: Bool {
@@ -1448,7 +1455,10 @@ final class AppViewModel: ObservableObject {
     func stop() {
         guard let controller else { return }
         guard !isBusy else { return }
-        guard isPlaybackRunningForControls else { return }
+        guard isPlaybackRunningForControls || isLockScreenOnlyActive else {
+            return
+        }
+        let stoppingLockScreenOnly = isLockScreenOnlyActive
         Task {
             isBusy = true
             defer { isBusy = false }
@@ -1456,7 +1466,9 @@ final class AppViewModel: ObservableObject {
                 let status = try await runAsync { try controller.stop() }
                 apply(status: status)
                 recordBridgeSuccess()
-                statusMessage = "Paused on current frame."
+                statusMessage = stoppingLockScreenOnly
+                    ? "Lock Screen wallpaper stopped."
+                    : "Paused on current frame."
                 alertMessage = nil
             } catch {
                 recordBridgeFailure(error, context: "pause")
@@ -2022,9 +2034,17 @@ final class AppViewModel: ObservableObject {
         let hasConfiguredVideo = !status.config.video_path.isEmpty
         let paused = status.paused ?? false
         let effectiveRunning = statusIndicatesActivePlayback(status)
+        let lockScreenOnlyActive = !status.running
+            && !paused
+            && status.health?.available == true
+            && status.health?.suspicious != true
         Self.setIfChanged(&isRunning, to: status.running)
         Self.setIfChanged(&isPlaybackActive, to: effectiveRunning)
         Self.setIfChanged(&isPlaybackPaused, to: paused && hasConfiguredVideo && !effectiveRunning)
+        Self.setIfChanged(
+            &isLockScreenOnlyActive,
+            to: lockScreenOnlyActive
+        )
         Self.setIfChanged(&playbackSpeed, to: status.config.playback_speed)
         Self.setIfChanged(&autostartEnabled, to: status.autostart ?? status.config.autostart ?? false)
         Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
