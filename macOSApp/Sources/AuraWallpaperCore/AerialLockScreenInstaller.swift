@@ -747,14 +747,12 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                         managedAssetID: marker.assetID
                     )
                 } ?? false
-                let currentHasManagedDesktop = storeBeforeAttempt.map {
-                    wallpaperStoreHasManagedDesktop(
-                        $0,
-                        managedAssetID: marker.assetID
-                    )
-                } ?? false
+                // A real macOS store can contain the user's newly selected
+                // Desktop in one Space and a transient Aura Aerial Desktop in
+                // another. Preserve the current store whenever it contains
+                // any user Desktop; the merge below replaces only managed
+                // modes and keeps every latest user route in place.
                 let latestUserStoreData = currentHasUserDesktop
-                    && !currentHasManagedDesktop
                     ? storeBeforeAttempt
                     : sessionData
                 if let latestUserStoreData {
@@ -1446,7 +1444,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         defer { operationLock.unlock() }
         return try withCrossProcessLock {
             guard requiresLockScreenSessionPromotion,
-                  let marker = loadMarker(),
+                  var marker = loadMarker(),
                   marker.completed == true
             else {
                 return false
@@ -1459,6 +1457,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                ),
                systemWallpaperURLMatches(assetID: marker.assetID) {
                 return false
+            }
+            if marker.systemWallpaperURLWasCaptured == true,
+               !systemWallpaperURLMatches(assetID: marker.assetID) {
+                // The user may change Desktop while lock-only mode is active.
+                // Capture that current public wallpaper URL for this lock
+                // session instead of restoring the URL from Aura startup.
+                marker.originalSystemWallpaperURL = currentSystemWallpaperURL()
+                try saveMarker(marker)
             }
             if !wallpaperStoreFullySelectsAerial(
                 assetID: marker.assetID,
@@ -1515,9 +1521,31 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             else {
                 return false
             }
-            let desktopStoreURL = fileManager.fileExists(
+            let currentStoreData = try Data(contentsOf: wallpaperStoreURL)
+            let hasSessionBackup = fileManager.fileExists(
                 atPath: lockSessionStoreBackupURL.path
-            ) ? lockSessionStoreBackupURL : wallpaperStoreBackupURL
+            )
+            let hasManagedDesktop = wallpaperStoreHasManagedDesktop(
+                currentStoreData,
+                managedAssetID: marker.assetID
+            )
+            let hasManagedSystemURL = systemWallpaperURLMatches(
+                assetID: marker.assetID
+            )
+            guard hasManagedDesktop || hasManagedSystemURL else {
+                // No lock promotion is active. A leftover session snapshot is
+                // stale and must never overwrite a Desktop changed by the
+                // user while AuraFlow keeps running.
+                if hasSessionBackup {
+                    try? fileManager.removeItem(
+                        at: lockSessionStoreBackupURL
+                    )
+                }
+                return false
+            }
+            let desktopStoreURL = hasSessionBackup
+                ? lockSessionStoreBackupURL
+                : wallpaperStoreBackupURL
             let desktopStoreData = try Data(contentsOf: desktopStoreURL)
             let lockOnlyStoreData = try aerialWallpaperStoreData(
                 from: desktopStoreData,
@@ -1551,6 +1579,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 var migratedMarker = marker
                 migratedMarker.desktopIncluded = false
                 try saveMarker(migratedMarker)
+            }
+            if hasSessionBackup {
+                try? fileManager.removeItem(at: lockSessionStoreBackupURL)
             }
             return storeChanged
         }

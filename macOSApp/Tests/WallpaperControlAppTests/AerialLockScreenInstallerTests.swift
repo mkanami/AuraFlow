@@ -477,6 +477,31 @@ private struct AerialLockScreenFixture {
     ))
 }
 
+@Test func lockOnlyRestoreDoesNotReplaySnapshotWithoutActiveLock() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    var changedRoot = try readWallpaperStore(fixture.storeURL)
+    var changedContainer = try #require(
+        changedRoot["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    changedContainer["Desktop"] = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.sequoia",
+        configuration: [:]
+    )
+    changedRoot["AllSpacesAndDisplays"] = changedContainer
+    try writeWallpaperStore(changedRoot, to: fixture.storeURL)
+    let userStoreData = try Data(contentsOf: fixture.storeURL)
+
+    let restored = try fixture.installer
+        .restoreDesktopAfterLockScreenSession()
+
+    #expect(!restored)
+    #expect(try Data(contentsOf: fixture.storeURL) == userStoreData)
+}
+
 @Test func modernLockScreenOnlyUninstallKeepsDesktopChangedByUser() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
@@ -496,10 +521,14 @@ private struct AerialLockScreenFixture {
         changedRoot["AllSpacesAndDisplays"],
         provider: "com.apple.wallpaper.choice.sequoia"
     )
-    changedRoot["SystemDefault"] = try withDesktop(
-        changedRoot["SystemDefault"],
-        provider: "com.apple.wallpaper.choice.ventura"
+    var mixedSystemDefault = try #require(
+        changedRoot["SystemDefault"] as? [String: Any]
     )
+    mixedSystemDefault["Desktop"] = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.aerials",
+        configuration: ["assetID": AerialLockScreenFixture.assetID]
+    )
+    changedRoot["SystemDefault"] = mixedSystemDefault
     var changedDisplays = try #require(
         changedRoot["Displays"] as? [String: Any]
     )
@@ -552,7 +581,7 @@ private struct AerialLockScreenFixture {
     )
     try expectDesktop(
         restoredRoot["SystemDefault"],
-        provider: "com.apple.wallpaper.choice.ventura"
+        provider: "com.apple.wallpaper.choice.image"
     )
     let restoredDisplays = try #require(
         restoredRoot["Displays"] as? [String: Any]
