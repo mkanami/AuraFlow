@@ -434,18 +434,13 @@ private struct AerialLockScreenFixture {
     container = try #require(
         root["AllSpacesAndDisplays"] as? [String: Any]
     )
-    desktop = try #require(container["Desktop"] as? [String: Any])
+    let lockLinked = try #require(container["Linked"] as? [String: Any])
     #expect(wallpaperStoreContains(
-        desktop,
+        lockLinked,
         provider: "com.apple.wallpaper.choice.aerials",
         assetID: AerialLockScreenFixture.assetID
     ))
-    let lockIdle = try #require(container["Idle"] as? [String: Any])
-    #expect(wallpaperStoreContains(
-        lockIdle,
-        provider: "com.apple.wallpaper.choice.aerials",
-        assetID: AerialLockScreenFixture.assetID
-    ))
+    #expect(container["Type"] as? String == "linked")
 
     _ = try fixture.installer.restoreDesktopAfterLockScreenSession()
     root = try readWallpaperStore(fixture.storeURL)
@@ -529,13 +524,48 @@ private struct AerialLockScreenFixture {
     root = try readWallpaperStore(fixture.storeURL)
     for key in ["AllSpacesAndDisplays", "SystemDefault"] {
         var split = try #require(root[key] as? [String: Any])
-        split["Desktop"] = AerialLockScreenFixture.makeMode(
+        var latestDesktop = AerialLockScreenFixture.makeMode(
             provider: "com.apple.wallpaper.choice.sonoma",
             configuration: [:]
         )
+        latestDesktop["LastSet"] = Date().addingTimeInterval(60)
+        latestDesktop["LastUse"] = Date().addingTimeInterval(60)
+        split["Desktop"] = latestDesktop
         root[key] = split
     }
     try writeWallpaperStore(root, to: fixture.storeURL)
+
+    // Idle still points at Aura, so this takes the current-installation fast
+    // path. The latest Desktop must nevertheless be journaled first.
+    _ = try fixture.installer.rearmForNextLock(videoURL: fixture.videoURL)
+
+    root = try readWallpaperStore(fixture.storeURL)
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        var split = try #require(root[key] as? [String: Any])
+        var staleDesktop = AerialLockScreenFixture.makeMode(
+            provider: "com.apple.wallpaper.choice.sequoia",
+            configuration: [:]
+        )
+        staleDesktop["LastSet"] = Date().addingTimeInterval(-60)
+        staleDesktop["LastUse"] = Date().addingTimeInterval(-60)
+        split["Desktop"] = staleDesktop
+        root[key] = split
+    }
+    try writeWallpaperStore(root, to: fixture.storeURL)
+
+    _ = try fixture.installer.activateLockScreenForCurrentSession()
+    _ = try fixture.installer.restoreDesktopAfterLockScreenSession()
+
+    root = try readWallpaperStore(fixture.storeURL)
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        let split = try #require(root[key] as? [String: Any])
+        let desktop = try #require(split["Desktop"] as? [String: Any])
+        #expect(wallpaperStoreContains(
+            desktop,
+            provider: "com.apple.wallpaper.choice.sonoma",
+            assetID: nil
+        ))
+    }
 
     try fixture.installer.uninstall()
 

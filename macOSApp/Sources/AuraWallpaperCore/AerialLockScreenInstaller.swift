@@ -118,6 +118,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         stateDirectoryURL.appendingPathComponent("Index.before-lock-session.plist")
     }
 
+    private var latestUserWallpaperStoreURL: URL {
+        stateDirectoryURL.appendingPathComponent("Index.latest-user.plist")
+    }
+
     private var assetBackupURL: URL {
         stateDirectoryURL.appendingPathComponent("aerial.before-auraflow.mov")
     }
@@ -413,6 +417,19 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             .appendingPathExtension("png")
         let systemWallpaperURLBeforeAttempt = currentSystemWallpaperURL()
 
+        // A Desktop-only user change leaves Aura's Idle mode valid, so the
+        // installation can still pass installationIsCurrent below. Capture
+        // that Desktop before the fast path returns or a later lock repair can
+        // erase the newest user choice.
+        if lockScreenOnlyRoute,
+           fileManager.fileExists(atPath: wallpaperStoreBackupURL.path) {
+            _ = try captureLatestUserWallpaperStoreData(
+                from: Data(contentsOf: wallpaperStoreURL),
+                fallbackData: Data(contentsOf: wallpaperStoreBackupURL),
+                managedAssetID: assetID
+            )
+        }
+
         if installationIsCurrent(
             videoURL: videoURL,
             assetID: assetID,
@@ -507,10 +524,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         let updateBaseStoreData: Data
         if lockScreenOnlyRoute {
             // A user can change wallpaper while lock-only mode is active.
-            // Build the unlocked Desktop/Idle split from the latest store,
-            // while retaining the original backup only for final uninstall.
-            updateBaseStoreData = try cleanedWallpaperStoreData(
-                from: Data(contentsOf: wallpaperStoreURL)
+            // Journal every user-owned route before Aura mutates the store.
+            // This survives a later lock/unlock repair that can replace the
+            // public Index before Remove gets a chance to inspect it.
+            updateBaseStoreData = try captureLatestUserWallpaperStoreData(
+                from: Data(contentsOf: wallpaperStoreURL),
+                fallbackData: originalStoreData,
+                managedAssetID: assetID
             )
         } else {
             updateBaseStoreData = originalStoreData
@@ -750,9 +770,6 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 // survives unchanged, then restore only Aura-managed modes.
                 // If Remove races the shared-Aerial lock handoff, its session
                 // snapshot is the complete user store to use instead.
-                let sessionData = try? Data(
-                    contentsOf: lockSessionStoreBackupURL
-                )
                 let currentHasUserDesktop = storeBeforeAttempt.map {
                     wallpaperStoreHasUserDesktop(
                         $0,
@@ -764,17 +781,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 // another. Preserve the current store whenever it contains
                 // any user Desktop; the merge below replaces only managed
                 // modes and keeps every latest user route in place.
-                let latestUserStoreData = currentHasUserDesktop
-                    ? storeBeforeAttempt
-                    : sessionData
-                if let latestUserStoreData {
+                if let storeBeforeAttempt {
                     restorationStoreData = try
-                        wallpaperStoreDataByPreservingUserDesktops(
-                            from: latestUserStoreData,
-                            restoringManagedModesFrom: originalStoreData,
+                        captureLatestUserWallpaperStoreData(
+                            from: storeBeforeAttempt,
+                            fallbackData: originalStoreData,
                             managedAssetID: marker.assetID
                         )
-                    preserveCurrentSystemWallpaperURL = true
+                    preserveCurrentSystemWallpaperURL = currentHasUserDesktop
                 }
             }
             try restorationStoreData.write(
@@ -830,6 +844,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             }
             try fileManager.removeItem(at: markerURL)
             try? fileManager.removeItem(at: wallpaperStoreBackupURL)
+            try? fileManager.removeItem(at: latestUserWallpaperStoreURL)
+            try? fileManager.removeItem(at: lockSessionStoreBackupURL)
             try? fileManager.removeItem(at: assetBackupURL)
             try? fileManager.removeItem(at: thumbnailBackupURL)
             try? fileManager.removeItem(at: stateDirectoryURL)
@@ -1145,6 +1161,22 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 )
         }
 
+        func newestMode(
+            _ candidates: [[String: Any]]
+        ) -> [String: Any]? {
+            guard var newest = candidates.first else { return nil }
+            func timestamp(_ mode: [String: Any]) -> Date {
+                [mode["LastSet"], mode["LastUse"]]
+                    .compactMap { $0 as? Date }
+                    .max() ?? .distantPast
+            }
+            for candidate in candidates.dropFirst()
+                where timestamp(candidate) > timestamp(newest) {
+                newest = candidate
+            }
+            return newest
+        }
+
         func cleanContainer(
             _ latestValue: Any?,
             original originalValue: Any?
@@ -1164,17 +1196,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             if originalWasLinked,
                let idle = result["Idle"] as? [String: Any],
                isManaged(idle) {
-                let latestUserMode: [String: Any]?
-                if let desktop = result["Desktop"] as? [String: Any],
-                   !isManaged(desktop) {
-                    latestUserMode = desktop
-                } else if let linked = result["Linked"] as? [String: Any],
-                          !isManaged(linked) {
-                    latestUserMode = linked
-                } else {
-                    latestUserMode = originalContainer["Linked"]
-                        as? [String: Any]
-                }
+                let latestUserMode = newestMode([
+                    result["Desktop"] as? [String: Any],
+                    result["Linked"] as? [String: Any],
+                    originalContainer["Linked"] as? [String: Any],
+                ].compactMap { mode in
+                    guard let mode, !isManaged(mode) else { return nil }
+                    return mode
+                })
                 if let latestUserMode {
                     result.removeValue(forKey: "Desktop")
                     result.removeValue(forKey: "Idle")
@@ -1259,6 +1288,30 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             format: .binary,
             options: 0
         )
+    }
+
+    /// Captures the newest user-owned wallpaper topology independently from
+    /// Aura's temporary Desktop/Idle routes. Every later lock repair, unlock,
+    /// Stop, and Remove can therefore restore the latest user choice instead
+    /// of falling back to the wallpaper present when Aura first started.
+    private func captureLatestUserWallpaperStoreData(
+        from currentData: Data,
+        fallbackData: Data,
+        managedAssetID: String
+    ) throws -> Data {
+        let previousData = (try? Data(
+            contentsOf: latestUserWallpaperStoreURL
+        )) ?? fallbackData
+        let latestData = try wallpaperStoreDataByPreservingUserDesktops(
+            from: currentData,
+            restoringManagedModesFrom: previousData,
+            managedAssetID: managedAssetID
+        )
+        try latestData.write(
+            to: latestUserWallpaperStoreURL,
+            options: .atomic
+        )
+        return latestData
     }
 
     private func wallpaperStoreHasUserDesktop(
@@ -1533,6 +1586,15 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 return false
             }
             let currentStoreData = try Data(contentsOf: wallpaperStoreURL)
+            let originalStoreData = try Data(
+                contentsOf: wallpaperStoreBackupURL
+            )
+            let latestUserStoreData = try
+                captureLatestUserWallpaperStoreData(
+                    from: currentStoreData,
+                    fallbackData: originalStoreData,
+                    managedAssetID: marker.assetID
+                )
             if markerStoreIncludesDesktop(marker),
                wallpaperStoreFullySelectsAerial(
                    assetID: marker.assetID,
@@ -1553,13 +1615,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 assetID: marker.assetID,
                 scope: .sharedWallpaper
             ) {
-                try currentStoreData.write(
+                try latestUserStoreData.write(
                     to: lockSessionStoreBackupURL,
                     options: .atomic
                 )
             }
             let activeStoreData = try aerialWallpaperStoreData(
-                from: currentStoreData,
+                from: latestUserStoreData,
                 assetID: marker.assetID,
                 scope: .sharedWallpaper
             )
@@ -1626,10 +1688,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 }
                 return false
             }
-            let desktopStoreURL = hasSessionBackup
-                ? lockSessionStoreBackupURL
-                : wallpaperStoreBackupURL
-            let desktopStoreData = try Data(contentsOf: desktopStoreURL)
+            let originalStoreData = try Data(
+                contentsOf: wallpaperStoreBackupURL
+            )
+            let desktopStoreData = try captureLatestUserWallpaperStoreData(
+                from: currentStoreData,
+                fallbackData: originalStoreData,
+                managedAssetID: marker.assetID
+            )
             let lockOnlyStoreData = try aerialWallpaperStoreData(
                 from: desktopStoreData,
                 assetID: marker.assetID,
@@ -2471,6 +2537,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             return
         }
         try? fileManager.removeItem(at: wallpaperStoreBackupURL)
+        try? fileManager.removeItem(at: latestUserWallpaperStoreURL)
+        try? fileManager.removeItem(at: lockSessionStoreBackupURL)
         try? fileManager.removeItem(at: assetBackupURL)
         try? fileManager.removeItem(at: thumbnailBackupURL)
         try? fileManager.removeItem(at: stateDirectoryURL)
