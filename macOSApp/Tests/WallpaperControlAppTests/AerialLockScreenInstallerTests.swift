@@ -391,6 +391,110 @@ private struct AerialLockScreenFixture {
     #expect(fixture.refreshCounter.count == 1)
 }
 
+@Test func linkedWallpaperPromotesOnlyDuringRealLockSession() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    let userLinkedMode = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.sequoia",
+        configuration: [:]
+    )
+    var linkedRoot = try readWallpaperStore(fixture.storeURL)
+    let linkedContainer: [String: Any] = [
+        "Type": "linked",
+        "Linked": userLinkedMode,
+    ]
+    linkedRoot["AllSpacesAndDisplays"] = linkedContainer
+    linkedRoot["SystemDefault"] = linkedContainer
+    linkedRoot["Displays"] = [String: Any]()
+    linkedRoot["Spaces"] = [String: Any]()
+    try writeWallpaperStore(linkedRoot, to: fixture.storeURL)
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    var root = try readWallpaperStore(fixture.storeURL)
+    var container = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    var linked = try #require(container["Linked"] as? [String: Any])
+    #expect(wallpaperStoreContains(
+        linked,
+        provider: "com.apple.wallpaper.choice.sequoia",
+        assetID: nil
+    ))
+
+    _ = try fixture.installer.activateLockScreenForCurrentSession()
+    root = try readWallpaperStore(fixture.storeURL)
+    container = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    linked = try #require(container["Linked"] as? [String: Any])
+    #expect(wallpaperStoreContains(
+        linked,
+        provider: "com.apple.wallpaper.choice.aerials",
+        assetID: AerialLockScreenFixture.assetID
+    ))
+
+    _ = try fixture.installer.restoreDesktopAfterLockScreenSession()
+    root = try readWallpaperStore(fixture.storeURL)
+    container = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    linked = try #require(container["Linked"] as? [String: Any])
+    #expect(wallpaperStoreContains(
+        linked,
+        provider: "com.apple.wallpaper.choice.sequoia",
+        assetID: nil
+    ))
+}
+
+@Test func linkedWallpaperChangedByUserSurvivesLockOnlyRemove() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    var root = try readWallpaperStore(fixture.storeURL)
+    let originalContainer: [String: Any] = [
+        "Type": "linked",
+        "Linked": AerialLockScreenFixture.makeMode(
+            provider: "com.apple.wallpaper.choice.sequoia",
+            configuration: [:]
+        ),
+    ]
+    root["AllSpacesAndDisplays"] = originalContainer
+    root["SystemDefault"] = originalContainer
+    root["Displays"] = [String: Any]()
+    root["Spaces"] = [String: Any]()
+    try writeWallpaperStore(root, to: fixture.storeURL)
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    let latestContainer: [String: Any] = [
+        "Type": "linked",
+        "Linked": AerialLockScreenFixture.makeMode(
+            provider: "com.apple.wallpaper.choice.sonoma",
+            configuration: [:]
+        ),
+    ]
+    root = try readWallpaperStore(fixture.storeURL)
+    root["AllSpacesAndDisplays"] = latestContainer
+    root["SystemDefault"] = latestContainer
+    try writeWallpaperStore(root, to: fixture.storeURL)
+
+    try fixture.installer.uninstall()
+
+    root = try readWallpaperStore(fixture.storeURL)
+    let restoredContainer = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let restoredLinked = try #require(
+        restoredContainer["Linked"] as? [String: Any]
+    )
+    #expect(wallpaperStoreContains(
+        restoredLinked,
+        provider: "com.apple.wallpaper.choice.sonoma",
+        assetID: nil
+    ))
+}
+
 @Test func modernLockScreenOnlyPromotesAndRestoresDesktopRoute() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

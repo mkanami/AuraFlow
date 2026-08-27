@@ -325,6 +325,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func sessionDidResignActive() {
+        promoteModernLockScreenForCurrentSession()
         nativeLockScreenBridge.showForLockTransition()
         handleSessionNotification(expectedLocked: true)
     }
@@ -335,6 +336,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func lockShieldDidRaise(_ notification: Notification) {
         guard !isTerminating else { return }
+        promoteModernLockScreenForCurrentSession()
         nativeLockScreenBridge.showForLockTransition()
     }
 
@@ -351,8 +353,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     lockShieldQueue
                 ) { [weak self] _ in
                     DispatchQueue.main.async {
-                        self?.nativeLockScreenBridge
-                            .showForLockTransition()
+                        self?.promoteModernLockScreenForCurrentSession()
+                        self?.nativeLockScreenBridge.showForLockTransition()
                     }
                 }
             }
@@ -399,10 +401,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 ProcessInfo.processInfo.systemUptime
             displaySleepLockObserved = true
             publishRearmGuardState()
+            promoteModernLockScreenForCurrentSession()
             nativeLockScreenBridge.showForLockTransition()
             syncLockScreenSetting(reason: "lock-setting")
             handleLockScreenEvent(.sessionLocked, reason: "session-locked")
-            scheduleLockedDesktopRestoration()
             writeHealth(reason: "session-inactive")
             return
         }
@@ -433,28 +435,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         rearmModernLockScreenForNextSession()
     }
 
-    private func scheduleLockedDesktopRestoration() {
-        guard config.show_on_lock_screen == true,
-              lockScreenInstaller.requiresLockScreenSessionPromotion
-        else {
-            return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) {
-            [weak self] in
-            guard let self,
-                  !self.isTerminating,
-                  self.sessionInactive,
-                  self.systemSessionIsLocked() == true
-            else {
-                return
-            }
-            // Clean up a stale backup from the legacy temporary-promotion
-            // path. The native Lock Screen assertion is independent of the
-            // user's Desktop route and remains active while locked.
-            self.restoreDesktopStoreAfterSession()
-        }
-    }
-
     private func restoreDesktopStoreAfterSession() {
         guard config.show_on_lock_screen == true,
               lockScreenInstaller.requiresLockScreenSessionPromotion
@@ -469,6 +449,26 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             writeHealth(
                 reason:
                     "desktop-store-restoration-failed: "
+                    + error.localizedDescription
+            )
+        }
+    }
+
+    private func promoteModernLockScreenForCurrentSession() {
+        guard !isTerminating,
+              lockScreenOnlyMode,
+              config.show_on_lock_screen == true,
+              lockScreenInstaller.requiresLockScreenSessionPromotion
+        else {
+            return
+        }
+        do {
+            _ = try lockScreenInstaller
+                .activateLockScreenForCurrentSession()
+        } catch {
+            writeHealth(
+                reason:
+                    "lock-session-promotion-failed: "
                     + error.localizedDescription
             )
         }
@@ -539,8 +539,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // screen; otherwise loginwindow falls back to the user's static
             // Lock Screen background even though Index.plist is correct.
             if sessionInactive || systemSessionIsLocked() == true {
+                promoteModernLockScreenForCurrentSession()
                 nativeLockScreenBridge.showForLockTransition()
-                scheduleLockedDesktopRestoration()
             }
             scheduleDesktopRestoreAfterDisplayWake()
             showWindows(forceOrder: lockScreenState.presentationMode == .lockScreen)

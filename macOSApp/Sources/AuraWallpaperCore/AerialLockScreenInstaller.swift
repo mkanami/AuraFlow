@@ -1032,6 +1032,18 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         )
         root = mapWallpaperContainers(in: root) { container in
             var result = container
+            if let linked = result["Linked"] as? [String: Any] {
+                if scope.includesDesktop {
+                    result["Linked"] = aerialMode
+                    result["Type"] = "linked"
+                } else {
+                    // A linked wallpaper has one route shared by Desktop and
+                    // Lock Screen. Keep it byte-for-byte while unlocked; the
+                    // shared route is promoted only for the real lock session.
+                    result["Linked"] = linked
+                }
+                return result
+            }
             if scope.includesDesktop, result["Desktop"] != nil {
                 result["Desktop"] = aerialMode
             }
@@ -1135,6 +1147,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                     result["Desktop"] = normalizeImageModeFiles(desktop)
                 }
             }
+            if let linked = result["Linked"] as? [String: Any] {
+                if isManaged(linked),
+                   let originalLinked = originalContainer["Linked"] {
+                    result["Linked"] = originalLinked
+                } else {
+                    result["Linked"] = normalizeImageModeFiles(linked)
+                }
+            }
             if let idle = result["Idle"] as? [String: Any],
                isManaged(idle),
                let originalIdle = originalContainer["Idle"] {
@@ -1211,6 +1231,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                ) {
                 foundUserDesktop = true
             }
+            if let linked = container["Linked"] as? [String: Any],
+               !modeReferencesAuraFlow(linked),
+               !modeFullySelectsAerial(
+                    linked,
+                    assetID: managedAssetID
+               ) {
+                foundUserDesktop = true
+            }
             return container
         }
         return foundUserDesktop
@@ -1229,6 +1257,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                modeReferencesAuraFlow(desktop)
                 || modeFullySelectsAerial(
                     desktop,
+                    assetID: managedAssetID
+                ) {
+                foundManagedDesktop = true
+            }
+            if let linked = container["Linked"] as? [String: Any],
+               modeReferencesAuraFlow(linked)
+                || modeFullySelectsAerial(
+                    linked,
                     assetID: managedAssetID
                 ) {
                 foundManagedDesktop = true
@@ -1910,8 +1946,23 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
 
         var inspectedModes = 0
+        var preservedLinkedModes = 0
         for container in containers {
-            let modes = scope.includesDesktop ? ["Desktop", "Idle"] : ["Idle"]
+            let modes: [String]
+            if container["Linked"] != nil {
+                if scope.includesDesktop {
+                    modes = ["Linked"]
+                } else {
+                    // Lock-only preparation intentionally leaves a linked
+                    // user route untouched until the actual lock handoff.
+                    preservedLinkedModes += 1
+                    modes = []
+                }
+            } else {
+                modes = scope.includesDesktop
+                    ? ["Desktop", "Idle"]
+                    : ["Idle"]
+            }
             for key in modes {
                 guard let mode = container[key] as? [String: Any] else {
                     continue
@@ -1922,7 +1973,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 }
             }
         }
-        return inspectedModes > 0
+        return inspectedModes > 0 || preservedLinkedModes > 0
     }
 
     private func modeFullySelectsAerial(
