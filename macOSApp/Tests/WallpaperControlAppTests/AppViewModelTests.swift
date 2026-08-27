@@ -169,7 +169,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
-@Test func localVideoSelectionReplacesRunningWallpaperImmediately() async throws {
+@Test func localVideoSelectionWaitsForExplicitStartWhileWallpaperRuns() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.local-preview-start")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.local-preview-start")
@@ -211,8 +211,17 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(viewModel.previewPlayer === firstPreviewPlayer)
 
     viewModel.selectLocalVideoForPreview(secondURL)
+
+    #expect(controller.lastConfiguredVideoURL == firstURL)
+    #expect(controller.startCallCount == 1)
+    #expect(viewModel.isRunning)
+    #expect(viewModel.currentVideoURL == secondURL.standardizedFileURL)
+    #expect(viewModel.canStart)
+
+    viewModel.start()
     for _ in 0..<20 {
-        if controller.lastConfiguredVideoURL == secondURL && controller.startCallCount == 2 && viewModel.isRunning {
+        if controller.lastConfiguredVideoURL == secondURL
+            && controller.startCallCount == 2 {
             break
         }
         try? await Task.sleep(nanoseconds: 25_000_000)
@@ -220,7 +229,6 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 
     #expect(controller.lastConfiguredVideoURL == secondURL)
     #expect(controller.startCallCount == 2)
-    #expect(viewModel.isRunning)
 }
 
 @MainActor
@@ -360,7 +368,10 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(controller.lastConfiguredVideoURL == nil)
     #expect(controller.startCallCount == 0)
     #expect(viewModel.isRunning == false)
-    #expect(viewModel.statusMessage == "Wallpaper downloaded. Press Start to apply.")
+    #expect(
+        viewModel.statusMessage
+            == "Wallpaper downloaded to preview. Press Start or Lock to apply."
+    )
 }
 
 @MainActor
@@ -454,7 +465,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
-@Test func downloadedWallpaperAppliesImmediately() async throws {
+@Test func downloadedWallpaperStagesPreviewUntilExplicitStart() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.downloaded-immediate")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.downloaded-immediate")
@@ -491,8 +502,21 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 
     viewModel.applyDownloadedCatalogWallpaper(wallpaper)
 
+    for _ in 0..<20 {
+        if viewModel.currentVideoURL == tempURL.standardizedFileURL {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(viewModel.currentVideoURL == tempURL.standardizedFileURL)
+    #expect(controller.lastConfiguredVideoURL == nil)
+    #expect(controller.startCallCount == 0)
+    #expect(!viewModel.isRunning)
+
+    viewModel.start()
     for _ in 0..<60 {
-        if controller.lastConfiguredVideoURL != nil && controller.startCallCount > 0 && viewModel.isRunning {
+        if controller.startCallCount == 1 && viewModel.isRunning {
             break
         }
         try? await Task.sleep(nanoseconds: 25_000_000)
@@ -527,15 +551,16 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 
     viewModel.applyDownloadedCatalogWallpaper(wallpaper)
 
-    for _ in 0..<40 {
-        if controller.startCallCount == 1 {
+    for _ in 0..<20 {
+        if viewModel.currentVideoURL == tempURL.standardizedFileURL {
             break
         }
         try? await Task.sleep(nanoseconds: 25_000_000)
     }
 
-    #expect(controller.startCallCount == 1)
-    #expect(controller.lastConfiguredVideoURL?.standardizedFileURL == tempURL.standardizedFileURL)
+    #expect(controller.startCallCount == 0)
+    #expect(controller.lastConfiguredVideoURL == nil)
+    #expect(viewModel.currentVideoURL == tempURL.standardizedFileURL)
 }
 
 @MainActor
@@ -704,7 +729,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
-@Test func startIgnoresRequestsWhileWallpaperIsAlreadyRunning() async throws {
+@Test func downloadedPreviewStartsOnlyAfterExplicitStart() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.start-preview")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.start-preview")
@@ -741,15 +766,23 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 
     viewModel.applyDownloadedCatalogWallpaper(wallpaper)
 
-    for _ in 0..<60 {
-        if controller.lastConfiguredVideoURL != nil && controller.startCallCount == 1 && viewModel.isRunning {
+    for _ in 0..<20 {
+        if viewModel.currentVideoURL == tempURL.standardizedFileURL {
             break
         }
         try? await Task.sleep(nanoseconds: 25_000_000)
     }
 
+    #expect(controller.lastConfiguredVideoURL == nil)
+    #expect(controller.startCallCount == 0)
+
     viewModel.start()
-    try? await Task.sleep(nanoseconds: 100_000_000)
+    for _ in 0..<60 {
+        if controller.startCallCount == 1 && viewModel.isRunning {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
 
     #expect(controller.lastConfiguredVideoURL != nil)
     #expect(controller.startCallCount == 1)

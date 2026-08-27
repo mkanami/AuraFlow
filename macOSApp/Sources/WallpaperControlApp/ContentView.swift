@@ -1160,7 +1160,7 @@ struct DownloadedWallpapersCard: View {
             Divider()
 
             if viewModel.downloadedCatalogWallpapers.isEmpty {
-                Text("No downloaded wallpapers yet. Use Download & Apply in the catalog.")
+                Text("No downloaded wallpapers yet. Use Download to Preview in the catalog.")
                     .font(.caption)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             } else {
@@ -1195,7 +1195,7 @@ struct DownloadedWallpapersCard: View {
                                 Button {
                                     viewModel.applyDownloadedCatalogWallpaper(wallpaper)
                                 } label: {
-                                    Label("Apply", systemImage: "checkmark.circle")
+                                    Label("Preview", systemImage: "play.rectangle")
                                 }
                                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                             }
@@ -1544,11 +1544,11 @@ struct WallpaperCatalogDetailView: View {
                     if viewModel.isDownloading(wallpaper) {
                         Label("Downloading…", systemImage: "arrow.down.circle")
                     } else {
-                        Label("Download & Apply", systemImage: "arrow.down.circle")
+                        Label("Download to Preview", systemImage: "arrow.down.circle")
                     }
                 }
                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .disabled(!viewModel.canApplyCatalogWallpaper)
+                .disabled(!viewModel.canDownloadCatalogWallpaper)
 
                 if let sourceURL = wallpaper.sourcePageURL {
                     Button {

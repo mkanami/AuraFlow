@@ -892,7 +892,8 @@ final class AppViewModel: ObservableObject {
 
     var isStartButtonHighlighted: Bool {
         selectedVideoURL != nil
-            && !isPlaybackRunningForControls
+            && (!isPlaybackRunningForControls
+                || pendingPreviewVideoURL != nil)
             && !isPlaybackPaused
     }
 
@@ -901,7 +902,11 @@ final class AppViewModel: ObservableObject {
     }
 
     var canStart: Bool {
-        isControllerAvailable && !isBusy && !isPlaybackRunningForControls && selectedVideoURL != nil
+        isControllerAvailable
+            && !isBusy
+            && (!isPlaybackRunningForControls
+                || pendingPreviewVideoURL != nil)
+            && selectedVideoURL != nil
     }
 
     var canApplyLockScreenOnly: Bool {
@@ -952,8 +957,8 @@ final class AppViewModel: ObservableObject {
         !isBusy && !optimizationInProgress
     }
 
-    var canApplyCatalogWallpaper: Bool {
-        isControllerAvailable && !isBusy && catalogDownloadID == nil
+    var canDownloadCatalogWallpaper: Bool {
+        !isBusy && catalogDownloadID == nil
     }
 
     var canClearCache: Bool {
@@ -1294,11 +1299,9 @@ final class AppViewModel: ObservableObject {
             do {
                 let resolvedURL = try await resolveDownloadedCatalogWallpaperURL(wallpaper)
                 closeDownloadedWallpapers()
-                selectVideoForPreview(resolvedURL, summary: nil)
-                applySelectionImmediately(
+                selectVideoForPreview(
                     resolvedURL,
-                    failureContext: "start",
-                    catalogFastPath: true
+                    summary: "Wallpaper loaded into preview. Press Start or Lock to apply."
                 )
             } catch {
                 alertMessage = "Failed to prepare downloaded wallpaper: \(error.localizedDescription)"
@@ -1338,11 +1341,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func applyCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
-        guard canApplyCatalogWallpaper else { return }
-        if isCatalogWallpaperAlreadyApplied(wallpaper) {
-            showSuccessBanner("Wallpaper is already applied.")
-            return
-        }
+        guard canDownloadCatalogWallpaper else { return }
         catalogDownloadID = wallpaper.id
         let requestedCacheGeneration = cacheGeneration
 
@@ -1358,14 +1357,11 @@ final class AppViewModel: ObservableObject {
                     try? FileManager.default.removeItem(at: localURL)
                     return
                 }
-                showSuccessBanner("Wallpaper downloaded. Applying…")
-                do {
-                    try await applyDownloadedCatalogWallpaperImmediately(wallpaper, localURL: localURL)
-                    showSuccessBanner("Wallpaper downloaded and applied.")
-                    alertMessage = nil
-                } catch {
-                    alertMessage = "Wallpaper downloaded, but apply failed: \(error.localizedDescription)"
-                }
+                stageCatalogWallpaperForPreview(
+                    wallpaper,
+                    localURL: localURL
+                )
+                showSuccessBanner("Wallpaper downloaded to preview.")
             } catch is CancellationError {
                 return
             } catch {
@@ -1398,7 +1394,9 @@ final class AppViewModel: ObservableObject {
 
     func start() {
         guard !isBusy else { return }
-        guard !isPlaybackRunningForControls else { return }
+        guard !isPlaybackRunningForControls
+            || pendingPreviewVideoURL != nil
+        else { return }
         guard let selectedVideoURL else {
             alertMessage = "Choose a video before starting."
             return
@@ -2813,54 +2811,6 @@ final class AppViewModel: ObservableObject {
         try data.write(to: try downloadedCatalogManifestURL(), options: .atomic)
     }
 
-    private func syncDownloadedCatalogWallpaperAfterApply(
-        wallpaperID: String,
-        requestedURL: URL,
-        previousVideoPath: String?
-    ) {
-        guard let appliedURL = appliedVideoURL?.standardizedFileURL else {
-            return
-        }
-        let appliedPath = appliedURL.path
-        if let previousVideoPath, previousVideoPath == appliedPath {
-            return
-        }
-
-        var updated = downloadedCatalogWallpapers
-        guard let index = updated.firstIndex(where: { $0.wallpaperID == wallpaperID }) else {
-            return
-        }
-
-        let normalizedRequestedPath = requestedURL.standardizedFileURL.path
-        let normalizedExistingPath = updated[index].localURL.standardizedFileURL.path
-        if normalizedExistingPath == appliedPath {
-            return
-        }
-
-        let normalizedPathToStore: String
-        if FileManager.default.fileExists(atPath: appliedPath) {
-            normalizedPathToStore = appliedPath
-        } else {
-            normalizedPathToStore = normalizedRequestedPath
-        }
-
-        let current = updated[index]
-        updated[index] = DownloadedCatalogWallpaper(
-            id: current.id,
-            wallpaperID: current.wallpaperID,
-            title: current.title,
-            category: current.category,
-            attribution: current.attribution,
-            previewImageURL: current.previewImageURL,
-            localPreviewPath: current.localPreviewPath,
-            sourcePageURL: current.sourcePageURL,
-            localPath: normalizedPathToStore,
-            downloadedAt: current.downloadedAt
-        )
-        downloadedCatalogWallpapers = updated
-        try? persistDownloadedCatalogWallpapers(updated)
-    }
-
     private func inferredDownloadedCatalogWallpapersFromDisk() -> [DownloadedCatalogWallpaper] {
         guard let directory = try? catalogDirectoryURL() else {
             return []
@@ -2926,16 +2876,6 @@ final class AppViewModel: ObservableObject {
                 return first.uppercased() + word.dropFirst()
             }
             .joined(separator: " ")
-    }
-
-    private func isCatalogWallpaperAlreadyApplied(_ wallpaper: CatalogWallpaper) -> Bool {
-        guard let appliedPath = appliedVideoURL?.standardizedFileURL.path else {
-            return false
-        }
-        guard let downloaded = downloadedCatalogWallpapers.first(where: { $0.wallpaperID == wallpaper.id }) else {
-            return false
-        }
-        return downloaded.localURL.standardizedFileURL.path == appliedPath
     }
 
     private func showSuccessBanner(_ message: String) {
@@ -3019,52 +2959,18 @@ final class AppViewModel: ObservableObject {
 
     func stageCatalogWallpaperForPreview(_ wallpaper: CatalogWallpaper, localURL: URL) {
         registerDownloadedCatalogWallpaper(for: wallpaper, localURL: localURL)
-        selectVideoForPreview(localURL, summary: "Wallpaper downloaded. Press Start to apply.")
-    }
-
-    private func applyDownloadedCatalogWallpaperImmediately(_ wallpaper: CatalogWallpaper, localURL: URL) async throws {
-        stageCatalogWallpaperForPreview(wallpaper, localURL: localURL)
-
-        let previousVideoPath = appliedVideoURL?.standardizedFileURL.path
-        guard !isBusy else {
-            throw NativeWallpaperControllerError.unavailable("AuraFlow is busy right now. Try applying the wallpaper again.")
-        }
-
-        isBusy = true
-        defer { isBusy = false }
-
-        do {
-            try await startWallpaper(
-                using: localURL,
-                statusSummary: "Wallpaper downloaded and applied.",
-                catalogFastPath: true
-            )
-            syncDownloadedCatalogWallpaperAfterApply(
-                wallpaperID: wallpaper.id,
-                requestedURL: localURL,
-                previousVideoPath: previousVideoPath
-            )
-        } catch {
-            statusMessage = "Wallpaper downloaded. Press Start to apply."
-            throw error
-        }
+        selectVideoForPreview(
+            localURL,
+            summary: "Wallpaper downloaded to preview. Press Start or Lock to apply."
+        )
     }
 
     func selectLocalVideoForPreview(_ url: URL) {
         let normalizedURL = url.standardizedFileURL
         scheduleLocalWallpaperImport(for: normalizedURL)
-
-        let hasCurrentWallpaper = isPlaybackActive || isPlaybackPaused
-        guard hasCurrentWallpaper else {
-            selectVideoForPreview(normalizedURL, summary: "Video loaded into preview. Press Start to apply.")
-            return
-        }
-
-        applySelectionImmediately(
+        selectVideoForPreview(
             normalizedURL,
-            failureContext: "change-wallpaper",
-            statusSummary: "Wallpaper changed.",
-            successMessage: "Wallpaper changed."
+            summary: "Video loaded into preview. Press Start or Lock to apply."
         )
     }
 
@@ -3201,46 +3107,15 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func applySelectionImmediately(
-        _ sourceURL: URL,
-        failureContext: String,
-        statusSummary: String = "Wallpaper started.",
-        successMessage: String? = nil,
-        catalogFastPath: Bool = false
-    ) {
-        guard !isBusy else { return }
-
-        Task {
-            isBusy = true
-            defer { isBusy = false }
-            do {
-                try await startWallpaper(
-                    using: sourceURL,
-                    statusSummary: statusSummary,
-                    catalogFastPath: catalogFastPath
-                )
-                if let successMessage {
-                    showSuccessBanner(successMessage)
-                }
-            } catch {
-                recordBridgeFailure(error, context: failureContext)
-                if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to start: \(error.localizedDescription)"
-                }
-            }
-        }
-    }
-
     private func startWallpaper(
         using sourceURL: URL,
-        statusSummary: String,
-        catalogFastPath: Bool = false
+        statusSummary: String
     ) async throws {
         guard let controller else {
             throw NativeWallpaperControllerError.unavailable("Native wallpaper runtime unavailable.")
         }
 
-        let prepared = catalogFastPath
+        let prepared = isManagedCacheURL(sourceURL)
             ? try await prepareCatalogVideoURLForPlayback(sourceURL)
             : try await prepareVideoURLForPlayback(sourceURL)
         let finalStatus = try await runAsync { try controller.start(videoURL: prepared.url, speed: nil) }
