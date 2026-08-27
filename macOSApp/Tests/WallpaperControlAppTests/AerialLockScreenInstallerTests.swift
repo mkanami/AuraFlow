@@ -50,7 +50,8 @@ private struct AerialLockScreenFixture {
 
     init(
         hasExistingAsset: Bool = true,
-        providerHasAsset: Bool = true
+        providerHasAsset: Bool = true,
+        onRefresh: ((URL) -> Void)? = nil
     ) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -228,6 +229,7 @@ private struct AerialLockScreenFixture {
 
         let counter = AerialRefreshCounter()
         refreshCounter = counter
+        let refreshStoreURL = storeURL
         installer = AerialLockScreenInstaller(
             fileManager: .default,
             wallpaperStoreURL: storeURL,
@@ -239,6 +241,7 @@ private struct AerialLockScreenFixture {
             assetID: Self.assetID,
             refreshSystem: {
                 counter.increment()
+                onRefresh?(refreshStoreURL)
             },
             rearmSystem: {
                 counter.increment()
@@ -333,6 +336,26 @@ private struct AerialLockScreenFixture {
 
     try originalStore.write(to: fixture.storeURL, options: .atomic)
     #expect(!fixture.installer.installationConfirmed)
+}
+
+@Test func modernLockScreenRecoversFromOneStaleWallpaperAgentFlush() throws {
+    var staleStoreData: Data?
+    let fixture = try AerialLockScreenFixture(onRefresh: { storeURL in
+        try? staleStoreData?.write(to: storeURL, options: .atomic)
+    })
+    defer { fixture.cleanup() }
+    staleStoreData = try Data(contentsOf: fixture.storeURL)
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    #expect(fixture.installer.installationConfirmed)
+    #expect(fixture.refreshCounter.count == 1)
+    let root = try readWallpaperStore(fixture.storeURL)
+    #expect(wallpaperStoreContains(
+        root,
+        provider: "com.apple.wallpaper.choice.aerials",
+        assetID: AerialLockScreenFixture.assetID
+    ))
 }
 
 @Test func modernLockScreenOnlyPreservesDesktopRoute() throws {

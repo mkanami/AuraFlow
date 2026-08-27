@@ -334,11 +334,9 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         try selectionCoordinator.restoreIfNeeded()
         refreshScreenSaverHosts()
         guard fileManager.fileExists(atPath: destinationURL.path) else { return }
-        var trashedURL: NSURL?
-        try fileManager.trashItem(
-            at: destinationURL,
-            resultingItemURL: &trashedURL
-        )
+        // This is AuraFlow's own installed copy. Removing it directly avoids
+        // asking Finder to process a Trash operation during Lock rollback.
+        try fileManager.removeItem(at: destinationURL)
     }
 
     private static func verifyBundleSignature(at url: URL) throws {

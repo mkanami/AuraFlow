@@ -311,7 +311,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 // resolves the real Lock Screen.
                 scope: .lockScreenOnly,
                 lockScreenOnlyRoute: true,
-                rollbackAction: refreshSystem,
+                // A failed Lock-only attempt must not restart Dock. Doing so
+                // can bring existing Finder and Wallpaper Settings windows
+                // forward even though AuraFlow never asked to open them.
+                rollbackAction: Self.prewarmLockScreenProvider,
                 shouldProceed: { true }
             )
         }
@@ -573,10 +576,42 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             } else {
                 didRefresh = false
             }
-            guard wallpaperStoreFullySelectsAerial(
-                assetID: assetID,
-                scope: scope
-            ) else {
+            // WallpaperAgent may flush its old in-memory Index immediately
+            // after being restarted. Reassert the exact desired store before
+            // reporting failure instead of rolling back a valid Lock click.
+            var configurationConfirmed = false
+            for attempt in 0..<3 {
+                if wallpaperStoreFullySelectsAerial(
+                    assetID: assetID,
+                    scope: scope
+                ) {
+                    configurationConfirmed = true
+                    break
+                }
+                guard shouldProceed() else {
+                    throw AerialLockScreenOperationAbort.sessionChanged
+                }
+                try updatedStoreData.write(
+                    to: wallpaperStoreURL,
+                    options: .atomic
+                )
+                if usesCanonicalWallpaperStore {
+                    guard setSystemWallpaperURL(
+                        desiredSystemWallpaperURL(assetID: assetID)
+                    ) else {
+                        throw AerialLockScreenInstallerError
+                            .wallpaperStoreUpdateFailed
+                    }
+                }
+                if attempt < 2 {
+                    Thread.sleep(forTimeInterval: 0.2)
+                }
+            }
+            guard configurationConfirmed
+                || wallpaperStoreFullySelectsAerial(
+                    assetID: assetID,
+                    scope: scope
+                ) else {
                 throw AerialLockScreenInstallerError
                     .wallpaperStoreUpdateFailed
             }
