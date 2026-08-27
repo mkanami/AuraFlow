@@ -250,6 +250,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         else {
             return false
         }
+        if usesCanonicalWallpaperStore,
+           (marker.lockScreenOnly == true
+                || marker.desktopIncluded == false) {
+            // The dedicated agent promotes Aerial atomically at lock time.
+            // WallpaperAgent is allowed to keep the user's unlocked Idle
+            // route in memory without invalidating the installation.
+            return true
+        }
         return wallpaperStoreFullySelectsAerial(
             assetID: marker.assetID,
             scope: scope
@@ -566,7 +574,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             guard shouldProceed() else {
                 throw AerialLockScreenOperationAbort.sessionChanged
             }
-            if usesCanonicalWallpaperStore {
+            if usesCanonicalWallpaperStore, !lockScreenOnlyRoute {
                 guard setSystemWallpaperURL(
                     desiredSystemWallpaperURL(assetID: assetID)
                 ) else {
@@ -582,44 +590,48 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             } else {
                 didRefresh = false
             }
-            // WallpaperAgent may flush its old in-memory Index immediately
-            // after being restarted. Reassert the exact desired store before
-            // reporting failure instead of rolling back a valid Lock click.
-            var configurationConfirmed = false
-            for attempt in 0..<3 {
-                if wallpaperStoreFullySelectsAerial(
-                    assetID: assetID,
-                    scope: scope
-                ) {
-                    configurationConfirmed = true
-                    break
-                }
-                guard shouldProceed() else {
-                    throw AerialLockScreenOperationAbort.sessionChanged
-                }
-                try updatedStoreData.write(
-                    to: wallpaperStoreURL,
-                    options: .atomic
-                )
-                if usesCanonicalWallpaperStore {
-                    guard setSystemWallpaperURL(
-                        desiredSystemWallpaperURL(assetID: assetID)
-                    ) else {
-                        throw AerialLockScreenInstallerError
-                            .wallpaperStoreUpdateFailed
+            let usesDeferredLockPromotion =
+                usesCanonicalWallpaperStore && lockScreenOnlyRoute
+            if !usesDeferredLockPromotion {
+                // WallpaperAgent may flush its old in-memory Index immediately
+                // after being restarted. Reassert the exact desired store
+                // before reporting failure.
+                var configurationConfirmed = false
+                for attempt in 0..<3 {
+                    if wallpaperStoreFullySelectsAerial(
+                        assetID: assetID,
+                        scope: scope
+                    ) {
+                        configurationConfirmed = true
+                        break
+                    }
+                    guard shouldProceed() else {
+                        throw AerialLockScreenOperationAbort.sessionChanged
+                    }
+                    try updatedStoreData.write(
+                        to: wallpaperStoreURL,
+                        options: .atomic
+                    )
+                    if usesCanonicalWallpaperStore {
+                        guard setSystemWallpaperURL(
+                            desiredSystemWallpaperURL(assetID: assetID)
+                        ) else {
+                            throw AerialLockScreenInstallerError
+                                .wallpaperStoreUpdateFailed
+                        }
+                    }
+                    if attempt < 2 {
+                        Thread.sleep(forTimeInterval: 0.2)
                     }
                 }
-                if attempt < 2 {
-                    Thread.sleep(forTimeInterval: 0.2)
+                guard configurationConfirmed
+                    || wallpaperStoreFullySelectsAerial(
+                        assetID: assetID,
+                        scope: scope
+                    ) else {
+                    throw AerialLockScreenInstallerError
+                        .wallpaperStoreUpdateFailed
                 }
-            }
-            guard configurationConfirmed
-                || wallpaperStoreFullySelectsAerial(
-                    assetID: assetID,
-                    scope: scope
-                ) else {
-                throw AerialLockScreenInstallerError
-                    .wallpaperStoreUpdateFailed
             }
             var completedMarker = marker
             completedMarker.completed = true
@@ -1737,6 +1749,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         else {
             return false
         }
+        if usesCanonicalWallpaperStore, lockScreenOnlyRoute {
+            return true
+        }
         return wallpaperStoreFullySelectsAerial(assetID: assetID, scope: scope)
     }
 
@@ -2208,6 +2223,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         let previousProviderPIDs = processIdentifiers(
             named: "WallpaperAerialsExtension"
         )
+        let previousOwnerPIDs = processIdentifiers(named: "WallpaperAgent")
         guard shouldProceed() else {
             throw AerialLockScreenOperationAbort.sessionChanged
         }
@@ -2220,7 +2236,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         // Once the owner has been stopped, waiting is passive and must finish
         // even if a new lock begins. Cancelling here could strand that lock
         // without any provider.
-        if waitForFreshProvider(excluding: previousProviderPIDs) {
+        if waitForFreshWallpaperRuntime(
+            excludingProviders: previousProviderPIDs,
+            excludingOwners: previousOwnerPIDs
+        ) {
             return
         }
 
@@ -2239,7 +2258,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 "/System/Library/CoreServices/WallpaperAgent.app",
             ]
         )
-        guard waitForFreshProvider(excluding: previousProviderPIDs) else {
+        guard waitForFreshWallpaperRuntime(
+            excludingProviders: previousProviderPIDs,
+            excludingOwners: previousOwnerPIDs
+        ) else {
             throw AerialLockScreenInstallerError
                 .aerialProviderRestartFailed
         }
@@ -2260,7 +2282,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         let currentProviderPIDs = processIdentifiers(
             named: "WallpaperAerialsExtension"
         )
-        if !currentProviderPIDs.isEmpty {
+        if !currentProviderPIDs.isEmpty
+            || !processIdentifiers(named: "WallpaperAgent").isEmpty {
             return
         }
 
@@ -2271,25 +2294,43 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 "/System/Library/CoreServices/WallpaperAgent.app",
             ]
         )
-        guard waitForFreshProvider(excluding: currentProviderPIDs) else {
+        guard waitForWallpaperRuntime() else {
             throw AerialLockScreenInstallerError
                 .aerialProviderRestartFailed
         }
     }
 
-    private static func waitForFreshProvider(
-        excluding previousPIDs: Set<Int32>
+    private static func waitForFreshWallpaperRuntime(
+        excludingProviders previousProviderPIDs: Set<Int32>,
+        excludingOwners previousOwnerPIDs: Set<Int32>
     ) -> Bool {
-        let deadline = Date().addingTimeInterval(2.0)
+        let deadline = Date().addingTimeInterval(5.0)
         while Date() < deadline {
-            let currentPIDs = processIdentifiers(
+            let currentProviderPIDs = processIdentifiers(
                 named: "WallpaperAerialsExtension"
             )
-            if !currentPIDs.isEmpty,
-               currentPIDs.isDisjoint(with: previousPIDs) {
+            if !currentProviderPIDs.isEmpty,
+               currentProviderPIDs.isDisjoint(with: previousProviderPIDs) {
                 return true
             }
-            Thread.sleep(forTimeInterval: 0.05)
+            let currentOwnerPIDs = processIdentifiers(named: "WallpaperAgent")
+            if !currentOwnerPIDs.isEmpty,
+               currentOwnerPIDs.isDisjoint(with: previousOwnerPIDs) {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return false
+    }
+
+    private static func waitForWallpaperRuntime() -> Bool {
+        let deadline = Date().addingTimeInterval(5.0)
+        while Date() < deadline {
+            if !processIdentifiers(named: "WallpaperAerialsExtension").isEmpty
+                || !processIdentifiers(named: "WallpaperAgent").isEmpty {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.1)
         }
         return false
     }
