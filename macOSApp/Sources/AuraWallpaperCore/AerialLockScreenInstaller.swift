@@ -289,7 +289,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             _ = try installLocked(
                 videoURL: videoURL,
                 forceRefresh: false,
-                refreshAction: rearmSystem,
+                // The real lock-only route lives in Idle while Desktop stays
+                // on the user's image. Restarting WallpaperAgent here makes
+                // macOS defer Aerial until lock time, so waiting for a fresh
+                // extension PID incorrectly reports a failed Lock install.
+                refreshAction: usesCanonicalWallpaperStore
+                    ? Self.preserveLockScreenProvider
+                    : rearmSystem,
                 scope: .sharedWallpaper,
                 rollbackAction: refreshSystem,
                 shouldProceed: { true }
@@ -2182,6 +2188,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             } catch {
                 continue
             }
+        }
+    }
+
+    private static func preserveLockScreenProvider(
+        shouldProceed: () -> Bool
+    ) throws {
+        guard shouldProceed() else {
+            throw AerialLockScreenOperationAbort.sessionChanged
         }
     }
 
