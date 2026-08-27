@@ -1,4 +1,5 @@
 import Darwin
+import AppKit
 import AVFoundation
 import CoreFoundation
 import Foundation
@@ -503,8 +504,19 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             )
         }
 
+        let updateBaseStoreData: Data
+        if lockScreenOnlyRoute {
+            // A user can change wallpaper while lock-only mode is active.
+            // Build the unlocked Desktop/Idle split from the latest store,
+            // while retaining the original backup only for final uninstall.
+            updateBaseStoreData = try cleanedWallpaperStoreData(
+                from: Data(contentsOf: wallpaperStoreURL)
+            )
+        } else {
+            updateBaseStoreData = originalStoreData
+        }
         let updatedStoreData = try aerialWallpaperStoreData(
-            from: originalStoreData,
+            from: updateBaseStoreData,
             assetID: assetID,
             scope: scope
         )
@@ -1037,10 +1049,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                     result["Linked"] = aerialMode
                     result["Type"] = "linked"
                 } else {
-                    // A linked wallpaper has one route shared by Desktop and
-                    // Lock Screen. Keep it byte-for-byte while unlocked; the
-                    // shared route is promoted only for the real lock session.
-                    result["Linked"] = linked
+                    // Split macOS's shared Linked route without changing the
+                    // visible Desktop choice. WallpaperAgent can then prewarm
+                    // Aura in Idle before loginwindow raises the lock shield.
+                    result.removeValue(forKey: "Linked")
+                    result["Desktop"] = linked
+                    result["Idle"] = aerialMode
+                    result["Type"] = "individual"
                 }
                 return result
             }
@@ -1139,6 +1154,35 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             }
             let originalContainer = originalValue as? [String: Any]
                 ?? fallbackOriginal
+            let originalWasLinked = originalContainer["Linked"] != nil
+                || (originalContainer["Type"] as? String) == "linked"
+
+            // Lock-only installation splits a user's Linked route into
+            // Desktop=user and Idle=Aura so WallpaperAgent can prewarm Aura.
+            // On Remove, collapse that synthetic split back to Linked using
+            // the latest user Desktop (not the stale pre-install choice).
+            if originalWasLinked,
+               let idle = result["Idle"] as? [String: Any],
+               isManaged(idle) {
+                let latestUserMode: [String: Any]?
+                if let desktop = result["Desktop"] as? [String: Any],
+                   !isManaged(desktop) {
+                    latestUserMode = desktop
+                } else if let linked = result["Linked"] as? [String: Any],
+                          !isManaged(linked) {
+                    latestUserMode = linked
+                } else {
+                    latestUserMode = originalContainer["Linked"]
+                        as? [String: Any]
+                }
+                if let latestUserMode {
+                    result.removeValue(forKey: "Desktop")
+                    result.removeValue(forKey: "Idle")
+                    result["Linked"] = normalizeImageModeFiles(latestUserMode)
+                    result["Type"] = "linked"
+                    return result
+                }
+            }
             if let desktop = result["Desktop"] as? [String: Any] {
                 if isManaged(desktop),
                    let originalDesktop = originalContainer["Desktop"] {
@@ -1156,9 +1200,12 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 }
             }
             if let idle = result["Idle"] as? [String: Any],
-               isManaged(idle),
-               let originalIdle = originalContainer["Idle"] {
-                result["Idle"] = originalIdle
+               isManaged(idle) {
+                if let originalIdle = originalContainer["Idle"] {
+                    result["Idle"] = originalIdle
+                } else {
+                    result.removeValue(forKey: "Idle")
+                }
             }
             return result
         }
@@ -1850,6 +1897,23 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             ".prepared-\(UUID().uuidString).mov"
         )
         defer { try? fileManager.removeItem(at: outputURL) }
+        if let image = NSImage(contentsOf: sourceURL) {
+            try writeStillImageAerialVideo(
+                image,
+                to: outputURL
+            )
+            guard aerialAssetIsCompatible(at: outputURL) else {
+                throw AerialLockScreenInstallerError
+                    .aerialVideoPreparationFailed(
+                        "The prepared image video is not HEVC compatible."
+                    )
+            }
+            if fileManager.fileExists(atPath: cacheURL.path) {
+                try fileManager.removeItem(at: cacheURL)
+            }
+            try fileManager.moveItem(at: outputURL, to: cacheURL)
+            return cacheURL
+        }
         let errorPipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/avconvert")
@@ -1892,6 +1956,167 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
         try fileManager.moveItem(at: outputURL, to: cacheURL)
         return cacheURL
+    }
+
+    private func writeStillImageAerialVideo(
+        _ image: NSImage,
+        to outputURL: URL
+    ) throws {
+        guard let sourceImage = image.cgImage(
+            forProposedRect: nil,
+            context: nil,
+            hints: nil
+        ) else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed("The image could not be decoded.")
+        }
+
+        let maximumWidth = 3840.0
+        let maximumHeight = 2160.0
+        let scale = min(
+            1.0,
+            maximumWidth / Double(sourceImage.width),
+            maximumHeight / Double(sourceImage.height)
+        )
+        func evenDimension(_ value: Int) -> Int {
+            max(2, value - value % 2)
+        }
+        let width = evenDimension(
+            Int((Double(sourceImage.width) * scale).rounded())
+        )
+        let height = evenDimension(
+            Int((Double(sourceImage.height) * scale).rounded())
+        )
+
+        try? fileManager.removeItem(at: outputURL)
+        let writer = try AVAssetWriter(
+            outputURL: outputURL,
+            fileType: .mov
+        )
+        let input = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.hevc,
+                AVVideoWidthKey: width,
+                AVVideoHeightKey: height,
+                AVVideoCompressionPropertiesKey: [
+                    AVVideoExpectedSourceFrameRateKey: 30,
+                    AVVideoAverageBitRateKey: max(
+                        2_000_000,
+                        min(20_000_000, width * height * 2)
+                    ),
+                ],
+            ]
+        )
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String:
+                    kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+            ]
+        )
+        guard writer.canAdd(input) else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The HEVC image writer could not be initialized."
+                )
+        }
+        writer.add(input)
+        guard writer.startWriting() else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    writer.error?.localizedDescription
+                        ?? "The HEVC image writer could not start."
+                )
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        var pixelBuffer: CVPixelBuffer?
+        let bufferStatus = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            [
+                kCVPixelBufferCGImageCompatibilityKey: true,
+                kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            ] as CFDictionary,
+            &pixelBuffer
+        )
+        guard bufferStatus == kCVReturnSuccess,
+              let pixelBuffer
+        else {
+            writer.cancelWriting()
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The image video pixel buffer could not be created."
+                )
+        }
+
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+        guard let context = CGContext(
+            data: CVPixelBufferGetBaseAddress(pixelBuffer),
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue
+                | CGImageAlphaInfo.premultipliedFirst.rawValue
+        ) else {
+            writer.cancelWriting()
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The image video frame could not be rendered."
+                )
+        }
+        context.setFillColor(NSColor.black.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.interpolationQuality = .high
+        context.draw(
+            sourceImage,
+            in: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+
+        for frame in 0..<90 {
+            while !input.isReadyForMoreMediaData,
+                  writer.status == .writing {
+                Thread.sleep(forTimeInterval: 0.002)
+            }
+            guard writer.status == .writing,
+                  adaptor.append(
+                    pixelBuffer,
+                    withPresentationTime: CMTime(
+                        value: Int64(frame),
+                        timescale: 30
+                    )
+                  )
+            else {
+                writer.cancelWriting()
+                throw AerialLockScreenInstallerError
+                    .aerialVideoPreparationFailed(
+                        writer.error?.localizedDescription
+                            ?? "The image video frame could not be encoded."
+                    )
+            }
+        }
+        input.markAsFinished()
+        let finished = DispatchSemaphore(value: 0)
+        writer.finishWriting { finished.signal() }
+        guard finished.wait(timeout: .now() + 30) == .success,
+              writer.status == .completed
+        else {
+            writer.cancelWriting()
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    writer.error?.localizedDescription
+                        ?? "The image video could not be finalized."
+                )
+        }
     }
 
     private func aerialAssetIsCompatible(at url: URL) -> Bool {
@@ -1946,18 +2171,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
 
         var inspectedModes = 0
-        var preservedLinkedModes = 0
         for container in containers {
             let modes: [String]
             if container["Linked"] != nil {
-                if scope.includesDesktop {
-                    modes = ["Linked"]
-                } else {
-                    // Lock-only preparation intentionally leaves a linked
-                    // user route untouched until the actual lock handoff.
-                    preservedLinkedModes += 1
-                    modes = []
-                }
+                modes = scope.includesDesktop ? ["Linked"] : []
             } else {
                 modes = scope.includesDesktop
                     ? ["Desktop", "Idle"]
@@ -1973,7 +2190,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 }
             }
         }
-        return inspectedModes > 0 || preservedLinkedModes > 0
+        return inspectedModes > 0
     }
 
     private func modeFullySelectsAerial(
