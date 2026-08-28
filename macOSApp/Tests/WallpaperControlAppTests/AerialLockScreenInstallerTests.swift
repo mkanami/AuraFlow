@@ -567,6 +567,14 @@ private struct AerialLockScreenFixture {
         ))
     }
 
+    // Simulate a journal written by an older build that accidentally kept
+    // Aura's managed Idle route next to the newest user Desktop.
+    try Data(contentsOf: fixture.storeURL).write(
+        to: fixture.stateURL
+            .appendingPathComponent("Index.latest-user.plist"),
+        options: .atomic
+    )
+
     try fixture.installer.uninstall()
 
     root = try readWallpaperStore(fixture.storeURL)
@@ -582,6 +590,41 @@ private struct AerialLockScreenFixture {
             assetID: nil
         ))
     }
+}
+
+@Test func latestUserAerialResolvesItsSystemWallpaperURL() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    let userAssetID = "44166C39-8566-4ECA-BD16-43159429B52F"
+    let userMode = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.aerials",
+        configuration: ["assetID": userAssetID]
+    )
+    let container: [String: Any] = [
+        "Type": "linked",
+        "Linked": userMode,
+    ]
+    let root: [String: Any] = [
+        "AllSpacesAndDisplays": container,
+        "SystemDefault": container,
+        "Displays": [String: Any](),
+        "Spaces": [String: Any](),
+    ]
+    try writeWallpaperStore(root, to: fixture.storeURL)
+
+    let resolved = fixture.installer.latestUserSystemWallpaperURL(
+        from: try Data(contentsOf: fixture.storeURL),
+        managedAssetID: AerialLockScreenFixture.assetID
+    )
+
+    #expect(
+        resolved
+            == fixture.videosURL
+                .appendingPathComponent(userAssetID)
+                .appendingPathExtension("mov")
+                .standardizedFileURL.absoluteString
+    )
 }
 
 @Test func modernLockScreenOnlyPromotesAndRestoresDesktopRoute() throws {

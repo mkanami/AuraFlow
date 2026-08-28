@@ -762,7 +762,6 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 contentsOf: wallpaperStoreBackupURL
             )
             var restorationStoreData = originalStoreData
-            var preserveCurrentSystemWallpaperURL = false
             if marker.lockScreenOnly == true
                 || marker.desktopIncluded == false {
                 // Desktop never belongs to AuraFlow in lock-only mode. Start
@@ -770,12 +769,6 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 // survives unchanged, then restore only Aura-managed modes.
                 // If Remove races the shared-Aerial lock handoff, its session
                 // snapshot is the complete user store to use instead.
-                let currentHasUserDesktop = storeBeforeAttempt.map {
-                    wallpaperStoreHasUserDesktop(
-                        $0,
-                        managedAssetID: marker.assetID
-                    )
-                } ?? false
                 // A real macOS store can contain the user's newly selected
                 // Desktop in one Space and a transient Aura Aerial Desktop in
                 // another. Preserve the current store whenever it contains
@@ -788,7 +781,6 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                             fallbackData: originalStoreData,
                             managedAssetID: marker.assetID
                         )
-                    preserveCurrentSystemWallpaperURL = currentHasUserDesktop
                 }
             }
             try restorationStoreData.write(
@@ -813,10 +805,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                       marker.originalThumbnailExisted == false {
                 try? fileManager.removeItem(at: thumbnailURL)
             }
-            if marker.systemWallpaperURLWasCaptured == true,
-               !preserveCurrentSystemWallpaperURL {
+            if marker.systemWallpaperURLWasCaptured == true {
+                let restoredSystemWallpaperURL =
+                    latestUserSystemWallpaperURL(
+                        from: restorationStoreData,
+                        managedAssetID: marker.assetID
+                    ) ?? marker.originalSystemWallpaperURL
                 guard setSystemWallpaperURL(
-                    marker.originalSystemWallpaperURL
+                    restoredSystemWallpaperURL
                 ) else {
                     throw AerialLockScreenInstallerError
                         .wallpaperStoreUpdateFailed
@@ -841,6 +837,27 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             guard restorationVerified else {
                 throw AerialLockScreenInstallerError
                     .wallpaperStoreUpdateFailed
+            }
+            // WallpaperAgent can flush the split lock-only route and its old
+            // fallback URL while it is terminating. Reassert both values
+            // after the final process refresh so Remove leaves the newest
+            // user wallpaper on Desktop and Lock Screen atomically.
+            try restorationStoreData.write(
+                to: wallpaperStoreURL,
+                options: .atomic
+            )
+            if marker.systemWallpaperURLWasCaptured == true {
+                let restoredSystemWallpaperURL =
+                    latestUserSystemWallpaperURL(
+                        from: restorationStoreData,
+                        managedAssetID: marker.assetID
+                    ) ?? marker.originalSystemWallpaperURL
+                guard setSystemWallpaperURL(
+                    restoredSystemWallpaperURL
+                ) else {
+                    throw AerialLockScreenInstallerError
+                        .wallpaperStoreUpdateFailed
+                }
             }
             try fileManager.removeItem(at: markerURL)
             try? fileManager.removeItem(at: wallpaperStoreBackupURL)
@@ -1302,9 +1319,20 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         let previousData = (try? Data(
             contentsOf: latestUserWallpaperStoreURL
         )) ?? fallbackData
+        // Older journal revisions could retain Aura's temporary Idle route.
+        // Sanitize the journal against the real pre-Aura store before using
+        // it as a fallback, otherwise that managed Idle route survives every
+        // later capture and Remove restores Aura instead of the user's latest
+        // wallpaper on the Lock Screen.
+        let sanitizedPreviousData = try
+            wallpaperStoreDataByPreservingUserDesktops(
+                from: previousData,
+                restoringManagedModesFrom: fallbackData,
+                managedAssetID: managedAssetID
+            )
         let latestData = try wallpaperStoreDataByPreservingUserDesktops(
             from: currentData,
-            restoringManagedModesFrom: previousData,
+            restoringManagedModesFrom: sanitizedPreviousData,
             managedAssetID: managedAssetID
         )
         try latestData.write(
@@ -1603,12 +1631,15 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                systemWallpaperURLMatches(assetID: marker.assetID) {
                 return false
             }
-            if marker.systemWallpaperURLWasCaptured == true,
-               !systemWallpaperURLMatches(assetID: marker.assetID) {
+            if marker.systemWallpaperURLWasCaptured == true {
                 // The user may change Desktop while lock-only mode is active.
-                // Capture that current public wallpaper URL for this lock
-                // session instead of restoring the URL from Aura startup.
-                marker.originalSystemWallpaperURL = currentSystemWallpaperURL()
+                // Index is authoritative here: SystemWallpaperURL can remain
+                // stale while macOS visibly switches a split Desktop route.
+                marker.originalSystemWallpaperURL =
+                    latestUserSystemWallpaperURL(
+                        from: latestUserStoreData,
+                        managedAssetID: marker.assetID
+                    ) ?? currentSystemWallpaperURL()
                 try saveMarker(marker)
             }
             if !wallpaperStoreFullySelectsAerial(
@@ -1710,8 +1741,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 )
             }
             if marker.systemWallpaperURLWasCaptured == true {
+                let restoredSystemWallpaperURL =
+                    latestUserSystemWallpaperURL(
+                        from: desktopStoreData,
+                        managedAssetID: marker.assetID
+                    ) ?? marker.originalSystemWallpaperURL
                 guard setSystemWallpaperURL(
-                    marker.originalSystemWallpaperURL
+                    restoredSystemWallpaperURL
                 ) else {
                     throw AerialLockScreenInstallerError
                         .wallpaperStoreUpdateFailed
@@ -1770,6 +1806,90 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         ) as? [String: Any]
     }
 
+    /// Resolves the fallback URL that WallpaperAgent uses in addition to
+    /// Index.plist. On current macOS, changing a split Desktop route can update
+    /// Index without updating SystemWallpaperURL; restarting WallpaperAgent
+    /// would then visually resurrect the previous wallpaper.
+    func latestUserSystemWallpaperURL(
+        from storeData: Data,
+        managedAssetID: String
+    ) -> String? {
+        guard let root = try? propertyListDictionary(from: storeData) else {
+            return nil
+        }
+        var candidates: [(date: Date, url: String)] = []
+        _ = mapWallpaperContainers(in: root) { container in
+            for key in ["Linked", "Desktop"] {
+                guard let mode = container[key] as? [String: Any],
+                      !modeReferencesAuraFlow(mode),
+                      !modeFullySelectsAerial(
+                          mode,
+                          assetID: managedAssetID
+                      ),
+                      let url = systemWallpaperURL(from: mode)
+                else {
+                    continue
+                }
+                let date = [mode["LastSet"], mode["LastUse"]]
+                    .compactMap { $0 as? Date }
+                    .max() ?? .distantPast
+                candidates.append((date, url))
+            }
+            return container
+        }
+        return candidates.max { $0.date < $1.date }?.url
+    }
+
+    private func systemWallpaperURL(
+        from mode: [String: Any]
+    ) -> String? {
+        guard let content = mode["Content"] as? [String: Any],
+              let choices = content["Choices"] as? [[String: Any]]
+        else {
+            return nil
+        }
+        for choice in choices {
+            let provider = choice["Provider"] as? String
+            let configuration: [String: Any]? = {
+                guard let data = choice["Configuration"] as? Data else {
+                    return nil
+                }
+                return try? propertyListDictionary(from: data)
+            }()
+            if provider == auraFlowAerialProvider,
+               let assetID = configuration?["assetID"] as? String {
+                return aerialVideosURL
+                    .appendingPathComponent(assetID)
+                    .appendingPathExtension("mov")
+                    .standardizedFileURL.absoluteString
+            }
+            if let url = configuration?["url"] as? [String: Any],
+               let relative = url["relative"] as? String,
+               let normalized = normalizedWallpaperURLString(relative) {
+                return normalized
+            }
+            if let files = choice["Files"] as? [[String: Any]] {
+                for file in files {
+                    if let relative = file["relative"] as? String,
+                       let normalized = normalizedWallpaperURLString(relative) {
+                        return normalized
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    private func normalizedWallpaperURLString(
+        _ value: String
+    ) -> String? {
+        if let url = URL(string: value), url.isFileURL {
+            return url.standardizedFileURL.absoluteString
+        }
+        guard value.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: value).standardizedFileURL.absoluteString
+    }
+
     private func currentSystemWallpaperURL() -> String? {
         guard usesCanonicalWallpaperStore else { return nil }
         return CFPreferencesCopyValue(
@@ -1795,10 +1915,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             kCFPreferencesCurrentUser,
             kCFPreferencesAnyHost
         )
-        return synchronized && clearManagedCurrentHostOverride()
+        return synchronized
+            && clearManagedCurrentHostOverride(preserving: value)
     }
 
-    private func clearManagedCurrentHostOverride() -> Bool {
+    private func clearManagedCurrentHostOverride(
+        preserving desiredValue: String?
+    ) -> Bool {
         guard let currentHostValue = CFPreferencesCopyValue(
             systemWallpaperURLPreferenceKey,
             wallpaperPreferencesApplicationID,
@@ -1808,6 +1931,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         let currentHostURL = URL(string: currentHostValue),
         currentHostURL.isFileURL
         else {
+            return true
+        }
+
+        if let desiredValue,
+           let desiredURL = URL(string: desiredValue),
+           desiredURL.isFileURL,
+           currentHostURL.standardizedFileURL
+                == desiredURL.standardizedFileURL {
             return true
         }
 
