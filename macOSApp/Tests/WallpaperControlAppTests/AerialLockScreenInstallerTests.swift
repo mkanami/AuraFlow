@@ -742,6 +742,49 @@ private struct AerialLockScreenFixture {
     #expect(fixture.refreshCounter.count == refreshCountBeforeRemove)
 }
 
+@Test func lockOnlyRemoveAcceptsRestoredWallpaperAsCurrentDesktop() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    var root = try readWallpaperStore(fixture.storeURL)
+    let restoredDesktop = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.image",
+        configuration: [
+            "type": "imageFile",
+            "url": [
+                "relative":
+                    "file:///Users/test/Library/Application%20Support/"
+                    + "AuraFlow/Restored%20Wallpapers/current.jpeg",
+            ],
+        ]
+    )
+    let expectedMode = wallpaperModeData(restoredDesktop)
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        var container = try #require(root[key] as? [String: Any])
+        container["Desktop"] = restoredDesktop
+        root[key] = container
+    }
+    try writeWallpaperStore(root, to: fixture.storeURL)
+    let refreshCountBeforeRemove = fixture.refreshCounter.count
+
+    try fixture.installer
+        .uninstallLockScreenOnlyPreservingCurrentDesktop()
+
+    root = try readWallpaperStore(fixture.storeURL)
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        let container = try #require(root[key] as? [String: Any])
+        let desktop = try #require(
+            container["Desktop"] as? [String: Any]
+        )
+        let idle = try #require(container["Idle"] as? [String: Any])
+        #expect(wallpaperModeData(desktop) == expectedMode)
+        #expect(wallpaperModeData(idle) == expectedMode)
+    }
+    #expect(fixture.refreshCounter.count == refreshCountBeforeRemove)
+    #expect(!fixture.installer.isInstalled)
+}
+
 @Test func lockOnlyRemovePreservesDistinctSpaceAndDisplayDesktops() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

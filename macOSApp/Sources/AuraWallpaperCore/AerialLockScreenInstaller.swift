@@ -1511,8 +1511,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         _ mode: [String: Any],
         assetID: String
     ) -> Bool {
-        modeReferencesAuraFlow(mode)
-            || modeFullySelectsAerial(mode, assetID: assetID)
+        // Modern lock-only installation owns exactly the reserved Aerial
+        // route recorded in its marker. A user's ordinary image can legally
+        // live under AuraFlow/Restored Wallpapers; treating the directory
+        // name itself as ownership makes a successful Remove look malformed.
+        modeFullySelectsAerial(mode, assetID: assetID)
     }
 
     private func wallpaperContainersWithPaths(
