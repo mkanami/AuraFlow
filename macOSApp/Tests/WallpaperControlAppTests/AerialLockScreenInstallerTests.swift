@@ -627,6 +627,165 @@ private struct AerialLockScreenFixture {
     )
 }
 
+@Test func lockOnlyRemoveMirrorsTheLiveDesktopWithoutReplayingSnapshots() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    // Exercise many user changes while Aura remains installed. Only the last
+    // live Desktop route is allowed to matter to Remove.
+    for revision in 1...100 {
+        var root = try readWallpaperStore(fixture.storeURL)
+        root = replaceTestDesktopModes(
+            in: root,
+            provider: "com.apple.wallpaper.choice.user-\(revision)"
+        )
+        try writeWallpaperStore(root, to: fixture.storeURL)
+    }
+
+    let refreshCountBeforeRemove = fixture.refreshCounter.count
+    let raceProvider = "com.apple.wallpaper.choice.user-race-winner"
+    var hookCalls = 0
+    fixture.installer.lockOnlyRemovalCommitHook = {
+        hookCalls += 1
+        guard hookCalls == 1,
+              var root = try? readWallpaperStore(fixture.storeURL)
+        else {
+            return
+        }
+        root = replaceTestDesktopModes(
+            in: root,
+            provider: raceProvider
+        )
+        try? writeWallpaperStore(root, to: fixture.storeURL)
+    }
+
+    try fixture.installer
+        .uninstallLockScreenOnlyPreservingCurrentDesktop()
+
+    let root = try readWallpaperStore(fixture.storeURL)
+    let containers = testWallpaperContainers(in: root)
+    #expect(!containers.isEmpty)
+    for container in containers {
+        if (container["Type"] as? String) == "linked" {
+            let linked = try #require(
+                container["Linked"] as? [String: Any]
+            )
+            #expect(wallpaperStoreContains(
+                linked,
+                provider: raceProvider,
+                assetID: nil
+            ))
+            continue
+        }
+        let desktop = try #require(
+            container["Desktop"] as? [String: Any]
+        )
+        let idle = try #require(container["Idle"] as? [String: Any])
+        #expect(wallpaperModeData(desktop) == wallpaperModeData(idle))
+        #expect(wallpaperStoreContains(
+            desktop,
+            provider: raceProvider,
+            assetID: nil
+        ))
+    }
+    #expect(!wallpaperStoreContains(
+        root,
+        provider: "com.apple.wallpaper.choice.aerials",
+        assetID: AerialLockScreenFixture.assetID
+    ))
+    #expect(hookCalls >= 2)
+    #expect(fixture.refreshCounter.count == refreshCountBeforeRemove)
+    #expect(!fixture.installer.isInstalled)
+    #expect(
+        try Data(contentsOf: fixture.assetURL)
+            == Data("original-aerial".utf8)
+    )
+}
+
+@Test func lockOnlyRemoveKeepsAnAlreadyLinkedUserRoute() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    var root = try readWallpaperStore(fixture.storeURL)
+    let linkedMode = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.sonoma",
+        configuration: [:]
+    )
+    let linkedContainer: [String: Any] = [
+        "Type": "linked",
+        "Linked": linkedMode,
+    ]
+    root["AllSpacesAndDisplays"] = linkedContainer
+    root["SystemDefault"] = linkedContainer
+    root["Displays"] = [String: Any]()
+    root["Spaces"] = [String: Any]()
+    try writeWallpaperStore(root, to: fixture.storeURL)
+    let expectedMode = wallpaperModeData(linkedMode)
+    let refreshCountBeforeRemove = fixture.refreshCounter.count
+
+    try fixture.installer
+        .uninstallLockScreenOnlyPreservingCurrentDesktop()
+
+    root = try readWallpaperStore(fixture.storeURL)
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        let container = try #require(root[key] as? [String: Any])
+        let linked = try #require(
+            container["Linked"] as? [String: Any]
+        )
+        #expect(wallpaperModeData(linked) == expectedMode)
+        #expect(container["Desktop"] == nil)
+        #expect(container["Idle"] == nil)
+    }
+    #expect(fixture.refreshCounter.count == refreshCountBeforeRemove)
+}
+
+@Test func lockOnlyRemovePreservesDistinctSpaceAndDisplayDesktops() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    var root = try readWallpaperStore(fixture.storeURL)
+    root = replaceTestDesktopModesDistinctly(in: root)
+    try writeWallpaperStore(root, to: fixture.storeURL)
+    let expectedDesktopRoutes = testDesktopRouteData(in: root)
+    #expect(expectedDesktopRoutes.count > 2)
+    let refreshCountBeforeRemove = fixture.refreshCounter.count
+
+    try fixture.installer
+        .uninstallLockScreenOnlyPreservingCurrentDesktop()
+
+    root = try readWallpaperStore(fixture.storeURL)
+    #expect(testDesktopRouteData(in: root) == expectedDesktopRoutes)
+    for container in testWallpaperContainers(in: root) {
+        guard let desktop = container["Desktop"] as? [String: Any]
+        else { continue }
+        let idle = try #require(container["Idle"] as? [String: Any])
+        #expect(wallpaperModeData(desktop) == wallpaperModeData(idle))
+    }
+    #expect(fixture.refreshCounter.count == refreshCountBeforeRemove)
+}
+
+@Test func lockOnlyRemoveNeverReplaysBackupWhenMarkerIsCorrupt() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    let liveDesktopStore = try Data(contentsOf: fixture.storeURL)
+    try Data("{broken-marker".utf8).write(
+        to: fixture.stateURL.appendingPathComponent("installation.json"),
+        options: .atomic
+    )
+
+    #expect(throws: AerialLockScreenInstallerError.self) {
+        try fixture.installer
+            .uninstallLockScreenOnlyPreservingCurrentDesktop()
+    }
+    #expect(try Data(contentsOf: fixture.storeURL) == liveDesktopStore)
+}
+
 @Test func modernLockScreenOnlyPromotesAndRestoresDesktopRoute() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
@@ -1168,6 +1327,177 @@ private func writeWallpaperStore(
         options: 0
     )
     try data.write(to: url, options: .atomic)
+}
+
+private func replaceTestDesktopModes(
+    in root: [String: Any],
+    provider: String
+) -> [String: Any] {
+    var result = root
+    let mode = AerialLockScreenFixture.makeMode(
+        provider: provider,
+        configuration: [:]
+    )
+    func replace(_ value: Any) -> Any {
+        guard var container = value as? [String: Any] else {
+            return value
+        }
+        if container["Desktop"] != nil {
+            container["Desktop"] = mode
+        } else if container["Linked"] != nil {
+            container["Linked"] = mode
+        }
+        return container
+    }
+
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        if let value = result[key] {
+            result[key] = replace(value)
+        }
+    }
+    if let displays = result["Displays"] as? [String: Any] {
+        result["Displays"] = displays.mapValues(replace)
+    }
+    if let spaces = result["Spaces"] as? [String: Any] {
+        result["Spaces"] = spaces.mapValues { value in
+            guard var space = value as? [String: Any] else {
+                return value
+            }
+            if let defaultValue = space["Default"] {
+                space["Default"] = replace(defaultValue)
+            }
+            if let displays = space["Displays"] as? [String: Any] {
+                space["Displays"] = displays.mapValues(replace)
+            }
+            return space
+        }
+    }
+    return result
+}
+
+private func testWallpaperContainers(
+    in root: [String: Any]
+) -> [[String: Any]] {
+    var result: [[String: Any]] = []
+    func append(_ value: Any?) {
+        if let container = value as? [String: Any] {
+            result.append(container)
+        }
+    }
+    append(root["AllSpacesAndDisplays"])
+    append(root["SystemDefault"])
+    if let displays = root["Displays"] as? [String: Any] {
+        for value in displays.values { append(value) }
+    }
+    if let spaces = root["Spaces"] as? [String: Any] {
+        for value in spaces.values {
+            guard let space = value as? [String: Any] else { continue }
+            append(space["Default"])
+            if let displays = space["Displays"] as? [String: Any] {
+                for display in displays.values { append(display) }
+            }
+        }
+    }
+    return result
+}
+
+private func replaceTestDesktopModesDistinctly(
+    in root: [String: Any]
+) -> [String: Any] {
+    var result = root
+    var revision = 0
+    func replace(_ value: Any) -> Any {
+        guard var container = value as? [String: Any] else {
+            return value
+        }
+        revision += 1
+        let mode = AerialLockScreenFixture.makeMode(
+            provider: "com.apple.wallpaper.choice.route-\(revision)",
+            configuration: [:]
+        )
+        if container["Desktop"] != nil {
+            container["Desktop"] = mode
+        } else if container["Linked"] != nil {
+            container["Linked"] = mode
+        }
+        return container
+    }
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        if let value = result[key] { result[key] = replace(value) }
+    }
+    if var displays = result["Displays"] as? [String: Any] {
+        for key in displays.keys.sorted() {
+            if let value = displays[key] { displays[key] = replace(value) }
+        }
+        result["Displays"] = displays
+    }
+    if var spaces = result["Spaces"] as? [String: Any] {
+        for spaceID in spaces.keys.sorted() {
+            guard var space = spaces[spaceID] as? [String: Any] else {
+                continue
+            }
+            if let value = space["Default"] {
+                space["Default"] = replace(value)
+            }
+            if var displays = space["Displays"] as? [String: Any] {
+                for displayID in displays.keys.sorted() {
+                    if let value = displays[displayID] {
+                        displays[displayID] = replace(value)
+                    }
+                }
+                space["Displays"] = displays
+            }
+            spaces[spaceID] = space
+        }
+        result["Spaces"] = spaces
+    }
+    return result
+}
+
+private func testDesktopRouteData(
+    in root: [String: Any]
+) -> [String: Data] {
+    var result: [String: Data] = [:]
+    func append(_ path: String, _ value: Any?) {
+        guard let container = value as? [String: Any] else { return }
+        let key = container["Desktop"] != nil ? "Desktop" : "Linked"
+        guard let mode = container[key] as? [String: Any],
+              let data = wallpaperModeData(mode)
+        else { return }
+        result[path + "." + key] = data
+    }
+    append("AllSpacesAndDisplays", root["AllSpacesAndDisplays"])
+    append("SystemDefault", root["SystemDefault"])
+    if let displays = root["Displays"] as? [String: Any] {
+        for key in displays.keys.sorted() {
+            append("Displays.\(key)", displays[key])
+        }
+    }
+    if let spaces = root["Spaces"] as? [String: Any] {
+        for spaceID in spaces.keys.sorted() {
+            guard let space = spaces[spaceID] as? [String: Any] else {
+                continue
+            }
+            append("Spaces.\(spaceID).Default", space["Default"])
+            if let displays = space["Displays"] as? [String: Any] {
+                for displayID in displays.keys.sorted() {
+                    append(
+                        "Spaces.\(spaceID).Displays.\(displayID)",
+                        displays[displayID]
+                    )
+                }
+            }
+        }
+    }
+    return result
+}
+
+private func wallpaperModeData(_ mode: [String: Any]) -> Data? {
+    try? PropertyListSerialization.data(
+        fromPropertyList: mode,
+        format: .xml,
+        options: 0
+    )
 }
 
 private func wallpaperChoiceProviders(_ value: Any) -> [String] {

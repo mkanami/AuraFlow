@@ -56,6 +56,13 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
         try legacy.uninstall()
     }
 
+    func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
+        if modern.isInstalled {
+            try modern.uninstallLockScreenOnlyPreservingCurrentDesktop()
+        }
+        try legacy.uninstall()
+    }
+
     private func installModernAndScreenSaver(
         videoURL: URL,
         lockScreenOnly: Bool

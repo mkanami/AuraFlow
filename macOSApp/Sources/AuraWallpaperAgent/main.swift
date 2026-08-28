@@ -129,8 +129,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
-        if lockScreenOnlyMode {
+        let preserveCurrentDesktop =
+            store.loadCommand()?.action == .terminatePreservingDesktop
+        if lockScreenOnlyMode, !preserveCurrentDesktop {
             restoreDesktopStoreAfterSession()
+        }
+        if lockScreenOnlyMode {
             nativeLockScreenBridge.shutdown()
         }
         transitionGeneration += 1
@@ -665,6 +669,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             handleLockScreenEvent(.endPreview, reason: "lock-preview-ended")
             rearmModernLockScreenForNextSession()
         case .terminate:
+            NSApp.terminate(nil)
+        case .terminatePreservingDesktop:
             NSApp.terminate(nil)
         }
 

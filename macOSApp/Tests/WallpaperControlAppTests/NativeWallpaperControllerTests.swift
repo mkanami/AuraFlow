@@ -43,6 +43,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     private(set) var installedVideoURL: URL?
     private(set) var installedLockScreenOnlyVideoURL: URL?
     private(set) var uninstallCallCount = 0
+    private(set) var preservingUninstallCallCount = 0
 
     var isInstalled: Bool {
         (installedVideoURL != nil || installedLockScreenOnlyVideoURL != nil)
@@ -58,6 +59,11 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     }
 
     func uninstall() throws {
+        uninstallCallCount += 1
+    }
+
+    func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
+        preservingUninstallCallCount += 1
         uninstallCallCount += 1
     }
 }
@@ -262,6 +268,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
 
     #expect(removed.wallpaper_restored == false)
     #expect(installer.uninstallCallCount == 1)
+    #expect(installer.preservingUninstallCallCount == 1)
     #expect(!FileManager.default.fileExists(atPath: backupURL.path))
     #expect(FileManager.default.fileExists(atPath: oldDesktopURL.path))
 }

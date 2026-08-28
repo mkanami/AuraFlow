@@ -16,6 +16,7 @@ public enum WallpaperRuntimeCommandAction: String, Codable, Equatable {
     case previewLock
     case previewUnlock
     case terminate
+    case terminatePreservingDesktop
 }
 
 public struct WallpaperRuntimeCommand: Codable, Equatable {

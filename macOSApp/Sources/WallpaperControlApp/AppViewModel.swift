@@ -486,7 +486,12 @@ final class NativeWallpaperController: WallpaperControlling {
             store.isLockScreenOnlyAgent()
             || store.loadLockScreenOnlySource() != nil
         if store.processIsAlive(pid: store.loadPID()) {
-            try? send(.terminate, config: currentConfig)
+            try? send(
+                removingLockScreenOnly
+                    ? .terminatePreservingDesktop
+                    : .terminate,
+                config: currentConfig
+            )
         }
         guard store.terminateDaemon(timeout: 2.0) else {
             throw NativeWallpaperControllerError.unavailable(
@@ -497,7 +502,12 @@ final class NativeWallpaperController: WallpaperControlling {
         store.removeHealth()
         if currentConfig.show_on_lock_screen == true
             || lockScreenSaverInstaller.isInstalled {
-            try lockScreenSaverInstaller.uninstall()
+            if removingLockScreenOnly {
+                try lockScreenSaverInstaller
+                    .uninstallLockScreenOnlyPreservingCurrentDesktop()
+            } else {
+                try lockScreenSaverInstaller.uninstall()
+            }
         }
         store.clearLockScreenOnlySource()
         store.markLockScreenOnlyAgent(false)

@@ -7,6 +7,7 @@ public protocol LockScreenSaverInstalling {
     func install(videoURL: URL) throws
     func installLockScreenOnly(videoURL: URL) throws
     func uninstall() throws
+    func uninstallLockScreenOnlyPreservingCurrentDesktop() throws
 }
 
 public extension LockScreenSaverInstalling {
@@ -16,5 +17,9 @@ public extension LockScreenSaverInstalling {
 
     func installLockScreenOnly(videoURL: URL) throws {
         try install(videoURL: videoURL)
+    }
+
+    func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
+        try uninstall()
     }
 }

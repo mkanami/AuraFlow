@@ -3,6 +3,7 @@ import AppKit
 import AVFoundation
 import CoreFoundation
 import Foundation
+import OSLog
 
 private let auraFlowAerialProvider = "com.apple.wallpaper.choice.aerials"
 private let auraFlowImageProvider = "com.apple.wallpaper.choice.image"
@@ -12,6 +13,10 @@ private let wallpaperPreferencesApplicationID =
     "com.apple.wallpaper" as CFString
 private let systemWallpaperURLPreferenceKey =
     "SystemWallpaperURL" as CFString
+private let lockScreenRemovalLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "LockScreenRemoval"
+)
 
 private enum AerialLockScreenOperationAbort: Error {
     case sessionChanged
@@ -24,6 +29,21 @@ private enum AerialWallpaperStoreScope: Equatable {
     var includesDesktop: Bool {
         self == .sharedWallpaper
     }
+}
+
+private enum LockOnlySystemWallpaperURLUpdate {
+    case preserve
+    case set(String)
+    case clear
+}
+
+private struct LockOnlyRemovalStorePlan {
+    var storeData: Data
+    var desktopRoutes: [String: Data]
+    var routeCount: Int
+    var spaceRouteCount: Int
+    var displayRouteCount: Int
+    var systemWallpaperURLUpdate: LockOnlySystemWallpaperURLUpdate
 }
 
 private struct AerialLockScreenMarker: Codable {
@@ -98,6 +118,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     private let desktopRestoreSystem: ConditionalSystemAction
     private let lockSessionHandoffSystem: ConditionalSystemAction
     private let operationLock = NSLock()
+    var lockOnlyRemovalCommitHook: (() -> Void)?
     private lazy var supportedProviderAssetIDs =
         loadSupportedProviderAssetIDs()
 
@@ -728,6 +749,134 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
     }
 
+    public func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        try withCrossProcessLock {
+            guard let marker = loadMarker() else {
+                if fileManager.fileExists(atPath: markerURL.path) {
+                    // A corrupt lock-only marker must never route Remove into
+                    // the old full-store recovery path: that could overwrite
+                    // the live Desktop with the startup snapshot.
+                    throw AerialLockScreenInstallerError
+                        .malformedWallpaperStore
+                }
+                removeIncompleteBackupsIfSafe()
+                return
+            }
+            guard marker.completed == true else {
+                throw AerialLockScreenInstallerError
+                    .malformedWallpaperStore
+            }
+            guard marker.lockScreenOnly == true
+                    || marker.desktopIncluded == false
+            else {
+                try uninstallLocked()
+                return
+            }
+            try uninstallLockScreenOnlyPreservingCurrentDesktopLocked(
+                marker: marker
+            )
+        }
+    }
+
+    private func uninstallLockScreenOnlyPreservingCurrentDesktopLocked(
+        marker: AerialLockScreenMarker
+    ) throws {
+        guard fileManager.fileExists(atPath: wallpaperStoreURL.path) else {
+            throw AerialLockScreenInstallerError.wallpaperStoreUnavailable
+        }
+
+        let maximumAttempts = 6
+        var committedPlan: LockOnlyRemovalStorePlan?
+        for attempt in 1...maximumAttempts {
+            let currentStoreData = try Data(contentsOf: wallpaperStoreURL)
+            let plan = try lockOnlyRemovalStorePlan(
+                from: currentStoreData,
+                managedAssetID: marker.assetID
+            )
+            lockOnlyRemovalCommitHook?()
+
+            // System Settings writes the same store without Aura's lock. Do
+            // not overwrite a newer Desktop choice made after our read.
+            guard try Data(contentsOf: wallpaperStoreURL)
+                    == currentStoreData
+            else {
+                lockScreenRemovalLogger.debug(
+                    "Desktop changed before Remove commit; retry \(attempt, privacy: .public)"
+                )
+                continue
+            }
+
+            try plan.storeData.write(
+                to: wallpaperStoreURL,
+                options: .atomic
+            )
+            guard applyLockOnlySystemWallpaperURLUpdate(
+                plan.systemWallpaperURLUpdate
+            ) else {
+                throw AerialLockScreenInstallerError
+                    .wallpaperStoreUpdateFailed
+            }
+
+            Thread.sleep(forTimeInterval: 0.12)
+            let observedStoreData = try Data(contentsOf: wallpaperStoreURL)
+            if lockOnlyRemovalStoreIsValid(
+                observedStoreData,
+                preserving: plan.desktopRoutes,
+                managedAssetID: marker.assetID
+            ) {
+                committedPlan = plan
+                break
+            }
+            lockScreenRemovalLogger.debug(
+                "Desktop or Lock Screen changed after Remove commit; retry \(attempt, privacy: .public)"
+            )
+        }
+
+        guard let committedPlan else {
+            lockScreenRemovalLogger.error(
+                "Remove could not stabilize the current Desktop routes"
+            )
+            throw AerialLockScreenInstallerError.wallpaperStoreUpdateFailed
+        }
+
+        // The live store is now free of Aura. Only after that is true may the
+        // reserved provider slot and recovery files be removed.
+        let assetURL = URL(fileURLWithPath: marker.assetPath)
+        if fileManager.fileExists(atPath: assetBackupURL.path) {
+            try replaceFile(
+                at: assetURL,
+                withContentsOf: assetBackupURL
+            )
+        } else if marker.originalAssetExisted == false {
+            try? fileManager.removeItem(at: assetURL)
+        }
+        if let thumbnailPath = marker.thumbnailPath {
+            let thumbnailURL = URL(fileURLWithPath: thumbnailPath)
+            if fileManager.fileExists(atPath: thumbnailBackupURL.path) {
+                try replaceFile(
+                    at: thumbnailURL,
+                    withContentsOf: thumbnailBackupURL
+                )
+            } else if marker.originalThumbnailExisted == false {
+                try? fileManager.removeItem(at: thumbnailURL)
+            }
+        }
+
+        try fileManager.removeItem(at: markerURL)
+        try? fileManager.removeItem(at: wallpaperStoreBackupURL)
+        try? fileManager.removeItem(at: latestUserWallpaperStoreURL)
+        try? fileManager.removeItem(at: lockSessionStoreBackupURL)
+        try? fileManager.removeItem(at: assetBackupURL)
+        try? fileManager.removeItem(at: thumbnailBackupURL)
+        try? fileManager.removeItem(at: stateDirectoryURL)
+
+        lockScreenRemovalLogger.info(
+            "Removed Aura Lock Screen; Desktop preserved=true routes=\(committedPlan.routeCount, privacy: .public) spaces=\(committedPlan.spaceRouteCount, privacy: .public) displays=\(committedPlan.displayRouteCount, privacy: .public) Aura cleared=true"
+        )
+    }
+
     private func uninstallLocked() throws {
         let marker: AerialLockScreenMarker
         if let installedMarker = loadMarker() {
@@ -1153,6 +1302,300 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             }
         }
         return result
+    }
+
+    private func lockOnlyRemovalStorePlan(
+        from currentStoreData: Data,
+        managedAssetID: String
+    ) throws -> LockOnlyRemovalStorePlan {
+        guard let root = try propertyListDictionary(
+            from: currentStoreData
+        ) else {
+            throw AerialLockScreenInstallerError.malformedWallpaperStore
+        }
+
+        let desktopRoutes = try currentDesktopRouteData(
+            in: root,
+            managedAssetID: managedAssetID
+        )
+        guard !desktopRoutes.isEmpty else {
+            throw AerialLockScreenInstallerError.malformedWallpaperStore
+        }
+
+        var invalidRoute = false
+        var selectedModes: [[String: Any]] = []
+        var routeCount = 0
+        let updatedRoot = mapWallpaperContainers(in: root) { container in
+            guard let route = currentUserDesktopRoute(
+                in: container,
+                managedAssetID: managedAssetID
+            ) else {
+                if containerContainsManagedWallpaper(
+                    container,
+                    managedAssetID: managedAssetID
+                ) {
+                    invalidRoute = true
+                }
+                return container
+            }
+
+            var updated = container
+            selectedModes.append(route.mode)
+            routeCount += 1
+            switch route.key {
+            case "Linked":
+                // A user-selected Linked route already means Desktop and Lock
+                // Screen are identical. Keep that descriptor byte-for-byte.
+                if let idle = updated["Idle"] as? [String: Any],
+                   modeIsManaged(idle, assetID: managedAssetID) {
+                    updated.removeValue(forKey: "Idle")
+                }
+                if let desktop = updated["Desktop"] as? [String: Any],
+                   modeIsManaged(desktop, assetID: managedAssetID) {
+                    updated.removeValue(forKey: "Desktop")
+                }
+                updated["Type"] = "linked"
+            default:
+                // Desktop is the source of truth. Do not normalize, replace,
+                // or timestamp it; copy it only into the ordinary Idle route.
+                updated["Idle"] = route.mode
+                if let linked = updated["Linked"] as? [String: Any],
+                   modeIsManaged(linked, assetID: managedAssetID) {
+                    updated.removeValue(forKey: "Linked")
+                }
+                updated["Type"] = "individual"
+            }
+            return updated
+        }
+
+        guard !invalidRoute, routeCount == desktopRoutes.count else {
+            throw AerialLockScreenInstallerError.malformedWallpaperStore
+        }
+        let updatedData = try PropertyListSerialization.data(
+            fromPropertyList: updatedRoot,
+            format: .binary,
+            options: 0
+        )
+        let updatedDesktopRoutes = try currentDesktopRouteData(
+            in: updatedRoot,
+            managedAssetID: managedAssetID
+        )
+        guard updatedDesktopRoutes == desktopRoutes else {
+            throw AerialLockScreenInstallerError.wallpaperStoreUpdateFailed
+        }
+
+        return LockOnlyRemovalStorePlan(
+            storeData: updatedData,
+            desktopRoutes: desktopRoutes,
+            routeCount: routeCount,
+            spaceRouteCount: desktopRoutes.keys.filter {
+                $0.hasPrefix("Spaces.")
+            }.count,
+            displayRouteCount: desktopRoutes.keys.filter {
+                $0.hasPrefix("Displays.") || $0.contains(".Displays.")
+            }.count,
+            systemWallpaperURLUpdate:
+                lockOnlySystemWallpaperURLUpdate(
+                    for: selectedModes.first
+                )
+        )
+    }
+
+    private func lockOnlyRemovalStoreIsValid(
+        _ storeData: Data,
+        preserving expectedDesktopRoutes: [String: Data],
+        managedAssetID: String
+    ) -> Bool {
+        guard let root = try? propertyListDictionary(from: storeData),
+              let desktopRoutes = try? currentDesktopRouteData(
+                in: root,
+                managedAssetID: managedAssetID
+              ),
+              desktopRoutes == expectedDesktopRoutes
+        else {
+            return false
+        }
+
+        for (_, container) in wallpaperContainersWithPaths(in: root) {
+            guard let route = currentUserDesktopRoute(
+                in: container,
+                managedAssetID: managedAssetID
+            ) else {
+                if containerContainsManagedWallpaper(
+                    container,
+                    managedAssetID: managedAssetID
+                ) {
+                    return false
+                }
+                continue
+            }
+            if route.key == "Linked" {
+                if containerContainsManagedWallpaper(
+                    container,
+                    managedAssetID: managedAssetID
+                ) {
+                    return false
+                }
+                continue
+            }
+            guard let idle = container["Idle"] as? [String: Any],
+                  !modeIsManaged(idle, assetID: managedAssetID),
+                  propertyListData(idle) == propertyListData(route.mode)
+            else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func currentDesktopRouteData(
+        in root: [String: Any],
+        managedAssetID: String
+    ) throws -> [String: Data] {
+        var result: [String: Data] = [:]
+        for (path, container) in wallpaperContainersWithPaths(in: root) {
+            guard let route = currentUserDesktopRoute(
+                in: container,
+                managedAssetID: managedAssetID
+            ) else {
+                continue
+            }
+            guard let data = propertyListData(route.mode) else {
+                throw AerialLockScreenInstallerError.malformedWallpaperStore
+            }
+            result[path + "." + route.key] = data
+        }
+        return result
+    }
+
+    private func currentUserDesktopRoute(
+        in container: [String: Any],
+        managedAssetID: String
+    ) -> (key: String, mode: [String: Any])? {
+        func userMode(_ key: String) -> [String: Any]? {
+            guard let mode = container[key] as? [String: Any],
+                  !modeIsManaged(mode, assetID: managedAssetID)
+            else {
+                return nil
+            }
+            return mode
+        }
+
+        if (container["Type"] as? String) == "linked",
+           let linked = userMode("Linked") {
+            return ("Linked", linked)
+        }
+        if let desktop = userMode("Desktop") {
+            return ("Desktop", desktop)
+        }
+        if let linked = userMode("Linked") {
+            return ("Linked", linked)
+        }
+        return nil
+    }
+
+    private func containerContainsManagedWallpaper(
+        _ container: [String: Any],
+        managedAssetID: String
+    ) -> Bool {
+        for key in ["Linked", "Desktop", "Idle"] {
+            if let mode = container[key] as? [String: Any],
+               modeIsManaged(mode, assetID: managedAssetID) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func modeIsManaged(
+        _ mode: [String: Any],
+        assetID: String
+    ) -> Bool {
+        modeReferencesAuraFlow(mode)
+            || modeFullySelectsAerial(mode, assetID: assetID)
+    }
+
+    private func wallpaperContainersWithPaths(
+        in root: [String: Any]
+    ) -> [(String, [String: Any])] {
+        var result: [(String, [String: Any])] = []
+        func append(_ path: String, _ value: Any?) {
+            if let container = value as? [String: Any] {
+                result.append((path, container))
+            }
+        }
+
+        append("AllSpacesAndDisplays", root["AllSpacesAndDisplays"])
+        append("SystemDefault", root["SystemDefault"])
+        if let displays = root["Displays"] as? [String: Any] {
+            for displayID in displays.keys.sorted() {
+                append("Displays.\(displayID)", displays[displayID])
+            }
+        }
+        if let spaces = root["Spaces"] as? [String: Any] {
+            for spaceID in spaces.keys.sorted() {
+                guard let space = spaces[spaceID] as? [String: Any] else {
+                    continue
+                }
+                append("Spaces.\(spaceID).Default", space["Default"])
+                if let displays = space["Displays"] as? [String: Any] {
+                    for displayID in displays.keys.sorted() {
+                        append(
+                            "Spaces.\(spaceID).Displays.\(displayID)",
+                            displays[displayID]
+                        )
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    private func propertyListData(_ value: Any) -> Data? {
+        try? PropertyListSerialization.data(
+            fromPropertyList: value,
+            format: .xml,
+            options: 0
+        )
+    }
+
+    private func lockOnlySystemWallpaperURLUpdate(
+        for mode: [String: Any]?
+    ) -> LockOnlySystemWallpaperURLUpdate {
+        guard let mode,
+              let content = mode["Content"] as? [String: Any],
+              let choice = (content["Choices"] as? [[String: Any]])?.first
+        else {
+            return .clear
+        }
+        if choice["Provider"] as? String == "default" {
+            return .preserve
+        }
+        if let url = systemWallpaperURL(from: mode) {
+            return .set(url)
+        }
+        // Explicit Apple providers such as Sequoia own their descriptor.
+        // Keeping a stale file URL here can resurrect a previous Desktop.
+        return .clear
+    }
+
+    private func applyLockOnlySystemWallpaperURLUpdate(
+        _ update: LockOnlySystemWallpaperURLUpdate
+    ) -> Bool {
+        switch update {
+        case .preserve:
+            return true
+        case .set(let value):
+            return setSystemWallpaperURL(
+                value,
+                clearConflictingCurrentHostOverride: true
+            )
+        case .clear:
+            return setSystemWallpaperURL(
+                nil,
+                clearConflictingCurrentHostOverride: true
+            )
+        }
     }
 
     private func wallpaperStoreDataByPreservingUserDesktops(
@@ -1901,7 +2344,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     @discardableResult
-    private func setSystemWallpaperURL(_ value: String?) -> Bool {
+    private func setSystemWallpaperURL(
+        _ value: String?,
+        clearConflictingCurrentHostOverride: Bool = false
+    ) -> Bool {
         guard usesCanonicalWallpaperStore else { return true }
         CFPreferencesSetValue(
             systemWallpaperURLPreferenceKey,
@@ -1915,8 +2361,49 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             kCFPreferencesCurrentUser,
             kCFPreferencesAnyHost
         )
+        if clearConflictingCurrentHostOverride {
+            return synchronized
+                && clearCurrentHostOverride(preserving: value)
+        }
         return synchronized
             && clearManagedCurrentHostOverride(preserving: value)
+    }
+
+    private func clearCurrentHostOverride(
+        preserving desiredValue: String?
+    ) -> Bool {
+        guard let currentHostValue = CFPreferencesCopyValue(
+            systemWallpaperURLPreferenceKey,
+            wallpaperPreferencesApplicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesCurrentHost
+        ) as? String
+        else {
+            return true
+        }
+
+        if let desiredValue,
+           let currentHostURL = URL(string: currentHostValue),
+           currentHostURL.isFileURL,
+           let desiredURL = URL(string: desiredValue),
+           desiredURL.isFileURL,
+           currentHostURL.standardizedFileURL
+                == desiredURL.standardizedFileURL {
+            return true
+        }
+
+        CFPreferencesSetValue(
+            systemWallpaperURLPreferenceKey,
+            nil,
+            wallpaperPreferencesApplicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesCurrentHost
+        )
+        return CFPreferencesSynchronize(
+            wallpaperPreferencesApplicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesCurrentHost
+        )
     }
 
     private func clearManagedCurrentHostOverride(
