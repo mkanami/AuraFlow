@@ -115,6 +115,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(command?.action == .reload)
     #expect(command?.operationID == 1)
     #expect(command?.config?.video_path == fixture.videoURL.path)
+    #expect(installer.installedVideoURL == nil)
+    #expect(installer.installedLockScreenOnlyVideoURL == nil)
 }
 
 @Test func runtimeCommandDecodesLegacyPayloadWithoutOperationID() throws {
