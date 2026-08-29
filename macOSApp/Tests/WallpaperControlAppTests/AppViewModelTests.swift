@@ -850,6 +850,74 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
+@Test func lifecycleActionsPublishDistinctSuccessNotifications() async throws {
+    let controller = MockNativeWallpaperController()
+    let suiteName = "AppViewModelTests.lifecycle-success-notifications"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    let optimizationStore = VideoOptimizationStore(defaults: defaults)
+    optimizationStore.save(
+        VideoOptimizationSettings(
+            enabled: false,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: true,
+            forceSoftwareAV1Encode: false,
+            profile: .quality
+        )
+    )
+    let viewModel = AppViewModel(
+        controller: controller,
+        optimizationStore: optimizationStore
+    )
+    let sourceURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(
+            "lifecycle-success-notifications-\(UUID().uuidString).mp4"
+        )
+    FileManager.default.createFile(
+        atPath: sourceURL.path,
+        contents: Data([0, 0, 0, 0])
+    )
+    defer {
+        try? FileManager.default.removeItem(at: sourceURL)
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+    viewModel.start()
+    for _ in 0..<40 {
+        if viewModel.successBannerMessage == "Wallpaper started." { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+    #expect(viewModel.successBannerMessage == "Wallpaper started.")
+
+    viewModel.stop()
+    for _ in 0..<40 {
+        if viewModel.successBannerMessage == "Wallpaper stopped." { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+    #expect(viewModel.successBannerMessage == "Wallpaper stopped.")
+
+    viewModel.clearWallpaper()
+    for _ in 0..<40 {
+        if viewModel.successBannerMessage == "Wallpaper removed." { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+    #expect(viewModel.successBannerMessage == "Wallpaper removed.")
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+    viewModel.applyLockScreenOnly()
+    for _ in 0..<40 {
+        if viewModel.successBannerMessage
+            == "Wallpaper started on Lock Screen." { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+    #expect(
+        viewModel.successBannerMessage
+            == "Wallpaper started on Lock Screen."
+    )
+}
+
+@MainActor
 @Test func suspiciousRunningDaemonKeepsStopAvailable() async throws {
     let controller = MockNativeWallpaperController()
     let viewModel = AppViewModel(controller: controller)

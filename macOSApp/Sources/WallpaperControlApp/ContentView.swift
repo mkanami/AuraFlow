@@ -2511,59 +2511,62 @@ struct AuraGlassInsetCard: View {
 
 struct ErrorBanner: View {
     let text: String
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.yellow)
-            Text(text)
-                .font(.callout)
-                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
-        }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 14)
-        .background(
-            AuraGlassRoundedSurface(
-                cornerRadius: 14,
-                material: .regular,
-                washColor: Color.orange.opacity(colorScheme == .dark ? 0.06 : 0.05)
-            )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(colorScheme == .dark ? 0.16 : 0.22), lineWidth: 0.9)
+        AuraNotificationBanner(
+            text: text,
+            systemImage: "exclamationmark.triangle.fill",
+            iconColor: .yellow
         )
     }
 }
 
 struct SuccessBanner: View {
     let text: String
+
+    var body: some View {
+        AuraNotificationBanner(
+            text: text,
+            systemImage: "checkmark.circle.fill",
+            iconColor: .green
+        )
+    }
+}
+
+private struct AuraNotificationBanner: View {
+    let text: String
+    let systemImage: String
+    let iconColor: Color
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+            Image(systemName: systemImage)
+                .foregroundStyle(iconColor)
             Text(text)
                 .font(.callout)
-                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
                 .lineLimit(2)
+            Spacer(minLength: 0)
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 14,
-                material: .regular,
-                washColor: Color.green.opacity(0.06)
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.bottomGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity
             )
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.18), lineWidth: 0.9)
+                .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .shadow(color: Color.black.opacity(0.18), radius: 4, x: 0, y: 2)
+        .environment(\.colorScheme, .dark)
     }
 }
 

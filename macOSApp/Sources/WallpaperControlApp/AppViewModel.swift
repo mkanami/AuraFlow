@@ -1679,7 +1679,7 @@ final class AppViewModel: ObservableObject {
                     status: status,
                     state: .ready,
                     statusMessage: "Wallpaper resumed.",
-                    successMessage: nil,
+                    successMessage: "Wallpaper started.",
                     previewURL: nil,
                     clearPendingPreview: false,
                     refreshPreview: true
@@ -1696,7 +1696,7 @@ final class AppViewModel: ObservableObject {
                 status: status,
                 state: .ready,
                 statusMessage: prepared.summary ?? "Wallpaper started.",
-                successMessage: nil,
+                successMessage: "Wallpaper started.",
                 previewURL: prepared.url,
                 clearPendingPreview: true,
                 refreshPreview: false
@@ -1714,7 +1714,7 @@ final class AppViewModel: ObservableObject {
                 statusMessage: prepared.summary.map {
                     "Lock Screen wallpaper confirmed. \($0)"
                 } ?? "Lock Screen wallpaper confirmed by macOS.",
-                successMessage: "Lock Screen wallpaper confirmed by macOS.",
+                successMessage: "Wallpaper started on Lock Screen.",
                 previewURL: nil,
                 clearPendingPreview: false,
                 refreshPreview: false
@@ -1731,7 +1731,7 @@ final class AppViewModel: ObservableObject {
                     : lockScreenOnly
                         ? "Lock Screen wallpaper paused."
                         : "Paused on current frame.",
-                successMessage: nil,
+                successMessage: "Wallpaper stopped.",
                 previewURL: nil,
                 clearPendingPreview: false,
                 refreshPreview: true
@@ -1748,7 +1748,7 @@ final class AppViewModel: ObservableObject {
                 statusMessage: status.wallpaper_restored == true
                     ? "Original wallpaper restored."
                     : "Wallpaper removed.",
-                successMessage: nil,
+                successMessage: "Wallpaper removed.",
                 previewURL: nil,
                 clearPendingPreview: false,
                 refreshPreview: true
