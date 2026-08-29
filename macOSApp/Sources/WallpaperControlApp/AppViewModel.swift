@@ -3,7 +3,38 @@ import AppKit
 import AVKit
 import Combine
 import Foundation
+import OSLog
 import UniformTypeIdentifiers
+
+private let lockScreenLifecycleLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "LockScreenLifecycle"
+)
+
+enum WallpaperLifecycleState: String, Equatable {
+    case idle
+    case preparing
+    case ready
+    case paused
+    case removing
+    case failed
+}
+
+private enum WallpaperLifecycleIntent: Equatable {
+    case start(URL, resume: Bool)
+    case lock(URL)
+    case stop(lockScreenOnly: Bool, staticImage: Bool)
+    case remove(lockScreenOnly: Bool)
+
+    var name: String {
+        switch self {
+        case .start: return "start"
+        case .lock: return "lock"
+        case .stop: return "stop"
+        case .remove: return "remove"
+        }
+    }
+}
 
 enum AdaptiveTextTone: Equatable {
     case dark
@@ -216,6 +247,8 @@ final class NativeWallpaperController: WallpaperControlling {
     private let store: WallpaperRuntimeStore
     private let helperURL: URL
     private let lockScreenSaverInstaller: LockScreenSaverInstalling
+    private let lifecycleLock = NSRecursiveLock()
+    private var nextRuntimeOperationID: UInt64 = 0
 
     init(
         store: WallpaperRuntimeStore = WallpaperRuntimeStore(),
@@ -235,6 +268,8 @@ final class NativeWallpaperController: WallpaperControlling {
         self.helperURL = helperResolution.url
         self.lockScreenSaverInstaller =
             lockScreenSaverInstaller ?? LockScreenWallpaperInstaller()
+        self.nextRuntimeOperationID =
+            store.loadCommand()?.operationID ?? 0
         if helperResolution.didUpdateInstalledCopy {
             try restartRunningAgentAfterHelperUpdate()
         }
@@ -349,7 +384,14 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     private func send(_ action: WallpaperRuntimeCommandAction, config: ControlConfig? = nil) throws {
-        try store.saveCommand(WallpaperRuntimeCommand(action: action, config: config))
+        nextRuntimeOperationID &+= 1
+        try store.saveCommand(
+            WallpaperRuntimeCommand(
+                operationID: nextRuntimeOperationID,
+                action: action,
+                config: config
+            )
+        )
         DistributedNotificationCenter.default().post(
             name: WallpaperRuntimeNotifications.commandDidChange,
             object: nil,
@@ -412,6 +454,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func start(videoURL: URL?, speed: Double?) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let wasLockScreenOnlyAgent = store.isLockScreenOnlyAgent()
         if wasLockScreenOnlyAgent, store.processIsAlive(pid: store.loadPID()) {
             guard store.terminateDaemon(timeout: 2.0) else {
@@ -449,6 +493,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func resume() throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
         guard !config.video_path.isEmpty else {
             throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
@@ -468,19 +514,24 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func stop() throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
-        let stoppingLockScreenOnly = store.isLockScreenOnlyAgent()
+        if store.isLockScreenOnlyAgent(),
+           let sourceURL = store.effectiveLockScreenSourceURL(for: config),
+           WallpaperMediaKind.forURL(sourceURL).isStaticImage {
+            return store.status()
+        }
         store.markPaused(true)
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.pause, config: config)
-        }
-        if stoppingLockScreenOnly, lockScreenSaverInstaller.isInstalled {
-            try lockScreenSaverInstaller.uninstall()
         }
         return store.status()
     }
 
     func clearWallpaper() throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let currentConfig = store.loadConfig()
         let removingLockScreenOnly =
             store.isLockScreenOnlyAgent()
@@ -534,6 +585,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func setVideo(_ url: URL) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(url.path)")
         }
@@ -547,6 +600,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func installLockScreenOnly(videoURL: URL) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let normalizedURL = videoURL.standardizedFileURL
         guard FileManager.default.fileExists(atPath: normalizedURL.path) else {
             throw NativeWallpaperControllerError.unavailable(
@@ -607,6 +662,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func setSpeed(_ speed: Double) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = try updateConfig { config in
             config.playback_speed = speed
         }
@@ -617,6 +674,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = try updateConfig { config in
             config.blend_interpolation = enabled
         }
@@ -627,6 +686,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = try updateConfig { config in
             config.pause_on_fullscreen = enabled
         }
@@ -637,6 +698,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let currentConfig = store.loadConfig()
         if enabled {
             if let sourceURL = store.effectiveLockScreenSourceURL(for: currentConfig) {
@@ -686,6 +749,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func syncLockScreenSaver() throws {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
         guard config.show_on_lock_screen ?? true,
               let sourceURL = store.effectiveLockScreenSourceURL(for: config),
@@ -701,6 +766,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func beginLockScreenPreview() throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
         guard config.show_on_lock_screen ?? true else {
             throw NativeWallpaperControllerError.unavailable(
@@ -717,6 +784,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func endLockScreenPreview() throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.previewUnlock, config: config)
@@ -725,6 +794,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func setScaleMode(_ mode: WallpaperScaleMode) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = try updateConfig { config in
             config.scale_mode = mode.commandValue
         }
@@ -735,6 +806,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func setAutostart(_ enabled: Bool) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = try updateConfig { config in
             config.autostart = enabled
         }
@@ -795,6 +868,21 @@ final class AppViewModel: ObservableObject {
         let scale_mode: String?
     }
 
+    private struct LifecycleRequest: Equatable {
+        let id: UInt64
+        let intent: WallpaperLifecycleIntent
+    }
+
+    private struct LifecycleResult {
+        let status: ControlStatus
+        let state: WallpaperLifecycleState
+        let statusMessage: String
+        let successMessage: String?
+        let previewURL: URL?
+        let clearPendingPreview: Bool
+        let refreshPreview: Bool
+    }
+
     @Published private(set) var appliedVideoURL: URL?
     @Published private(set) var pendingPreviewVideoURL: URL?
     @Published var playbackSpeed: Double = 1.0
@@ -839,6 +927,8 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var downloadedCatalogWallpapers: [DownloadedCatalogWallpaper] = []
     @Published private(set) var controllerAvailable: Bool = false
     @Published private(set) var adaptiveGlassAppearance: AdaptiveGlassAppearance = .default
+    @Published private(set) var lifecycleState: WallpaperLifecycleState = .idle
+    @Published private(set) var isLifecycleBusy = false
 
     private var controller: WallpaperControlling?
     private let catalogProvider: WallpaperCatalogProviding
@@ -872,6 +962,10 @@ final class AppViewModel: ObservableObject {
     private var glassAnalysisTask: Task<Void, Never>?
     private var glassAnalysisGeneration = 0
     private var cacheGeneration = 0
+    private var lifecycleTask: Task<Void, Never>?
+    private var activeLifecycleIntent: WallpaperLifecycleIntent?
+    private var pendingLifecycleRequest: LifecycleRequest?
+    private var latestLifecycleOperationID: UInt64 = 0
 
     private let expectedStatusContractVersion = 3
     private let bridgeFailureThreshold = 3
@@ -913,24 +1007,25 @@ final class AppViewModel: ObservableObject {
 
     var canStart: Bool {
         isControllerAvailable
-            && !isBusy
             && (!isPlaybackRunningForControls
                 || pendingPreviewVideoURL != nil)
             && selectedVideoURL != nil
     }
 
     var canApplyLockScreenOnly: Bool {
-        isControllerAvailable && !isBusy && selectedVideoURL != nil
+        isControllerAvailable && selectedVideoURL != nil
     }
 
     var canStop: Bool {
         isControllerAvailable
-            && !isBusy
-            && (isPlaybackRunningForControls || isLockScreenOnlyActive)
+            && (isPlaybackRunningForControls
+                || isLockScreenOnlyActive
+                || activeLifecycleIntent?.name == "lock"
+                || pendingLifecycleRequest?.intent.name == "lock")
     }
 
     var canClearWallpaper: Bool {
-        isControllerAvailable && !isBusy
+        isControllerAvailable
     }
 
     var canToggleAutostart: Bool {
@@ -1039,6 +1134,7 @@ final class AppViewModel: ObservableObject {
     }
 
     deinit {
+        lifecycleTask?.cancel()
         healthMonitorTask?.cancel()
         monitoringTask?.cancel()
         catalogRefreshTask?.cancel()
@@ -1403,7 +1499,6 @@ final class AppViewModel: ObservableObject {
     }
 
     func start() {
-        guard !isBusy else { return }
         guard !isPlaybackRunningForControls
             || pendingPreviewVideoURL != nil
         else { return }
@@ -1412,119 +1507,280 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        Task {
-            isBusy = true
-            statusMessage = "Starting wallpaper…"
-            alertMessage = nil
-            defer { isBusy = false }
-            do {
-                if isPlaybackPaused && pendingPreviewVideoURL == nil {
-                    guard let controller else {
-                        throw NativeWallpaperControllerError.unavailable("Native wallpaper runtime unavailable.")
-                    }
-                    let status = try await runAsync { try controller.resume() }
-                    apply(status: status)
-                    recordBridgeSuccess()
-                    statusMessage = "Wallpaper resumed."
-                    alertMessage = nil
-                } else {
-                    try await startWallpaper(using: selectedVideoURL, statusSummary: "Wallpaper started.")
-                }
-            } catch {
-                recordBridgeFailure(error, context: "start")
-                if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to start: \(error.localizedDescription)"
-                }
-            }
-        }
+        submitLifecycle(
+            .start(
+                selectedVideoURL,
+                resume: isPlaybackPaused && pendingPreviewVideoURL == nil
+            )
+        )
     }
 
     func applyLockScreenOnly() {
-        guard !isBusy else { return }
         guard let selectedVideoURL else {
             alertMessage = "Choose a video before applying it to the Lock Screen."
             return
         }
-        guard let controller else {
+        guard controller != nil else {
             alertMessage = "Native wallpaper runtime unavailable."
             return
         }
-
-        Task {
-            isBusy = true
-            statusMessage = "Applying live wallpaper to Lock Screen…"
-            alertMessage = nil
-            defer { isBusy = false }
-            do {
-                let prepared = try await prepareVideoURLForPlayback(selectedVideoURL)
-                let status = try await runAsync {
-                    try controller.installLockScreenOnly(videoURL: prepared.url)
-                }
-                apply(status: status, refreshPreview: false)
-                recordBridgeSuccess()
-                showSuccessBanner("Lock Screen wallpaper confirmed by macOS.")
-                statusMessage = prepared.summary.map {
-                    "Lock Screen wallpaper confirmed. \($0)"
-                } ?? "Lock Screen wallpaper confirmed by macOS."
-                alertMessage = nil
-            } catch {
-                recordBridgeFailure(error, context: "lock-screen-only")
-                alertMessage = "Failed to apply Lock Screen wallpaper: \(error.localizedDescription)"
-                statusMessage = "Lock Screen wallpaper was not installed."
-            }
-        }
+        submitLifecycle(.lock(selectedVideoURL))
     }
 
     func stop() {
-        guard let controller else { return }
-        guard !isBusy else { return }
-        guard isPlaybackRunningForControls || isLockScreenOnlyActive else {
+        guard controller != nil else { return }
+        guard isPlaybackRunningForControls
+                || isLockScreenOnlyActive
+                || activeLifecycleIntent?.name == "lock"
+                || pendingLifecycleRequest?.intent.name == "lock"
+        else {
             return
         }
         let stoppingLockScreenOnly = isLockScreenOnlyActive
-        Task {
-            isBusy = true
-            defer { isBusy = false }
-            do {
-                let status = try await runAsync { try controller.stop() }
-                apply(status: status)
-                recordBridgeSuccess()
-                statusMessage = stoppingLockScreenOnly
-                    ? "Lock Screen wallpaper stopped."
-                    : "Paused on current frame."
-                alertMessage = nil
-            } catch {
-                recordBridgeFailure(error, context: "pause")
-                if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to pause: \(error.localizedDescription)"
-                }
-            }
-        }
+            || activeLifecycleIntent?.name == "lock"
+            || pendingLifecycleRequest?.intent.name == "lock"
+        let staticImage = stoppingLockScreenOnly
+            && selectedVideoURL.map {
+                WallpaperMediaKind.forURL($0).isStaticImage
+            } == true
+        submitLifecycle(
+            .stop(
+                lockScreenOnly: stoppingLockScreenOnly,
+                staticImage: staticImage
+            )
+        )
     }
 
     func clearWallpaper() {
-        guard let controller else { return }
-        guard !isBusy else { return }
-        Task {
-            isBusy = true
-            defer { isBusy = false }
+        guard controller != nil else { return }
+        submitLifecycle(.remove(lockScreenOnly: isLockScreenOnlyActive))
+    }
+
+    private func submitLifecycle(_ intent: WallpaperLifecycleIntent) {
+        if activeLifecycleIntent == intent,
+           pendingLifecycleRequest == nil {
+            return
+        }
+        if pendingLifecycleRequest?.intent == intent {
+            return
+        }
+
+        latestLifecycleOperationID &+= 1
+        let request = LifecycleRequest(
+            id: latestLifecycleOperationID,
+            intent: intent
+        )
+        pendingLifecycleRequest = request
+        lockScreenLifecycleLogger.notice(
+            "Queued operation=\(request.id, privacy: .public) intent=\(intent.name, privacy: .public)"
+        )
+        switch intent {
+        case .remove:
+            lifecycleState = .removing
+            statusMessage = "Removing wallpaper…"
+        case .stop:
+            statusMessage = "Pausing wallpaper…"
+        case .start:
+            lifecycleState = .preparing
+            statusMessage = "Starting wallpaper…"
+        case .lock:
+            lifecycleState = .preparing
+            statusMessage = "Preparing Lock Screen wallpaper…"
+        }
+        alertMessage = nil
+
+        guard lifecycleTask == nil else { return }
+        lifecycleTask = Task { [weak self] in
+            await self?.drainLifecycleQueue()
+        }
+    }
+
+    private func drainLifecycleQueue() async {
+        isLifecycleBusy = true
+        defer {
+            activeLifecycleIntent = nil
+            lifecycleTask = nil
+            isLifecycleBusy = false
+        }
+
+        while !Task.isCancelled,
+              let request = pendingLifecycleRequest {
+            pendingLifecycleRequest = nil
+            activeLifecycleIntent = request.intent
+            let startedAt = ContinuousClock.now
+            lockScreenLifecycleLogger.notice(
+                "Started operation=\(request.id, privacy: .public) intent=\(request.intent.name, privacy: .public)"
+            )
             do {
-                let status = try await runAsync { try controller.clearWallpaper() }
-                apply(status: status)
+                let result = try await executeLifecycle(request)
+                guard request.id == latestLifecycleOperationID,
+                      pendingLifecycleRequest == nil
+                else {
+                    lockScreenLifecycleLogger.notice(
+                        "Superseded operation=\(request.id, privacy: .public) intent=\(request.intent.name, privacy: .public)"
+                    )
+                    activeLifecycleIntent = nil
+                    continue
+                }
+                applyLifecycleResult(result)
                 recordBridgeSuccess()
-                if let restored = status.wallpaper_restored {
-                    statusMessage = restored ? "Original wallpaper restored." : "Wallpaper backup not found."
-                } else {
-                    statusMessage = "Removing live wallpaper."
-                }
+                lifecycleState = result.state
                 alertMessage = nil
-            } catch {
-                recordBridgeFailure(error, context: "clear-wallpaper")
-                if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to restore wallpaper: \(error.localizedDescription)"
+                if let successMessage = result.successMessage {
+                    showSuccessBanner(successMessage)
                 }
+                let elapsed = startedAt.duration(to: .now)
+                lockScreenLifecycleLogger.notice(
+                    "Completed operation=\(request.id, privacy: .public) intent=\(request.intent.name, privacy: .public) elapsed=\(String(describing: elapsed), privacy: .public)"
+                )
+            } catch is CancellationError {
+                lockScreenLifecycleLogger.notice(
+                    "Cancelled operation=\(request.id, privacy: .public) intent=\(request.intent.name, privacy: .public)"
+                )
+            } catch {
+                guard request.id == latestLifecycleOperationID,
+                      pendingLifecycleRequest == nil
+                else {
+                    activeLifecycleIntent = nil
+                    continue
+                }
+                lifecycleState = .failed
+                let context: String
+                switch request.intent {
+                case .start: context = "start"
+                case .lock: context = "lock-screen-only"
+                case .stop: context = "pause"
+                case .remove: context = "clear-wallpaper"
+                }
+                recordBridgeFailure(error, context: context)
+                alertMessage = "Failed to \(request.intent.name): \(error.localizedDescription)"
+                lockScreenLifecycleLogger.error(
+                    "Failed operation=\(request.id, privacy: .public) intent=\(request.intent.name, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
+            }
+            activeLifecycleIntent = nil
+        }
+    }
+
+    private func executeLifecycle(
+        _ request: LifecycleRequest
+    ) async throws -> LifecycleResult {
+        guard let controller else {
+            throw NativeWallpaperControllerError.unavailable(
+                "Native wallpaper runtime unavailable."
+            )
+        }
+
+        switch request.intent {
+        case .start(let sourceURL, let resume):
+            if resume {
+                let status = try await runAsync { try controller.resume() }
+                return LifecycleResult(
+                    status: status,
+                    state: .ready,
+                    statusMessage: "Wallpaper resumed.",
+                    successMessage: nil,
+                    previewURL: nil,
+                    clearPendingPreview: false,
+                    refreshPreview: true
+                )
+            }
+            let prepared = isManagedCacheURL(sourceURL)
+                ? try await prepareCatalogVideoURLForPlayback(sourceURL)
+                : try await prepareVideoURLForPlayback(sourceURL)
+            try ensureLifecycleMayCommit(request)
+            let status = try await runAsync {
+                try controller.start(videoURL: prepared.url, speed: nil)
+            }
+            return LifecycleResult(
+                status: status,
+                state: .ready,
+                statusMessage: prepared.summary ?? "Wallpaper started.",
+                successMessage: nil,
+                previewURL: prepared.url,
+                clearPendingPreview: true,
+                refreshPreview: false
+            )
+
+        case .lock(let sourceURL):
+            let prepared = try await prepareVideoURLForPlayback(sourceURL)
+            try ensureLifecycleMayCommit(request)
+            let status = try await runAsync {
+                try controller.installLockScreenOnly(videoURL: prepared.url)
+            }
+            return LifecycleResult(
+                status: status,
+                state: .ready,
+                statusMessage: prepared.summary.map {
+                    "Lock Screen wallpaper confirmed. \($0)"
+                } ?? "Lock Screen wallpaper confirmed by macOS.",
+                successMessage: "Lock Screen wallpaper confirmed by macOS.",
+                previewURL: nil,
+                clearPendingPreview: false,
+                refreshPreview: false
+            )
+
+        case .stop(let lockScreenOnly, let staticImage):
+            try ensureLifecycleMayCommit(request)
+            let status = try await runAsync { try controller.stop() }
+            return LifecycleResult(
+                status: status,
+                state: staticImage ? .ready : .paused,
+                statusMessage: staticImage
+                    ? "Static Lock Screen wallpaper is already still."
+                    : lockScreenOnly
+                        ? "Lock Screen wallpaper paused."
+                        : "Paused on current frame.",
+                successMessage: nil,
+                previewURL: nil,
+                clearPendingPreview: false,
+                refreshPreview: true
+            )
+
+        case .remove:
+            try ensureLifecycleMayCommit(request)
+            let status = try await runAsync {
+                try controller.clearWallpaper()
+            }
+            return LifecycleResult(
+                status: status,
+                state: .idle,
+                statusMessage: status.wallpaper_restored == true
+                    ? "Original wallpaper restored."
+                    : "Wallpaper removed.",
+                successMessage: nil,
+                previewURL: nil,
+                clearPendingPreview: false,
+                refreshPreview: true
+            )
+        }
+    }
+
+    private func ensureLifecycleMayCommit(
+        _ request: LifecycleRequest
+    ) throws {
+        guard request.id == latestLifecycleOperationID,
+              pendingLifecycleRequest == nil,
+              !Task.isCancelled
+        else {
+            throw CancellationError()
+        }
+    }
+
+    private func applyLifecycleResult(_ result: LifecycleResult) {
+        if result.clearPendingPreview {
+            pendingPreviewVideoURL = nil
+        }
+        apply(status: result.status, refreshPreview: result.refreshPreview)
+        if let previewURL = result.previewURL {
+            let configuredURL = result.status.config.video_path.isEmpty
+                ? previewURL
+                : URL(fileURLWithPath: result.status.config.video_path)
+            if previewPlayerURL != configuredURL.standardizedFileURL {
+                configurePreview(for: configuredURL)
             }
         }
+        statusMessage = result.statusMessage
     }
 
     func updateSpeed(_ speed: Double) {
@@ -2057,10 +2313,14 @@ final class AppViewModel: ObservableObject {
         let hasConfiguredVideo = !status.config.video_path.isEmpty
         let paused = status.paused ?? false
         let effectiveRunning = statusIndicatesActivePlayback(status)
-        let lockScreenOnlyActive = !status.running
-            && !paused
-            && status.health?.available == true
-            && status.health?.suspicious != true
+        let lockScreenOnlyActive = status.lock_screen_only == true
+            || (
+                status.lock_screen_only == nil
+                    && !status.running
+                    && !paused
+                    && status.health?.available == true
+                    && status.health?.suspicious != true
+            )
         Self.setIfChanged(&isRunning, to: status.running)
         Self.setIfChanged(&isPlaybackActive, to: effectiveRunning)
         Self.setIfChanged(&isPlaybackPaused, to: paused && hasConfiguredVideo && !effectiveRunning)
@@ -2953,7 +3213,8 @@ final class AppViewModel: ObservableObject {
             let isGeneratedStillFrame = name == "last_frame.png"
                 || name == "last_frame_source.json"
                 || (name.hasPrefix("last_frame_") && name.hasSuffix(".png"))
-            if isGeneratedStillFrame {
+            let isPreparedLockScreenCache = name == "LockScreenMediaCache"
+            if isGeneratedStillFrame || isPreparedLockScreenCache {
                 try fileManager.removeItem(at: entry)
             }
         }

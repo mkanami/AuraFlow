@@ -35,6 +35,10 @@ private struct AerialLockScreenFixture {
         "2335F433-2476-462F-B0BA-F7A4DE8FC1E4"
     static let assetID =
         "7C643A39-C0B2-4BA0-8BC2-2EAA47CC580E"
+    static let alternateAssetID =
+        "44166C39-8566-4ECA-BD16-43159429B52F"
+    static let secondAlternateAssetID =
+        "80C7B9D0-D9A4-41BB-9E8A-DA676267C50A"
 
     let root: URL
     let storeURL: URL
@@ -51,6 +55,8 @@ private struct AerialLockScreenFixture {
     init(
         hasExistingAsset: Bool = true,
         providerHasAsset: Bool = true,
+        providerAssetIDs: [String]? = nil,
+        configuredAssetID: String? = Self.assetID,
         onRefresh: ((URL) -> Void)? = nil
     ) throws {
         root = FileManager.default.temporaryDirectory
@@ -111,7 +117,9 @@ private struct AerialLockScreenFixture {
         let catalogData = try JSONSerialization.data(
             withJSONObject: [
                 "assets": providerHasAsset
-                    ? [["id": Self.assetID]]
+                    ? (providerAssetIDs ?? [Self.assetID]).map {
+                        ["id": $0]
+                    }
                     : [],
             ]
         )
@@ -238,7 +246,7 @@ private struct AerialLockScreenFixture {
             aerialThumbnailsURL: thumbnailsURL,
             aerialProviderURL: providerURL,
             stateDirectoryURL: stateURL,
-            assetID: Self.assetID,
+            assetID: configuredAssetID,
             refreshSystem: {
                 counter.increment()
                 onRefresh?(refreshStoreURL)
@@ -391,7 +399,7 @@ private struct AerialLockScreenFixture {
     #expect(fixture.refreshCounter.count == 1)
 }
 
-@Test func linkedWallpaperPromotesOnlyDuringRealLockSession() throws {
+@Test func linkedWallpaperNeverPromotesIntoDesktopDuringLockSession() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
@@ -429,18 +437,21 @@ private struct AerialLockScreenFixture {
         assetID: AerialLockScreenFixture.assetID
     ))
 
-    _ = try fixture.installer.activateLockScreenForCurrentSession()
+    let desktopBeforeLock = wallpaperModeData(desktop)
+    let idleBeforeLock = wallpaperModeData(idle)
+    let promoted = try fixture.installer
+        .activateLockScreenForCurrentSession()
+    #expect(promoted == false)
     root = try readWallpaperStore(fixture.storeURL)
     container = try #require(
         root["AllSpacesAndDisplays"] as? [String: Any]
     )
-    let lockLinked = try #require(container["Linked"] as? [String: Any])
-    #expect(wallpaperStoreContains(
-        lockLinked,
-        provider: "com.apple.wallpaper.choice.aerials",
-        assetID: AerialLockScreenFixture.assetID
-    ))
-    #expect(container["Type"] as? String == "linked")
+    desktop = try #require(container["Desktop"] as? [String: Any])
+    let lockIdle = try #require(container["Idle"] as? [String: Any])
+    #expect(wallpaperModeData(desktop) == desktopBeforeLock)
+    #expect(wallpaperModeData(lockIdle) == idleBeforeLock)
+    #expect(container["Type"] as? String == "individual")
+    #expect(fixture.refreshCounter.count == 1)
 
     _ = try fixture.installer.restoreDesktopAfterLockScreenSession()
     root = try readWallpaperStore(fixture.storeURL)
@@ -502,7 +513,7 @@ private struct AerialLockScreenFixture {
     ))
 }
 
-@Test func linkedWallpaperSplitCollapsesToLatestDesktopOnRemove() throws {
+@Test func linkedWallpaperRemoveUsesCurrentDesktopNotOlderJournal() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
@@ -535,8 +546,8 @@ private struct AerialLockScreenFixture {
     }
     try writeWallpaperStore(root, to: fixture.storeURL)
 
-    // Idle still points at Aura, so this takes the current-installation fast
-    // path. The latest Desktop must nevertheless be journaled first.
+    // Exercise the old journal path; it must not become authoritative for a
+    // later Remove.
     _ = try fixture.installer.rearmForNextLock(videoURL: fixture.videoURL)
 
     root = try readWallpaperStore(fixture.storeURL)
@@ -562,7 +573,7 @@ private struct AerialLockScreenFixture {
         let desktop = try #require(split["Desktop"] as? [String: Any])
         #expect(wallpaperStoreContains(
             desktop,
-            provider: "com.apple.wallpaper.choice.sonoma",
+            provider: "com.apple.wallpaper.choice.sequoia",
             assetID: nil
         ))
     }
@@ -586,7 +597,7 @@ private struct AerialLockScreenFixture {
         let linked = try #require(restored["Linked"] as? [String: Any])
         #expect(wallpaperStoreContains(
             linked,
-            provider: "com.apple.wallpaper.choice.sonoma",
+            provider: "com.apple.wallpaper.choice.sequoia",
             assetID: nil
         ))
     }
@@ -829,29 +840,33 @@ private struct AerialLockScreenFixture {
     #expect(try Data(contentsOf: fixture.storeURL) == liveDesktopStore)
 }
 
-@Test func modernLockScreenOnlyPromotesAndRestoresDesktopRoute() throws {
+@Test func modernLockScreenOnlyNeverMutatesDesktopAtSessionBoundary() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
     try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
     #expect(fixture.installer.isLockScreenOnlyInstallation)
 
-    _ = try fixture.installer.activateLockScreenForCurrentSession()
-    #expect(fixture.refreshCounter.count == 2)
     var root = try readWallpaperStore(fixture.storeURL)
     var allSpacesAndDisplays = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let desktopBeforeLock = wallpaperModeData(
+        try #require(allSpacesAndDisplays["Desktop"] as? [String: Any])
+    )
+
+    let promoted = try fixture.installer
+        .activateLockScreenForCurrentSession()
+    #expect(promoted == false)
+    #expect(fixture.refreshCounter.count == 1)
+    root = try readWallpaperStore(fixture.storeURL)
+    allSpacesAndDisplays = try #require(
         root["AllSpacesAndDisplays"] as? [String: Any]
     )
     let lockDesktop = try #require(
         allSpacesAndDisplays["Desktop"] as? [String: Any]
     )
-    #expect(
-        wallpaperStoreContains(
-            lockDesktop,
-            provider: "com.apple.wallpaper.choice.aerials",
-            assetID: AerialLockScreenFixture.assetID
-        )
-    )
+    #expect(wallpaperModeData(lockDesktop) == desktopBeforeLock)
 
     _ = try fixture.installer.restoreDesktopAfterLockScreenSession()
     root = try readWallpaperStore(fixture.storeURL)
@@ -861,11 +876,7 @@ private struct AerialLockScreenFixture {
     let restoredDesktop = try #require(
         allSpacesAndDisplays["Desktop"] as? [String: Any]
     )
-    #expect(wallpaperStoreContains(
-        restoredDesktop,
-        provider: "com.apple.wallpaper.choice.image",
-        assetID: nil
-    ))
+    #expect(wallpaperModeData(restoredDesktop) == desktopBeforeLock)
     #expect(fixture.installer.isLockScreenOnlyInstallation)
 }
 
@@ -1282,6 +1293,83 @@ private struct AerialLockScreenFixture {
     #expect(!FileManager.default.fileExists(atPath: fixture.assetURL.path))
 }
 
+@Test func lockOnlyUsesFreeSlotsAndRotatesAfterRemove() throws {
+    let fixture = try AerialLockScreenFixture(
+        hasExistingAsset: true,
+        providerAssetIDs: [
+            AerialLockScreenFixture.assetID,
+            AerialLockScreenFixture.alternateAssetID,
+            AerialLockScreenFixture.secondAlternateAssetID,
+        ],
+        configuredAssetID: nil
+    )
+    defer { fixture.cleanup() }
+
+    let originalSystemAsset = try Data(contentsOf: fixture.assetURL)
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    let firstMarker = try #require(
+        JSONSerialization.jsonObject(
+            with: Data(
+                contentsOf: fixture.stateURL
+                    .appendingPathComponent("installation.json")
+            )
+        ) as? [String: Any]
+    )
+    let firstAssetID = try #require(firstMarker["assetID"] as? String)
+    #expect(firstAssetID != AerialLockScreenFixture.assetID)
+    #expect(try Data(contentsOf: fixture.assetURL) == originalSystemAsset)
+
+    try fixture.installer
+        .uninstallLockScreenOnlyPreservingCurrentDesktop()
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    let secondMarker = try #require(
+        JSONSerialization.jsonObject(
+            with: Data(
+                contentsOf: fixture.stateURL
+                    .appendingPathComponent("installation.json")
+            )
+        ) as? [String: Any]
+    )
+    let secondAssetID = try #require(secondMarker["assetID"] as? String)
+    #expect(secondAssetID != firstAssetID)
+    #expect(secondAssetID != AerialLockScreenFixture.assetID)
+    #expect(try Data(contentsOf: fixture.assetURL) == originalSystemAsset)
+}
+
+@Test func lockOnlyCanUseCatalogThumbnailWithoutReplacingUserAerialMovie() throws {
+    let fixture = try AerialLockScreenFixture(
+        hasExistingAsset: true,
+        providerAssetIDs: [
+            AerialLockScreenFixture.assetID,
+            AerialLockScreenFixture.alternateAssetID,
+        ],
+        configuredAssetID: nil
+    )
+    defer { fixture.cleanup() }
+
+    let catalogThumbnail = fixture.thumbnailsURL
+        .appendingPathComponent(AerialLockScreenFixture.alternateAssetID)
+        .appendingPathExtension("png")
+    try Data("catalog-thumbnail".utf8).write(to: catalogThumbnail)
+    let originalSystemAsset = try Data(contentsOf: fixture.assetURL)
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    let marker = try #require(
+        JSONSerialization.jsonObject(
+            with: Data(
+                contentsOf: fixture.stateURL
+                    .appendingPathComponent("installation.json")
+            )
+        ) as? [String: Any]
+    )
+    #expect(marker["assetID"] as? String == AerialLockScreenFixture.alternateAssetID)
+    #expect(try Data(contentsOf: fixture.assetURL) == originalSystemAsset)
+
+    try fixture.installer
+        .uninstallLockScreenOnlyPreservingCurrentDesktop()
+    #expect(try Data(contentsOf: catalogThumbnail) == Data("catalog-thumbnail".utf8))
+}
+
 @Test func modernLockScreenRejectsProviderWithoutReservedAsset() throws {
     let fixture = try AerialLockScreenFixture(
         hasExistingAsset: false,
@@ -1293,6 +1381,25 @@ private struct AerialLockScreenFixture {
     #expect(throws: AerialLockScreenInstallerError.self) {
         try fixture.installer.install(videoURL: fixture.videoURL)
     }
+}
+
+@Test func lockOnlyFailsWithoutOverwritingWhenEverySlotIsOccupied() throws {
+    let fixture = try AerialLockScreenFixture(
+        hasExistingAsset: true,
+        configuredAssetID: nil
+    )
+    defer { fixture.cleanup() }
+
+    let storeBefore = try Data(contentsOf: fixture.storeURL)
+    let assetBefore = try Data(contentsOf: fixture.assetURL)
+    #expect(fixture.installer.isAvailable)
+    #expect(throws: AerialLockScreenInstallerError.self) {
+        try fixture.installer.installLockScreenOnly(
+            videoURL: fixture.videoURL
+        )
+    }
+    #expect(try Data(contentsOf: fixture.storeURL) == storeBefore)
+    #expect(try Data(contentsOf: fixture.assetURL) == assetBefore)
 }
 
 @Test func incompleteModernLockScreenJournalIsRetried() throws {

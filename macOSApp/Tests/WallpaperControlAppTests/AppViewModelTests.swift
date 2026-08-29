@@ -905,6 +905,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     let controller = MockNativeWallpaperController()
     controller.statusRunning = false
     controller.statusPaused = false
+    controller.statusLockScreenOnly = true
     controller.statusHealth = DaemonHealth(
         available: true,
         fresh: true,
@@ -925,9 +926,62 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     }
 
     #expect(controller.stopCallCount == 1)
-    #expect(viewModel.isLockScreenOnlyActive == false)
-    #expect(viewModel.canStop == false)
-    #expect(viewModel.statusMessage == "Lock Screen wallpaper stopped.")
+    #expect(viewModel.isLockScreenOnlyActive)
+    #expect(viewModel.lifecycleState == .paused)
+    #expect(viewModel.statusMessage == "Lock Screen wallpaper paused.")
+}
+
+@MainActor
+@Test func lifecycleLatestRemoveWinsOverInFlightLock() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.lockDelay = 0.15
+    let defaults = UserDefaults(
+        suiteName: "AppViewModelTests.lifecycle-latest-remove"
+    )!
+    defaults.removePersistentDomain(
+        forName: "AppViewModelTests.lifecycle-latest-remove"
+    )
+    let optimizationStore = VideoOptimizationStore(defaults: defaults)
+    optimizationStore.save(
+        VideoOptimizationSettings(
+            enabled: false,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: true,
+            forceSoftwareAV1Encode: false,
+            profile: .quality
+        )
+    )
+    let viewModel = AppViewModel(
+        controller: controller,
+        optimizationStore: optimizationStore
+    )
+    let sourceURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lifecycle-latest-remove.mp4")
+    FileManager.default.createFile(
+        atPath: sourceURL.path,
+        contents: Data([0, 0, 0, 0])
+    )
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+    viewModel.applyLockScreenOnly()
+    try? await Task.sleep(nanoseconds: 25_000_000)
+    viewModel.clearWallpaper()
+
+    for _ in 0..<80 {
+        if controller.clearCallCount == 1,
+           viewModel.lifecycleState == .idle,
+           !viewModel.isLifecycleBusy {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.lockCallCount <= 1)
+    #expect(controller.clearCallCount == 1)
+    #expect(controller.statusLockScreenOnly == false)
+    #expect(viewModel.lifecycleState == .idle)
+    #expect(viewModel.alertMessage == nil)
 }
 
 @MainActor
@@ -1018,8 +1072,11 @@ final class MockNativeWallpaperController: WallpaperControlling {
     var statusPaused: Bool?
     var statusHealth: DaemonHealth?
     var statusShowOnLockScreen = false
+    var statusLockScreenOnly = false
     var syncLockScreenCallCount = 0
     var setVideoStatusOverride: ControlStatus?
+    var lockCallCount = 0
+    var lockDelay: TimeInterval = 0
 
     func status() throws -> ControlStatus {
         statusPayload(running: statusRunning, paused: statusPaused, health: statusHealth)
@@ -1033,6 +1090,7 @@ final class MockNativeWallpaperController: WallpaperControlling {
         }
         statusRunning = true
         statusPaused = false
+        statusLockScreenOnly = false
         statusHealth = nil
         return statusPayload(running: true, paused: false, health: nil)
     }
@@ -1060,7 +1118,30 @@ final class MockNativeWallpaperController: WallpaperControlling {
         configuredVideoURL = nil
         lastConfiguredVideoURL = nil
         statusHealth = nil
+        statusLockScreenOnly = false
         return statusPayload(running: false, paused: false, health: nil)
+    }
+
+    func installLockScreenOnly(videoURL: URL) throws -> ControlStatus {
+        lockCallCount += 1
+        if lockDelay > 0 {
+            Thread.sleep(forTimeInterval: lockDelay)
+        }
+        statusRunning = false
+        statusPaused = false
+        statusLockScreenOnly = true
+        configuredVideoURL = nil
+        statusHealth = DaemonHealth(
+            available: true,
+            fresh: true,
+            suspicious: false,
+            reason: "lock-screen-only"
+        )
+        return statusPayload(
+            running: false,
+            paused: false,
+            health: statusHealth
+        )
     }
 
     func setVideo(_ url: URL) throws -> ControlStatus {
@@ -1132,7 +1213,8 @@ final class MockNativeWallpaperController: WallpaperControlling {
             pid: running ? 1234 : nil,
             autostart: false,
             paused: paused ?? !running,
-            health: health
+            health: health,
+            lock_screen_only: statusLockScreenOnly
         )
     }
 }

@@ -28,8 +28,17 @@ private struct NativeRuntimeFixture {
         try script.write(to: helperURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helperURL.path)
 
-        videoURL = root.appendingPathComponent("wallpaper.mp4")
-        FileManager.default.createFile(atPath: videoURL.path, contents: Data([0, 0, 0, 0]), attributes: nil)
+        videoURL = root.appendingPathComponent("wallpaper.png")
+        let png = Data(
+            base64Encoded:
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+                + "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )!
+        FileManager.default.createFile(
+            atPath: videoURL.path,
+            contents: png,
+            attributes: nil
+        )
     }
 
     func cleanup() {
@@ -104,7 +113,22 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(status.pid != nil)
     #expect(fixture.store.processIsAlive(pid: status.pid))
     #expect(command?.action == .reload)
+    #expect(command?.operationID == 1)
     #expect(command?.config?.video_path == fixture.videoURL.path)
+}
+
+@Test func runtimeCommandDecodesLegacyPayloadWithoutOperationID() throws {
+    let data = Data(
+        """
+        {"id":"legacy","action":"pause","created_at":1}
+        """.utf8
+    )
+    let command = try JSONDecoder().decode(
+        WallpaperRuntimeCommand.self,
+        from: data
+    )
+    #expect(command.operationID == nil)
+    #expect(command.action == .pause)
 }
 
 @Test func nativeLockScreenOnlyDoesNotChangeDesktopOrLaunchAgent() throws {
@@ -141,7 +165,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(installer.installedVideoURL == nil)
     #expect(installer.installedLockScreenOnlyVideoURL == fixture.videoURL)
     #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
-    #expect(FileManager.default.fileExists(atPath: fixture.store.lastFrameURL.path) == false)
+    #expect(FileManager.default.fileExists(atPath: fixture.store.lastFrameURL.path))
 }
 
 @Test func nativeLockScreenOnlyReplacesRunningDesktopAgent() throws {
@@ -174,7 +198,11 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let fixture = try NativeRuntimeFixture("settings")
     defer { fixture.cleanup() }
 
-    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL)
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller()
+    )
     _ = try controller.start(videoURL: fixture.videoURL, speed: 1.0)
     _ = try controller.setSpeed(2.25)
     _ = try controller.setScaleMode(.fit)
@@ -215,7 +243,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 }
 
-@Test func nativeStopDisablesActiveLockScreenOnlyWallpaper() throws {
+@Test func nativeStopPausesLockScreenOnlyWithoutUninstalling() throws {
     let fixture = try NativeRuntimeFixture("stop-lock-screen-only")
     defer { fixture.cleanup() }
 
@@ -237,10 +265,37 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(stopped.running == false)
     #expect(stopped.paused == true)
     #expect(fixture.store.loadCommand()?.action == .pause)
-    #expect(installer.uninstallCallCount == 1)
+    #expect(installer.uninstallCallCount == 0)
+    #expect(installer.isInstalled)
     #expect(
         fixture.store.processIsAlive(pid: Int(agent.processIdentifier))
     )
+}
+
+@Test func nativeStopIsNoOpForStaticLockScreenWallpaper() throws {
+    let fixture = try NativeRuntimeFixture("stop-static-lock-screen-only")
+    defer { fixture.cleanup() }
+
+    let installer = RecordingLockScreenSaverInstaller()
+    try installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+    let agent = Process()
+    agent.executableURL = fixture.helperURL
+    try agent.run()
+    try fixture.store.savePID(agent.processIdentifier)
+    fixture.store.markLockScreenOnlyAgent(true)
+
+    let stopped = try controller.stop()
+
+    #expect(stopped.paused == false)
+    #expect(fixture.store.loadCommand() == nil)
+    #expect(installer.uninstallCallCount == 0)
+    #expect(installer.isInstalled)
 }
 
 @Test func nativeLockScreenOnlyRemoveDiscardsOldDesktopBackup() throws {
@@ -279,7 +334,11 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
 
     try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .terminate))
 
-    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL)
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller()
+    )
     let status = try controller.start(videoURL: fixture.videoURL, speed: 1.0)
 
     #expect(status.running)
@@ -301,7 +360,11 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
             autostart: false
         )
     )
-    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL)
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller()
+    )
     _ = try controller.setAutostart(true)
     let plist = try String(contentsOf: fixture.store.launchAgentURL, encoding: .utf8)
 

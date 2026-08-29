@@ -17,6 +17,10 @@ private let lockScreenRemovalLogger = Logger(
     subsystem: "com.andrijvergeles.auraflow",
     category: "LockScreenRemoval"
 )
+private let lockScreenLifecycleLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "LockScreenLifecycle"
+)
 
 private enum AerialLockScreenOperationAbort: Error {
     case sessionChanged
@@ -63,6 +67,13 @@ private struct AerialLockScreenMarker: Codable {
     var lockScreenOnly: Bool?
     var desktopIncluded: Bool?
     var completed: Bool?
+    var mediaKind: String?
+    var generation: UInt64?
+}
+
+private struct AerialSlotState: Codable {
+    var lastAssetID: String?
+    var generation: UInt64
 }
 
 public enum AerialLockScreenInstallerError: LocalizedError {
@@ -79,7 +90,7 @@ public enum AerialLockScreenInstallerError: LocalizedError {
         case .wallpaperStoreUnavailable:
             return "The macOS wallpaper store is not available."
         case .aerialAssetUnavailable:
-            return "Download one Apple Aerial wallpaper before enabling Lock Screen."
+            return "No free macOS Aerial slot is available. AuraFlow did not change the wallpaper."
         case .malformedWallpaperStore:
             return "The macOS wallpaper store could not be read safely."
         case .wallpaperStoreUpdateFailed:
@@ -149,6 +160,16 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
 
     private var thumbnailBackupURL: URL {
         stateDirectoryURL.appendingPathComponent("thumbnail.before-auraflow.png")
+    }
+
+    private var preparedCacheDirectoryURL: URL {
+        stateDirectoryURL.deletingLastPathComponent()
+            .appendingPathComponent("LockScreenMediaCache", isDirectory: true)
+    }
+
+    private var slotStateURL: URL {
+        stateDirectoryURL.deletingLastPathComponent()
+            .appendingPathComponent("lock_screen_slot_state.json")
     }
 
     public init(
@@ -244,12 +265,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     /// only for that transition and restore the user's Desktop route after
     /// unlock.
     public var requiresLockScreenSessionPromotion: Bool {
-        guard let marker = loadMarker(), marker.completed == true else {
-            return false
-        }
-        return marker.lockScreenOnly == true
-            || (marker.lockScreenOnly != true
-                && marker.desktopIncluded == false)
+        // Dedicated Lock Screen installs stay in Idle for their complete
+        // lifetime. Promoting them to Linked/Desktop is what allowed the
+        // provider's cached Aerial to spill onto the unlocked Desktop.
+        return false
     }
 
     /// Confirms the system configuration, rather than only checking that our
@@ -264,39 +283,28 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         else {
             return false
         }
-        let scope: AerialWallpaperStoreScope =
-            markerStoreIncludesDesktop(marker)
-            ? .sharedWallpaper
-            : .lockScreenOnly
+        if marker.lockScreenOnly == true
+            || marker.desktopIncluded == false {
+            return wallpaperStoreFullySelectsAerial(
+                assetID: marker.assetID,
+                scope: .lockScreenOnly
+            )
+        }
         guard !usesCanonicalWallpaperStore
             || systemWallpaperURLMatchesInstalledState(
                 assetID: marker.assetID,
                 marker: marker
             )
-        else {
-            return false
-        }
-        if usesCanonicalWallpaperStore,
-           (marker.lockScreenOnly == true
-                || marker.desktopIncluded == false) {
-            // The dedicated agent promotes Aerial atomically at lock time.
-            // WallpaperAgent is allowed to keep the user's unlocked Idle
-            // route in memory without invalidating the installation.
-            return true
-        }
+        else { return false }
         return wallpaperStoreFullySelectsAerial(
             assetID: marker.assetID,
-            scope: scope
+            scope: .sharedWallpaper
         )
     }
 
     public var isAvailable: Bool {
-        guard fileManager.fileExists(atPath: wallpaperStoreURL.path),
-              let assetID = resolveAssetID()
-        else {
-            return false
-        }
-        return providerSupportsAsset(assetID)
+        fileManager.fileExists(atPath: wallpaperStoreURL.path)
+            && !supportedProviderAssetIDs.isEmpty
     }
 
     /// Re-applies the managed still frame immediately before a real lock.
@@ -423,7 +431,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         guard fileManager.fileExists(atPath: videoURL.path) else {
             throw AerialLockScreenInstallerError.videoMissing(videoURL.path)
         }
-        guard let assetID = resolveAssetID() else {
+        guard let assetID = resolveAssetIDForInstallation() else {
             throw AerialLockScreenInstallerError.aerialAssetUnavailable
         }
         guard providerSupportsAsset(assetID) else {
@@ -561,6 +569,20 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             assetID: assetID,
             scope: scope
         )
+        let desktopRoutesBeforeAttempt: [String: Data]
+        if lockScreenOnlyRoute,
+           let updateBaseRoot = try propertyListDictionary(
+               from: updateBaseStoreData
+           ) {
+            desktopRoutesBeforeAttempt = normalizedDesktopRoutesForComparison(
+                try currentDesktopRouteData(
+                    in: updateBaseRoot,
+                    managedAssetID: assetID
+                )
+            )
+        } else {
+            desktopRoutesBeforeAttempt = [:]
+        }
         let storeBeforeAttempt = try Data(contentsOf: wallpaperStoreURL)
         let assetBeforeAttempt = try? Data(contentsOf: assetURL)
         let thumbnailBeforeAttempt = try? Data(contentsOf: thumbnailURL)
@@ -643,45 +665,56 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             } else {
                 didRefresh = false
             }
-            let usesDeferredLockPromotion =
-                usesCanonicalWallpaperStore && lockScreenOnlyRoute
-            if !usesDeferredLockPromotion {
-                // WallpaperAgent may flush its old in-memory Index immediately
-                // after being restarted. Reassert the exact desired store
-                // before reporting failure.
-                var configurationConfirmed = false
-                for attempt in 0..<3 {
-                    if wallpaperStoreFullySelectsAerial(
-                        assetID: assetID,
-                        scope: scope
-                    ) {
-                        configurationConfirmed = true
-                        break
-                    }
-                    guard shouldProceed() else {
-                        throw AerialLockScreenOperationAbort.sessionChanged
-                    }
-                    try updatedStoreData.write(
-                        to: wallpaperStoreURL,
-                        options: .atomic
-                    )
-                    if usesCanonicalWallpaperStore {
-                        guard setSystemWallpaperURL(
-                            desiredSystemWallpaperURL(assetID: assetID)
-                        ) else {
-                            throw AerialLockScreenInstallerError
-                                .wallpaperStoreUpdateFailed
-                        }
-                    }
-                    if attempt < 2 {
-                        Thread.sleep(forTimeInterval: 0.2)
+            // WallpaperAgent may flush its old in-memory Index immediately
+            // after being restarted. Reassert the exact desired store before
+            // reporting success, but never perform a second provider refresh.
+            var configurationConfirmed = false
+            for attempt in 0..<3 {
+                if wallpaperStoreFullySelectsAerial(
+                    assetID: assetID,
+                    scope: scope
+                ) {
+                    configurationConfirmed = true
+                    break
+                }
+                guard shouldProceed() else {
+                    throw AerialLockScreenOperationAbort.sessionChanged
+                }
+                try updatedStoreData.write(
+                    to: wallpaperStoreURL,
+                    options: .atomic
+                )
+                if usesCanonicalWallpaperStore, !lockScreenOnlyRoute {
+                    guard setSystemWallpaperURL(
+                        desiredSystemWallpaperURL(assetID: assetID)
+                    ) else {
+                        throw AerialLockScreenInstallerError
+                            .wallpaperStoreUpdateFailed
                     }
                 }
-                guard configurationConfirmed
-                    || wallpaperStoreFullySelectsAerial(
-                        assetID: assetID,
-                        scope: scope
-                    ) else {
+                if attempt < 2 {
+                    Thread.sleep(forTimeInterval: 0.2)
+                }
+            }
+            guard configurationConfirmed
+                || wallpaperStoreFullySelectsAerial(
+                    assetID: assetID,
+                    scope: scope
+                ) else {
+                throw AerialLockScreenInstallerError
+                    .wallpaperStoreUpdateFailed
+            }
+            if lockScreenOnlyRoute {
+                guard let observedRoot = try propertyListDictionary(
+                    from: Data(contentsOf: wallpaperStoreURL)
+                ),
+                normalizedDesktopRoutesForComparison(
+                    try currentDesktopRouteData(
+                        in: observedRoot,
+                        managedAssetID: assetID
+                    )
+                ) == desktopRoutesBeforeAttempt
+                else {
                     throw AerialLockScreenInstallerError
                         .wallpaperStoreUpdateFailed
                 }
@@ -1077,28 +1110,78 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         if let configuredAssetID {
             return configuredAssetID
         }
-
-        let preferredURL = aerialVideosURL
-            .appendingPathComponent(Self.preferredAssetID)
-            .appendingPathExtension("mov")
-        if fileManager.fileExists(atPath: preferredURL.path) {
-            return Self.preferredAssetID
+        if let marker = loadMarker(), marker.completed == true {
+            return marker.assetID
         }
+        return orderedFreeProviderAssetIDs().first
+            ?? supportedProviderAssetIDs.sorted().first
+    }
 
-        let candidates = (
-            try? fileManager.contentsOfDirectory(
-                at: aerialVideosURL,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
+    private func resolveAssetIDForInstallation() -> String? {
+        if let configuredAssetID {
+            return configuredAssetID
+        }
+        if let marker = loadMarker(), marker.completed == true {
+            return marker.assetID
+        }
+        guard let assetID = orderedFreeProviderAssetIDs().first else {
+            return nil
+        }
+        var state = loadSlotState()
+            ?? AerialSlotState(lastAssetID: nil, generation: 0)
+        state.lastAssetID = assetID
+        state.generation &+= 1
+        do {
+            try saveSlotState(state)
+        } catch {
+            lockScreenLifecycleLogger.error(
+                "Failed to persist Aerial slot rotation"
             )
-        ) ?? []
-        return candidates
-            .filter { $0.pathExtension.lowercased() == "mov" }
-            .map { $0.deletingPathExtension().lastPathComponent }
-            .filter { UUID(uuidString: $0) != nil }
-            .sorted()
-            .first
-            ?? Self.preferredAssetID
+            return nil
+        }
+        lockScreenLifecycleLogger.notice(
+            "Selected free Aerial slot generation=\(state.generation, privacy: .public)"
+        )
+        return assetID
+    }
+
+    private func orderedFreeProviderAssetIDs() -> [String] {
+        let free = supportedProviderAssetIDs.filter { assetID in
+            let videoURL = aerialVideosURL
+                .appendingPathComponent(assetID)
+                .appendingPathExtension("mov")
+            // Current macOS pre-populates catalog thumbnails even when an
+            // Aerial movie was never downloaded or selected by the user.
+            // The movie file is the ownership boundary: never replace one.
+            // A catalog thumbnail is backed up/restored with the marker.
+            return !fileManager.fileExists(atPath: videoURL.path)
+        }.sorted()
+        guard free.count > 1,
+              let lastAssetID = loadSlotState()?.lastAssetID,
+              let index = free.firstIndex(of: lastAssetID)
+        else {
+            return free
+        }
+        let next = free.index(after: index)
+        return Array(free[next...]) + Array(free[..<next])
+    }
+
+    private func loadSlotState() -> AerialSlotState? {
+        guard let data = try? Data(contentsOf: slotStateURL) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(AerialSlotState.self, from: data)
+    }
+
+    private func saveSlotState(_ state: AerialSlotState) throws {
+        try fileManager.createDirectory(
+            at: slotStateURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(state).write(
+            to: slotStateURL,
+            options: .atomic
+        )
     }
 
     private func providerSupportsAsset(_ assetID: String) -> Bool {
@@ -1302,6 +1385,22 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             }
         }
         return result
+    }
+
+    private func normalizedDesktopRoutesForComparison(
+        _ routes: [String: Data]
+    ) -> [String: Data] {
+        Dictionary(uniqueKeysWithValues: routes.map { key, data in
+            let normalizedKey: String
+            if key.hasSuffix(".Linked") {
+                normalizedKey = String(key.dropLast(".Linked".count))
+            } else if key.hasSuffix(".Desktop") {
+                normalizedKey = String(key.dropLast(".Desktop".count))
+            } else {
+                normalizedKey = key
+            }
+            return (normalizedKey, data)
+        })
     }
 
     private func lockOnlyRemovalStorePlan(
@@ -2542,16 +2641,15 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
            markerSignature != sourceSignature {
             return false
         }
-        guard !usesCanonicalWallpaperStore
-            || systemWallpaperURLMatchesInstalledState(
-                assetID: assetID,
-                marker: marker
-            )
-        else {
-            return false
-        }
-        if usesCanonicalWallpaperStore, lockScreenOnlyRoute {
-            return true
+        if !lockScreenOnlyRoute {
+            guard !usesCanonicalWallpaperStore
+                || systemWallpaperURLMatchesInstalledState(
+                    assetID: assetID,
+                    marker: marker
+                )
+            else {
+                return false
+            }
         }
         return wallpaperStoreFullySelectsAerial(assetID: assetID, scope: scope)
     }
@@ -2564,7 +2662,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
 
         try fileManager.createDirectory(
-            at: stateDirectoryURL,
+            at: preparedCacheDirectoryURL,
             withIntermediateDirectories: true
         )
         // The Lock Screen provider only accepts HEVC in a QuickTime movie.
@@ -2572,15 +2670,19 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         // Settings, restarting the agent, or switching back to a wallpaper
         // does not transcode the same file again.
         let sourceSignature = try fileSignature(at: sourceURL)
-        let cacheURL = stateDirectoryURL.appendingPathComponent(
-            "prepared-\(sourceSignature).mov"
+        let cacheURL = preparedCacheDirectoryURL.appendingPathComponent(
+            "prepared-v2-\(sourceSignature).mov"
         )
         if fileManager.fileExists(atPath: cacheURL.path),
            aerialAssetIsCompatible(at: cacheURL) {
+            lockScreenLifecycleLogger.notice(
+                "Prepared media cache hit"
+            )
             return cacheURL
         }
 
-        let outputURL = stateDirectoryURL.appendingPathComponent(
+        lockScreenLifecycleLogger.notice("Prepared media cache miss")
+        let outputURL = preparedCacheDirectoryURL.appendingPathComponent(
             ".prepared-\(UUID().uuidString).mov"
         )
         defer { try? fileManager.removeItem(at: outputURL) }
@@ -3017,7 +3119,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 : nil,
             lockScreenOnly: lockScreenOnlyRoute,
             desktopIncluded: scope.includesDesktop,
-            completed: false
+            completed: false,
+            mediaKind: WallpaperMediaKind.forURL(videoURL).isStaticImage
+                ? "image"
+                : "video",
+            generation: loadSlotState()?.generation
         )
     }
 
@@ -3086,7 +3192,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             systemWallpaperURLCaptureVersion: nil,
             lockScreenOnly: nil,
             desktopIncluded: nil,
-            completed: false
+            completed: false,
+            mediaKind: nil,
+            generation: nil
         )
     }
 

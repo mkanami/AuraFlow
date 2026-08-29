@@ -53,6 +53,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     )
     private var lockShieldNotificationTokens: [Int32] = []
     private var lastCommandID: String?
+    private var lastCommandOperationID: UInt64?
     private var manualPaused = false
     private var sleeping = false
     private var displaySleepRestorePending = false
@@ -329,8 +330,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func sessionDidResignActive() {
-        promoteModernLockScreenForCurrentSession()
-        nativeLockScreenBridge.showForLockTransition()
+        // NSWorkspace can emit resign-active while the helper/app is merely
+        // restarting. Starting the screen saver before CGSession confirms a
+        // real lock would lock the Mac as a side effect of launching AuraFlow.
+        if systemSessionIsLocked() == true {
+            promoteModernLockScreenForCurrentSession()
+            nativeLockScreenBridge.showForLockTransition()
+        }
         handleSessionNotification(expectedLocked: true)
     }
 
@@ -592,7 +598,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func pollCommand() {
         guard !isTerminating else { return }
         guard let command = store.loadCommand(), command.id != lastCommandID else { return }
+        if let operationID = command.operationID,
+           let lastCommandOperationID,
+           operationID <= lastCommandOperationID {
+            return
+        }
         lastCommandID = command.id
+        if let operationID = command.operationID {
+            lastCommandOperationID = operationID
+        }
         if let newConfig = command.config {
             config = store.normalized(newConfig)
             publishRearmGuardState()
@@ -680,7 +694,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func prepareLockScreenOnlyAgent() {
         guard lockScreenOnlyMode else { return }
         guard config.show_on_lock_screen == true,
-              let videoURL = effectiveLockScreenVideoURL(),
+              effectiveLockScreenVideoURL() != nil,
               lockScreenInstaller.isInstalled,
               !sessionInactive,
               systemSessionIsLocked() != true
@@ -690,29 +704,27 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        do {
-            _ = try lockScreenInstaller.rearmForNextLock(videoURL: videoURL)
-            nativeLockScreenBridge.prepare { [weak self] succeeded in
-                guard let self,
-                      !self.isTerminating,
-                      !self.sessionInactive,
-                      self.systemSessionIsLocked() != true
-                else {
-                    return
-                }
-                self.store.markLockScreenAgentReady(succeeded)
-                self.writeHealth(
-                    reason: succeeded
-                        ? "lock-screen-agent-ready"
-                        : "lock-screen-agent-not-ready"
-                )
-            }
-        } catch {
+        guard lockScreenInstaller.installationConfirmed else {
             store.markLockScreenAgentReady(false)
-            writeHealth(
-                reason:
-                    "lock-screen-agent-prepare-failed: "
-                    + error.localizedDescription
+            writeHealth(reason: "lock-screen-installation-not-confirmed")
+            return
+        }
+        // The controller already committed the asset/store and performed the
+        // single provider refresh. Startup only establishes the native bridge;
+        // rearming here races the provider that was just made ready.
+        nativeLockScreenBridge.prepare { [weak self] succeeded in
+            guard let self,
+                  !self.isTerminating,
+                  !self.sessionInactive,
+                  self.systemSessionIsLocked() != true
+            else {
+                return
+            }
+            self.store.markLockScreenAgentReady(succeeded)
+            self.writeHealth(
+                reason: succeeded
+                    ? "lock-screen-agent-ready"
+                    : "lock-screen-agent-not-ready"
             )
         }
     }
@@ -1169,13 +1181,16 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func samplePlaybackHealth() {
         reconcileSystemSessionState()
-        repairModernLockScreenIfNeeded()
-        rearmModernLockScreenForNextSession()
 
         if lockScreenOnlyMode {
+            // Lock-only health checks are observational. Provider repair is
+            // serialized by the controller and never runs on a polling timer.
             writeHealth(reason: "lock-screen-only")
             return
         }
+
+        repairModernLockScreenIfNeeded()
+        rearmModernLockScreenForNextSession()
 
         if WallpaperMediaKind.forURL(URL(fileURLWithPath: config.video_path)).isStaticImage {
             consecutiveStallPolls = 0
@@ -1236,7 +1251,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func repairModernLockScreenIfNeeded(force: Bool = false) {
-        guard config.show_on_lock_screen == true,
+        guard !lockScreenOnlyMode,
+              config.show_on_lock_screen == true,
               let videoURL = effectiveLockScreenVideoURL(),
               lockScreenInstaller.isInstalled,
               !lockScreenRepairInProgress,
@@ -1291,7 +1307,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rearmModernLockScreenForNextSession() {
-        guard config.show_on_lock_screen == true,
+        guard !lockScreenOnlyMode,
+              config.show_on_lock_screen == true,
               let videoURL = effectiveLockScreenVideoURL(),
               lockScreenInstaller.isInstalled,
               !sessionInactive,

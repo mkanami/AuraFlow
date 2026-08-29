@@ -21,17 +21,20 @@ public enum WallpaperRuntimeCommandAction: String, Codable, Equatable {
 
 public struct WallpaperRuntimeCommand: Codable, Equatable {
     public var id: String
+    public var operationID: UInt64?
     public var action: WallpaperRuntimeCommandAction
     public var config: ControlConfig?
     public var created_at: Double
 
     public init(
         id: String = UUID().uuidString,
+        operationID: UInt64? = nil,
         action: WallpaperRuntimeCommandAction,
         config: ControlConfig? = nil,
         created_at: Double = Date().timeIntervalSince1970
     ) {
         self.id = id
+        self.operationID = operationID
         self.action = action
         self.config = config
         self.created_at = created_at
@@ -275,7 +278,8 @@ public final class WallpaperRuntimeStore {
             paused: paused,
             wallpaper_restored: wallpaperRestored,
             wallpaper: wallpaper,
-            health: health
+            health: health,
+            lock_screen_only: lockScreenOnly
         )
     }
 
@@ -405,11 +409,27 @@ public final class WallpaperRuntimeStore {
 
     public func captureStillFrame(from videoURL: URL, time: CMTime = CMTime(seconds: 0.2, preferredTimescale: 600)) throws -> URL {
         try ensureDirectories()
-        let asset = AVURLAsset(url: videoURL)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 3840, height: 2160)
-        let image = try generator.copyCGImage(at: time, actualTime: nil)
+        let image: CGImage
+        if WallpaperMediaKind.forURL(videoURL).isStaticImage {
+            guard let sourceImage = NSImage(contentsOf: videoURL),
+                  let decodedImage = sourceImage.cgImage(
+                    forProposedRect: nil,
+                    context: nil,
+                    hints: nil
+                  )
+            else {
+                throw WallpaperRuntimeError.unavailable(
+                    "Could not decode wallpaper image."
+                )
+            }
+            image = decodedImage
+        } else {
+            let asset = AVURLAsset(url: videoURL)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 3840, height: 2160)
+            image = try generator.copyCGImage(at: time, actualTime: nil)
+        }
         let bitmap = NSBitmapImageRep(cgImage: image)
         guard let data = bitmap.representation(using: .png, properties: [:]) else {
             throw WallpaperRuntimeError.unavailable("Could not encode wallpaper frame.")

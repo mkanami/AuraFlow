@@ -66,6 +66,7 @@ public struct ControlStatus: Codable, Equatable {
     public var wallpaper_restored: Bool?
     public var wallpaper: String?
     public var health: DaemonHealth?
+    public var lock_screen_only: Bool?
 
     public init(
         contract_version: Int? = AuraWallpaperContract.statusVersion,
@@ -76,7 +77,8 @@ public struct ControlStatus: Codable, Equatable {
         paused: Bool? = nil,
         wallpaper_restored: Bool? = nil,
         wallpaper: String? = nil,
-        health: DaemonHealth? = nil
+        health: DaemonHealth? = nil,
+        lock_screen_only: Bool? = nil
     ) {
         self.contract_version = contract_version
         self.running = running
@@ -87,6 +89,7 @@ public struct ControlStatus: Codable, Equatable {
         self.wallpaper_restored = wallpaper_restored
         self.wallpaper = wallpaper
         self.health = health
+        self.lock_screen_only = lock_screen_only
     }
 }
 

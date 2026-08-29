@@ -7,7 +7,6 @@ import Wallpaper
 
 final class NativeLockScreenWallpaperBridge {
     private typealias StartScreenSaverFunction = @convention(c) () -> Int32
-    private typealias StopScreenSaverFunction = @convention(c) () -> Int32
 
     private static let logger = Logger(
         subsystem: "com.auraflow.wallpaper",
@@ -94,22 +93,32 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     func resumeAfterPause() {
+        if let layer = displayAssertion?.layer, layer.speed == 0 {
+            let pausedTime = layer.timeOffset
+            layer.speed = 1
+            layer.timeOffset = 0
+            layer.beginTime = 0
+            let resumedTime = layer.convertTime(
+                CACurrentMediaTime(),
+                from: nil
+            )
+            layer.beginTime = resumedTime - pausedTime
+        }
         paused = false
     }
 
     func pause() {
+        guard !paused else { return }
         paused = true
-        showing = false
-        window?.alphaValue = 0
-        stopSystemScreenSaverNow()
-        guard let displayAssertion else { return }
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.presentationAssertion = try? await
-                WallpaperPresentationModeAssertion.takeIdleAssertion(
-                    displayAssertion: displayAssertion
-                )
+        if let layer = displayAssertion?.layer, layer.speed != 0 {
+            let pausedTime = layer.convertTime(
+                CACurrentMediaTime(),
+                from: nil
+            )
+            layer.speed = 0
+            layer.timeOffset = pausedTime
         }
+        Self.logger.notice("Native Lock Screen layer paused")
     }
 
     func hideAfterUnlock() {
@@ -149,19 +158,6 @@ final class NativeLockScreenWallpaperBridge {
         }
     }
 
-    private func stopSystemScreenSaverNow() {
-        guard let function = Self.stopScreenSaverFunction else {
-            Self.logger.error("SACScreenSaverStopNow is unavailable")
-            return
-        }
-        let result = function()
-        if result != 0 {
-            Self.logger.error(
-                "SACScreenSaverStopNow failed: \(result, privacy: .public)"
-            )
-        }
-    }
-
     private static let startScreenSaverFunction: StartScreenSaverFunction? = {
         guard let handle = dlopen(
             "/System/Library/PrivateFrameworks/login.framework/login",
@@ -172,18 +168,6 @@ final class NativeLockScreenWallpaperBridge {
             return nil
         }
         return unsafeBitCast(symbol, to: StartScreenSaverFunction.self)
-    }()
-
-    private static let stopScreenSaverFunction: StopScreenSaverFunction? = {
-        guard let handle = dlopen(
-            "/System/Library/PrivateFrameworks/login.framework/login",
-            RTLD_NOW | RTLD_LOCAL
-        ),
-        let symbol = dlsym(handle, "SACScreenSaverStopNow")
-        else {
-            return nil
-        }
-        return unsafeBitCast(symbol, to: StopScreenSaverFunction.self)
     }()
 
     private func makeWindow(for wallpaperLayer: CALayer) -> NSWindow {
