@@ -2547,11 +2547,10 @@ private struct AuraNotificationBanner: View {
                 .font(.callout)
                 .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
                 .lineLimit(2)
-            Spacer(minLength: 0)
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 14,
