@@ -192,6 +192,20 @@ final class VideoOptimizer {
             return VideoOptimizationResult(outputURL: outputURL, decision: decision, fromCache: false)
         }
 
+        // AVFoundation cannot reliably inspect WebM/MKV on macOS and emits
+        // -11828 before the compatibility path can run. These containers are
+        // already known to require ffmpeg, so go straight to the cached MP4
+        // conversion instead of probing them repeatedly through AVAsset.
+        if isCompatibilityFFmpegCandidate(inputURL) {
+            return try await transcodeToCompatibilityUsingFFmpeg(
+                inputURL: inputURL,
+                settings: settings,
+                codecType: 0,
+                reason: "Web container converted for macOS wallpaper compatibility.",
+                progress: progress
+            )
+        }
+
         let asset = AVURLAsset(url: inputURL)
         let tracks: [AVAssetTrack]
         do {
@@ -375,9 +389,10 @@ final class VideoOptimizer {
             return VideoOptimizationResult(outputURL: outputURL, decision: decision, fromCache: true)
         }
 
-        let duration = try? await AVURLAsset(url: inputURL).load(.duration)
-        let seconds = duration.map(CMTimeGetSeconds)
-        let durationSeconds = (seconds?.isFinite == true) ? seconds : nil
+        // Do not ask AVFoundation for WebM/MKV duration here. Those
+        // containers are the compatibility cases this method handles and
+        // probing them recreates the same -11828 error we just avoided.
+        let durationSeconds: Double? = nil
 
         try await transcodeToH264Compatibility(
             ffmpegExecutable: ffmpeg,

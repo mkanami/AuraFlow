@@ -962,6 +962,8 @@ final class AppViewModel: ObservableObject {
     private var glassAnalysisTask: Task<Void, Never>?
     private var glassAnalysisGeneration = 0
     private var cacheGeneration = 0
+    private var previewPreparationTask: Task<Void, Never>?
+    private var previewPreparationGeneration = 0
     private var lifecycleTask: Task<Void, Never>?
     private var activeLifecycleIntent: WallpaperLifecycleIntent?
     private var pendingLifecycleRequest: LifecycleRequest?
@@ -1161,6 +1163,7 @@ final class AppViewModel: ObservableObject {
         localWallpaperImportTask?.cancel()
         controllerBootstrapTask?.cancel()
         glassAnalysisTask?.cancel()
+        previewPreparationTask?.cancel()
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver)
         }
@@ -1235,7 +1238,7 @@ final class AppViewModel: ObservableObject {
            let restoredScaleMode = WallpaperScaleMode(rawValue: rawScaleMode) {
             scaleMode = restoredScaleMode
         }
-        configurePreview(for: videoURL)
+        configurePreviewOrPrepare(for: videoURL)
     }
 
     private static func previewURL(for seed: WallpaperPreviewSeed) -> URL? {
@@ -1267,9 +1270,83 @@ final class AppViewModel: ObservableObject {
             appliedVideoURL = savedURL
         }
         if previewChanged || (refreshPreview && previewPlayer?.currentItem == nil) {
-            configurePreview(for: savedURL)
+            configurePreviewOrPrepare(for: savedURL)
         }
         return true
+    }
+
+    private func cancelPreviewPreparation() {
+        previewPreparationGeneration &+= 1
+        previewPreparationTask?.cancel()
+        previewPreparationTask = nil
+    }
+
+    private func configurePreviewOrPrepare(for url: URL) {
+        guard !WallpaperMediaKind.forURL(url).isStaticImage else {
+            cancelPreviewPreparation()
+            configurePreview(for: url)
+            return
+        }
+
+        let isNativeContainer = isNativePlaybackContainer(url)
+        if isNativeContainer {
+            configurePreview(for: url)
+        } else if previewPlayer == nil {
+            // Keep the view attached to a real player while compatibility
+            // conversion runs. Unsupported containers must never be handed to
+            // AVPlayer as the final preview source.
+            configurePreview(for: nil)
+        }
+        schedulePreviewPreparation(for: url)
+    }
+
+    private func schedulePreviewPreparation(for sourceURL: URL) {
+        cancelPreviewPreparation()
+        let requestedGeneration = previewPreparationGeneration
+        let normalizedSourceURL = sourceURL.standardizedFileURL
+
+        previewPreparationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                if isNativePlaybackContainer(normalizedSourceURL),
+                   normalizedSourceURL.pathExtension.lowercased() != "gif",
+                   await isPreviewPlayableVideo(at: normalizedSourceURL) {
+                    if requestedGeneration == previewPreparationGeneration {
+                        previewPreparationTask = nil
+                    }
+                    return
+                }
+
+                let prepared = try await prepareCatalogVideoURLForPlayback(normalizedSourceURL)
+                guard !Task.isCancelled,
+                      requestedGeneration == previewPreparationGeneration,
+                      selectedVideoURL?.standardizedFileURL == normalizedSourceURL
+                else {
+                    return
+                }
+
+                configurePreview(for: prepared.url)
+                savePreviewSeed(for: prepared.url)
+                if let summary = prepared.summary {
+                    statusMessage = summary
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard requestedGeneration == previewPreparationGeneration,
+                      selectedVideoURL?.standardizedFileURL == normalizedSourceURL
+                else {
+                    return
+                }
+                // Keep the current preview visible and let Start/Lock surface
+                // the actionable conversion error at commit time.
+                statusMessage = "Preview preparation failed. Press Start or Lock to retry."
+            }
+
+            if requestedGeneration == previewPreparationGeneration {
+                previewPreparationTask = nil
+            }
+        }
     }
 
     private func loadSavedPreviewSeed() -> WallpaperPreviewSeed? {
@@ -2315,7 +2392,9 @@ final class AppViewModel: ObservableObject {
         // inspect it, but the desktop agent needs the optimizer's MP4 output
         // for reliable looping.
         let isGIF = sourceURL.pathExtension.lowercased() == "gif"
-        if !isGIF, await isPreviewPlayableVideo(at: sourceURL) {
+        if !isGIF,
+           isNativePlaybackContainer(sourceURL),
+           await isPreviewPlayableVideo(at: sourceURL) {
             // A native MP4/MOV/M4V source is already ready to render. Do not
             // make a catalog download wait for the user's optional HEVC or
             // 1080p optimization pass.
@@ -3263,8 +3342,9 @@ final class AppViewModel: ObservableObject {
     }
 
     private func selectVideoForPreview(_ url: URL, summary: String?) {
+        cancelPreviewPreparation()
         pendingPreviewVideoURL = url
-        configurePreview(for: url)
+        configurePreviewOrPrepare(for: url)
         savePreviewSeed(for: url)
         statusMessage = summary
         alertMessage = nil
