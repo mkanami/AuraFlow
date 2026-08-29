@@ -1831,7 +1831,7 @@ final class AppViewModel: ObservableObject {
             )
 
         case .lock(let sourceURL):
-            let prepared = try await prepareVideoURLForPlayback(sourceURL)
+            let prepared = try await prepareLockScreenVideoURLForPlayback(sourceURL)
             try ensureLifecycleMayCommit(request)
             let status = try await runAsync {
                 try controller.installLockScreenOnly(videoURL: prepared.url)
@@ -2433,6 +2433,25 @@ final class AppViewModel: ObservableObject {
                 : "Wallpaper converted for macOS playback. \(reason)"
             return (result.outputURL, summary)
         }
+    }
+
+    private func prepareLockScreenVideoURLForPlayback(_ sourceURL: URL) async throws -> (url: URL, summary: String?) {
+        // The native Lock Screen bridge prepares a still frame with avconvert.
+        // Catalog files and non-native containers must therefore go through
+        // the compatibility path first; passing a raw WebM/MKV/GIF here makes
+        // Lock fail even when the same source already has a usable preview.
+        if WallpaperMediaKind.forURL(sourceURL).isStaticImage {
+            return (sourceURL.standardizedFileURL, nil)
+        }
+
+        if isManagedCacheURL(sourceURL) || !isNativePlaybackContainer(sourceURL) {
+            return try await prepareCatalogVideoURLForPlayback(sourceURL)
+        }
+
+        // Preserve the existing user optimization behavior for external
+        // native MP4/MOV/M4V sources while still guaranteeing compatibility
+        // conversion for managed and unsupported sources above.
+        return try await prepareVideoURLForPlayback(sourceURL)
     }
 
     private func apply(
