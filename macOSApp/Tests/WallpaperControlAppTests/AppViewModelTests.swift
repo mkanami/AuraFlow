@@ -77,6 +77,15 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
+@Test func defaultTestAppSupportDoesNotUseTheUserProfile() {
+    let viewModel = AppViewModel(controller: MockNativeWallpaperController())
+    let userAppSupport = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/AuraFlow", isDirectory: true)
+
+    #expect(viewModel.appSupportDirectoryURLForTesting != userAppSupport)
+}
+
+@MainActor
 @Test func localVideoSelectionStaysInPreviewUntilStart() throws {
     let controller = MockNativeWallpaperController()
     let viewModel = AppViewModel(controller: controller)
@@ -129,6 +138,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 
     let firstViewModel = AppViewModel(
         controller: MockNativeWallpaperController(),
+        appSupportDirectoryURL: root,
         previewStateURL: previewStateURL
     )
     firstViewModel.selectLocalVideoForPreview(videoURL)
@@ -136,6 +146,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     let restartedController = MockNativeWallpaperController()
     let restartedViewModel = AppViewModel(
         controller: restartedController,
+        appSupportDirectoryURL: root,
         previewStateURL: previewStateURL
     )
 
@@ -161,11 +172,62 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
         .appendingPathComponent("missing-preview-\(UUID().uuidString).json")
     let viewModel = AppViewModel(
         controller: MockNativeWallpaperController(),
+        appSupportDirectoryURL: previewStateURL.deletingLastPathComponent(),
         previewStateURL: previewStateURL
     )
 
     #expect(viewModel.currentVideoURL == nil)
     #expect(viewModel.previewPlayer == nil)
+}
+
+@MainActor
+@Test func lockOnlyStatusReloadsPreviewChangedByAnotherAppInstance() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("lock-only-preview-refresh-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let firstURL = root.appendingPathComponent("first.mp4")
+    let latestURL = root.appendingPathComponent("latest.mp4")
+    FileManager.default.createFile(atPath: firstURL.path, contents: Data([1]), attributes: nil)
+    FileManager.default.createFile(atPath: latestURL.path, contents: Data([2]), attributes: nil)
+    let previewStateURL = root.appendingPathComponent("last_preview.json")
+
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        appSupportDirectoryURL: root,
+        previewStateURL: previewStateURL
+    )
+    viewModel.selectLocalVideoForPreview(firstURL)
+
+    let controller = MockNativeWallpaperController()
+    controller.statusRunning = false
+    controller.statusPaused = false
+    controller.statusLockScreenOnly = true
+    controller.statusHealth = DaemonHealth(
+        available: true,
+        fresh: true,
+        suspicious: false,
+        reason: "lock-screen-only"
+    )
+    let refreshedViewModel = AppViewModel(
+        controller: controller,
+        appSupportDirectoryURL: root,
+        previewStateURL: previewStateURL
+    )
+    #expect(refreshedViewModel.currentVideoURL == firstURL.standardizedFileURL)
+
+    let externalPreview = """
+    {"video_path":\(String(reflecting: latestURL.path)),"playback_speed":1.0,"scale_mode":"fill"}
+    """
+    try #require(externalPreview.data(using: .utf8))
+        .write(to: previewStateURL, options: .atomic)
+
+    await refreshedViewModel.loadStatus()
+
+    #expect(refreshedViewModel.currentVideoURL == latestURL.standardizedFileURL)
+    let playerAsset = try #require(refreshedViewModel.previewPlayer?.currentItem?.asset as? AVURLAsset)
+    #expect(playerAsset.url.standardizedFileURL == latestURL.standardizedFileURL)
 }
 
 @MainActor
@@ -865,9 +927,19 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
             profile: .quality
         )
     )
+    let appSupportURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(
+            "lifecycle-success-app-support-\(UUID().uuidString)",
+            isDirectory: true
+        )
+    try FileManager.default.createDirectory(
+        at: appSupportURL,
+        withIntermediateDirectories: true
+    )
     let viewModel = AppViewModel(
         controller: controller,
-        optimizationStore: optimizationStore
+        optimizationStore: optimizationStore,
+        appSupportDirectoryURL: appSupportURL
     )
     let sourceURL = FileManager.default.temporaryDirectory
         .appendingPathComponent(
@@ -879,6 +951,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     )
     defer {
         try? FileManager.default.removeItem(at: sourceURL)
+        try? FileManager.default.removeItem(at: appSupportURL)
         defaults.removePersistentDomain(forName: suiteName)
     }
 

@@ -970,12 +970,22 @@ final class AppViewModel: ObservableObject {
     private let expectedStatusContractVersion = 3
     private let bridgeFailureThreshold = 3
     private let daemonSuspiciousThreshold = 2
-    private static let appSupportDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+    private static let defaultAppSupportDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/AuraFlow", isDirectory: true)
-    private static let startupConfigURL = appSupportDirectoryURL.appendingPathComponent("config.json")
-    private static let defaultPreviewStateURL = appSupportDirectoryURL
-        .appendingPathComponent("last_preview.json")
 
+    private static func defaultAppSupportDirectoryForCurrentProcess() -> URL {
+        let isTestProcess = CommandLine.arguments.contains { $0.contains(".xctest") }
+            || Bundle.allBundles.contains { $0.bundleURL.pathExtension == "xctest" }
+            || NSClassFromString("XCTestCase") != nil
+        guard isTestProcess else {
+            return defaultAppSupportDirectoryURL
+        }
+        return FileManager.default.temporaryDirectory
+            .appendingPathComponent("AuraFlow-AppViewModelTests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+
+    private let appSupportDirectoryURL: URL
     private let previewStateURL: URL
 
     var isControllerAvailable: Bool {
@@ -988,6 +998,10 @@ final class AppViewModel: ObservableObject {
 
     var currentVideoURL: URL? {
         selectedVideoURL
+    }
+
+    var appSupportDirectoryURLForTesting: URL {
+        appSupportDirectoryURL
     }
 
     private var isPlaybackRunningForControls: Bool {
@@ -1098,11 +1112,16 @@ final class AppViewModel: ObservableObject {
         controller: WallpaperControlling? = nil,
         optimizationStore: VideoOptimizationStore = VideoOptimizationStore(),
         catalogProvider: WallpaperCatalogProviding = ManagedWallpaperCatalogProvider(),
+        appSupportDirectoryURL: URL? = nil,
         previewStateURL: URL? = nil
     ) {
         self.optimizationStore = optimizationStore
         self.catalogProvider = catalogProvider
-        self.previewStateURL = previewStateURL ?? Self.defaultPreviewStateURL
+        let resolvedAppSupportURL = appSupportDirectoryURL
+            ?? Self.defaultAppSupportDirectoryForCurrentProcess()
+        self.appSupportDirectoryURL = resolvedAppSupportURL
+        self.previewStateURL = previewStateURL
+            ?? resolvedAppSupportURL.appendingPathComponent("last_preview.json")
         if let controller {
             self.controller = controller
             self.controllerAvailable = true
@@ -1201,17 +1220,14 @@ final class AppViewModel: ObservableObject {
     private func restoreInitialPreviewFromSavedConfig() {
         guard pendingPreviewVideoURL == nil else { return }
         let seeds = [
-            Self.loadStartupPreviewSeed(),
+            loadStartupPreviewSeed(),
             loadSavedPreviewSeed(),
         ].compactMap { $0 }
-        guard let seed = seeds.first(where: {
-            FileManager.default.fileExists(
-                atPath: URL(fileURLWithPath: $0.video_path).standardizedFileURL.path
-            )
-        }) else {
+        guard let seed = seeds.first(where: { Self.previewURL(for: $0) != nil }),
+              let videoURL = Self.previewURL(for: seed)
+        else {
             return
         }
-        let videoURL = URL(fileURLWithPath: seed.video_path).standardizedFileURL
 
         appliedVideoURL = videoURL
         playbackSpeed = seed.playback_speed
@@ -1220,6 +1236,40 @@ final class AppViewModel: ObservableObject {
             scaleMode = restoredScaleMode
         }
         configurePreview(for: videoURL)
+    }
+
+    private static func previewURL(for seed: WallpaperPreviewSeed) -> URL? {
+        let path = seed.video_path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard let values = try? url.resourceValues(forKeys: [
+            .isRegularFileKey,
+            .isReadableKey,
+        ]),
+        values.isRegularFile == true,
+        values.isReadable != false
+        else {
+            return nil
+        }
+        return url
+    }
+
+    private func refreshPreviewFromSavedSeedIfNeeded(refreshPreview: Bool) -> Bool {
+        guard let seed = loadSavedPreviewSeed(),
+              let savedURL = Self.previewURL(for: seed)
+        else {
+            return false
+        }
+
+        let previewChanged = appliedVideoURL?.standardizedFileURL != savedURL
+        if previewChanged {
+            appliedVideoURL = savedURL
+        }
+        if previewChanged || (refreshPreview && previewPlayer?.currentItem == nil) {
+            configurePreview(for: savedURL)
+        }
+        return true
     }
 
     private func loadSavedPreviewSeed() -> WallpaperPreviewSeed? {
@@ -1247,7 +1297,8 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private static func loadStartupPreviewSeed() -> WallpaperPreviewSeed? {
+    private func loadStartupPreviewSeed() -> WallpaperPreviewSeed? {
+        let startupConfigURL = appSupportDirectoryURL.appendingPathComponent("config.json")
         guard let data = try? Data(contentsOf: startupConfigURL) else { return nil }
         guard let config = try? JSONDecoder().decode(ControlConfig.self, from: data),
               !config.video_path.isEmpty
@@ -2349,7 +2400,12 @@ final class AppViewModel: ObservableObject {
             }
         } else {
             if pendingPreviewVideoURL == nil {
-                if let currentURL = appliedVideoURL?.standardizedFileURL,
+                if refreshPreviewFromSavedSeedIfNeeded(refreshPreview: refreshPreview) {
+                    // Lock-only intentionally keeps config.video_path empty.
+                    // Re-read the persisted preview so another AuraFlow window
+                    // or a completed Lock operation cannot leave this window
+                    // attached to a deleted/stale player item.
+                } else if let currentURL = appliedVideoURL?.standardizedFileURL,
                    FileManager.default.fileExists(atPath: currentURL.path) {
                     if refreshPreview && previewPlayer?.currentItem == nil {
                         configurePreview(for: currentURL)
@@ -2888,28 +2944,14 @@ final class AppViewModel: ObservableObject {
     }
 
     private func catalogDirectoryURL() throws -> URL {
-        let appSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let directory = appSupport
-            .appendingPathComponent("AuraFlow", isDirectory: true)
+        let directory = appSupportDirectoryURL
             .appendingPathComponent("Catalog", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
 
     private func optimizedVideosDirectoryURL() throws -> URL {
-        let appSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let directory = appSupport
-            .appendingPathComponent("AuraFlow", isDirectory: true)
+        let directory = appSupportDirectoryURL
             .appendingPathComponent("OptimizedVideos", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
@@ -3203,7 +3245,7 @@ final class AppViewModel: ObservableObject {
     private func clearRuntimePreviewCache() throws {
         let fileManager = FileManager.default
         let entries = try fileManager.contentsOfDirectory(
-            at: Self.appSupportDirectoryURL,
+            at: appSupportDirectoryURL,
             includingPropertiesForKeys: nil,
             options: []
         )
