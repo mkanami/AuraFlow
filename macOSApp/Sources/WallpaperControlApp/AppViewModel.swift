@@ -483,9 +483,13 @@ final class NativeWallpaperController: WallpaperControlling {
         }
         store.clearLockScreenOnlySource()
         _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(appSupportPath: store.appSupportURL.path)
-        // Start is the Desktop action. Lock Screen installation is explicit
-        // and belongs exclusively to the Lock button, so a normal desktop
-        // start must not allocate or refresh an Aerial slot.
+        // Start keeps the original all-surfaces behavior: the selected
+        // wallpaper is applied to the Desktop and Lock Screen together.
+        // The separate Lock button uses installLockScreenOnly() and is the
+        // only path that leaves the user's Desktop untouched.
+        if config.show_on_lock_screen ?? true {
+            try installLockScreenSaver(using: config)
+        }
         store.markPaused(false)
         try launchAgentIfNeeded()
         try send(.reload, config: config)
