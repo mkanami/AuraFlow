@@ -110,6 +110,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
 
     #expect(config.video_path == fixture.videoURL.path)
     #expect(config.playback_speed == 1.75)
+    #expect(config.show_on_lock_screen == true)
     #expect(status.pid != nil)
     #expect(fixture.store.processIsAlive(pid: status.pid))
     #expect(command?.action == .reload)

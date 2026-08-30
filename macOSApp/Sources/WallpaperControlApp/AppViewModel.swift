@@ -474,6 +474,8 @@ final class NativeWallpaperController: WallpaperControlling {
             if let speed {
                 config.playback_speed = speed
             }
+            // Start is explicitly the all-surfaces action.
+            config.show_on_lock_screen = true
         }
         guard !config.video_path.isEmpty else {
             throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
@@ -487,8 +489,11 @@ final class NativeWallpaperController: WallpaperControlling {
         // wallpaper is applied to the Desktop and Lock Screen together.
         // The separate Lock button uses installLockScreenOnly() and is the
         // only path that leaves the user's Desktop untouched.
-        if config.show_on_lock_screen ?? true {
-            try installLockScreenSaver(using: config)
+        try installLockScreenSaver(using: config)
+        guard lockScreenSaverInstaller.installationConfirmed else {
+            throw NativeWallpaperControllerError.unavailable(
+                "macOS did not confirm the Desktop and Lock Screen wallpaper configuration."
+            )
         }
         store.markPaused(false)
         try launchAgentIfNeeded()
