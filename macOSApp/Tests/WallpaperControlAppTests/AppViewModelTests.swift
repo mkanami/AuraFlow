@@ -893,6 +893,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(viewModel.isStartButtonHighlighted == false)
     #expect(viewModel.isStopButtonHighlighted == false)
     #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly == false)
     #expect(viewModel.canStop)
 
     viewModel.stop()
@@ -908,7 +909,66 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(viewModel.isStartButtonHighlighted == false)
     #expect(viewModel.isStopButtonHighlighted)
     #expect(viewModel.canStart)
+    #expect(viewModel.canApplyLockScreenOnly)
     #expect(viewModel.canStop == false)
+}
+
+@MainActor
+@Test func startAndLockButtonsAreMutuallyExclusiveByActiveMode() async throws {
+    let controller = MockNativeWallpaperController()
+    let suiteName = "AppViewModelTests.mutually-exclusive-buttons"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    let optimizationStore = VideoOptimizationStore(defaults: defaults)
+    optimizationStore.save(
+        VideoOptimizationSettings(
+            enabled: false,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: true,
+            forceSoftwareAV1Encode: false,
+            profile: .quality
+        )
+    )
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let viewModel = AppViewModel(
+        controller: controller,
+        optimizationStore: optimizationStore
+    )
+    let sourceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("mutually-exclusive-buttons-\(UUID().uuidString).mp4")
+    FileManager.default.createFile(atPath: sourceURL.path, contents: Data(), attributes: nil)
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+    #expect(viewModel.canStart)
+    #expect(viewModel.canApplyLockScreenOnly)
+
+    viewModel.start()
+    for _ in 0..<40 {
+        if viewModel.isRunning { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(viewModel.isRunning)
+    #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly == false)
+
+    viewModel.stop()
+    for _ in 0..<40 {
+        if viewModel.isPlaybackPaused { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    viewModel.applyLockScreenOnly()
+    for _ in 0..<40 {
+        if viewModel.isLockScreenOnlyActive { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(viewModel.isLockScreenOnlyActive)
+    #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly)
 }
 
 @MainActor

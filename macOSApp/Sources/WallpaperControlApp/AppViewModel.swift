@@ -1019,6 +1019,18 @@ final class AppViewModel: ObservableObject {
         isRunning && !isPlaybackPaused
     }
 
+    private var isLockScreenOnlyModeActiveForControls: Bool {
+        isLockScreenOnlyActive
+            || activeLifecycleIntent?.name == "lock"
+            || pendingLifecycleRequest?.intent.name == "lock"
+    }
+
+    private var isDesktopAndLockModeActiveForControls: Bool {
+        isPlaybackRunningForControls
+            || activeLifecycleIntent?.name == "start"
+            || pendingLifecycleRequest?.intent.name == "start"
+    }
+
     var isStartButtonHighlighted: Bool {
         selectedVideoURL != nil
             && (!isPlaybackRunningForControls
@@ -1032,13 +1044,16 @@ final class AppViewModel: ObservableObject {
 
     var canStart: Bool {
         isControllerAvailable
+            && !isLockScreenOnlyModeActiveForControls
             && (!isPlaybackRunningForControls
                 || pendingPreviewVideoURL != nil)
             && selectedVideoURL != nil
     }
 
     var canApplyLockScreenOnly: Bool {
-        isControllerAvailable && selectedVideoURL != nil
+        isControllerAvailable
+            && !isDesktopAndLockModeActiveForControls
+            && selectedVideoURL != nil
     }
 
     var canStop: Bool {
