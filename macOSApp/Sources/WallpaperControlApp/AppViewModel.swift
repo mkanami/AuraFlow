@@ -10,6 +10,10 @@ private let lockScreenLifecycleLogger = Logger(
     subsystem: "com.andrijvergeles.auraflow",
     category: "LockScreenLifecycle"
 )
+private let adaptiveContrastLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "AdaptiveContrast"
+)
 
 enum WallpaperLifecycleState: String, Equatable {
     case idle
@@ -44,25 +48,37 @@ enum AdaptiveTextTone: Equatable {
 struct AdaptiveGlassAppearance: Equatable {
     var topGlassAlpha: CGFloat
     var bottomGlassAlpha: CGFloat
+    var centerGlassAlpha: CGFloat
     var topProtectionOverlayOpacity: CGFloat
     var bottomProtectionOverlayOpacity: CGFloat
+    var centerProtectionOverlayOpacity: CGFloat
     var bottomButtonProtectionOpacity: CGFloat
     var bottomButtonHighlightOpacity: CGFloat
-    var topTextTone: AdaptiveTextTone
-    var bottomTextTone: AdaptiveTextTone
-    var centerTextTone: AdaptiveTextTone
+    /// One tone is intentionally shared by every text-bearing surface. The
+    /// backing/protection strength can still vary by region, but the text
+    /// never changes polarity between a button and a panel.
+    var textTone: AdaptiveTextTone
 
-    static let `default` = AdaptiveGlassAppearance(
-        topGlassAlpha: 1.0,
-        bottomGlassAlpha: 1.0,
-        topProtectionOverlayOpacity: 0.0,
-        bottomProtectionOverlayOpacity: 0.0,
-        bottomButtonProtectionOpacity: 0.0,
-        bottomButtonHighlightOpacity: 0.055,
-        topTextTone: .light,
-        bottomTextTone: .light,
-        centerTextTone: .light
+    var topTextTone: AdaptiveTextTone { textTone }
+    var bottomTextTone: AdaptiveTextTone { textTone }
+    var centerTextTone: AdaptiveTextTone { textTone }
+
+    /// Used only before the first valid frame is available. It intentionally
+    /// favors a readable black palette and local light backing instead of
+    /// briefly rendering the old white-on-wallpaper palette.
+    static let safeFallback = AdaptiveGlassAppearance(
+        topGlassAlpha: 0.92,
+        bottomGlassAlpha: 0.88,
+        centerGlassAlpha: 0.90,
+        topProtectionOverlayOpacity: 0.54,
+        bottomProtectionOverlayOpacity: 0.62,
+        centerProtectionOverlayOpacity: 0.58,
+        bottomButtonProtectionOpacity: 0.56,
+        bottomButtonHighlightOpacity: 0.018,
+        textTone: .dark
     )
+
+    static let `default` = safeFallback
 }
 
 struct CatalogVideoSource: Hashable, Codable {
@@ -970,6 +986,7 @@ final class AppViewModel: ObservableObject {
     private var suspendedPreviewRate: Float?
     private var glassAnalysisTask: Task<Void, Never>?
     private var glassAnalysisGeneration = 0
+    private var lastKnownGoodAdaptiveGlassAppearance: AdaptiveGlassAppearance = .safeFallback
     private var cacheGeneration = 0
     private var previewPreparationTask: Task<Void, Never>?
     private var previewPreparationGeneration = 0
@@ -2305,6 +2322,7 @@ final class AppViewModel: ObservableObject {
                 try clearCatalogCache()
                 try clearOptimizedVideoCache()
                 try clearRuntimePreviewCache()
+                AdaptiveContrastAnalyzer.clearCache()
                 URLCache.shared.removeAllCachedResponses()
                 CatalogPreviewImageLoader.clearCache()
 
@@ -3603,6 +3621,10 @@ final class AppViewModel: ObservableObject {
     }
 
     private func configurePreview(for url: URL?) {
+        glassAnalysisGeneration &+= 1
+        glassAnalysisTask?.cancel()
+        glassAnalysisTask = nil
+
         if let previewEndObserver {
             NotificationCenter.default.removeObserver(previewEndObserver)
             self.previewEndObserver = nil
@@ -3618,7 +3640,8 @@ final class AppViewModel: ObservableObject {
             previewPlayer?.pause()
             previewPlayer?.replaceCurrentItem(with: nil)
             previewPlayer = nil
-            adaptiveGlassAppearance = .default
+            adaptiveGlassAppearance = .safeFallback
+            lastKnownGoodAdaptiveGlassAppearance = .safeFallback
             return
         }
 
@@ -3681,327 +3704,71 @@ final class AppViewModel: ObservableObject {
 
     private func scheduleAdaptiveGlassRefresh(for url: URL) {
         glassAnalysisTask?.cancel()
+        glassAnalysisGeneration &+= 1
+        let requestedGeneration = glassAnalysisGeneration
         let requestedURL = url.standardizedFileURL
         let requestedScaleMode = scaleMode
 
-        glassAnalysisTask = Task.detached(priority: .utility) { [requestedURL, requestedScaleMode] in
-            let appearance = Self.adaptiveGlassAppearance(for: requestedURL, scaleMode: requestedScaleMode)
+        glassAnalysisTask = Task.detached(priority: .utility) { [requestedURL, requestedScaleMode, requestedGeneration] in
+            let analysis = AdaptiveContrastAnalyzer.analyze(
+                url: requestedURL,
+                scaleMode: requestedScaleMode
+            )
             guard !Task.isCancelled else { return }
+            guard let analysis else {
+                await MainActor.run { [weak self] in
+                    guard let self,
+                          requestedGeneration == self.glassAnalysisGeneration else {
+                        return
+                    }
+                    // Keep the last valid palette while a source is temporarily
+                    // undecodable. A failed analysis must never flash the old
+                    // white default or a partially computed profile.
+                    self.adaptiveGlassAppearance = self.lastKnownGoodAdaptiveGlassAppearance
+                    adaptiveContrastLogger.debug(
+                        "Appearance analysis deferred; last known good profile retained"
+                    )
+                }
+                return
+            }
 
-            await MainActor.run {
+            // A file can be replaced in place while the background decoder is
+            // working. Recheck the signature before publishing the result so
+            // an old frame can never win merely because its URL is unchanged.
+            guard AdaptiveContrastAnalyzer.sourceSignature(for: requestedURL) == analysis.sourceSignature,
+                  !Task.isCancelled else {
+                return
+            }
+
+            await MainActor.run { [weak self] in
+                guard let self,
+                      requestedGeneration == self.glassAnalysisGeneration else {
+                    return
+                }
+
                 let currentURL = self.selectedVideoURL?.standardizedFileURL
                 let appliedURL = self.appliedVideoURL?.standardizedFileURL
                 let pendingURL = self.pendingPreviewVideoURL?.standardizedFileURL
                 guard currentURL == requestedURL || appliedURL == requestedURL || pendingURL == requestedURL else {
                     return
                 }
-                self.adaptiveGlassAppearance = appearance
+
+                self.adaptiveGlassAppearance = analysis.appearance
+                self.lastKnownGoodAdaptiveGlassAppearance = analysis.appearance
+                adaptiveContrastLogger.debug(
+                    "Appearance analysis accepted: samples=\(analysis.sampleCount, privacy: .public), cache_hit=\(analysis.cacheHit, privacy: .public), selected_score=\(analysis.selectedToneScore, privacy: .public), alternate_score=\(analysis.alternateToneScore, privacy: .public)"
+                )
             }
         }
     }
 
     nonisolated static func adaptiveGlassAppearance(for url: URL, scaleMode: WallpaperScaleMode) -> AdaptiveGlassAppearance {
-        if WallpaperMediaKind.forURL(url).isStaticImage,
-           let image = NSImage(contentsOf: url),
-           let cgImage = image.cgImage(
-               forProposedRect: nil,
-               context: nil,
-               hints: nil
-           ) {
-            return adaptiveGlassAppearance(for: cgImage)
-        }
-        let asset = AVURLAsset(url: url)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = NSSize(width: 240, height: 135)
-
-        let sampleTime: Double
-        switch scaleMode {
-        case .fill:
-            sampleTime = 0.5
-        case .fit, .stretch:
-            sampleTime = 0.2
-        }
-
-        let time = CMTime(seconds: sampleTime, preferredTimescale: 600)
-        guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else {
-            return .default
-        }
-        return adaptiveGlassAppearance(for: cgImage)
+        AdaptiveContrastAnalyzer.analyze(url: url, scaleMode: scaleMode)?.appearance
+            ?? AdaptiveGlassAppearance.safeFallback
     }
 
     nonisolated static func adaptiveGlassAppearance(for cgImage: CGImage) -> AdaptiveGlassAppearance {
-        let width = 120
-        let height = 68
-        guard let pixels = rgbaPixels(from: cgImage, width: width, height: height) else {
-            return .default
-        }
-
-        let topStats = luminanceStats(
-            pixels: pixels,
-            width: width,
-            height: height,
-            region: CGRect(x: 0.26, y: 0.04, width: 0.48, height: 0.10)
-        )
-        let bottomStats = luminanceStats(
-            pixels: pixels,
-            width: width,
-            height: height,
-            region: CGRect(x: 0.08, y: 0.80, width: 0.84, height: 0.16)
-        )
-        // Text is one visual system across the app. Sample the three places
-        // where glass controls actually live, then choose the tone with the
-        // best worst-case contrast. A full-frame average is misleading for a
-        // bright sky beside a dark subject and was the source of the old
-        // black-Speed/white-buttons mismatch.
-        let sharedTextRegions = [
-            textLuminanceStats(
-                pixels: pixels,
-                width: width,
-                height: height,
-                region: regionFromTop(CGRect(x: 0.20, y: 0.02, width: 0.60, height: 0.18))
-            ),
-            textLuminanceStats(
-                pixels: pixels,
-                width: width,
-                height: height,
-                region: regionFromTop(CGRect(x: 0.05, y: 0.76, width: 0.90, height: 0.22))
-            ),
-            textLuminanceStats(
-                pixels: pixels,
-                width: width,
-                height: height,
-                region: regionFromTop(CGRect(x: 0.08, y: 0.18, width: 0.84, height: 0.58))
-            ),
-        ]
-        let sharedTextTone = textTone(for: sharedTextRegions)
-
-        let topProtection = protectionLevel(for: topStats)
-        let bottomProtection = protectionLevel(for: bottomStats)
-
-        return AdaptiveGlassAppearance(
-            topGlassAlpha: 1.0 - (0.08 * topProtection),
-            bottomGlassAlpha: 1.0 - (0.10 * bottomProtection),
-            topProtectionOverlayOpacity: 0.016 * topProtection,
-            bottomProtectionOverlayOpacity: 0.020 * bottomProtection,
-            bottomButtonProtectionOpacity: 0.014 * bottomProtection,
-            bottomButtonHighlightOpacity: max(0.018, 0.055 - (0.040 * bottomProtection)),
-            topTextTone: sharedTextTone,
-            bottomTextTone: sharedTextTone,
-            centerTextTone: sharedTextTone
-        )
-    }
-
-    nonisolated private static func regionFromTop(_ region: CGRect) -> CGRect {
-        CGRect(
-            x: region.minX,
-            y: 1.0 - region.maxY,
-            width: region.width,
-            height: region.height
-        )
-    }
-
-    nonisolated private static func textTone(for stats: TextLuminanceStats) -> AdaptiveTextTone {
-        let darkBackground = (stats.lowerQuartile * 0.70) + (stats.median * 0.30)
-        let lightBackground = (stats.upperQuartile * 0.70) + (stats.median * 0.30)
-        let darkContrast = (darkBackground + 0.05) / 0.05
-        let lightContrast = 1.05 / (lightBackground + 0.05)
-
-        // A bright highlight such as a moon must not force black text over a
-        // mostly dark panel. The reverse protects black text on mostly white
-        // snow or sky.
-        if stats.darkCoverage >= 0.36, stats.lightCoverage < 0.36 {
-            return .light
-        }
-        if stats.lightCoverage >= 0.36, stats.darkCoverage < 0.36 {
-            return .dark
-        }
-
-        return lightContrast > darkContrast ? .light : .dark
-    }
-
-    nonisolated private static func textTone(for regions: [TextLuminanceStats]) -> AdaptiveTextTone {
-        guard !regions.isEmpty else { return .light }
-
-        let worstDarkContrast = regions
-            .map { textContrast(for: .dark, stats: $0) }
-            .min() ?? 0.0
-        let worstLightContrast = regions
-            .map { textContrast(for: .light, stats: $0) }
-            .min() ?? 0.0
-
-        return worstLightContrast > worstDarkContrast ? .light : .dark
-    }
-
-    nonisolated private static func textContrast(
-        for tone: AdaptiveTextTone,
-        stats: TextLuminanceStats
-    ) -> CGFloat {
-        switch tone {
-        case .dark:
-            let darkBackground = (stats.lowerQuartile * 0.70) + (stats.median * 0.30)
-            return (darkBackground + 0.05) / 0.05
-        case .light:
-            let lightBackground = (stats.upperQuartile * 0.70) + (stats.median * 0.30)
-            return 1.05 / (lightBackground + 0.05)
-        }
-    }
-
-    nonisolated private static func protectionLevel(for stats: LuminanceStats) -> CGFloat {
-        let bright = normalized(stats.mean, lower: 0.72, upper: 0.96)
-        let flat = 1.0 - normalized(stats.standardDeviation, lower: 0.07, upper: 0.24)
-        let protection = bright * (0.35 + (flat * 0.65))
-        return min(max(protection, 0.0), 1.0)
-    }
-
-    nonisolated private static func normalized(_ value: CGFloat, lower: CGFloat, upper: CGFloat) -> CGFloat {
-        guard upper > lower else { return 0 }
-        return min(max((value - lower) / (upper - lower), 0.0), 1.0)
-    }
-
-    nonisolated private static func rgbaPixels(from cgImage: CGImage, width: Int, height: Int) -> [UInt8]? {
-        let bytesPerPixel = 4
-        let bytesPerRow = width * bytesPerPixel
-        var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
-
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                data: &pixels,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: bytesPerRow,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              ) else {
-            return nil
-        }
-
-        context.interpolationQuality = .medium
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return pixels
-    }
-
-    nonisolated private static func luminanceStats(
-        pixels: [UInt8],
-        width: Int,
-        height: Int,
-        region: CGRect
-    ) -> LuminanceStats {
-        let minX = max(Int(CGFloat(width) * region.minX), 0)
-        let maxX = min(Int(CGFloat(width) * region.maxX), width)
-        let minY = max(Int(CGFloat(height) * region.minY), 0)
-        let maxY = min(Int(CGFloat(height) * region.maxY), height)
-
-        var luminanceValues: [CGFloat] = []
-        luminanceValues.reserveCapacity(max((maxX - minX) * (maxY - minY), 1))
-
-        for y in minY..<maxY {
-            for x in minX..<maxX {
-                let offset = ((y * width) + x) * 4
-                let red = CGFloat(pixels[offset]) / 255.0
-                let green = CGFloat(pixels[offset + 1]) / 255.0
-                let blue = CGFloat(pixels[offset + 2]) / 255.0
-                let luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
-                luminanceValues.append(luminance)
-            }
-        }
-
-        guard !luminanceValues.isEmpty else {
-            return LuminanceStats(mean: 0.0, standardDeviation: 0.0)
-        }
-
-        let mean = luminanceValues.reduce(0, +) / CGFloat(luminanceValues.count)
-        let variance = luminanceValues.reduce(0) { partialResult, value in
-            let delta = value - mean
-            return partialResult + (delta * delta)
-        } / CGFloat(luminanceValues.count)
-
-        return LuminanceStats(mean: mean, standardDeviation: sqrt(variance))
-    }
-
-    nonisolated private static func textLuminanceStats(
-        pixels: [UInt8],
-        width: Int,
-        height: Int,
-        region: CGRect
-    ) -> TextLuminanceStats {
-        let minX = max(Int(CGFloat(width) * region.minX), 0)
-        let maxX = min(Int(CGFloat(width) * region.maxX), width)
-        let minY = max(Int(CGFloat(height) * region.minY), 0)
-        let maxY = min(Int(CGFloat(height) * region.maxY), height)
-
-        var luminanceValues: [CGFloat] = []
-        luminanceValues.reserveCapacity(max((maxX - minX) * (maxY - minY), 1))
-
-        guard minX < maxX, minY < maxY else {
-            return .default
-        }
-
-        for y in minY..<maxY {
-            for x in minX..<maxX {
-                let offset = ((y * width) + x) * 4
-                let red = linearizeSRGB(CGFloat(pixels[offset]) / 255.0)
-                let green = linearizeSRGB(CGFloat(pixels[offset + 1]) / 255.0)
-                let blue = linearizeSRGB(CGFloat(pixels[offset + 2]) / 255.0)
-                luminanceValues.append((0.2126 * red) + (0.7152 * green) + (0.0722 * blue))
-            }
-        }
-
-        guard !luminanceValues.isEmpty else {
-            return .default
-        }
-
-        luminanceValues.sort()
-        let darkCount = luminanceValues.reduce(into: 0) { count, luminance in
-            if luminance < 0.18 { count += 1 }
-        }
-        let lightCount = luminanceValues.reduce(into: 0) { count, luminance in
-            if luminance > 0.65 { count += 1 }
-        }
-
-        return TextLuminanceStats(
-            lowerQuartile: percentile(luminanceValues, at: 0.25),
-            median: percentile(luminanceValues, at: 0.50),
-            upperQuartile: percentile(luminanceValues, at: 0.75),
-            darkCoverage: CGFloat(darkCount) / CGFloat(luminanceValues.count),
-            lightCoverage: CGFloat(lightCount) / CGFloat(luminanceValues.count)
-        )
-    }
-
-    nonisolated private static func linearizeSRGB(_ value: CGFloat) -> CGFloat {
-        if value <= 0.04045 {
-            return value / 12.92
-        }
-        return pow((value + 0.055) / 1.055, 2.4)
-    }
-
-    nonisolated private static func percentile(_ values: [CGFloat], at fraction: CGFloat) -> CGFloat {
-        guard !values.isEmpty else { return 0.0 }
-        let clampedFraction = min(max(fraction, 0.0), 1.0)
-        let index = Int((CGFloat(values.count - 1) * clampedFraction).rounded())
-        return values[min(max(index, 0), values.count - 1)]
-    }
-
-    private struct LuminanceStats {
-        let mean: CGFloat
-        let standardDeviation: CGFloat
-    }
-
-    private struct TextLuminanceStats {
-        let lowerQuartile: CGFloat
-        let median: CGFloat
-        let upperQuartile: CGFloat
-        let darkCoverage: CGFloat
-        let lightCoverage: CGFloat
-
-        static let `default` = TextLuminanceStats(
-            lowerQuartile: 0.18,
-            median: 0.18,
-            upperQuartile: 0.18,
-            darkCoverage: 0.0,
-            lightCoverage: 0.0
-        )
+        AdaptiveContrastAnalyzer.appearance(for: cgImage)
     }
 
     private func previewPlaybackRate() -> Float {

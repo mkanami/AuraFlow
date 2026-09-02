@@ -1,5 +1,6 @@
 import Testing
 import AVFoundation
+import AppKit
 @testable import WallpaperControlApp
 
 private func writeTinyGIF(to url: URL) throws {
@@ -34,6 +35,112 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
     )!
     return context.makeImage()!
+}
+
+private func horizontalSplitImage(
+    width: Int,
+    height: Int,
+    topValue: UInt8,
+    bottomValue: UInt8
+) -> CGImage {
+    let bytesPerPixel = 4
+    let bytesPerRow = width * bytesPerPixel
+    var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+
+    for y in 0..<height {
+        let value = y < height / 2 ? bottomValue : topValue
+        for x in 0..<width {
+            let offset = ((y * width) + x) * bytesPerPixel
+            pixels[offset] = value
+            pixels[offset + 1] = value
+            pixels[offset + 2] = value
+            pixels[offset + 3] = 255
+        }
+    }
+
+    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+    let context = CGContext(
+        data: &pixels,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: bytesPerRow,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    return context.makeImage()!
+}
+
+private func solidColorImage(
+    width: Int,
+    height: Int,
+    red: UInt8,
+    green: UInt8,
+    blue: UInt8
+) -> CGImage {
+    let bytesPerPixel = 4
+    let bytesPerRow = width * bytesPerPixel
+    var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+
+    for y in 0..<height {
+        for x in 0..<width {
+            let offset = ((y * width) + x) * bytesPerPixel
+            pixels[offset] = red
+            pixels[offset + 1] = green
+            pixels[offset + 2] = blue
+            pixels[offset + 3] = 255
+        }
+    }
+
+    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+    let context = CGContext(
+        data: &pixels,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: bytesPerRow,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    return context.makeImage()!
+}
+
+private func patternedImage(
+    width: Int,
+    height: Int,
+    colorAt: (Int, Int) -> (UInt8, UInt8, UInt8)
+) -> CGImage {
+    let bytesPerPixel = 4
+    let bytesPerRow = width * bytesPerPixel
+    var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+
+    for y in 0..<height {
+        for x in 0..<width {
+            let (red, green, blue) = colorAt(x, y)
+            let offset = ((y * width) + x) * bytesPerPixel
+            pixels[offset] = red
+            pixels[offset + 1] = green
+            pixels[offset + 2] = blue
+            pixels[offset + 3] = 255
+        }
+    }
+
+    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+    let context = CGContext(
+        data: &pixels,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: bytesPerRow,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    return context.makeImage()!
+}
+
+private func pngData(for image: CGImage) -> Data {
+    NSBitmapImageRep(cgImage: image)
+        .representation(using: .png, properties: [:])!
 }
 
 @Test func catalogOriginHeaderValueIncludesSchemeAndHost() {
@@ -513,7 +620,11 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 
     #expect(appearance.topGlassAlpha == 1.0)
     #expect(appearance.bottomGlassAlpha == 1.0)
+    #expect(appearance.centerGlassAlpha == 1.0)
     #expect(appearance.bottomButtonProtectionOpacity == 0.0)
+    #expect(appearance.topTextTone == .light)
+    #expect(appearance.bottomTextTone == .light)
+    #expect(appearance.centerTextTone == .light)
 }
 
 @Test func adaptiveGlassAppearanceProtectsBrightFlatWallpaper() {
@@ -522,8 +633,130 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 
     #expect(appearance.topGlassAlpha < 0.97)
     #expect(appearance.bottomGlassAlpha < 0.95)
+    #expect(appearance.centerGlassAlpha < 0.95)
     #expect(appearance.bottomButtonProtectionOpacity > 0.005)
     #expect(appearance.bottomButtonHighlightOpacity < 0.04)
+    #expect(appearance.topTextTone == .dark)
+    #expect(appearance.bottomTextTone == .dark)
+    #expect(appearance.centerTextTone == .dark)
+}
+
+@Test func adaptiveGlassAppearanceUsesOneToneEverywhere() {
+    let image = horizontalSplitImage(
+        width: 120,
+        height: 68,
+        topValue: 248,
+        bottomValue: 36
+    )
+    let appearance = AppViewModel.adaptiveGlassAppearance(for: image)
+
+    #expect(appearance.textTone == appearance.topTextTone)
+    #expect(appearance.textTone == appearance.bottomTextTone)
+    #expect(appearance.textTone == appearance.centerTextTone)
+    #expect(appearance.centerProtectionOverlayOpacity >= 0.0)
+}
+
+@Test func adaptiveGlassAppearanceChoosesBlackForLightPastelWallpaper() {
+    let image = solidColorImage(
+        width: 144,
+        height: 90,
+        red: 255,
+        green: 218,
+        blue: 226
+    )
+    let appearance = AppViewModel.adaptiveGlassAppearance(for: image)
+
+    #expect(appearance.textTone == .dark)
+    #expect(appearance.topTextTone == .dark)
+    #expect(appearance.centerTextTone == .dark)
+    #expect(appearance.bottomTextTone == .dark)
+    #expect(appearance.bottomButtonProtectionOpacity > 0.005)
+}
+
+@Test func adaptiveGlassAppearanceAggregatesBrightAndDarkVideoFrames() {
+    let bright = solidImage(width: 144, height: 90, value: 248)
+    let dark = solidImage(width: 144, height: 90, value: 28)
+    let appearance = AdaptiveContrastAnalyzer.appearance(for: [bright, dark])
+
+    #expect(appearance.textTone == .dark)
+    #expect(appearance.textTone == appearance.topTextTone)
+    #expect(appearance.textTone == appearance.centerTextTone)
+    #expect(appearance.textTone == appearance.bottomTextTone)
+    #expect(appearance.centerProtectionOverlayOpacity >= 0.0)
+}
+
+@Test func adaptiveContrastAnalyzerHandlesWhiteGradientAndCheckerboard() {
+    let white = solidColorImage(width: 144, height: 90, red: 255, green: 255, blue: 255)
+    let gradient = patternedImage(width: 144, height: 90) { x, _ in
+        let value = UInt8((Double(x) / 143.0 * 255.0).rounded())
+        return (value, value, value)
+    }
+    let checkerboard = patternedImage(width: 144, height: 90) { x, y in
+        let value: UInt8 = ((x / 12) + (y / 12)).isMultiple(of: 2) ? 245 : 24
+        return (value, value, value)
+    }
+
+    let appearances = [
+        AdaptiveContrastAnalyzer.appearance(for: white),
+        AdaptiveContrastAnalyzer.appearance(for: gradient),
+        AdaptiveContrastAnalyzer.appearance(for: checkerboard),
+    ]
+
+    #expect(appearances[0].textTone == .dark)
+    for appearance in appearances {
+        #expect(appearance.textTone == appearance.topTextTone)
+        #expect(appearance.textTone == appearance.centerTextTone)
+        #expect(appearance.textTone == appearance.bottomTextTone)
+        #expect(appearance.topProtectionOverlayOpacity >= 0.0)
+        #expect(appearance.topProtectionOverlayOpacity <= 0.68)
+        #expect(appearance.centerProtectionOverlayOpacity >= 0.0)
+        #expect(appearance.centerProtectionOverlayOpacity <= 0.68)
+        #expect(appearance.bottomProtectionOverlayOpacity >= 0.0)
+        #expect(appearance.bottomProtectionOverlayOpacity <= 0.68)
+    }
+}
+
+@Test func adaptiveContrastAnalyzerCachesAndInvalidatesByContentSignature() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("adaptive-contrast-cache-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let imageURL = root.appendingPathComponent("wallpaper.png")
+    try pngData(for: solidColorImage(
+        width: 144,
+        height: 90,
+        red: 255,
+        green: 218,
+        blue: 226
+    )).write(to: imageURL, options: .atomic)
+
+    AdaptiveContrastAnalyzer.clearCache()
+    let first = AdaptiveContrastAnalyzer.analyze(url: imageURL, scaleMode: .fill)
+    let second = AdaptiveContrastAnalyzer.analyze(url: imageURL, scaleMode: .fill)
+    #expect(first?.cacheHit == false)
+    #expect(second?.cacheHit == true)
+    #expect(first?.sourceSignature == second?.sourceSignature)
+
+    try pngData(for: solidImage(width: 144, height: 90, value: 28))
+        .write(to: imageURL, options: .atomic)
+    let third = AdaptiveContrastAnalyzer.analyze(url: imageURL, scaleMode: .fill)
+
+    #expect(third?.cacheHit == false)
+    #expect(third?.sourceSignature != first?.sourceSignature)
+    #expect(third?.appearance.textTone == .light)
+}
+
+@Test func adaptiveContrastAnalyzerUsesSafeFallbackForUnreadableSource() throws {
+    let url = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("adaptive-contrast-invalid-\(UUID().uuidString).mp4")
+    try Data("not a video".utf8).write(to: url, options: .atomic)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    #expect(AdaptiveContrastAnalyzer.analyze(url: url, scaleMode: .fill) == nil)
+    let fallback = AppViewModel.adaptiveGlassAppearance(for: url, scaleMode: .fill)
+    #expect(fallback.textTone == .dark)
+    #expect(fallback.bottomProtectionOverlayOpacity > 0.5)
 }
 
 @MainActor

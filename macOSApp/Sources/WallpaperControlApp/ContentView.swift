@@ -40,36 +40,36 @@ private extension AdaptiveTextTone {
     var primaryTextColor: Color {
         switch self {
         case .dark:
-            return Color.black.opacity(0.82)
+            return Color.black.opacity(0.92)
         case .light:
-            return Color.white.opacity(0.94)
+            return Color.white.opacity(0.98)
         }
     }
 
     var secondaryTextColor: Color {
         switch self {
         case .dark:
-            return Color.black.opacity(0.60)
+            return Color.black.opacity(0.72)
         case .light:
-            return Color.white.opacity(0.78)
+            return Color.white.opacity(0.90)
         }
     }
 
     var disabledTextColor: Color {
         switch self {
         case .dark:
-            return Color.black.opacity(0.34)
+            return Color.black.opacity(0.42)
         case .light:
-            return Color.white.opacity(0.50)
+            return Color.white.opacity(0.58)
         }
     }
 
     var textShadowColor: Color {
         switch self {
         case .dark:
-            return Color.white.opacity(0.18)
+            return Color.white.opacity(0.24)
         case .light:
-            return Color.black.opacity(0.18)
+            return Color.black.opacity(0.26)
         }
     }
 }
@@ -152,6 +152,9 @@ struct ContentView: View {
             await viewModel.loadStatus()
         }
         .environment(\.adaptiveGlassAppearance, viewModel.adaptiveGlassAppearance)
+        // Keep every text-bearing control on the same adaptive polarity. The
+        // individual surfaces still choose their own backing strength below.
+        .foregroundStyle(viewModel.adaptiveGlassAppearance.textTone.primaryTextColor)
     }
 
     @ViewBuilder
@@ -614,7 +617,8 @@ struct ControlPanel: View {
                 cornerRadius: 14,
                 material: .clear,
                 alphaMultiplier: adaptiveGlassAppearance.bottomGlassAlpha,
-                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity
+                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.bottomTextTone.contrastSurfaceColor
             )
         )
         .overlay(
@@ -758,7 +762,10 @@ struct SettingsPopupCard: View {
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 18,
-                material: .clear
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.centerGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.centerProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor
             )
         )
         .overlay(
@@ -1077,7 +1084,10 @@ struct MonitoringPopupCard: View {
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 18,
-                material: .clear
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.centerGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.centerProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor
             )
         )
         .overlay(
@@ -1213,7 +1223,10 @@ struct DownloadedWallpapersCard: View {
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 18,
-                material: .clear
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.centerGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.centerProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor
             )
         )
         .overlay(
@@ -1363,21 +1376,7 @@ struct WallpaperCatalogView: View {
 
                     Spacer(minLength: 8)
 
-                    TextField("Search catalog", text: $viewModel.catalogSearchText)
-                        .textFieldStyle(.plain)
-                        .font(.body.weight(.medium))
-                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-                        .padding(.vertical, 9)
-                        .padding(.horizontal, 12)
-                        .background(AuraGlassInsetCard(emphasized: true))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(
-                                    adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.12),
-                                    lineWidth: 0.9
-                                )
-                        )
-                        .frame(maxWidth: 260)
+                    catalogSearchField
                 }
                 .zIndex(9)
             }
@@ -1396,7 +1395,10 @@ struct WallpaperCatalogView: View {
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 14,
-                material: .clear
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.bottomGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.bottomTextTone.contrastSurfaceColor
             )
         )
         .overlay(
@@ -1406,6 +1408,41 @@ struct WallpaperCatalogView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: Color.black.opacity(0.26), radius: 12, x: 0, y: 7)
         .environment(\.colorScheme, .dark)
+    }
+
+    private var catalogSearchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+
+            ZStack(alignment: .leading) {
+                TextField("", text: $viewModel.catalogSearchText)
+                    .textFieldStyle(.plain)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+
+                if viewModel.catalogSearchText.isEmpty {
+                    Text("Search catalog")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+        .padding(.vertical, 9)
+        .padding(.horizontal, 12)
+        .background(AuraGlassInsetCard(emphasized: true))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(
+                    adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.12),
+                    lineWidth: 0.9
+                )
+        )
+        .frame(maxWidth: 260)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Search catalog")
     }
 
     @ViewBuilder
@@ -1777,7 +1814,8 @@ struct SpeedOverlay: View {
             AuraGlassCapsuleSurface(
                 material: .clear,
                 alphaMultiplier: adaptiveGlassAppearance.topGlassAlpha,
-                protectionOverlayOpacity: adaptiveGlassAppearance.topProtectionOverlayOpacity
+                protectionOverlayOpacity: adaptiveGlassAppearance.topProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.topTextTone.contrastSurfaceColor
             )
         )
         .overlay(
@@ -1786,6 +1824,7 @@ struct SpeedOverlay: View {
         .shadow(color: Color.black.opacity(0.16), radius: 4, x: 0, y: 2)
         .environment(\.colorScheme, .dark)
     }
+
 }
 
 private struct AuraLegacySpeedSlider: View {
@@ -1982,6 +2021,8 @@ struct VisualEffectView: NSViewRepresentable {
 }
 
 struct DisabledOverlay: View {
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+
     var body: some View {
         RoundedRectangle(cornerRadius: 22, style: .continuous)
             .fill(Color.black.opacity(0.5))
@@ -1991,7 +2032,7 @@ struct DisabledOverlay: View {
                         .font(.title3.weight(.semibold))
                     Text("Native wallpaper runtime unavailable")
                         .font(.callout)
-                        .foregroundColor(.white.opacity(0.92))
+                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
                 }
                 .padding(14)
             )
@@ -2104,9 +2145,13 @@ private struct AuraPanelButton: View {
                         shape.fill(
                             textTone.contrastSurfaceColor.opacity(
                                 isEnabled
-                                    ? (configuration.isPressed
-                                        ? 0.045
-                                        : (selected ? 0.065 : (emphasized ? 0.045 : 0.022)))
+                                    ? min(
+                                        0.34,
+                                        0.035
+                                            + adaptiveGlassAppearance.bottomButtonProtectionOpacity
+                                            + (configuration.isPressed ? 0.025 : 0.0)
+                                            + (selected ? 0.018 : (emphasized ? 0.010 : 0.0))
+                                    )
                                     : 0.012
                             )
                         )
@@ -2295,8 +2340,13 @@ private struct AuraGlassButton: View {
                         shape.fill(
                             adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(
                                 isEnabled
-                                    ? (configuration.isPressed ? 0.045 : 0.022)
-                                    : 0.012
+                                    ? min(
+                                        0.34,
+                                        0.045
+                                            + (adaptiveGlassAppearance.centerProtectionOverlayOpacity * 0.80)
+                                            + (configuration.isPressed ? 0.025 : 0.0)
+                                    )
+                                    : 0.016
                             )
                         )
                     } else {
@@ -2375,6 +2425,7 @@ private struct AuraGlassRoundedSurface: View {
     var washColor: Color = .clear
     var alphaMultiplier: CGFloat = 1.0
     var protectionOverlayOpacity: CGFloat = 0.0
+    var protectionOverlayColor: Color = .black
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -2403,7 +2454,7 @@ private struct AuraGlassRoundedSurface: View {
         }
         .overlay {
             if protectionOverlayOpacity > 0.001 {
-                shape.fill(Color.black.opacity(protectionOverlayOpacity))
+                shape.fill(protectionOverlayColor.opacity(protectionOverlayOpacity))
             }
         }
         .clipShape(shape)
@@ -2415,6 +2466,7 @@ private struct AuraGlassCapsuleSurface: View {
     var washColor: Color = .clear
     var alphaMultiplier: CGFloat = 1.0
     var protectionOverlayOpacity: CGFloat = 0.0
+    var protectionOverlayColor: Color = .black
 
     var body: some View {
         let shape = Capsule()
@@ -2438,7 +2490,7 @@ private struct AuraGlassCapsuleSurface: View {
         }
         .overlay {
             if protectionOverlayOpacity > 0.001 {
-                shape.fill(Color.black.opacity(protectionOverlayOpacity))
+                shape.fill(protectionOverlayColor.opacity(protectionOverlayOpacity))
             }
         }
         .clipShape(shape)
@@ -2483,11 +2535,23 @@ struct AuraGlassInsetCard: View {
                     .fill(Color.clear)
                     .glassEffect(.clear.interactive(), in: shape)
                 shape.fill(
-                    textTone.contrastSurfaceColor.opacity(emphasized ? 0.10 : 0.06)
+                    textTone.contrastSurfaceColor.opacity(
+                        min(
+                            0.34,
+                            (emphasized ? 0.08 : 0.06)
+                                + (adaptiveGlassAppearance.centerProtectionOverlayOpacity * 0.75)
+                        )
+                    )
                 )
             } else {
                 shape.fill(
-                    textTone.contrastSurfaceColor.opacity(emphasized ? 0.30 : 0.22)
+                    textTone.contrastSurfaceColor.opacity(
+                        min(
+                            0.44,
+                            (emphasized ? 0.30 : 0.22)
+                                + (adaptiveGlassAppearance.centerProtectionOverlayOpacity * 0.30)
+                        )
+                    )
                 )
             }
             LinearGradient(
@@ -2556,7 +2620,8 @@ private struct AuraNotificationBanner: View {
                 cornerRadius: 14,
                 material: .clear,
                 alphaMultiplier: adaptiveGlassAppearance.bottomGlassAlpha,
-                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity
+                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.bottomTextTone.contrastSurfaceColor
             )
         )
         .overlay(
