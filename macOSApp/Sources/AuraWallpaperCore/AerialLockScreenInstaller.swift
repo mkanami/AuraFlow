@@ -118,7 +118,7 @@ public enum AerialLockScreenInstallerError: LocalizedError {
 /// screen. Apple does not publish a third-party wallpaper extension API, so
 /// AuraFlow reserves one already-downloaded Aerial cache slot and restores
 /// every touched file when the feature is disabled.
-public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
+public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     private typealias ConditionalSystemAction =
         (_ shouldProceed: () -> Bool) throws -> Void
 
@@ -140,8 +140,12 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     private let operationLock = NSLock()
     var lockOnlyRemovalCommitHook: (() -> Void)?
     var lockOnlyRepairCommitHook: (() -> Void)?
-    private lazy var supportedProviderAssetIDs =
+    private var supportedProviderAssetIDs: Set<String> {
+        // The system extension can disappear after the process starts (for
+        // example after a macOS update). Keep availability live so a stale
+        // installation marker never keeps selecting the modern adapter.
         loadSupportedProviderAssetIDs()
+    }
 
     private var usesCanonicalWallpaperStore: Bool {
         wallpaperStoreURL.standardizedFileURL

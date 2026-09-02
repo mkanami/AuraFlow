@@ -36,6 +36,12 @@ final class LegacyMacOSAdapter: LockScreenSaverInstalling {
     }
 
     func installLockScreenOnly(videoURL: URL) throws {
+        guard capabilities.supportsLockScreenOnly else {
+            throw LockScreenPlatformError.unsupported(
+                capabilities.availabilityMessage
+                    ?? "Lock Screen-only wallpaper is unavailable."
+            )
+        }
         try requireAvailability()
         try installer.installLockScreenOnly(videoURL: videoURL)
     }
@@ -117,13 +123,7 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     var capabilities: PlatformCapabilities {
-        if modern.capabilities.isAvailable {
-            return modern.capabilities
-        }
-        if legacy.capabilities.isAvailable {
-            return legacy.capabilities
-        }
-        return unsupported.capabilities
+        selectedPlatform.capabilities
     }
 
     var isInstalled: Bool {
@@ -131,13 +131,10 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     var installationConfirmed: Bool {
-        if modern.capabilities.isAvailable || modern.isInstalled {
+        if modern.capabilities.isAvailable {
             return modern.installationConfirmed && legacy.installationConfirmed
         }
-        if legacy.capabilities.isAvailable {
-            return legacy.installationConfirmed
-        }
-        return false
+        return selectedPlatform.installationConfirmed
     }
 
     func install(_ media: URL) throws {
@@ -165,23 +162,13 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     func prepareLockScreenMedia(videoURL: URL) throws {
-        if modern.capabilities.isAvailable {
-            try modern.prepareLockScreenMedia(videoURL: videoURL)
-        } else {
-            try legacy.prepareLockScreenMedia(videoURL: videoURL)
-        }
+        try selectedPlatform.prepareLockScreenMedia(videoURL: videoURL)
     }
 
     func lockScreenOnlyStatus(
         videoURL: URL?
     ) -> LockScreenOnlyGenerationStatus {
-        if modern.isInstalled {
-            return modern.lockScreenOnlyStatus(videoURL: videoURL)
-        }
-        if legacy.isInstalled || legacy.capabilities.isAvailable {
-            return legacy.lockScreenOnlyStatus(videoURL: videoURL)
-        }
-        return unsupported.lockScreenOnlyStatus(videoURL: videoURL)
+        selectedPlatform.lockScreenOnlyStatus(videoURL: videoURL)
     }
 
     @discardableResult
@@ -189,19 +176,7 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
     ) throws -> Bool {
-        if modern.isInstalled {
-            return try modern.repairLockScreenOnlyGeneration(
-                videoURL: videoURL,
-                shouldProceed: shouldProceed
-            )
-        }
-        if legacy.capabilities.isAvailable {
-            return try legacy.repairLockScreenOnlyGeneration(
-                videoURL: videoURL,
-                shouldProceed: shouldProceed
-            )
-        }
-        return try unsupported.repairLockScreenOnlyGeneration(
+        try selectedPlatform.repairLockScreenOnlyGeneration(
             videoURL: videoURL,
             shouldProceed: shouldProceed
         )
@@ -239,25 +214,26 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     var requiresLockScreenSessionPromotion: Bool {
-        modern.capabilities.isAvailable && modern.requiresLockScreenSessionPromotion
+        guard modern.capabilities.isAvailable else { return false }
+        return modern.requiresLockScreenSessionPromotion
     }
 
     @discardableResult
     func activateLockScreenForCurrentSession() throws -> Bool {
-        guard modern.capabilities.isAvailable else { return false }
-        return try modern.activateLockScreenForCurrentSession()
+        guard selectedPlatform === modern else { return false }
+        return try selectedPlatform.activateLockScreenForCurrentSession()
     }
 
     @discardableResult
     func restoreDesktopAfterLockScreenSession() throws -> Bool {
-        guard modern.capabilities.isAvailable else { return false }
-        return try modern.restoreDesktopAfterLockScreenSession()
+        guard selectedPlatform === modern else { return false }
+        return try selectedPlatform.restoreDesktopAfterLockScreenSession()
     }
 
     @discardableResult
     func applyCurrentDesktopFallback() -> Bool {
-        guard modern.capabilities.isAvailable else { return false }
-        return modern.applyCurrentDesktopFallback()
+        guard selectedPlatform === modern else { return false }
+        return selectedPlatform.applyCurrentDesktopFallback()
     }
 
     @discardableResult
@@ -265,13 +241,7 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
     ) throws -> Bool {
-        if modern.isInstalled {
-            return try modern.repair(
-                videoURL: videoURL,
-                shouldProceed: shouldProceed
-            )
-        }
-        return try legacy.repair(
+        try selectedPlatform.repair(
             videoURL: videoURL,
             shouldProceed: shouldProceed
         )
@@ -282,27 +252,29 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
     ) throws -> Bool {
-        if modern.isInstalled {
-            return try modern.rearmForNextLock(
-                videoURL: videoURL,
-                shouldProceed: shouldProceed
-            )
-        }
-        return try legacy.rearmForNextLock(
+        try selectedPlatform.rearmForNextLock(
             videoURL: videoURL,
             shouldProceed: shouldProceed
         )
+    }
+
+    private var selectedPlatform: LockScreenPlatformOperating {
+        if modern.capabilities.isAvailable {
+            return modern
+        }
+        if legacy.capabilities.isAvailable {
+            return legacy
+        }
+        return unsupported
     }
 
     private func installModernAndLegacy(
         videoURL: URL,
         lockScreenOnly: Bool
     ) throws {
-        if lockScreenOnly {
-            try legacy.installLockScreenOnly(videoURL: videoURL)
-        } else {
-            try legacy.install(videoURL: videoURL)
-        }
+        // The legacy saver is only the compatibility companion here. Its
+        // standalone Lock Screen-only mode is intentionally unavailable.
+        try legacy.install(videoURL: videoURL)
 
         do {
             if lockScreenOnly {

@@ -1537,6 +1537,16 @@ private struct AerialLockScreenFixture {
     }
 }
 
+@Test func modernProviderRemovalInvalidatesAvailability() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    #expect(fixture.installer.isAvailable)
+    try FileManager.default.removeItem(at: fixture.providerURL)
+
+    #expect(fixture.installer.isAvailable == false)
+}
+
 @Test func lockOnlyFailsWithoutOverwritingWhenEverySlotIsOccupied() throws {
     let fixture = try AerialLockScreenFixture(
         hasExistingAsset: true,

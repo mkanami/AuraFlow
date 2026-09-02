@@ -38,12 +38,12 @@ public struct PlatformCapabilities: Equatable, Sendable {
         platformName: "Legacy macOS screen saver",
         minimumMajorOSVersion: 13,
         supportsLockScreen: true,
-        supportsLockScreenOnly: true,
+        supportsLockScreenOnly: false,
         supportsSecureLockScreen: false,
         supportsAnimatedMedia: true,
         usesPrivateWallpaperFramework: false,
         availabilityMessage:
-            "Secure Aerial Lock Screen requires macOS 26 or later."
+            "The legacy screen saver can provide Lock Screen wallpaper. Lock Screen-only mode requires macOS 26 or later."
     )
 
     public static func modernMacOS26(isAvailable: Bool) -> PlatformCapabilities {
@@ -241,6 +241,14 @@ public protocol LockScreenSaverInstalling: LockScreenPlatformOperating {
     ) throws -> Bool
     func uninstall() throws
     func uninstallLockScreenOnlyPreservingCurrentDesktop() throws
+}
+
+/// Injectable implementation boundary for the native macOS 26 provider.
+/// Keeping the concrete Aerial installer out of the adapter makes platform
+/// selection and provider-removal behavior testable without touching the real
+/// wallpaper store.
+public protocol ModernLockScreenInstalling: LockScreenSaverInstalling {
+    var isAvailable: Bool { get }
 }
 
 public extension LockScreenSaverInstalling {

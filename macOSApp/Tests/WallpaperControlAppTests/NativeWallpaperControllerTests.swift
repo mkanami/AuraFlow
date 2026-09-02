@@ -49,6 +49,11 @@ private struct NativeRuntimeFixture {
 }
 
 private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling {
+    var capabilities: PlatformCapabilities {
+        // These controller tests exercise the dedicated native route. The
+        // production legacy adapter advertises this capability as unavailable.
+        .modernMacOS26(isAvailable: true)
+    }
     private(set) var installedVideoURL: URL?
     private(set) var installedLockScreenOnlyVideoURL: URL?
     private(set) var uninstallCallCount = 0
@@ -169,6 +174,29 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(installer.installedLockScreenOnlyVideoURL == fixture.videoURL)
     #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
     #expect(FileManager.default.fileExists(atPath: fixture.store.lastFrameURL.path))
+}
+
+@Test func legacyScreenSaverDoesNotLaunchLockScreenOnlyAgent() throws {
+    let fixture = try NativeRuntimeFixture("legacy-lock-screen-only")
+    defer { fixture.cleanup() }
+
+    let installer = RecordingLockScreenSaverInstaller()
+    let legacyPlatform = LegacyMacOSAdapter(
+        installer: installer,
+        isAvailable: true
+    )
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: legacyPlatform
+    )
+
+    #expect(legacyPlatform.capabilities.supportsLockScreenOnly == false)
+    #expect(throws: NativeWallpaperControllerError.self) {
+        try controller.installLockScreenOnly(videoURL: fixture.videoURL)
+    }
+    #expect(fixture.store.loadPID() == nil)
+    #expect(installer.installedLockScreenOnlyVideoURL == nil)
 }
 
 @Test func nativeLockScreenOnlyReplacesRunningDesktopAgent() throws {

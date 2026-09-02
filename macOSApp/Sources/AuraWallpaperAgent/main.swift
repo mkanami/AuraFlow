@@ -38,7 +38,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let store = WallpaperRuntimeStore()
     private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
     private let lockScreenPlatform: LockScreenPlatformOperating =
-        ModernMacOS26Adapter()
+        LockScreenPlatformFactory.makeAgentPlatform()
     private let nativeLockScreenBridge = NativeLockScreenWallpaperBridge()
     private let lockScreenRepairQueue = DispatchQueue(
         label: "com.auraflow.lock-screen-repair",
@@ -118,6 +118,16 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             "AuraFlow wallpaper agent is active"
         )
         NSApp.setActivationPolicy(.accessory)
+        if lockScreenOnlyMode,
+           !lockScreenPlatform.capabilities.supportsLockScreenOnly {
+            // The legacy screen saver is managed by the main app. An old
+            // launch command must not keep a native-only agent alive after a
+            // downgrade or removal of the macOS 26 provider.
+            store.markLockScreenAgentReady(false)
+            writeHealth(reason: "lock-screen-agent-disabled-for-platform")
+            NSApp.terminate(nil)
+            return
+        }
         publishRearmGuardState()
         try? store.savePID()
         store.markPaused(false)
@@ -140,6 +150,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 reason: "startup"
             )
         } else if config.show_on_lock_screen == true,
+                  lockScreenPlatform.capabilities.supportsSecureLockScreen,
                   lockScreenPlatform.isInstalled {
             // Start owns both surfaces. Prepare the native bridge in advance
             // so Stop can freeze the Lock Screen layer without installing or
@@ -455,7 +466,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     .sessionLocked,
                     reason: "session-locked"
                 )
-            } else {
+            } else if lockScreenPlatform.capabilities.supportsSecureLockScreen {
                 nativeLockScreenBridge.showForLockTransition()
             }
             writeHealth(reason: "session-inactive")
@@ -747,7 +758,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func prepareNativeLockScreenBridgeForStart() {
-        guard !lockScreenOnlyMode else { return }
+        guard !lockScreenOnlyMode,
+              lockScreenPlatform.capabilities.supportsSecureLockScreen
+        else { return }
         nativeLockScreenBridge.prepare { [weak self] succeeded in
             guard let self, !self.isTerminating else { return }
             self.writeHealth(
@@ -762,7 +775,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         _ event: LockScreenLifecycleEvent,
         reason: String
     ) {
-        guard lockScreenOnlyMode, !isTerminating else { return }
+        guard lockScreenOnlyMode,
+              lockScreenPlatform.capabilities.supportsLockScreenOnly,
+              !isTerminating
+        else { return }
         guard let operation = lockScreenLifecycleCoordinator.enqueue(event)
         else {
             return

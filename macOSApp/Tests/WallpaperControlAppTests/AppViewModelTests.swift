@@ -1496,6 +1496,8 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 final class MockNativeWallpaperController: WallpaperControlling {
+    var lockScreenCapabilities: PlatformCapabilities =
+        .modernMacOS26(isAvailable: true)
     var configuredVideoURL: URL?
     var lastConfiguredVideoURL: URL?
     var startCallCount = 0

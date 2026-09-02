@@ -4,11 +4,11 @@ import Foundation
 /// Lock Screen. All knowledge of the private installer stays behind this
 /// type; callers use only `LockScreenPlatformOperating`.
 public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
-    private let installer: AerialLockScreenInstaller
+    private let installer: ModernLockScreenInstalling
     private let operatingSystemVersion: OperatingSystemVersion
 
     public init(
-        installer: AerialLockScreenInstaller = AerialLockScreenInstaller(),
+        installer: ModernLockScreenInstalling = AerialLockScreenInstaller(),
         operatingSystemVersion: OperatingSystemVersion = ProcessInfo.processInfo
             .operatingSystemVersion
     ) {
@@ -158,6 +158,37 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
                     ?? "Lock Screen is unavailable on this macOS version."
             )
         }
+    }
+}
+
+/// Builds the platform implementation used by the standalone wallpaper agent.
+/// The legacy screen saver is owned by the main application target, so the
+/// agent must not enter the native Aerial lifecycle on older macOS releases or
+/// when the modern provider has disappeared after an update.
+public enum LockScreenPlatformFactory {
+    public static func makeAgentPlatform(
+        operatingSystemVersion: OperatingSystemVersion = ProcessInfo.processInfo
+            .operatingSystemVersion,
+        modernInstaller: ModernLockScreenInstalling? = nil
+    ) -> LockScreenPlatformOperating {
+        guard operatingSystemVersion.majorVersion >= 26 else {
+            return UnsupportedAdapter(
+                message:
+                    "The legacy screen saver owns Lock Screen runtime on this macOS version."
+            )
+        }
+
+        let adapter = ModernMacOS26Adapter(
+            installer: modernInstaller ?? AerialLockScreenInstaller(),
+            operatingSystemVersion: operatingSystemVersion
+        )
+        guard adapter.capabilities.supportsSecureLockScreen else {
+            return UnsupportedAdapter(
+                message:
+                    "The macOS 26 Aerial provider is unavailable; native Lock Screen runtime is disabled."
+            )
+        }
+        return adapter
     }
 }
 

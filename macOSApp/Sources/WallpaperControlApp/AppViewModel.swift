@@ -680,6 +680,12 @@ final class NativeWallpaperController: WallpaperControlling {
     func installLockScreenOnly(videoURL: URL) throws -> ControlStatus {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
+        guard lockScreenPlatform.capabilities.supportsLockScreenOnly else {
+            throw NativeWallpaperControllerError.unavailable(
+                lockScreenPlatform.capabilities.availabilityMessage
+                    ?? "Lock Screen-only wallpaper is unavailable."
+            )
+        }
         let normalizedURL = videoURL.standardizedFileURL
         guard FileManager.default.fileExists(atPath: normalizedURL.path) else {
             throw NativeWallpaperControllerError.unavailable(
@@ -786,6 +792,7 @@ final class NativeWallpaperController: WallpaperControlling {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         let currentConfig = store.loadConfig()
+        var migratedLockScreenOnlySource: URL?
         if enabled {
             if let sourceURL = store.effectiveLockScreenSourceURL(for: currentConfig) {
                 guard FileManager.default.fileExists(atPath: sourceURL.path) else {
@@ -801,10 +808,16 @@ final class NativeWallpaperController: WallpaperControlling {
                             appSupportPath: store.appSupportURL.path
                         )
                 }
+                let lockScreenOnlySource = store.loadLockScreenOnlySource()
+                let useLockScreenOnly = lockScreenOnlySource != nil
+                    && lockScreenPlatform.capabilities.supportsLockScreenOnly
+                if let lockScreenOnlySource, !useLockScreenOnly {
+                    migratedLockScreenOnlySource = lockScreenOnlySource
+                }
                 try installLockScreenSaver(
                     videoURL: sourceURL,
-                    ensureStillFrame: store.loadLockScreenOnlySource() == nil,
-                    lockScreenOnly: store.loadLockScreenOnlySource() != nil
+                    ensureStillFrame: true,
+                    lockScreenOnly: useLockScreenOnly
                 )
             }
         } else {
@@ -826,6 +839,13 @@ final class NativeWallpaperController: WallpaperControlling {
 
         let config = try updateConfig { config in
             config.show_on_lock_screen = enabled
+            if let migratedLockScreenOnlySource,
+               config.video_path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                config.video_path = migratedLockScreenOnlySource.path
+            }
+        }
+        if migratedLockScreenOnlySource != nil {
+            store.clearLockScreenOnlySource()
         }
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.update, config: config)
@@ -837,16 +857,31 @@ final class NativeWallpaperController: WallpaperControlling {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
+        let lockScreenOnlySource = store.loadLockScreenOnlySource()
         guard config.show_on_lock_screen ?? true,
               let sourceURL = store.effectiveLockScreenSourceURL(for: config),
               FileManager.default.fileExists(atPath: sourceURL.path)
         else {
             return
         }
+        let useLockScreenOnly = lockScreenOnlySource != nil
+            && lockScreenPlatform.capabilities.supportsLockScreenOnly
+        if lockScreenOnlySource != nil, !useLockScreenOnly {
+            // A lock-only marker can survive a downgrade or removal of the
+            // modern provider. Migrate it to the legacy screen-saver route so
+            // startup does not repeatedly fail trying to launch a native-only
+            // agent on a platform that cannot support it.
+            _ = try? updateConfig { config in
+                if config.video_path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    config.video_path = sourceURL.path
+                }
+            }
+            store.clearLockScreenOnlySource()
+        }
         try installLockScreenSaver(
             videoURL: sourceURL,
-            ensureStillFrame: store.loadLockScreenOnlySource() == nil,
-            lockScreenOnly: store.loadLockScreenOnlySource() != nil
+            ensureStillFrame: true,
+            lockScreenOnly: useLockScreenOnly
         )
     }
 
@@ -857,6 +892,12 @@ final class NativeWallpaperController: WallpaperControlling {
         guard config.show_on_lock_screen ?? true else {
             throw NativeWallpaperControllerError.unavailable(
                 "Enable Lock Screen before previewing the transition."
+            )
+        }
+        guard lockScreenCapabilities.supportsSecureLockScreen else {
+            throw NativeWallpaperControllerError.unavailable(
+                lockScreenCapabilities.availabilityMessage
+                    ?? "Lock Screen transition preview is unavailable."
             )
         }
         guard store.processIsAlive(pid: store.loadPID()) else {
