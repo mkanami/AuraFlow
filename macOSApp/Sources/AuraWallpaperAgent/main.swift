@@ -100,6 +100,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var lastAppliedLockScreenLifecycleOperationID: UInt64?
     private var lastLockScreenOnlyStatus = LockScreenOnlyGenerationStatus()
     private var isTerminating = false
+    private var terminationHealthReason: String?
 
     private let spaceTransitionGracePeriod: TimeInterval = 0.75
     private let fullscreenConfirmationSamples = 2
@@ -123,9 +124,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // The legacy screen saver is managed by the main app. An old
             // launch command must not keep a native-only agent alive after a
             // downgrade or removal of the macOS 26 provider.
-            store.markLockScreenAgentReady(false)
-            writeHealth(reason: "lock-screen-agent-disabled-for-platform")
-            NSApp.terminate(nil)
+            terminateLockScreenOnlyAgent(
+                reason: "lock-screen-agent-disabled-for-platform"
+            )
             return
         }
         publishRearmGuardState()
@@ -180,7 +181,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         lockSessionGeneration &+= 1
         publishRearmGuardState()
         pendingRearmToken = nil
-        writeHealth(reason: "terminating")
+        writeHealth(reason: terminationHealthReason ?? "terminating")
         DistributedNotificationCenter.default().removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
@@ -775,10 +776,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         _ event: LockScreenLifecycleEvent,
         reason: String
     ) {
-        guard lockScreenOnlyMode,
-              lockScreenPlatform.capabilities.supportsLockScreenOnly,
-              !isTerminating
-        else { return }
+        guard lockScreenOnlyMode, !isTerminating else { return }
+        guard lockScreenPlatform.capabilities.supportsLockScreenOnly else {
+            terminateLockScreenOnlyAgent(
+                reason: "lock-screen-provider-unavailable"
+            )
+            return
+        }
         guard let operation = lockScreenLifecycleCoordinator.enqueue(event)
         else {
             return
@@ -801,9 +805,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
         guard let videoURL = effectiveLockScreenVideoURL() else {
             lastLockScreenOnlyStatus = LockScreenOnlyGenerationStatus()
-            store.markLockScreenAgentReady(false)
-            writeHealth(reason: "lock-screen-source-missing")
-            finishLockScreenLifecycle(operation, reason: reason)
+            terminateLockScreenOnlyAgent(reason: "lock-screen-source-missing")
             return
         }
 
@@ -811,6 +813,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             videoURL: videoURL
         )
         lastLockScreenOnlyStatus = status
+        guard status.providerAvailable else {
+            terminateLockScreenOnlyAgent(
+                reason: "lock-screen-provider-unavailable"
+            )
+            return
+        }
         let generationReady = isLockScreenGenerationReady(status)
         if operation.expectedLocked {
             // The legacy saver can render the verified still-frame while a
@@ -875,6 +883,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 let repairedStatus = self.lockScreenPlatform
                     .lockScreenOnlyStatus(videoURL: videoURL)
                 self.lastLockScreenOnlyStatus = repairedStatus
+                guard repairedStatus.providerAvailable else {
+                    self.terminateLockScreenOnlyAgent(
+                        reason: "lock-screen-provider-unavailable"
+                    )
+                    return
+                }
                 self.store.markLockScreenAgentReady(
                     self.isLockScreenGenerationReady(repairedStatus)
                 )
@@ -983,6 +997,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 reason: "coalesced-" + reason
             )
         }
+    }
+
+    private func terminateLockScreenOnlyAgent(reason: String) {
+        guard lockScreenOnlyMode, !isTerminating else { return }
+        terminationHealthReason = reason
+        isTerminating = true
+        store.markLockScreenAgentReady(false)
+        writeHealth(reason: reason)
+        NSApp.terminate(nil)
     }
 
     private func setCurrentLockScreenLifecycleOperation(

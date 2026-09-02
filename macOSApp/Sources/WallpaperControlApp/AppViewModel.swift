@@ -859,7 +859,31 @@ final class NativeWallpaperController: WallpaperControlling {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
-        let lockScreenOnlySource = store.loadLockScreenOnlySource()
+        var lockScreenOnlySource = store.loadLockScreenOnlySource()
+        let supportsLockScreenOnly =
+            lockScreenPlatform.capabilities.supportsLockScreenOnly
+        let hasUsableLockScreenOnlySource = lockScreenOnlySource.map {
+            FileManager.default.fileExists(atPath: $0.path)
+        } == true
+
+        // A stale lock-only agent must not survive merely because the source
+        // disappeared before this sync reached its normal source guard.
+        if store.isLockScreenOnlyAgent(),
+           (!hasUsableLockScreenOnlySource || !supportsLockScreenOnly) {
+            guard store.terminateDaemon(timeout: 2.0) else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The Lock Screen agent did not stop during fallback cleanup."
+                )
+            }
+            store.removeCommand()
+            store.removeHealth()
+            store.markLockScreenOnlyAgent(false)
+        }
+        if lockScreenOnlySource != nil, !hasUsableLockScreenOnlySource {
+            store.clearLockScreenOnlySource()
+            lockScreenOnlySource = nil
+        }
+
         guard config.show_on_lock_screen ?? true,
               let sourceURL = store.effectiveLockScreenSourceURL(for: config),
               FileManager.default.fileExists(atPath: sourceURL.path)
@@ -867,7 +891,7 @@ final class NativeWallpaperController: WallpaperControlling {
             return
         }
         let useLockScreenOnly = lockScreenOnlySource != nil
-            && lockScreenPlatform.capabilities.supportsLockScreenOnly
+            && supportsLockScreenOnly
         if lockScreenOnlySource != nil, !useLockScreenOnly {
             // A lock-only marker can survive a downgrade or removal of the
             // modern provider. Migrate it to the legacy screen-saver route so

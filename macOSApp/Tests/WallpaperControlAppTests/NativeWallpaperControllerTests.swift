@@ -349,6 +349,47 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.isLockScreenAgentReady() == false)
 }
 
+@Test func syncCleansLockOnlyAgentWhenSourceIsMissing() throws {
+    let fixture = try NativeRuntimeFixture("sync-missing-lock-only-source")
+    defer { fixture.cleanup() }
+
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: "",
+            playback_speed: 1.0,
+            show_on_lock_screen: true
+        )
+    )
+    try fixture.store.saveLockScreenOnlySource(
+        fixture.root.appendingPathComponent("missing.mp4")
+    )
+
+    let agent = Process()
+    agent.executableURL = fixture.helperURL
+    try agent.run()
+    try fixture.store.savePID(agent.processIdentifier)
+    fixture.store.markLockScreenOnlyAgent(true)
+    try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .reload))
+    try fixture.store.saveHealth(
+        DaemonHealth(available: true, fresh: true, suspicious: false)
+    )
+
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller()
+    )
+
+    try controller.syncLockScreenSaver()
+
+    #expect(fixture.store.loadLockScreenOnlySource() == nil)
+    #expect(fixture.store.isLockScreenOnlyAgent() == false)
+    #expect(fixture.store.loadPID() == nil)
+    #expect(fixture.store.loadCommand() == nil)
+    #expect(fixture.store.loadHealth() == nil)
+    #expect(fixture.store.isLockScreenAgentReady() == false)
+}
+
 @Test func enablingLockScreenOnLegacyPlatformMigratesLockOnlySource() throws {
     let fixture = try NativeRuntimeFixture("legacy-enable-lock-only-migration")
     defer { fixture.cleanup() }
