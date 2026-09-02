@@ -125,6 +125,14 @@ private struct MenuBarControls: View {
         }
         .disabled(!viewModel.canStart)
 
+        Button("Lock") {
+            guard allowActionAfterMenuOpen else { return }
+            performMenuBarActionAfterDismiss {
+                viewModel.applyLockScreenOnly()
+            }
+        }
+        .disabled(!viewModel.canApplyLockScreenOnly)
+
         Button("Stop") {
             guard allowActionAfterMenuOpen else { return }
             viewModel.stop()
