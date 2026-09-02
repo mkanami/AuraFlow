@@ -399,6 +399,29 @@ private struct AerialLockScreenFixture {
     #expect(fixture.refreshCounter.count == 1)
 }
 
+@Test func lockOnlyApplyKeepsLatestDesktopWhenSourceChanges() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    var root = try readWallpaperStore(fixture.storeURL)
+    root = replaceTestDesktopModes(
+        in: root,
+        provider: "com.apple.wallpaper.choice.user-latest"
+    )
+    try writeWallpaperStore(root, to: fixture.storeURL)
+    let latestDesktopRoutes = testDesktopRouteData(in: root)
+
+    let secondVideoURL = fixture.root.appendingPathComponent("wallpaper-b.mp4")
+    try Data("second-wallpaper".utf8).write(to: secondVideoURL)
+    try fixture.installer.installLockScreenOnly(videoURL: secondVideoURL)
+
+    root = try readWallpaperStore(fixture.storeURL)
+    #expect(testDesktopRouteData(in: root) == latestDesktopRoutes)
+    #expect(fixture.refreshCounter.count == 1)
+}
+
 @Test func lockOnlyRepairRestoresDriftedIdleWithoutChangingDesktopRoutes() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

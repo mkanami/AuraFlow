@@ -455,6 +455,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 // resolves the real Lock Screen.
                 scope: .lockScreenOnly,
                 lockScreenOnlyRoute: true,
+                // Replacing an existing lock-only source must not restart
+                // WallpaperAgent: it can replay the stale Desktop preference
+                // captured when the lock session originally started.
+                avoidProviderRestartOnExistingLockOnlySourceChange: true,
                 // A failed Lock-only attempt must not restart Dock. Doing so
                 // can bring existing Finder and Wallpaper Settings windows
                 // forward even though AuraFlow never asked to open them.
@@ -729,6 +733,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         scope: AerialWallpaperStoreScope,
         currentInstallationRefreshAction: ConditionalSystemAction? = nil,
         lockScreenOnlyRoute: Bool = false,
+        avoidProviderRestartOnExistingLockOnlySourceChange: Bool = false,
         rollbackAction: ConditionalSystemAction,
         shouldProceed: @escaping () -> Bool
     ) throws -> Bool {
@@ -752,19 +757,24 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             .appendingPathComponent(assetID)
             .appendingPathExtension("png")
         let systemWallpaperURLBeforeAttempt = currentSystemWallpaperURL()
-
-        // A Desktop-only user change leaves Aura's Idle mode valid, so the
-        // installation can still pass installationIsCurrent below. Capture
-        // that Desktop before the fast path returns or a later lock repair can
-        // erase the newest user choice.
-        if lockScreenOnlyRoute,
-           fileManager.fileExists(atPath: wallpaperStoreBackupURL.path) {
-            _ = try captureLatestUserWallpaperStoreData(
-                from: Data(contentsOf: wallpaperStoreURL),
-                fallbackData: Data(contentsOf: wallpaperStoreBackupURL),
-                managedAssetID: assetID
-            )
-        }
+        let existingMarker = loadMarker()
+        let currentVideoSignature = try? fileSignature(at: videoURL)
+        let replacingExistingLockOnlySource: Bool = {
+            guard let existingMarker,
+                  existingMarker.completed == true,
+                  existingMarker.lockScreenOnly == true
+                    || existingMarker.desktopIncluded == false
+            else {
+                return false
+            }
+            if let previousSignature = existingMarker.videoSignature,
+               let currentVideoSignature {
+                return previousSignature != currentVideoSignature
+            }
+            return URL(fileURLWithPath: existingMarker.videoPath)
+                .standardizedFileURL
+                != videoURL.standardizedFileURL
+        }()
 
         if installationIsCurrent(
             videoURL: videoURL,
@@ -801,7 +811,6 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             withIntermediateDirectories: true
         )
 
-        let existingMarker = loadMarker()
         let originalSystemWallpaperURL: String?
         let systemWallpaperURLWasCaptured: Bool
         if usesCanonicalWallpaperStore {
@@ -857,19 +866,30 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             )
         }
 
+        // In lock-only mode, the live Index is the sole source of truth for
+        // Desktop. Session snapshots are recovery data for Remove and must
+        // never select a wallpaper for a later Apply.
+        let currentStoreDataForAttempt = try Data(contentsOf: wallpaperStoreURL)
         let updateBaseStoreData: Data
         if lockScreenOnlyRoute {
-            // A user can change wallpaper while lock-only mode is active.
-            // Journal every user-owned route before Aura mutates the store.
-            // This survives a later lock/unlock repair that can replace the
-            // public Index before Remove gets a chance to inspect it.
-            updateBaseStoreData = try captureLatestUserWallpaperStoreData(
-                from: Data(contentsOf: wallpaperStoreURL),
-                fallbackData: originalStoreData,
-                managedAssetID: assetID
-            )
+            updateBaseStoreData = currentStoreDataForAttempt
         } else {
             updateBaseStoreData = originalStoreData
+        }
+        if lockScreenOnlyRoute {
+            guard let currentRoot = try propertyListDictionary(
+                from: updateBaseStoreData
+            ),
+            !normalizedDesktopRoutesForComparison(
+                try currentDesktopRouteData(
+                    in: currentRoot,
+                    managedAssetID: assetID
+                )
+            ).isEmpty else {
+                // There is no safe live Desktop to preserve. Do not guess
+                // from an older session snapshot.
+                throw AerialLockScreenInstallerError.malformedWallpaperStore
+            }
         }
         let updatedStoreData = try aerialWallpaperStoreData(
             from: updateBaseStoreData,
@@ -890,7 +910,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         } else {
             desktopRoutesBeforeAttempt = [:]
         }
-        let storeBeforeAttempt = try Data(contentsOf: wallpaperStoreURL)
+        let storeBeforeAttempt = currentStoreDataForAttempt
         let assetBeforeAttempt = try? Data(contentsOf: assetURL)
         let thumbnailBeforeAttempt = try? Data(contentsOf: thumbnailURL)
         let markerBeforeAttempt = try? Data(contentsOf: markerURL)
@@ -948,6 +968,13 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             guard shouldProceed() else {
                 throw AerialLockScreenOperationAbort.sessionChanged
             }
+            if lockScreenOnlyRoute,
+               try Data(contentsOf: wallpaperStoreURL) != storeBeforeAttempt {
+                // System Settings may have committed a newer Desktop while
+                // media was being prepared. Abort before touching Index.plist
+                // so the next Apply can use that newest Desktop.
+                throw AerialLockScreenOperationAbort.storeChanged
+            }
             try updatedStoreData.write(
                 to: wallpaperStoreURL,
                 options: .atomic
@@ -966,7 +993,22 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 systemWallpaperURLMutated = true
             }
             let didRefresh: Bool
-            if shouldProceed() {
+            if lockScreenOnlyRoute,
+               avoidProviderRestartOnExistingLockOnlySourceChange,
+               replacingExistingLockOnlySource {
+                // The dedicated lock-only route is already registered. A
+                // WallpaperAgent restart here can replay an old
+                // SystemWallpaperURL and overwrite the user's live Desktop.
+                // If the provider is genuinely absent, prewarm it; otherwise
+                // leave the owner alive and let the updated Idle asset be
+                // consumed by the next lock transition.
+                if usesCanonicalWallpaperStore {
+                    try Self.prewarmLockScreenProvider(
+                        shouldProceed: { shouldProceed() }
+                    )
+                }
+                didRefresh = false
+            } else if shouldProceed() {
                 try refreshAction({ shouldProceed() })
                 didRefresh = true
             } else {
