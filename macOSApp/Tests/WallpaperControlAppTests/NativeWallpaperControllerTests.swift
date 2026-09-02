@@ -48,6 +48,11 @@ private struct NativeRuntimeFixture {
     }
 }
 
+private enum TestInstallerError: Error {
+    case installFailed
+    case uninstallFailed
+}
+
 private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling {
     var capabilities: PlatformCapabilities {
         // These controller tests exercise the dedicated native route. The
@@ -58,6 +63,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     private(set) var installedLockScreenOnlyVideoURL: URL?
     private(set) var uninstallCallCount = 0
     private(set) var preservingUninstallCallCount = 0
+    var installError: TestInstallerError?
+    var uninstallError: TestInstallerError?
 
     var isInstalled: Bool {
         (installedVideoURL != nil || installedLockScreenOnlyVideoURL != nil)
@@ -65,18 +72,30 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     }
 
     func install(videoURL: URL) throws {
+        if let installError {
+            throw installError
+        }
         installedVideoURL = videoURL
     }
 
     func installLockScreenOnly(videoURL: URL) throws {
+        if let installError {
+            throw installError
+        }
         installedLockScreenOnlyVideoURL = videoURL
     }
 
     func uninstall() throws {
+        if let uninstallError {
+            throw uninstallError
+        }
         uninstallCallCount += 1
     }
 
     func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
+        if let uninstallError {
+            throw uninstallError
+        }
         preservingUninstallCallCount += 1
         uninstallCallCount += 1
     }
@@ -174,6 +193,55 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(installer.installedLockScreenOnlyVideoURL == fixture.videoURL)
     #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
     #expect(FileManager.default.fileExists(atPath: fixture.store.lastFrameURL.path))
+}
+
+@Test func failedLockScreenOnlyInstallPreservesPreviousSource() throws {
+    let fixture = try NativeRuntimeFixture("lock-screen-only-install-failure")
+    defer { fixture.cleanup() }
+
+    let previousSource = fixture.root.appendingPathComponent("previous.mp4")
+    try fixture.store.saveLockScreenOnlySource(previousSource)
+
+    let installer = RecordingLockScreenSaverInstaller()
+    installer.installError = .installFailed
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    #expect(throws: TestInstallerError.self) {
+        try controller.installLockScreenOnly(videoURL: fixture.videoURL)
+    }
+    #expect(
+        fixture.store.loadLockScreenOnlySource()
+            == previousSource.standardizedFileURL
+    )
+    #expect(installer.installedLockScreenOnlyVideoURL == nil)
+}
+
+@Test func failedLockScreenUninstallPreservesSource() throws {
+    let fixture = try NativeRuntimeFixture("lock-screen-uninstall-failure")
+    defer { fixture.cleanup() }
+
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+    let installer = RecordingLockScreenSaverInstaller()
+    try installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    installer.uninstallError = .uninstallFailed
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    #expect(throws: TestInstallerError.self) {
+        try controller.setShowOnLockScreen(false)
+    }
+    #expect(
+        fixture.store.loadLockScreenOnlySource()
+            == fixture.videoURL.standardizedFileURL
+    )
+    #expect(installer.isInstalled)
 }
 
 @Test func legacyScreenSaverDoesNotLaunchLockScreenOnlyAgent() throws {

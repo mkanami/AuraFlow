@@ -148,6 +148,14 @@ public final class WallpaperRuntimeStore {
         try? FileManager.default.removeItem(at: lockScreenOnlySourceURL)
     }
 
+    public func restoreLockScreenOnlySource(_ url: URL?) {
+        guard let url else {
+            clearLockScreenOnlySource()
+            return
+        }
+        try? saveLockScreenOnlySource(url)
+    }
+
     public func markLockScreenOnlyAgent(_ enabled: Bool) {
         if enabled {
             try? ensureDirectories()

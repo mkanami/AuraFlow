@@ -697,8 +697,8 @@ final class NativeWallpaperController: WallpaperControlling {
         // temporarily promotes its Aerial route only during the lock handoff
         // and restores the user's Desktop route after unlock.
 
+        let previousSource = store.loadLockScreenOnlySource()
         do {
-            try store.saveLockScreenOnlySource(normalizedURL)
             try installLockScreenSaver(
                 videoURL: normalizedURL,
                 ensureStillFrame: true,
@@ -709,8 +709,9 @@ final class NativeWallpaperController: WallpaperControlling {
                     "macOS did not confirm the Lock Screen wallpaper configuration."
                 )
             }
+            try store.saveLockScreenOnlySource(normalizedURL)
         } catch {
-            store.clearLockScreenOnlySource()
+            store.restoreLockScreenOnlySource(previousSource)
             throw error
         }
         let config = try updateConfig { config in
@@ -821,7 +822,6 @@ final class NativeWallpaperController: WallpaperControlling {
                 )
             }
         } else {
-            store.clearLockScreenOnlySource()
             try lockScreenPlatform.uninstall()
             if store.isLockScreenOnlyAgent() {
                 if store.processIsAlive(pid: store.loadPID()) {
@@ -835,6 +835,7 @@ final class NativeWallpaperController: WallpaperControlling {
                 store.removeHealth()
                 store.markLockScreenOnlyAgent(false)
             }
+            store.clearLockScreenOnlySource()
         }
 
         let config = try updateConfig { config in
