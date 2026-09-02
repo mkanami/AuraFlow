@@ -125,7 +125,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // launch command must not keep a native-only agent alive after a
             // downgrade or removal of the macOS 26 provider.
             terminateLockScreenOnlyAgent(
-                reason: "lock-screen-agent-disabled-for-platform"
+                reason: "lock-screen-agent-disabled-for-platform",
+                notifyController: true
             )
             return
         }
@@ -779,7 +780,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard lockScreenOnlyMode, !isTerminating else { return }
         guard lockScreenPlatform.capabilities.supportsLockScreenOnly else {
             terminateLockScreenOnlyAgent(
-                reason: "lock-screen-provider-unavailable"
+                reason: "lock-screen-provider-unavailable",
+                notifyController: true
             )
             return
         }
@@ -815,7 +817,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         lastLockScreenOnlyStatus = status
         guard status.providerAvailable else {
             terminateLockScreenOnlyAgent(
-                reason: "lock-screen-provider-unavailable"
+                reason: "lock-screen-provider-unavailable",
+                notifyController: true
             )
             return
         }
@@ -885,7 +888,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 self.lastLockScreenOnlyStatus = repairedStatus
                 guard repairedStatus.providerAvailable else {
                     self.terminateLockScreenOnlyAgent(
-                        reason: "lock-screen-provider-unavailable"
+                        reason: "lock-screen-provider-unavailable",
+                        notifyController: true
                     )
                     return
                 }
@@ -999,12 +1003,22 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func terminateLockScreenOnlyAgent(reason: String) {
+    private func terminateLockScreenOnlyAgent(
+        reason: String,
+        notifyController: Bool = false
+    ) {
         guard lockScreenOnlyMode, !isTerminating else { return }
         terminationHealthReason = reason
         isTerminating = true
         store.markLockScreenAgentReady(false)
         writeHealth(reason: reason)
+        if notifyController {
+            DistributedNotificationCenter.default().post(
+                name: WallpaperRuntimeNotifications
+                    .lockScreenProviderBecameUnavailable,
+                object: nil
+            )
+        }
         NSApp.terminate(nil)
     }
 

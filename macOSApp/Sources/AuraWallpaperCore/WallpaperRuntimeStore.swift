@@ -1,3 +1,4 @@
+import Darwin
 import AppKit
 import AVFoundation
 import Foundation
@@ -5,6 +6,9 @@ import Foundation
 public enum WallpaperRuntimeNotifications {
     public static let commandDidChange = Notification.Name(
         "com.andrijvergeles.auraflow.runtime-command-did-change"
+    )
+    public static let lockScreenProviderBecameUnavailable = Notification.Name(
+        "com.andrijvergeles.auraflow.lock-screen-provider-became-unavailable"
     )
 }
 
@@ -42,6 +46,11 @@ public struct WallpaperRuntimeCommand: Codable, Equatable {
 }
 
 public final class WallpaperRuntimeStore {
+    private struct DaemonProcessIdentity: Codable, Equatable {
+        var executablePath: String
+        var startTimeMicros: Int64
+    }
+
     private struct LastFrameSourceRevision: Codable, Equatable {
         var path: String
         var size: UInt64?
@@ -74,6 +83,9 @@ public final class WallpaperRuntimeStore {
     public var healthURL: URL { appSupportURL.appendingPathComponent("daemon_health.json") }
     public var pidURL: URL { appSupportURL.appendingPathComponent("wallpaper_daemon.pid") }
     public var pausedURL: URL { appSupportURL.appendingPathComponent("wallpaper_daemon.paused") }
+    public var daemonIdentityURL: URL {
+        appSupportURL.appendingPathComponent("wallpaper_daemon_identity.json")
+    }
     public var lastFrameURL: URL { appSupportURL.appendingPathComponent("last_frame.png") }
     public var lastFrameSourceURL: URL {
         appSupportURL.appendingPathComponent("last_frame_source.json")
@@ -232,11 +244,17 @@ public final class WallpaperRuntimeStore {
 
     public func savePID(_ pid: Int32 = getpid()) throws {
         try ensureDirectories()
+        if let identity = processIdentity(for: Int(pid)) {
+            try writeJSON(identity, to: daemonIdentityURL)
+        } else {
+            try? FileManager.default.removeItem(at: daemonIdentityURL)
+        }
         try "\(pid)\n".write(to: pidURL, atomically: true, encoding: .utf8)
     }
 
     public func removePID() {
         try? FileManager.default.removeItem(at: pidURL)
+        try? FileManager.default.removeItem(at: daemonIdentityURL)
     }
 
     public func markPaused(_ paused: Bool) {
@@ -397,6 +415,14 @@ public final class WallpaperRuntimeStore {
             markPaused(false)
             return true
         }
+        guard daemonProcessIdentityMatches(pid) else {
+            // A PID can be reused after AuraFlow exits. Remove only our stale
+            // metadata when the executable/start-time identity is unknown or
+            // no longer matches; never signal an unrelated process.
+            removePID()
+            markPaused(false)
+            return true
+        }
         kill(pid_t(pid), SIGTERM)
         let deadline = Date().addingTimeInterval(max(timeout, 0.2))
         while Date() < deadline {
@@ -405,7 +431,17 @@ public final class WallpaperRuntimeStore {
                 markPaused(false)
                 return true
             }
+            guard daemonProcessIdentityMatches(pid) else {
+                removePID()
+                markPaused(false)
+                return true
+            }
             Thread.sleep(forTimeInterval: 0.05)
+        }
+        guard daemonProcessIdentityMatches(pid) else {
+            removePID()
+            markPaused(false)
+            return true
         }
         kill(pid_t(pid), SIGKILL)
         let killDeadline = Date().addingTimeInterval(1.0)
@@ -415,9 +451,53 @@ public final class WallpaperRuntimeStore {
                 markPaused(false)
                 return true
             }
+            guard daemonProcessIdentityMatches(pid) else {
+                removePID()
+                markPaused(false)
+                return true
+            }
             Thread.sleep(forTimeInterval: 0.05)
         }
         return false
+    }
+
+    private func daemonProcessIdentityMatches(_ pid: Int) -> Bool {
+        guard let expected = try? readJSON(
+            DaemonProcessIdentity.self,
+            from: daemonIdentityURL
+        ),
+              let actual = processIdentity(for: pid)
+        else {
+            return false
+        }
+        return expected == actual
+    }
+
+    private func processIdentity(for pid: Int) -> DaemonProcessIdentity? {
+        guard pid > 0 else { return nil }
+        var path = [Int8](repeating: 0, count: 4_096)
+        guard proc_pidpath(pid_t(pid), &path, UInt32(path.count)) > 0 else {
+            return nil
+        }
+
+        var processInfo = proc_bsdinfo()
+        let infoSize = proc_pidinfo(
+            pid_t(pid),
+            PROC_PIDTBSDINFO,
+            0,
+            &processInfo,
+            Int32(MemoryLayout<proc_bsdinfo>.stride)
+        )
+        guard infoSize == Int32(MemoryLayout<proc_bsdinfo>.stride) else {
+            return nil
+        }
+
+        let startTimeMicros = Int64(processInfo.pbi_start_tvsec) * 1_000_000
+            + Int64(processInfo.pbi_start_tvusec)
+        return DaemonProcessIdentity(
+            executablePath: String(cString: path),
+            startTimeMicros: startTimeMicros
+        )
     }
 
     public func captureStillFrame(from videoURL: URL, time: CMTime = CMTime(seconds: 0.2, preferredTimescale: 600)) throws -> URL {

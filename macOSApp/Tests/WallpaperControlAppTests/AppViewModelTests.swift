@@ -1355,7 +1355,11 @@ private func pngData(for image: CGImage) -> Data {
 
     viewModel.stop()
     for _ in 0..<20 {
-        if controller.stopCallCount == 1 { break }
+        if controller.stopCallCount == 1,
+           viewModel.lifecycleState == .paused,
+           viewModel.statusMessage == "Lock Screen wallpaper paused." {
+            break
+        }
         try? await Task.sleep(nanoseconds: 25_000_000)
     }
 

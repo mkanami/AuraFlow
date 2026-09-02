@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import WallpaperControlApp
@@ -21,9 +22,7 @@ private struct NativeRuntimeFixture {
         helperURL = root.appendingPathComponent("mock-agent.sh")
         let script = """
         #!/bin/sh
-        while true; do
-          sleep 1
-        done
+        kill -STOP $$
         """
         try script.write(to: helperURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helperURL.path)
@@ -116,6 +115,46 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(status.running == false)
     #expect(status.pid == nil)
     #expect(status.health?.available == false)
+}
+
+@Test func terminateDaemonDoesNotSignalProcessWithMismatchedIdentity() throws {
+    let fixture = try NativeRuntimeFixture("pid-identity")
+    defer { fixture.cleanup() }
+
+    let agent = Process()
+    agent.executableURL = fixture.helperURL
+    try agent.run()
+    defer {
+        if agent.isRunning {
+            kill(agent.processIdentifier, SIGKILL)
+            agent.waitUntilExit()
+        }
+    }
+
+    try fixture.store.savePID(agent.processIdentifier)
+    #expect(
+        FileManager.default.fileExists(
+            atPath: fixture.store.daemonIdentityURL.path
+        )
+    )
+
+    let mismatchedIdentity = """
+    {"executablePath":"/definitely/not/auraflow","startTimeMicros":1}
+    """
+    try Data(mismatchedIdentity.utf8).write(
+        to: fixture.store.daemonIdentityURL,
+        options: .atomic
+    )
+
+    let pid = Int(agent.processIdentifier)
+    #expect(fixture.store.terminateDaemon(timeout: 0.2))
+    #expect(fixture.store.loadPID() == nil)
+    #expect(
+        FileManager.default.fileExists(
+            atPath: fixture.store.daemonIdentityURL.path
+        ) == false
+    )
+    #expect(fixture.store.processIsAlive(pid: pid))
 }
 
 @Test func nativeStartWritesConfigAndLaunchesMockHelper() throws {
@@ -363,6 +402,45 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     try fixture.store.saveLockScreenOnlySource(
         fixture.root.appendingPathComponent("missing.mp4")
     )
+
+    let agent = Process()
+    agent.executableURL = fixture.helperURL
+    try agent.run()
+    try fixture.store.savePID(agent.processIdentifier)
+    fixture.store.markLockScreenOnlyAgent(true)
+    try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .reload))
+    try fixture.store.saveHealth(
+        DaemonHealth(available: true, fresh: true, suspicious: false)
+    )
+
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller()
+    )
+
+    try controller.syncLockScreenSaver()
+
+    #expect(fixture.store.loadLockScreenOnlySource() == nil)
+    #expect(fixture.store.isLockScreenOnlyAgent() == false)
+    #expect(fixture.store.loadPID() == nil)
+    #expect(fixture.store.loadCommand() == nil)
+    #expect(fixture.store.loadHealth() == nil)
+    #expect(fixture.store.isLockScreenAgentReady() == false)
+}
+
+@Test func syncCleansLockOnlyAgentWhenLockScreenIsDisabled() throws {
+    let fixture = try NativeRuntimeFixture("sync-disabled-lock-screen")
+    defer { fixture.cleanup() }
+
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: fixture.videoURL.path,
+            playback_speed: 1.0,
+            show_on_lock_screen: false
+        )
+    )
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
 
     let agent = Process()
     agent.executableURL = fixture.helperURL

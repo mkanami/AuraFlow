@@ -865,11 +865,15 @@ final class NativeWallpaperController: WallpaperControlling {
         let hasUsableLockScreenOnlySource = lockScreenOnlySource.map {
             FileManager.default.fileExists(atPath: $0.path)
         } == true
+        let lockScreenEnabled = config.show_on_lock_screen ?? true
 
         // A stale lock-only agent must not survive merely because the source
-        // disappeared before this sync reached its normal source guard.
+        // disappeared or Lock Screen was disabled before this sync reached
+        // its normal source guard.
         if store.isLockScreenOnlyAgent(),
-           (!hasUsableLockScreenOnlySource || !supportsLockScreenOnly) {
+           (!lockScreenEnabled
+                || !hasUsableLockScreenOnlySource
+                || !supportsLockScreenOnly) {
             guard store.terminateDaemon(timeout: 2.0) else {
                 throw NativeWallpaperControllerError.unavailable(
                     "The Lock Screen agent did not stop during fallback cleanup."
@@ -879,12 +883,13 @@ final class NativeWallpaperController: WallpaperControlling {
             store.removeHealth()
             store.markLockScreenOnlyAgent(false)
         }
-        if lockScreenOnlySource != nil, !hasUsableLockScreenOnlySource {
+        if lockScreenOnlySource != nil,
+           (!lockScreenEnabled || !hasUsableLockScreenOnlySource) {
             store.clearLockScreenOnlySource()
             lockScreenOnlySource = nil
         }
 
-        guard config.show_on_lock_screen ?? true,
+        guard lockScreenEnabled,
               let sourceURL = store.effectiveLockScreenSourceURL(for: config),
               FileManager.default.fileExists(atPath: sourceURL.path)
         else {
@@ -1103,6 +1108,8 @@ final class AppViewModel: ObservableObject {
     private var didAttemptAutostartOnLaunch = false
     private var healthMonitorTask: Task<Void, Never>?
     private var isHealthCheckInProgress = false
+    private var lockScreenProviderUnavailableObserver: NSObjectProtocol?
+    private var pendingLockScreenProviderFallback = false
     private var bridgeFailureCount = 0
     private var daemonSuspiciousPolls = 0
     private var lowPowerAutoPauseActive = false
@@ -1338,6 +1345,17 @@ final class AppViewModel: ObservableObject {
                 self?.beginShutdown()
             }
         }
+        lockScreenProviderUnavailableObserver =
+            DistributedNotificationCenter.default().addObserver(
+                forName: WallpaperRuntimeNotifications
+                    .lockScreenProviderBecameUnavailable,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.handleLockScreenProviderBecameUnavailable()
+                }
+            }
         Task { [weak self] in
             await self?.loadCatalogFromCache()
             await MainActor.run {
@@ -1362,6 +1380,11 @@ final class AppViewModel: ObservableObject {
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver)
         }
+        if let lockScreenProviderUnavailableObserver {
+            DistributedNotificationCenter.default().removeObserver(
+                lockScreenProviderUnavailableObserver
+            )
+        }
         if let previewEndObserver {
             NotificationCenter.default.removeObserver(previewEndObserver)
         }
@@ -1382,7 +1405,15 @@ final class AppViewModel: ObservableObject {
         lockScreenCapabilities = controller.lockScreenCapabilities
         guard !isBusy else { return }
         isBusy = true
-        defer { isBusy = false }
+        defer {
+            isBusy = false
+            if pendingLockScreenProviderFallback, !isShuttingDown {
+                pendingLockScreenProviderFallback = false
+                Task { @MainActor [weak self] in
+                    await self?.handleLockScreenProviderBecameUnavailable()
+                }
+            }
+        }
 
         do {
             let status = try await runAsync { try controller.status() }
@@ -1390,16 +1421,14 @@ final class AppViewModel: ObservableObject {
             let needsNormalizationURL = configuredVideoNeedingCompatibilityNormalization(from: status)
             recordBridgeSuccess()
             await startFromAutostartIfNeeded(using: status)
-            if status.config.show_on_lock_screen ?? true {
-                do {
-                    try await runAsync {
-                        try controller.syncLockScreenSaver()
-                    }
-                } catch {
-                    alertMessage =
-                        "Lock Screen sync failed: \(error.localizedDescription)"
-                    return
+            do {
+                try await runAsync {
+                    try controller.syncLockScreenSaver()
                 }
+            } catch {
+                alertMessage =
+                    "Lock Screen sync failed: \(error.localizedDescription)"
+                return
             }
             if let needsNormalizationURL {
                 Task { @MainActor [weak self] in
@@ -1414,6 +1443,20 @@ final class AppViewModel: ObservableObject {
         } catch {
             recordBridgeFailure(error, context: "status")
         }
+    }
+
+    private func handleLockScreenProviderBecameUnavailable() async {
+        guard !isShuttingDown else { return }
+        guard controller != nil else {
+            pendingLockScreenProviderFallback = true
+            return
+        }
+        guard !isBusy else {
+            pendingLockScreenProviderFallback = true
+            return
+        }
+        pendingLockScreenProviderFallback = false
+        await loadStatus()
     }
 
     private func restoreInitialPreviewFromSavedConfig() {
