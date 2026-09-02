@@ -49,6 +49,37 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
         }
     }
 
+    func prepareLockScreenMedia(videoURL: URL) throws {
+        guard modern.isAvailable else { return }
+        try modern.prepareLockScreenMedia(videoURL: videoURL)
+    }
+
+    func lockScreenOnlyStatus(
+        videoURL: URL?
+    ) -> LockScreenOnlyGenerationStatus {
+        if modern.isInstalled {
+            return modern.lockScreenOnlyStatus(videoURL: videoURL)
+        }
+        return legacy.lockScreenOnlyStatus(videoURL: videoURL)
+    }
+
+    @discardableResult
+    func repairLockScreenOnlyGeneration(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) throws -> Bool {
+        if modern.isInstalled {
+            return try modern.repairLockScreenOnlyGeneration(
+                videoURL: videoURL,
+                shouldProceed: shouldProceed
+            )
+        }
+        return try legacy.repairLockScreenOnlyGeneration(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
+    }
+
     func uninstall() throws {
         if modern.isInstalled {
             try modern.uninstall()

@@ -123,6 +123,13 @@ public struct DaemonHealth: Codable, Equatable {
     public var blend_interpolation_enabled: Bool?
     public var blend_interpolation_active: Bool?
     public var scale_mode: String?
+    // Optional lifecycle diagnostics. Older agents and status files remain
+    // decodable because these fields are not required for the core contract.
+    public var visible_desktop_windows: Int?
+    public var native_lock_state: String?
+    public var active_source_signature: String?
+    public var applied_operation_id: UInt64?
+    public var active_generation: UInt64?
 
     public init(
         contract_version: Int? = AuraWallpaperContract.statusVersion,
@@ -153,7 +160,12 @@ public struct DaemonHealth: Codable, Equatable {
         last_lock_transition_ms: Double? = nil,
         blend_interpolation_enabled: Bool? = nil,
         blend_interpolation_active: Bool? = nil,
-        scale_mode: String? = nil
+        scale_mode: String? = nil,
+        visible_desktop_windows: Int? = nil,
+        native_lock_state: String? = nil,
+        active_source_signature: String? = nil,
+        applied_operation_id: UInt64? = nil,
+        active_generation: UInt64? = nil
     ) {
         self.contract_version = contract_version
         self.available = available
@@ -184,6 +196,11 @@ public struct DaemonHealth: Codable, Equatable {
         self.blend_interpolation_enabled = blend_interpolation_enabled
         self.blend_interpolation_active = blend_interpolation_active
         self.scale_mode = scale_mode
+        self.visible_desktop_windows = visible_desktop_windows
+        self.native_lock_state = native_lock_state
+        self.active_source_signature = active_source_signature
+        self.applied_operation_id = applied_operation_id
+        self.active_generation = active_generation
     }
 }
 

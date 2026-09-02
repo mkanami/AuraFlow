@@ -399,6 +399,96 @@ private struct AerialLockScreenFixture {
     #expect(fixture.refreshCounter.count == 1)
 }
 
+@Test func lockOnlyRepairRestoresDriftedIdleWithoutChangingDesktopRoutes() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    var root = try readWallpaperStore(fixture.storeURL)
+    let desktopBefore = testDesktopRouteData(in: root)
+
+    // Simulate macOS replacing one Idle route with its own wallpaper after a
+    // few lock/unlock cycles. The user Desktop remains the live source.
+    var allSpaces = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    allSpaces["Idle"] = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.aerials",
+        configuration: ["assetID": AerialLockScreenFixture.alternateAssetID]
+    )
+    root["AllSpacesAndDisplays"] = allSpaces
+    try writeWallpaperStore(root, to: fixture.storeURL)
+
+    let drifted = fixture.installer.lockScreenOnlyStatus(
+        videoURL: fixture.videoURL
+    )
+    #expect(!drifted.wallpaperStoreValid)
+
+    _ = try fixture.installer.repairLockScreenOnlyGeneration(
+        videoURL: fixture.videoURL
+    )
+
+    root = try readWallpaperStore(fixture.storeURL)
+    #expect(testDesktopRouteData(in: root) == desktopBefore)
+    #expect(
+        fixture.installer.lockScreenOnlyStatus(
+            videoURL: fixture.videoURL
+        ).wallpaperStoreValid
+    )
+    // The fixture uses a non-canonical provider, so repairing only Idle does
+    // not restart a real WallpaperAgent.
+    #expect(fixture.refreshCounter.count == 1)
+}
+
+@Test func lockOnlyRepairDoesNotOverwriteDesktopChangedDuringRepair() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    var root = try readWallpaperStore(fixture.storeURL)
+    var allSpaces = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    allSpaces["Idle"] = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.aerials",
+        configuration: ["assetID": AerialLockScreenFixture.alternateAssetID]
+    )
+    root["AllSpacesAndDisplays"] = allSpaces
+    try writeWallpaperStore(root, to: fixture.storeURL)
+
+    let latestDesktop = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.sequoia",
+        configuration: ["revision": 2]
+    )
+    root = try readWallpaperStore(fixture.storeURL)
+    allSpaces = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    allSpaces["Desktop"] = latestDesktop
+    root["AllSpacesAndDisplays"] = allSpaces
+    let latestRoot = root
+    fixture.installer.lockOnlyRepairCommitHook = {
+        try? writeWallpaperStore(latestRoot, to: fixture.storeURL)
+    }
+
+    _ = try fixture.installer.repairLockScreenOnlyGeneration(
+        videoURL: fixture.videoURL
+    )
+    root = try readWallpaperStore(fixture.storeURL)
+    allSpaces = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let desktopAfter = try #require(
+        allSpaces["Desktop"] as? [String: Any]
+    )
+    #expect(wallpaperModeData(desktopAfter) == wallpaperModeData(latestDesktop))
+    #expect(
+        fixture.installer.lockScreenOnlyStatus(
+            videoURL: fixture.videoURL
+        ).wallpaperStoreValid == false
+    )
+}
+
 @Test func linkedWallpaperNeverPromotesIntoDesktopDuringLockSession() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

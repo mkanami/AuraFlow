@@ -337,7 +337,12 @@ public final class WallpaperRuntimeStore {
             last_lock_transition_ms: saved?.last_lock_transition_ms,
             blend_interpolation_enabled: saved?.blend_interpolation_enabled ?? false,
             blend_interpolation_active: saved?.blend_interpolation_active ?? false,
-            scale_mode: saved?.scale_mode ?? loadConfig().scale_mode
+            scale_mode: saved?.scale_mode ?? loadConfig().scale_mode,
+            visible_desktop_windows: saved?.visible_desktop_windows,
+            native_lock_state: saved?.native_lock_state,
+            active_source_signature: saved?.active_source_signature,
+            applied_operation_id: saved?.applied_operation_id,
+            active_generation: saved?.active_generation
         )
     }
 

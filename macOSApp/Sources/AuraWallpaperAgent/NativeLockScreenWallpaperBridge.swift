@@ -4,6 +4,7 @@ import Darwin
 import OSLog
 import QuartzCore
 import Wallpaper
+import AuraWallpaperCore
 
 final class NativeLockScreenWallpaperBridge {
     private typealias StartScreenSaverFunction = @convention(c) () -> Int32
@@ -20,12 +21,20 @@ final class NativeLockScreenWallpaperBridge {
     private var showing = false
     private var paused = false
     private var pendingCompletions: [(Bool) -> Void] = []
+    private var presentationRequestID: UInt64 = 0
 
     var isReady: Bool {
         displayAssertion != nil && window != nil
     }
 
     func prepare(completion: @escaping (Bool) -> Void) {
+        // Stop persists its marker before the runtime command reaches this
+        // process. Pick it up before creating a new assertion so a late
+        // preparation cannot start the Lock Screen video again.
+        if WallpaperRuntimeStore().isPaused() {
+            paused = true
+        }
+
         if isReady {
             completion(true)
             return
@@ -44,6 +53,9 @@ final class NativeLockScreenWallpaperBridge {
                 self.displayAssertion = assertion
                 self.presentationAssertion = presentation
                 self.window = window
+                if self.paused {
+                    self.pauseLayer(assertion.layer)
+                }
                 self.finishPreparation(succeeded: true)
                 Self.logger.notice("Native Lock Screen layer prepared")
             } catch {
@@ -68,11 +80,26 @@ final class NativeLockScreenWallpaperBridge {
         )
     }
 
-    func showForLockTransition() {
-        guard !paused, !showing else { return }
+    func showForLockTransition(completion: ((Bool) -> Void)? = nil) {
+        // Close the small Stop -> Lock race: the marker is committed before
+        // the .pause command is delivered to the agent.
+        if WallpaperRuntimeStore().isPaused() {
+            paused = true
+        }
+
+        if showing {
+            completion?(isReady)
+            return
+        }
         showing = true
+        presentationRequestID &+= 1
+        let requestID = presentationRequestID
         startSystemScreenSaverNow()
-        guard let displayAssertion else { return }
+        guard let displayAssertion else {
+            showing = false
+            completion?(false)
+            return
+        }
         // Keep the prewarmed layer hidden. Making it visible here creates a
         // three-frame transition: Aura, loginwindow's Desktop snapshot, then
         // the real Aura Lock Screen. loginwindow owns the secure surface and
@@ -80,14 +107,26 @@ final class NativeLockScreenWallpaperBridge {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                self.presentationAssertion = try await
+                let assertion = try await
                     WallpaperPresentationModeAssertion.takeLockedAssertion(
                         displayAssertion: displayAssertion
                     )
+                guard self.presentationRequestID == requestID,
+                      self.showing
+                else {
+                    return
+                }
+                self.presentationAssertion = assertion
+                if self.paused {
+                    self.pauseLayer(displayAssertion.layer)
+                }
+                completion?(true)
             } catch {
                 Self.logger.error(
                     "Native locked presentation failed: \(error.localizedDescription, privacy: .public)"
                 )
+                self.showing = false
+                completion?(false)
             }
         }
     }
@@ -108,33 +147,52 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     func pause() {
-        guard !paused else { return }
+        let wasPaused = paused
         paused = true
-        if let layer = displayAssertion?.layer, layer.speed != 0 {
-            let pausedTime = layer.convertTime(
-                CACurrentMediaTime(),
-                from: nil
-            )
-            layer.speed = 0
-            layer.timeOffset = pausedTime
+        if let layer = displayAssertion?.layer {
+            pauseLayer(layer)
         }
-        Self.logger.notice("Native Lock Screen layer paused")
+        if !wasPaused {
+            Self.logger.notice("Native Lock Screen layer paused")
+        }
+    }
+
+    private func pauseLayer(_ layer: CALayer) {
+        guard layer.speed != 0 else { return }
+        let pausedTime = layer.convertTime(
+            CACurrentMediaTime(),
+            from: nil
+        )
+        layer.speed = 0
+        layer.timeOffset = pausedTime
     }
 
     func hideAfterUnlock() {
         showing = false
+        presentationRequestID &+= 1
+        let requestID = presentationRequestID
         window?.alphaValue = 0
         guard let displayAssertion else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
-            self.presentationAssertion = try? await
+            guard let assertion = try? await
                 WallpaperPresentationModeAssertion.takeIdleAssertion(
                     displayAssertion: displayAssertion
-                )
+                ),
+                self.presentationRequestID == requestID,
+                !self.showing
+            else {
+                return
+            }
+            self.presentationAssertion = assertion
+            if self.paused {
+                self.pauseLayer(displayAssertion.layer)
+            }
         }
     }
 
     func shutdown() {
+        presentationRequestID &+= 1
         window?.orderOut(nil)
         window = nil
         presentationAssertion = nil

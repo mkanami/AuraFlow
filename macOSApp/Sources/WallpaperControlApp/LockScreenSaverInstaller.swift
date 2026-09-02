@@ -144,6 +144,10 @@ struct ScreenSaverSelectionCoordinator {
         self.backupURL = backupURL
     }
 
+    var isSelected: Bool {
+        preferences.selectedModule?.pointsTo(destinationURL) == true
+    }
+
     func activate() throws {
         let previousModule = preferences.selectedModule
         let previousIdleTime = preferences.idleTime
@@ -256,6 +260,10 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
 
     var isInstalled: Bool {
         fileManager.fileExists(atPath: destinationURL.path)
+    }
+
+    var installationConfirmed: Bool {
+        isInstalled && selectionCoordinator.isSelected
     }
 
     func install(videoURL: URL) throws {

@@ -3,7 +3,13 @@ import AuraWallpaperCore
 import AVFoundation
 import Foundation
 import notify
+import OSLog
 import QuartzCore
+
+private let wallpaperAgentLifecycleLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "LockScreenLifecycle"
+)
 
 private final class WallpaperLayerView: NSView {
     override var isOpaque: Bool { true }
@@ -81,6 +87,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var stallEvents = 0
     private var recoveryEvents = 0
     private var lockScreenRepairInProgress = false
+    private var lockScreenLifecycleCoordinator = LockScreenLifecycleCoordinator()
+    private var lockScreenOnlyRepairInProgress = false
+    private let lifecycleOperationLock = NSLock()
+    private var currentLockScreenLifecycleOperationID: UInt64?
+    private var lastAppliedLockScreenLifecycleOperationID: UInt64?
+    private var lastLockScreenOnlyStatus = LockScreenOnlyGenerationStatus()
     private var isTerminating = false
 
     private let spaceTransitionGracePeriod: TimeInterval = 0.75
@@ -117,7 +129,16 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // Do this before advertising the agent as ready. The Apply button
             // waits for this handshake so an immediate direct-lock cannot
             // arrive while the first provider rearm is still in flight.
-            prepareLockScreenOnlyAgent()
+            requestLockScreenLifecycle(
+                .healthCheck,
+                reason: "startup"
+            )
+        } else if config.show_on_lock_screen == true,
+                  lockScreenInstaller.isInstalled {
+            // Start owns both surfaces. Prepare the native bridge in advance
+            // so Stop can freeze the Lock Screen layer without installing or
+            // removing anything at the time of the click.
+            prepareNativeLockScreenBridgeForStart()
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             [weak self] in
@@ -163,6 +184,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if lockScreenOnlyMode {
             store.markLockScreenAgentReady(false)
         }
+        lockScreenLifecycleCoordinator.invalidate()
         tearDownPlayback()
         store.removePID()
         store.markPaused(false)
@@ -306,7 +328,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     @objc private func activeSpaceDidChange() {
         guard !isTerminating else { return }
         if lockScreenOnlyMode {
-            showWindows(forceOrder: true)
+            requestLockScreenLifecycle(
+                .activeSpaceChanged,
+                reason: "space-change"
+            )
             return
         }
         lastSpaceChangeUptime = ProcessInfo.processInfo.systemUptime
@@ -334,8 +359,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         // restarting. Starting the screen saver before CGSession confirms a
         // real lock would lock the Mac as a side effect of launching AuraFlow.
         if systemSessionIsLocked() == true {
-            promoteModernLockScreenForCurrentSession()
-            nativeLockScreenBridge.showForLockTransition()
+            requestLockScreenLifecycle(
+                .shieldRaised,
+                reason: "session-resign-active"
+            )
         }
         handleSessionNotification(expectedLocked: true)
     }
@@ -346,8 +373,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func lockShieldDidRaise(_ notification: Notification) {
         guard !isTerminating else { return }
-        promoteModernLockScreenForCurrentSession()
-        nativeLockScreenBridge.showForLockTransition()
+        requestLockScreenLifecycle(
+            .shieldRaised,
+            reason: "shield-raised"
+        )
     }
 
     private func registerLockShieldDarwinNotifications() {
@@ -363,8 +392,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     lockShieldQueue
                 ) { [weak self] _ in
                     DispatchQueue.main.async {
-                        self?.promoteModernLockScreenForCurrentSession()
-                        self?.nativeLockScreenBridge.showForLockTransition()
+                        self?.requestLockScreenLifecycle(
+                            .shieldRaised,
+                            reason: "darwin-shield-raised"
+                        )
                     }
                 }
             }
@@ -411,10 +442,16 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 ProcessInfo.processInfo.systemUptime
             displaySleepLockObserved = true
             publishRearmGuardState()
-            promoteModernLockScreenForCurrentSession()
-            nativeLockScreenBridge.showForLockTransition()
             syncLockScreenSetting(reason: "lock-setting")
             handleLockScreenEvent(.sessionLocked, reason: "session-locked")
+            if lockScreenOnlyMode {
+                requestLockScreenLifecycle(
+                    .sessionLocked,
+                    reason: "session-locked"
+                )
+            } else {
+                nativeLockScreenBridge.showForLockTransition()
+            }
             writeHealth(reason: "session-inactive")
             return
         }
@@ -425,7 +462,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         lastSessionTransitionUptime =
             ProcessInfo.processInfo.systemUptime
         publishRearmGuardState()
-        nativeLockScreenBridge.hideAfterUnlock()
         restoreDesktopStoreAfterSession()
         if lockScreenOnlyMode,
            !store.isLockScreenAgentReady() {
@@ -433,10 +469,18 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // initial preparation is intentionally skipped in that state, so
             // complete the provider warm-up as soon as the first unlock
             // arrives before advertising the next Lock transition as ready.
-            prepareLockScreenOnlyAgent()
+            requestLockScreenLifecycle(
+                .healthCheck,
+                reason: "unlock-preparation"
+            )
         }
         handleLockScreenEvent(.sessionUnlocked, reason: "session-unlocked")
-        if !lockScreenOnlyMode {
+        if lockScreenOnlyMode {
+            requestLockScreenLifecycle(
+                .sessionUnlocked,
+                reason: "session-unlocked"
+            )
+        } else {
             showWindows(forceOrder: true)
             applyPlaybackRate()
         }
@@ -514,7 +558,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // wakes to the password surface.
             displaySleepRestorePending = true
             displaySleepLockObserved = false
-            nativeLockScreenBridge.showForLockTransition()
+            requestLockScreenLifecycle(
+                .shieldRaised,
+                reason: "display-sleep-before-lock"
+            )
             writeHealth(reason: "display-sleep-before-lock")
             return
         }
@@ -527,7 +574,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminating, lockScreenOnlyMode else { return }
         displaySleepRestorePending = true
         displaySleepLockObserved = sessionInactive
-        nativeLockScreenBridge.showForLockTransition()
+        requestLockScreenLifecycle(
+            .shieldRaised,
+            reason: "screens-sleep-before-lock"
+        )
         writeHealth(reason: "screens-sleep-before-lock")
     }
 
@@ -549,12 +599,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // screen; otherwise loginwindow falls back to the user's static
             // Lock Screen background even though Index.plist is correct.
             if sessionInactive || systemSessionIsLocked() == true {
-                promoteModernLockScreenForCurrentSession()
-                nativeLockScreenBridge.showForLockTransition()
+                requestLockScreenLifecycle(
+                    .wake,
+                    reason: "wake-while-locked"
+                )
             }
             scheduleDesktopRestoreAfterDisplayWake()
-            showWindows(forceOrder: lockScreenState.presentationMode == .lockScreen)
-            applyPlaybackRate()
+            requestLockScreenLifecycle(.wake, reason: reason)
         } else {
             showWindows(forceOrder: true)
             applyPlaybackRate()
@@ -630,8 +681,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             )
             manualPaused = false
             store.markPaused(false)
+            nativeLockScreenBridge.resumeAfterPause()
             if lockScreenOnlyMode {
-                nativeLockScreenBridge.resumeAfterPause()
                 restoreDesktopStoreAfterSession()
             } else {
                 rebuildPlayback(from: config, keepPaused: false)
@@ -656,9 +707,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 restoreDesktopStoreAfterSession()
             }
         case .resume:
-            if lockScreenOnlyMode {
-                nativeLockScreenBridge.resumeAfterPause()
-            }
+            nativeLockScreenBridge.resumeAfterPause()
             if !lockScreenOnlyMode {
                 showWindows()
             }
@@ -668,10 +717,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 applyPlaybackRate()
             }
         case .pause:
+            nativeLockScreenBridge.pause()
             if lockScreenOnlyMode {
                 manualPaused = true
                 store.markPaused(true)
-                nativeLockScreenBridge.pause()
             } else {
                 pauseAndCommitStillFrame()
             }
@@ -691,42 +740,265 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         writeHealth(reason: "ok")
     }
 
-    private func prepareLockScreenOnlyAgent() {
-        guard lockScreenOnlyMode else { return }
-        guard config.show_on_lock_screen == true,
-              effectiveLockScreenVideoURL() != nil,
-              lockScreenInstaller.isInstalled,
-              !sessionInactive,
-              systemSessionIsLocked() != true
+    private func prepareNativeLockScreenBridgeForStart() {
+        guard !lockScreenOnlyMode else { return }
+        nativeLockScreenBridge.prepare { [weak self] succeeded in
+            guard let self, !self.isTerminating else { return }
+            self.writeHealth(
+                reason: succeeded
+                    ? "native-lock-bridge-ready"
+                    : "native-lock-bridge-not-ready"
+            )
+        }
+    }
+
+    private func requestLockScreenLifecycle(
+        _ event: LockScreenLifecycleEvent,
+        reason: String
+    ) {
+        guard lockScreenOnlyMode, !isTerminating else { return }
+        guard let operation = lockScreenLifecycleCoordinator.enqueue(event)
         else {
-            store.markLockScreenAgentReady(false)
-            writeHealth(reason: "lock-screen-agent-not-ready")
+            return
+        }
+        setCurrentLockScreenLifecycleOperation(operation.operationID)
+        reconcileLockScreenLifecycle(operation, reason: reason)
+    }
+
+    private func reconcileLockScreenLifecycle(
+        _ operation: LockScreenLifecycleOperation,
+        reason: String
+    ) {
+        guard lockScreenOnlyMode,
+              !isTerminating,
+              isCurrentLockScreenLifecycleOperation(operation.operationID)
+        else {
             return
         }
 
-        guard lockScreenInstaller.installationConfirmed else {
+        guard let videoURL = effectiveLockScreenVideoURL() else {
+            lastLockScreenOnlyStatus = LockScreenOnlyGenerationStatus()
             store.markLockScreenAgentReady(false)
-            writeHealth(reason: "lock-screen-installation-not-confirmed")
+            writeHealth(reason: "lock-screen-source-missing")
+            finishLockScreenLifecycle(operation, reason: reason)
             return
         }
-        // The controller already committed the asset/store and performed the
-        // single provider refresh. Startup only establishes the native bridge;
-        // rearming here races the provider that was just made ready.
-        nativeLockScreenBridge.prepare { [weak self] succeeded in
+
+        let status = lockScreenInstaller.lockScreenOnlyStatus(
+            videoURL: videoURL
+        )
+        lastLockScreenOnlyStatus = status
+        if operation.expectedLocked {
+            // The legacy saver can render the verified still-frame while a
+            // store repair is in progress. This prevents loginwindow from
+            // exposing an unrelated Apple wallpaper during the repair.
+            if status.assetValid && status.screenSaverSelected {
+                nativeLockScreenBridge.showForLockTransition()
+            }
+        } else {
+            nativeLockScreenBridge.hideAfterUnlock()
+        }
+
+        guard !status.isReady else {
+            completeReadyLockScreenLifecycle(
+                operation,
+                status: status,
+                reason: reason
+            )
+            return
+        }
+
+        guard !lockScreenOnlyRepairInProgress else { return }
+        lockScreenOnlyRepairInProgress = true
+        let startedAt = CACurrentMediaTime()
+        lockScreenRepairQueue.async { [weak self] in
+            guard let self else { return }
+            var repairError: Error?
+            do {
+                _ = try self.lockScreenInstaller
+                    .repairLockScreenOnlyGeneration(
+                        videoURL: videoURL,
+                        shouldProceed: { [weak self] in
+                            self?.isCurrentLockScreenLifecycleOperation(
+                                operation.operationID
+                            ) ?? false
+                        }
+                    )
+            } catch {
+                repairError = error
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      self.isCurrentLockScreenLifecycleOperation(
+                          operation.operationID
+                      )
+                else {
+                    return
+                }
+                self.lockScreenOnlyRepairInProgress = false
+                let repairedStatus = self.lockScreenInstaller
+                    .lockScreenOnlyStatus(videoURL: videoURL)
+                self.lastLockScreenOnlyStatus = repairedStatus
+                self.store.markLockScreenAgentReady(
+                    repairedStatus.isReady
+                )
+                let duration = (CACurrentMediaTime() - startedAt) * 1_000
+                if let repairError {
+                    self.writeHealth(
+                        reason:
+                            "lock-screen-repair-failed: "
+                            + repairError.localizedDescription
+                    )
+                } else {
+                    self.writeHealth(
+                        reason:
+                            repairedStatus.isReady
+                            ? "lock-screen-repaired"
+                            : "lock-screen-repair-pending"
+                    )
+                }
+                self.logLockScreenLifecycle(
+                    reason: reason,
+                    operation: operation,
+                    status: repairedStatus,
+                    durationMilliseconds: duration,
+                    repairError: repairError
+                )
+                self.completeReadyLockScreenLifecycle(
+                    operation,
+                    status: repairedStatus,
+                    reason: reason
+                )
+            }
+        }
+    }
+
+    private func completeReadyLockScreenLifecycle(
+        _ operation: LockScreenLifecycleOperation,
+        status: LockScreenOnlyGenerationStatus,
+        reason: String
+    ) {
+        nativeLockScreenBridge.prepare { [weak self] prepared in
             guard let self,
-                  !self.isTerminating,
-                  !self.sessionInactive,
-                  self.systemSessionIsLocked() != true
+                  self.isCurrentLockScreenLifecycleOperation(
+                      operation.operationID
+                  )
             else {
                 return
             }
-            self.store.markLockScreenAgentReady(succeeded)
-            self.writeHealth(
-                reason: succeeded
-                    ? "lock-screen-agent-ready"
-                    : "lock-screen-agent-not-ready"
+            guard prepared else {
+                self.store.markLockScreenAgentReady(false)
+                self.writeHealth(reason: "lock-screen-bridge-not-ready")
+                self.finishLockScreenLifecycle(operation, reason: reason)
+                return
+            }
+
+            guard operation.expectedLocked else {
+                self.nativeLockScreenBridge.hideAfterUnlock()
+                self.store.markLockScreenAgentReady(status.isReady)
+                self.finishLockScreenLifecycle(operation, reason: reason)
+                return
+            }
+
+            self.nativeLockScreenBridge.showForLockTransition { [weak self] shown in
+                guard let self,
+                      self.isCurrentLockScreenLifecycleOperation(
+                          operation.operationID
+                      )
+                else {
+                    return
+                }
+                self.store.markLockScreenAgentReady(
+                    status.isReady && shown
+                )
+                self.writeHealth(
+                    reason: status.isReady && shown
+                        ? "lock-screen-presented"
+                        : "lock-screen-fallback-active"
+                )
+                self.finishLockScreenLifecycle(
+                    operation,
+                    reason: reason
+                )
+            }
+        }
+    }
+
+    private func finishLockScreenLifecycle(
+        _ operation: LockScreenLifecycleOperation,
+        reason: String
+    ) {
+        guard let next = lockScreenLifecycleCoordinator.finish(
+            operationID: operation.operationID
+        ) else {
+            lastAppliedLockScreenLifecycleOperationID = operation.operationID
+            setCurrentLockScreenLifecycleOperation(nil)
+            return
+        }
+        lastAppliedLockScreenLifecycleOperationID = operation.operationID
+        setCurrentLockScreenLifecycleOperation(next.operationID)
+        DispatchQueue.main.async { [weak self] in
+            self?.reconcileLockScreenLifecycle(
+                next,
+                reason: "coalesced-" + reason
             )
         }
+    }
+
+    private func setCurrentLockScreenLifecycleOperation(
+        _ operationID: UInt64?
+    ) {
+        lifecycleOperationLock.lock()
+        currentLockScreenLifecycleOperationID = operationID
+        lifecycleOperationLock.unlock()
+    }
+
+    private func isCurrentLockScreenLifecycleOperation(
+        _ operationID: UInt64
+    ) -> Bool {
+        lifecycleOperationLock.lock()
+        let isCurrent = currentLockScreenLifecycleOperationID == operationID
+        lifecycleOperationLock.unlock()
+        return isCurrent && !isTerminating
+    }
+
+    private func logLockScreenLifecycle(
+        reason: String,
+        operation: LockScreenLifecycleOperation,
+        status: LockScreenOnlyGenerationStatus,
+        durationMilliseconds: Double,
+        repairError: Error?
+    ) {
+        let outcome = repairError == nil
+            ? (status.isReady ? "ready" : "degraded")
+            : "failed"
+        let event = String(describing: operation.event)
+        let operationID = String(operation.operationID)
+        let generation = String(status.generation ?? 0)
+        let duration = String(durationMilliseconds)
+        let fallback = String(!status.isReady)
+        let message = "Lock Screen lifecycle event="
+            + event
+            + " reason=" + reason
+            + " operation=" + operationID
+            + " generation=" + generation
+            + " duration_ms=" + duration
+            + " outcome=" + outcome
+            + " fallback=" + fallback
+            + " source_hash=" + (status.sourceSignature ?? "none")
+            + " route_valid=" + String(status.wallpaperStoreValid)
+            + " asset_valid=" + String(status.assetValid)
+            + " provider_available=" + String(status.providerAvailable)
+            + " provider_running=" + String(status.providerRunning)
+            + " saver_selected=" + String(status.screenSaverSelected)
+        wallpaperAgentLifecycleLogger.notice("\(message, privacy: .public)")
+    }
+
+    private func prepareLockScreenOnlyAgent() {
+        requestLockScreenLifecycle(
+            .healthCheck,
+            reason: "lock-screen-preparation"
+        )
     }
 
     private func rebuildPlayback(from config: ControlConfig, keepPaused: Bool) {
@@ -1174,7 +1446,20 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             last_lock_transition_ms: lastLockTransitionMilliseconds,
             blend_interpolation_enabled: config.blend_interpolation ?? false,
             blend_interpolation_active: false,
-            scale_mode: config.scale_mode
+            scale_mode: config.scale_mode,
+            visible_desktop_windows: windows.filter(\.isVisible).count,
+            native_lock_state: lockScreenOnlyMode
+                ? (sessionInactive ? "locked" : (paused ? "paused" : "idle"))
+                : nil,
+            active_source_signature: lockScreenOnlyMode
+                ? lastLockScreenOnlyStatus.sourceSignature
+                : nil,
+            applied_operation_id: lockScreenOnlyMode
+                ? lastAppliedLockScreenLifecycleOperationID
+                : nil,
+            active_generation: lockScreenOnlyMode
+                ? lastLockScreenOnlyStatus.generation
+                : nil
         )
         try? store.saveHealth(health)
     }
@@ -1183,9 +1468,22 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         reconcileSystemSessionState()
 
         if lockScreenOnlyMode {
-            // Lock-only health checks are observational. Provider repair is
-            // serialized by the controller and never runs on a polling timer.
-            writeHealth(reason: "lock-screen-only")
+            requestLockScreenLifecycle(
+                .healthCheck,
+                reason: "health-check"
+            )
+            return
+        }
+
+        // Stop writes its marker before the .pause command arrives here. Do
+        // not repair or rearm the independent Lock Screen provider while the
+        // session is paused: those operations can restart playback even when
+        // the Desktop player is already frozen.
+        if manualPaused || store.isPaused() {
+            manualPaused = true
+            lastPlaybackProgressUptime = nil
+            consecutiveStallPolls = 0
+            writeHealth(reason: "paused")
             return
         }
 

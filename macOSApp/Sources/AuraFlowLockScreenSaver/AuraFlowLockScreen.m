@@ -4,6 +4,8 @@
 #import <QuartzCore/QuartzCore.h>
 
 static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
+static NSString * const AuraFlowRuntimeCommandNotification =
+    @"com.andrijvergeles.auraflow.runtime-command-did-change";
 
 @interface AuraFlowLockScreen ()
 @property(nonatomic, strong) CALayer *fallbackLayer;
@@ -13,6 +15,8 @@ static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
 @property(nonatomic, copy, nullable) NSString *configurationSignature;
 @property(nonatomic, copy) NSString *scaleMode;
 @property(nonatomic) BOOL observingReadyForDisplay;
+@property(nonatomic) BOOL runtimePaused;
+@property(nonatomic) BOOL playerLayerPaused;
 @end
 
 @implementation AuraFlowLockScreen
@@ -31,11 +35,21 @@ static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
         self.scaleMode = @"fill";
         [self createLayers];
         [self applyResolvedConfiguration:[self resolvedConfiguration] force:YES];
+        [[NSDistributedNotificationCenter defaultCenter]
+            addObserver:self
+               selector:@selector(runtimeCommandDidChange:)
+                   name:AuraFlowRuntimeCommandNotification
+                 object:nil
+     suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
     }
     return self;
 }
 
 - (void)dealloc {
+    [[NSDistributedNotificationCenter defaultCenter]
+        removeObserver:self
+                  name:AuraFlowRuntimeCommandNotification
+                object:nil];
     [self tearDownPlayer];
 }
 
@@ -59,7 +73,10 @@ static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
     // ScreenSaverView instances can be reused. Refresh only when the effective
     // paths or scale mode changed so a pre-rolled first frame is preserved.
     [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
-    [self.player playImmediatelyAtRate:1.0];
+    [self syncRuntimePauseState];
+    if (!self.runtimePaused) {
+        [self.player playImmediatelyAtRate:1.0];
+    }
 }
 
 - (void)stopAnimation {
@@ -68,7 +85,20 @@ static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
 }
 
 - (void)animateOneFrame {
-    // AVPlayerLayer renders on its own clock.
+    // AVPlayerLayer renders on its own clock. The runtime pause marker is the
+    // cross-process Stop contract: ScreenSaverView is a separate process from
+    // AuraWallpaperAgent, so the agent's CALayer pause alone cannot stop this
+    // player when macOS enters the secure Lock Screen.
+    [self syncRuntimePauseState];
+}
+
+- (void)runtimeCommandDidChange:(NSNotification *)notification {
+    // The command is written before the distributed notification is posted.
+    // Hop to the screen-saver view's thread so the player is paused before
+    // the next secure-surface refresh, without waiting for animateOneFrame.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self syncRuntimePauseState];
+    });
 }
 
 - (void)setFrameSize:(NSSize)newSize {
@@ -115,15 +145,15 @@ static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
     NSDictionary *runtimeConfig = [self JSONDictionaryAtURL:runtimeConfigURL];
 
     // The app runtime contract uses video_path while the portable saver
-    // resource uses video_file. Prefer a valid current app selection.
-    NSURL *runtimeVideoURL =
-        [self existingURLForConfiguredValue:runtimeConfig[@"video_path"]
-                                    relativeTo:applicationSupportURL];
-    if (runtimeVideoURL == nil) {
-        // Lock-only wallpapers intentionally do not write video_path: that
-        // field belongs to the desktop runtime. Resolve the isolated source
-        // saved by the app instead, so the live saver never changes desktop
-        // wallpaper state just to obtain its Lock Screen media.
+    // resource uses video_file. A lock-only agent has a separate source
+    // contract; never let a stale Desktop config win over the wallpaper the
+    // user selected for this Lock Screen generation.
+    NSString *lockOnlyAgentMarkerPath =
+        [applicationSupportURL.path stringByAppendingPathComponent:
+            @"lock_screen_only_agent"];
+    NSURL *runtimeVideoURL = nil;
+    if ([[NSFileManager defaultManager]
+            fileExistsAtPath:lockOnlyAgentMarkerPath]) {
         NSURL *lockOnlySourceURL =
             [applicationSupportURL URLByAppendingPathComponent:
                 @"lock_screen_only_source.json"];
@@ -131,6 +161,11 @@ static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
             [self JSONDictionaryAtURL:lockOnlySourceURL];
         runtimeVideoURL =
             [self existingURLForConfiguredValue:lockOnlySource[@"path"]
+                                        relativeTo:applicationSupportURL];
+    }
+    if (runtimeVideoURL == nil) {
+        runtimeVideoURL =
+            [self existingURLForConfiguredValue:runtimeConfig[@"video_path"]
                                         relativeTo:applicationSupportURL];
     }
     if (runtimeVideoURL != nil) {
@@ -151,6 +186,70 @@ static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
         @"fallback_path" : fallbackURL.path ?: @"",
         @"scale_mode" : scaleMode,
     };
+}
+
+- (BOOL)runtimePauseMarkerExists {
+    NSString *applicationSupportPath =
+        [NSHomeDirectory() stringByAppendingPathComponent:
+            @"Library/Application Support/AuraFlow"];
+    NSString *pauseMarkerPath =
+        [applicationSupportPath stringByAppendingPathComponent:
+            @"wallpaper_daemon.paused"];
+    return [[NSFileManager defaultManager] fileExistsAtPath:pauseMarkerPath];
+}
+
+- (void)syncRuntimePauseState {
+    BOOL paused = [self runtimePauseMarkerExists];
+    if (paused) {
+        self.runtimePaused = YES;
+        // Enforce the paused state on every saver tick as well as on the
+        // distributed notification. macOS may recreate the AVPlayerLayer
+        // during a lock refresh, resetting its timing without changing the
+        // marker state.
+        [self pausePlayerLayerAtCurrentFrame];
+        [self.player pause];
+        return;
+    }
+
+    if (!self.runtimePaused) {
+        return;
+    }
+
+    self.runtimePaused = NO;
+    [self resumePlayerLayer];
+    [self.player playImmediatelyAtRate:1.0];
+}
+
+- (void)pausePlayerLayerAtCurrentFrame {
+    AVPlayerLayer *layer = self.playerLayer;
+    if (layer == nil || self.playerLayerPaused) {
+        return;
+    }
+
+    // AVPlayer and AVPlayerLayer have separate clocks. Freezing only the
+    // player still lets the compositor advance a frame during a secure-lock
+    // refresh, which is why Lock Screen used to keep moving after Stop.
+    CFTimeInterval pausedTime = [layer convertTime:CACurrentMediaTime()
+                                          fromLayer:nil];
+    layer.speed = 0.0;
+    layer.timeOffset = pausedTime;
+    self.playerLayerPaused = YES;
+}
+
+- (void)resumePlayerLayer {
+    AVPlayerLayer *layer = self.playerLayer;
+    if (layer == nil || !self.playerLayerPaused) {
+        return;
+    }
+
+    CFTimeInterval pausedTime = layer.timeOffset;
+    layer.speed = 1.0;
+    layer.timeOffset = 0.0;
+    layer.beginTime = 0.0;
+    CFTimeInterval currentTime = [layer convertTime:CACurrentMediaTime()
+                                           fromLayer:nil];
+    layer.beginTime = currentTime - pausedTime;
+    self.playerLayerPaused = NO;
 }
 
 - (NSDictionary *)JSONDictionaryAtURL:(NSURL *)URL {
@@ -305,6 +404,7 @@ static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
 }
 
 - (void)tearDownPlayer {
+    self.playerLayerPaused = NO;
     [self.player pause];
     if (self.observingReadyForDisplay && self.playerLayer != nil) {
         [self.playerLayer removeObserver:self
