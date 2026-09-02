@@ -873,6 +873,16 @@ final class NativeWallpaperController: WallpaperControlling {
             // modern provider. Migrate it to the legacy screen-saver route so
             // startup does not repeatedly fail trying to launch a native-only
             // agent on a platform that cannot support it.
+            if store.isLockScreenOnlyAgent() {
+                guard store.terminateDaemon(timeout: 2.0) else {
+                    throw NativeWallpaperControllerError.unavailable(
+                        "The Lock Screen agent did not stop during legacy fallback."
+                    )
+                }
+                store.removeCommand()
+                store.removeHealth()
+                store.markLockScreenOnlyAgent(false)
+            }
             if lockScreenOnlySource?.standardizedFileURL == sourceURL {
                 _ = try updateConfig { config in
                     config.video_path = sourceURL.path
