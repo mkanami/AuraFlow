@@ -223,6 +223,7 @@ protocol WallpaperControlling {
     func clearWallpaper() throws -> ControlStatus
     func setVideo(_ url: URL) throws -> ControlStatus
     func installLockScreenOnly(videoURL: URL) throws -> ControlStatus
+    func prepareLockScreenMedia(videoURL: URL) throws
     func setSpeed(_ speed: Double) throws -> ControlStatus
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus
@@ -240,6 +241,11 @@ extension WallpaperControlling {
         throw NativeWallpaperControllerError.unavailable(
             "Lock Screen-only wallpaper is unavailable."
         )
+    }
+
+    func prepareLockScreenMedia(videoURL: URL) throws {
+        // Controllers without a native Aerial implementation do not need a
+        // separate media cache.
     }
 }
 
@@ -465,6 +471,42 @@ final class NativeWallpaperController: WallpaperControlling {
         )
     }
 
+    private func waitForLockScreenGenerationReady(videoURL: URL) throws {
+        // The agent-ready marker only says that its run loop is alive. The
+        // selected generation must also be valid and owned by the provider;
+        // otherwise the Apply button can report success while the next lock
+        // still falls back to the macOS wallpaper.
+        guard store.appSupportURL.standardizedFileURL
+            == WallpaperRuntimeStore.defaultAppSupportURL()
+                .standardizedFileURL
+        else {
+            return
+        }
+
+        let deadline = Date().addingTimeInterval(8.0)
+        while Date() < deadline {
+            guard store.processIsAlive(pid: store.loadPID()) else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The Lock Screen agent stopped before the wallpaper was ready."
+                )
+            }
+
+            let status = lockScreenSaverInstaller.lockScreenOnlyStatus(
+                videoURL: videoURL
+            )
+            if status.isReady,
+               status.providerRunning,
+               store.isLockScreenAgentReady() {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        throw NativeWallpaperControllerError.unavailable(
+            "The Lock Screen provider did not confirm the selected wallpaper."
+        )
+    }
+
     func status() throws -> ControlStatus {
         store.status()
     }
@@ -683,7 +725,14 @@ final class NativeWallpaperController: WallpaperControlling {
             try launchAgentIfNeeded(lockScreenOnly: true)
         }
         try waitForLockScreenAgentReady()
+        try waitForLockScreenGenerationReady(videoURL: normalizedURL)
         return store.status()
+    }
+
+    func prepareLockScreenMedia(videoURL: URL) throws {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        try lockScreenSaverInstaller.prepareLockScreenMedia(videoURL: videoURL)
     }
 
     func setSpeed(_ speed: Double) throws -> ControlStatus {
@@ -990,6 +1039,8 @@ final class AppViewModel: ObservableObject {
     private var cacheGeneration = 0
     private var previewPreparationTask: Task<Void, Never>?
     private var previewPreparationGeneration = 0
+    private var lockScreenPreparationTask: Task<Void, Never>?
+    private var lockScreenPreparationGeneration = 0
     private var lifecycleTask: Task<Void, Never>?
     private var activeLifecycleIntent: WallpaperLifecycleIntent?
     private var pendingLifecycleRequest: LifecycleRequest?
@@ -1205,6 +1256,7 @@ final class AppViewModel: ObservableObject {
         controllerBootstrapTask?.cancel()
         glassAnalysisTask?.cancel()
         previewPreparationTask?.cancel()
+        lockScreenPreparationTask?.cancel()
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver)
         }
@@ -1320,12 +1372,19 @@ final class AppViewModel: ObservableObject {
         previewPreparationGeneration &+= 1
         previewPreparationTask?.cancel()
         previewPreparationTask = nil
+        lockScreenPreparationGeneration &+= 1
+        lockScreenPreparationTask?.cancel()
+        lockScreenPreparationTask = nil
     }
 
     private func configurePreviewOrPrepare(for url: URL) {
         guard !WallpaperMediaKind.forURL(url).isStaticImage else {
             cancelPreviewPreparation()
             configurePreview(for: url)
+            scheduleLockScreenMediaPreparation(
+                for: url,
+                previewGeneration: previewPreparationGeneration
+            )
             return
         }
 
@@ -1352,6 +1411,10 @@ final class AppViewModel: ObservableObject {
                 if isNativePlaybackContainer(normalizedSourceURL),
                    normalizedSourceURL.pathExtension.lowercased() != "gif",
                    await isPreviewPlayableVideo(at: normalizedSourceURL) {
+                    scheduleLockScreenMediaPreparation(
+                        for: normalizedSourceURL,
+                        previewGeneration: requestedGeneration
+                    )
                     if requestedGeneration == previewPreparationGeneration {
                         previewPreparationTask = nil
                     }
@@ -1368,6 +1431,10 @@ final class AppViewModel: ObservableObject {
 
                 configurePreview(for: prepared.url)
                 savePreviewSeed(for: prepared.url)
+                scheduleLockScreenMediaPreparation(
+                    for: prepared.url,
+                    previewGeneration: requestedGeneration
+                )
                 if let summary = prepared.summary {
                     statusMessage = summary
                 }
@@ -1386,6 +1453,54 @@ final class AppViewModel: ObservableObject {
 
             if requestedGeneration == previewPreparationGeneration {
                 previewPreparationTask = nil
+            }
+        }
+    }
+
+    private func scheduleLockScreenMediaPreparation(
+        for sourceURL: URL,
+        previewGeneration: Int
+    ) {
+        guard controller != nil else { return }
+
+        lockScreenPreparationGeneration &+= 1
+        let requestedGeneration = lockScreenPreparationGeneration
+        lockScreenPreparationTask?.cancel()
+        let normalizedSourceURL = sourceURL.standardizedFileURL
+        guard FileManager.default.fileExists(atPath: normalizedSourceURL.path) else {
+            return
+        }
+        let controller = self.controller
+
+        lockScreenPreparationTask = Task { @MainActor [weak self] in
+            guard let self, let controller else { return }
+            do {
+                try await self.runAsync {
+                    try controller.prepareLockScreenMedia(
+                        videoURL: normalizedSourceURL
+                    )
+                }
+                try Task.checkCancellation()
+                guard requestedGeneration == self.lockScreenPreparationGeneration,
+                      previewGeneration == self.previewPreparationGeneration
+                else {
+                    return
+                }
+                self.lockScreenPreparationTask = nil
+            } catch is CancellationError {
+                return
+            } catch {
+                // Cache warming is best-effort. Lock keeps its existing
+                // preparation and user-facing error path if needed.
+                guard requestedGeneration == self.lockScreenPreparationGeneration,
+                      previewGeneration == self.previewPreparationGeneration
+                else {
+                    return
+                }
+                lockScreenLifecycleLogger.debug(
+                    "Lock Screen media cache warm-up deferred: \(error.localizedDescription, privacy: .public)"
+                )
+                self.lockScreenPreparationTask = nil
             }
         }
     }
@@ -1443,6 +1558,7 @@ final class AppViewModel: ObservableObject {
                     self.controllerAvailable = true
                     self.isControllerBootstrapInProgress = false
                     self.controllerBootstrapTask = nil
+                    self.scheduleLockScreenMediaPreparationForCurrentPreview()
                     Task { @MainActor [weak self] in
                         await self?.loadStatus()
                     }
@@ -1458,6 +1574,20 @@ final class AppViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func scheduleLockScreenMediaPreparationForCurrentPreview() {
+        guard let sourceURL = selectedVideoURL else { return }
+        let isStatic = WallpaperMediaKind.forURL(sourceURL).isStaticImage
+        guard isStatic || isNativePlaybackContainer(sourceURL) else {
+            // The preview preparation task will schedule the cache warm-up
+            // after it produces a compatible file for non-native containers.
+            return
+        }
+        scheduleLockScreenMediaPreparation(
+            for: sourceURL,
+            previewGeneration: previewPreparationGeneration
+        )
     }
 
     func chooseVideo(force: Bool = false) {

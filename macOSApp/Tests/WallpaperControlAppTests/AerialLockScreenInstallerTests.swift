@@ -422,6 +422,47 @@ private struct AerialLockScreenFixture {
     #expect(fixture.refreshCounter.count == 1)
 }
 
+@Test func lockOnlyRepairRefreshesStaleAssetSignature() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    let markerURL = fixture.stateURL
+        .appendingPathComponent("installation.json")
+    var marker = try #require(
+        JSONSerialization.jsonObject(
+            with: Data(contentsOf: markerURL)
+        ) as? [String: Any]
+    )
+    marker["assetSignature"] = "stale-asset-signature"
+    try JSONSerialization.data(
+        withJSONObject: marker,
+        options: [.prettyPrinted, .sortedKeys]
+    ).write(to: markerURL, options: .atomic)
+
+    #expect(
+        !fixture.installer.lockScreenOnlyStatus(
+            videoURL: fixture.videoURL
+        ).assetValid
+    )
+
+    _ = try fixture.installer.repairLockScreenOnlyGeneration(
+        videoURL: fixture.videoURL
+    )
+
+    let repairedMarker = try #require(
+        JSONSerialization.jsonObject(
+            with: Data(contentsOf: markerURL)
+        ) as? [String: Any]
+    )
+    #expect(repairedMarker["assetSignature"] as? String != "stale-asset-signature")
+    #expect(
+        fixture.installer.lockScreenOnlyStatus(
+            videoURL: fixture.videoURL
+        ).assetValid
+    )
+}
+
 @Test func lockOnlyRepairRestoresDriftedIdleWithoutChangingDesktopRoutes() throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

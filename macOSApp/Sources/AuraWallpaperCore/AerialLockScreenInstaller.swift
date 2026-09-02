@@ -339,10 +339,17 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
 
         let assetURL = URL(fileURLWithPath: marker.assetPath)
         let currentAssetSignature = try? fileSignature(at: assetURL)
+        // The asset was decoded and checked before it was committed. During a
+        // provider hand-off AVURLAsset can temporarily expose no format
+        // descriptions even though the atomically installed file is intact.
+        // The marker signature is the stable content check; legacy markers
+        // without one still receive the full compatibility check below.
+        let assetSignatureMatches = marker.assetSignature != nil
+            && marker.assetSignature == currentAssetSignature
         let assetValid = fileManager.fileExists(atPath: assetURL.path)
-            && aerialAssetIsCompatible(at: assetURL)
-            && (marker.assetSignature == nil
-                || marker.assetSignature == currentAssetSignature)
+            && (assetSignatureMatches
+                || (marker.assetSignature == nil
+                    && aerialAssetIsCompatible(at: assetURL)))
         let providerAvailable = providerSupportsAsset(marker.assetID)
         let providerRunning = usesCanonicalWallpaperStore
             && !Self.processIdentifiers(named: "WallpaperAerialsExtension")
@@ -550,10 +557,12 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
 
         let assetURL = URL(fileURLWithPath: marker.assetPath)
         let assetBefore = try? Data(contentsOf: assetURL)
+        let currentAssetSignature = try? fileSignature(at: assetURL)
         let assetWasValid = fileManager.fileExists(atPath: assetURL.path)
-            && aerialAssetIsCompatible(at: assetURL)
-            && (marker.assetSignature == nil
-                || marker.assetSignature == (try? fileSignature(at: assetURL)))
+            && ((marker.assetSignature != nil
+                    && marker.assetSignature == currentAssetSignature)
+                || (marker.assetSignature == nil
+                    && aerialAssetIsCompatible(at: assetURL)))
         let storeChanged = updatedStoreData != currentStoreData
         let usesCanonicalStore = usesCanonicalWallpaperStore
         let saverWasSelected = usesCanonicalStore
@@ -643,6 +652,12 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                     .wallpaperStoreUpdateFailed
             }
 
+            if assetChanged {
+                // An interrupted or legacy marker may carry the signature of
+                // an older file. Persist the exact asset we just committed so
+                // the next health check is a no-op.
+                updatedMarker.assetSignature = try fileSignature(at: assetURL)
+            }
             updatedMarker.desiredMode = "lockOnly"
             updatedMarker.lastValidatedStoreHash = signature(
                 of: observedStoreData
@@ -3915,28 +3930,42 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     private static func processIdentifiers(named name: String) -> Set<Int32> {
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        process.arguments = ["-x", name]
-        process.standardOutput = output
-        process.standardError = Pipe()
-        do {
-            try process.run()
-            guard waitForProcessExit(process, timeout: 0.25) else {
-                return []
-            }
-        } catch {
-            return []
-        }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        guard let text = String(data: data, encoding: .utf8) else {
-            return []
-        }
-        return Set(
-            text.split(whereSeparator: \.isWhitespace)
-                .compactMap { Int32($0) }
+        // This method is called by the agent's main-thread health timer. A
+        // child `pgrep` plus a timeout can stall that run loop while
+        // WallpaperAgent is starting, exactly when loginwindow needs the
+        // prepared Lock Screen route. Enumerate process paths directly so a
+        // health sample is bounded by the kernel query rather than another
+        // process launch and wait.
+        let bufferSize = proc_listallpids(nil, 0)
+        guard bufferSize > 0 else { return [] }
+        var pids = [pid_t](
+            repeating: 0,
+            count: Int(bufferSize) / MemoryLayout<pid_t>.stride
         )
+        let bytesUsed = proc_listallpids(
+            &pids,
+            bufferSize
+        )
+        guard bytesUsed > 0 else { return [] }
+
+        var matches = Set<Int32>()
+        let pidCount = min(
+            Int(bytesUsed) / MemoryLayout<pid_t>.stride,
+            pids.count
+        )
+        for pid in pids.prefix(pidCount) where pid > 0 {
+            var path = [Int8](repeating: 0, count: 4_096)
+            guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else {
+                continue
+            }
+            guard URL(fileURLWithPath: String(cString: path))
+                .lastPathComponent == name
+            else {
+                continue
+            }
+            matches.insert(Int32(pid))
+        }
+        return matches
     }
 
     private static func runProcess(

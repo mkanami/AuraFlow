@@ -91,6 +91,11 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var lockScreenOnlyRepairInProgress = false
     private let lifecycleOperationLock = NSLock()
     private var currentLockScreenLifecycleOperationID: UInt64?
+    // Keep the operation object alongside its ID so a stale repair completion
+    // can immediately re-run the currently desired operation after clearing
+    // the shared repair gate. Without this, a superseded repair could leave
+    // the gate permanently set and make later Lock requests no-ops.
+    private var currentLockScreenLifecycleOperation: LockScreenLifecycleOperation?
     private var lastAppliedLockScreenLifecycleOperationID: UInt64?
     private var lastLockScreenOnlyStatus = LockScreenOnlyGenerationStatus()
     private var isTerminating = false
@@ -762,6 +767,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
         setCurrentLockScreenLifecycleOperation(operation.operationID)
+        currentLockScreenLifecycleOperation = operation
         reconcileLockScreenLifecycle(operation, reason: reason)
     }
 
@@ -788,18 +794,19 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             videoURL: videoURL
         )
         lastLockScreenOnlyStatus = status
+        let generationReady = isLockScreenGenerationReady(status)
         if operation.expectedLocked {
             // The legacy saver can render the verified still-frame while a
             // store repair is in progress. This prevents loginwindow from
             // exposing an unrelated Apple wallpaper during the repair.
-            if status.assetValid && status.screenSaverSelected {
+            if generationReady {
                 nativeLockScreenBridge.showForLockTransition()
             }
         } else {
             nativeLockScreenBridge.hideAfterUnlock()
         }
 
-        guard !status.isReady else {
+        guard !generationReady else {
             completeReadyLockScreenLifecycle(
                 operation,
                 status: status,
@@ -828,19 +835,31 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 repairError = error
             }
             DispatchQueue.main.async { [weak self] in
-                guard let self,
-                      self.isCurrentLockScreenLifecycleOperation(
-                          operation.operationID
-                      )
-                else {
+                guard let self else {
                     return
                 }
                 self.lockScreenOnlyRepairInProgress = false
+
+                guard self.isCurrentLockScreenLifecycleOperation(
+                    operation.operationID
+                ) else {
+                    // The repair finished after a newer lifecycle operation
+                    // superseded it. The result is stale, but the gate must
+                    // still be released and the latest operation must get a
+                    // chance to validate or repair its own generation.
+                    if let currentOperation = self.currentLockScreenLifecycleOperation {
+                        self.reconcileLockScreenLifecycle(
+                            currentOperation,
+                            reason: "stale-repair-completed"
+                        )
+                    }
+                    return
+                }
                 let repairedStatus = self.lockScreenInstaller
                     .lockScreenOnlyStatus(videoURL: videoURL)
                 self.lastLockScreenOnlyStatus = repairedStatus
                 self.store.markLockScreenAgentReady(
-                    repairedStatus.isReady
+                    self.isLockScreenGenerationReady(repairedStatus)
                 )
                 let duration = (CACurrentMediaTime() - startedAt) * 1_000
                 if let repairError {
@@ -852,7 +871,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     self.writeHealth(
                         reason:
-                            repairedStatus.isReady
+                            self.isLockScreenGenerationReady(repairedStatus)
                             ? "lock-screen-repaired"
                             : "lock-screen-repair-pending"
                     )
@@ -895,7 +914,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
             guard operation.expectedLocked else {
                 self.nativeLockScreenBridge.hideAfterUnlock()
-                self.store.markLockScreenAgentReady(status.isReady)
+                self.store.markLockScreenAgentReady(
+                    self.isLockScreenGenerationReady(status)
+                )
                 self.finishLockScreenLifecycle(operation, reason: reason)
                 return
             }
@@ -909,10 +930,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
                 self.store.markLockScreenAgentReady(
-                    status.isReady && shown
+                    self.isLockScreenGenerationReady(status) && shown
                 )
                 self.writeHealth(
-                    reason: status.isReady && shown
+                    reason: self.isLockScreenGenerationReady(status) && shown
                         ? "lock-screen-presented"
                         : "lock-screen-fallback-active"
                 )
@@ -933,10 +954,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         ) else {
             lastAppliedLockScreenLifecycleOperationID = operation.operationID
             setCurrentLockScreenLifecycleOperation(nil)
+            currentLockScreenLifecycleOperation = nil
             return
         }
         lastAppliedLockScreenLifecycleOperationID = operation.operationID
         setCurrentLockScreenLifecycleOperation(next.operationID)
+        currentLockScreenLifecycleOperation = next
         DispatchQueue.main.async { [weak self] in
             self?.reconcileLockScreenLifecycle(
                 next,
@@ -962,6 +985,16 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         return isCurrent && !isTerminating
     }
 
+    private func isLockScreenGenerationReady(
+        _ status: LockScreenOnlyGenerationStatus
+    ) -> Bool {
+        // A valid marker/store is not enough for an immediate Lock. The
+        // provider must be alive as well; otherwise loginwindow can resolve
+        // the route before WallpaperAerialsExtension owns the generation and
+        // silently display the system wallpaper.
+        status.isReady && status.providerRunning
+    }
+
     private func logLockScreenLifecycle(
         reason: String,
         operation: LockScreenLifecycleOperation,
@@ -970,13 +1003,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         repairError: Error?
     ) {
         let outcome = repairError == nil
-            ? (status.isReady ? "ready" : "degraded")
+            ? (isLockScreenGenerationReady(status) ? "ready" : "degraded")
             : "failed"
         let event = String(describing: operation.event)
         let operationID = String(operation.operationID)
         let generation = String(status.generation ?? 0)
         let duration = String(durationMilliseconds)
-        let fallback = String(!status.isReady)
+        let fallback = String(!isLockScreenGenerationReady(status))
         let message = "Lock Screen lifecycle event="
             + event
             + " reason=" + reason
