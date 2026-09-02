@@ -267,6 +267,77 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(installer.installedLockScreenOnlyVideoURL == nil)
 }
 
+@Test func legacySyncMigratesLockOnlySourceIntoMainConfig() throws {
+    let fixture = try NativeRuntimeFixture("legacy-sync-lock-only-migration")
+    defer { fixture.cleanup() }
+
+    let desktopURL = fixture.root.appendingPathComponent("desktop.mp4")
+    try Data([1, 2, 3]).write(to: desktopURL)
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: desktopURL.path,
+            playback_speed: 1.0,
+            show_on_lock_screen: true
+        )
+    )
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+
+    let installer = RecordingLockScreenSaverInstaller()
+    let legacyPlatform = LegacyMacOSAdapter(
+        installer: installer,
+        isAvailable: true
+    )
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: legacyPlatform
+    )
+
+    try controller.syncLockScreenSaver()
+
+    #expect(installer.installedVideoURL == fixture.videoURL)
+    #expect(fixture.store.loadConfig().video_path == fixture.videoURL.path)
+    #expect(fixture.store.loadLockScreenOnlySource() == nil)
+
+    try controller.syncLockScreenSaver()
+    #expect(installer.installedVideoURL == fixture.videoURL)
+}
+
+@Test func enablingLockScreenOnLegacyPlatformMigratesLockOnlySource() throws {
+    let fixture = try NativeRuntimeFixture("legacy-enable-lock-only-migration")
+    defer { fixture.cleanup() }
+
+    let desktopURL = fixture.root.appendingPathComponent("desktop.mp4")
+    try Data([4, 5, 6]).write(to: desktopURL)
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: desktopURL.path,
+            playback_speed: 1.0,
+            show_on_lock_screen: false
+        )
+    )
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+    try Data("{}".utf8).write(to: fixture.store.appSupportURL
+        .appendingPathComponent("wallpaper_backup.json"))
+
+    let installer = RecordingLockScreenSaverInstaller()
+    let legacyPlatform = LegacyMacOSAdapter(
+        installer: installer,
+        isAvailable: true
+    )
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: legacyPlatform
+    )
+
+    _ = try controller.setShowOnLockScreen(true)
+
+    #expect(installer.installedVideoURL == fixture.videoURL)
+    #expect(fixture.store.loadConfig().video_path == fixture.videoURL.path)
+    #expect(fixture.store.loadLockScreenOnlySource() == nil)
+}
+
 @Test func nativeLockScreenOnlyReplacesRunningDesktopAgent() throws {
     let fixture = try NativeRuntimeFixture("lock-screen-only-running")
     defer { fixture.cleanup() }

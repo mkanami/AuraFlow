@@ -812,7 +812,9 @@ final class NativeWallpaperController: WallpaperControlling {
                 let lockScreenOnlySource = store.loadLockScreenOnlySource()
                 let useLockScreenOnly = lockScreenOnlySource != nil
                     && lockScreenPlatform.capabilities.supportsLockScreenOnly
-                if let lockScreenOnlySource, !useLockScreenOnly {
+                if let lockScreenOnlySource,
+                   !useLockScreenOnly,
+                   lockScreenOnlySource.standardizedFileURL == sourceURL {
                     migratedLockScreenOnlySource = lockScreenOnlySource
                 }
                 try installLockScreenSaver(
@@ -840,8 +842,7 @@ final class NativeWallpaperController: WallpaperControlling {
 
         let config = try updateConfig { config in
             config.show_on_lock_screen = enabled
-            if let migratedLockScreenOnlySource,
-               config.video_path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let migratedLockScreenOnlySource {
                 config.video_path = migratedLockScreenOnlySource.path
             }
         }
@@ -872,8 +873,8 @@ final class NativeWallpaperController: WallpaperControlling {
             // modern provider. Migrate it to the legacy screen-saver route so
             // startup does not repeatedly fail trying to launch a native-only
             // agent on a platform that cannot support it.
-            _ = try? updateConfig { config in
-                if config.video_path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if lockScreenOnlySource?.standardizedFileURL == sourceURL {
+                _ = try updateConfig { config in
                     config.video_path = sourceURL.path
                 }
             }
