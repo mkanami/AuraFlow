@@ -5,16 +5,16 @@ import CoreFoundation
 import Foundation
 import OSLog
 
-private let auraFlowAerialProvider = "com.apple.wallpaper.choice.aerials"
-private let auraFlowImageProvider = "com.apple.wallpaper.choice.image"
+private let auraFlowAerialProvider = WallpaperPlatformConstants.aerialProviderID
+private let auraFlowImageProvider = WallpaperPlatformConstants.imageProviderID
 private let auraFlowScreenSaverProvider =
-    "com.apple.wallpaper.choice.screen-saver"
+    WallpaperPlatformConstants.screenSaverProviderID
 private let wallpaperPreferencesApplicationID =
-    "com.apple.wallpaper" as CFString
+    WallpaperPlatformConstants.wallpaperApplicationID as CFString
 private let systemWallpaperURLPreferenceKey =
-    "SystemWallpaperURL" as CFString
+    WallpaperPlatformConstants.systemWallpaperURLKey as CFString
 private let screenSaverPreferencesApplicationID =
-    "com.apple.screensaver" as CFString
+    WallpaperPlatformConstants.screenSaverApplicationID as CFString
 private let lockScreenRemovalLogger = Logger(
     subsystem: "com.andrijvergeles.auraflow",
     category: "LockScreenRemoval"
@@ -196,15 +196,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     ) {
         self.fileManager = fileManager
         let home = fileManager.homeDirectoryForCurrentUser
-        let wallpaperSupport = home
-            .appendingPathComponent(
-                "Library/Application Support/com.apple.wallpaper",
-                isDirectory: true
-            )
+        let wallpaperSupport = WallpaperPlatformConstants.wallpaperSupportURL(
+            homeURL: home
+        )
         self.wallpaperStoreURL = wallpaperStoreURL
-            ?? wallpaperSupport
-                .appendingPathComponent("Store", isDirectory: true)
-                .appendingPathComponent("Index.plist")
+            ?? WallpaperPlatformConstants.wallpaperStoreURL(homeURL: home)
         self.spacesPreferencesURL = spacesPreferencesURL
             ?? home
                 .appendingPathComponent(
@@ -212,18 +208,20 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                 )
         self.aerialVideosURL = aerialVideosURL
             ?? wallpaperSupport
-                .appendingPathComponent("aerials/videos", isDirectory: true)
+                .appendingPathComponent(
+                    WallpaperPlatformConstants.aerialVideosRelativePath,
+                    isDirectory: true
+                )
         self.aerialThumbnailsURL = aerialThumbnailsURL
             ?? wallpaperSupport
                 .appendingPathComponent(
-                    "aerials/thumbnails",
+                    WallpaperPlatformConstants.aerialThumbnailsRelativePath,
                     isDirectory: true
                 )
         self.aerialProviderURL = aerialProviderURL
             ?? URL(
                 fileURLWithPath:
-                    "/System/Library/ExtensionKit/Extensions/"
-                    + "WallpaperAerialsExtension.appex",
+                    WallpaperPlatformConstants.aerialProviderPath,
                 isDirectory: true
             )
         self.stateDirectoryURL = stateDirectoryURL
@@ -352,7 +350,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
                     && aerialAssetIsCompatible(at: assetURL)))
         let providerAvailable = providerSupportsAsset(marker.assetID)
         let providerRunning = usesCanonicalWallpaperStore
-            && !Self.processIdentifiers(named: "WallpaperAerialsExtension")
+            && !Self.processIdentifiers(
+                named: WallpaperPlatformConstants.aerialExtensionProcessName
+            )
                 .isEmpty
         let storeData = try? Data(contentsOf: wallpaperStoreURL)
         let storeHash = storeData.map(signature(of:))
@@ -569,7 +569,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             ? lockScreenSaverIsSelected()
             : true
         let providerWasRunning = usesCanonicalWallpaperStore
-            && !Self.processIdentifiers(named: "WallpaperAerialsExtension")
+            && !Self.processIdentifiers(
+                named: WallpaperPlatformConstants.aerialExtensionProcessName
+            )
                 .isEmpty
         var assetChanged = false
         var selectionChanged = false
@@ -1567,11 +1569,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         guard let infoData = try? Data(contentsOf: infoURL),
               let info = try? propertyListDictionary(from: infoData),
               info["CFBundleIdentifier"] as? String
-                == "com.apple.wallpaper.extension.aerials",
+                == WallpaperPlatformConstants.aerialExtensionBundleID,
               let attributes =
                 info["EXAppExtensionAttributes"] as? [String: Any],
               attributes["EXExtensionPointIdentifier"] as? String
-                == "com.apple.wallpaper"
+                == WallpaperPlatformConstants.wallpaperExtensionPointID
         else {
             return []
         }
@@ -2328,7 +2330,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             return mode
         }
         let wallpaperPath = loadOriginalWallpaperPath()
-            ?? "/System/Library/Desktop Pictures/Solid Colors/Stone.png"
+            ?? WallpaperPlatformConstants.fallbackDesktopImagePath
         return makeMode(
             provider: auraFlowImageProvider,
             configuration: [
@@ -2352,7 +2354,8 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             configuration: [
                 "module": [
                     "relative":
-                        "file:///System/Library/ExtensionKit/Extensions/Ventura.appex",
+                        URL(fileURLWithPath: WallpaperPlatformConstants.fallbackScreenSaverPath)
+                            .absoluteString,
                 ],
             ],
             date: Date()
@@ -3478,12 +3481,9 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     }
 
     private static func defaultWallpaperStoreURL() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Application Support/com.apple.wallpaper/Store",
-                isDirectory: true
-            )
-            .appendingPathComponent("Index.plist")
+        WallpaperPlatformConstants.wallpaperStoreURL(
+            homeURL: FileManager.default.homeDirectoryForCurrentUser
+        )
     }
 
     private func signature(of data: Data) -> String {
@@ -3772,11 +3772,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         for (executable, arguments) in [
             (
                 "/usr/bin/pkill",
-                ["-x", "WallpaperAerialsExtension"]
+                ["-x", WallpaperPlatformConstants.aerialExtensionProcessName]
             ),
             ("/usr/bin/pkill", ["-x", "legacyScreenSaver"]),
-            ("/usr/bin/killall", ["WallpaperAgent"]),
-            ("/usr/bin/killall", ["Dock"]),
+            (
+                "/usr/bin/killall",
+                [WallpaperPlatformConstants.wallpaperAgentProcessName]
+            ),
+            ("/usr/bin/killall", [WallpaperPlatformConstants.dockProcessName]),
         ] {
             guard shouldProceed() else {
                 throw AerialLockScreenOperationAbort.sessionChanged
@@ -3802,9 +3805,11 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             throw AerialLockScreenOperationAbort.sessionChanged
         }
         let previousProviderPIDs = processIdentifiers(
-            named: "WallpaperAerialsExtension"
+            named: WallpaperPlatformConstants.aerialExtensionProcessName
         )
-        let previousOwnerPIDs = processIdentifiers(named: "WallpaperAgent")
+        let previousOwnerPIDs = processIdentifiers(
+            named: WallpaperPlatformConstants.wallpaperAgentProcessName
+        )
         guard shouldProceed() else {
             throw AerialLockScreenOperationAbort.sessionChanged
         }
@@ -3813,7 +3818,10 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         // not reliably relaunch an orphaned provider on the next lock, which
         // produces a black screen. WallpaperAgent immediately creates a fresh
         // provider with a new state machine.
-        runProcess("/usr/bin/killall", ["WallpaperAgent"])
+        runProcess(
+            "/usr/bin/killall",
+            [WallpaperPlatformConstants.wallpaperAgentProcessName]
+        )
         // Once the owner has been stopped, waiting is passive and must finish
         // even if a new lock begins. Cancelling here could strand that lock
         // without any provider.
@@ -3829,14 +3837,14 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         if shouldProceed() {
             runProcess(
                 "/usr/bin/pkill",
-                ["-x", "WallpaperAerialsExtension"]
+                ["-x", WallpaperPlatformConstants.aerialExtensionProcessName]
             )
         }
         runProcess(
             "/usr/bin/open",
             [
                 "-gja",
-                "/System/Library/CoreServices/WallpaperAgent.app",
+                WallpaperPlatformConstants.wallpaperAgentApplicationPath,
             ]
         )
         guard waitForFreshWallpaperRuntime(
@@ -3861,10 +3869,12 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         }
 
         let currentProviderPIDs = processIdentifiers(
-            named: "WallpaperAerialsExtension"
+            named: WallpaperPlatformConstants.aerialExtensionProcessName
         )
         if !currentProviderPIDs.isEmpty
-            || !processIdentifiers(named: "WallpaperAgent").isEmpty {
+            || !processIdentifiers(
+                named: WallpaperPlatformConstants.wallpaperAgentProcessName
+            ).isEmpty {
             return
         }
 
@@ -3872,7 +3882,7 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
             "/usr/bin/open",
             [
                 "-gja",
-                "/System/Library/CoreServices/WallpaperAgent.app",
+                WallpaperPlatformConstants.wallpaperAgentApplicationPath,
             ]
         )
         guard waitForWallpaperRuntime() else {
@@ -3888,13 +3898,15 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
         let deadline = Date().addingTimeInterval(5.0)
         while Date() < deadline {
             let currentProviderPIDs = processIdentifiers(
-                named: "WallpaperAerialsExtension"
+                named: WallpaperPlatformConstants.aerialExtensionProcessName
             )
             if !currentProviderPIDs.isEmpty,
                currentProviderPIDs.isDisjoint(with: previousProviderPIDs) {
                 return true
             }
-            let currentOwnerPIDs = processIdentifiers(named: "WallpaperAgent")
+            let currentOwnerPIDs = processIdentifiers(
+                named: WallpaperPlatformConstants.wallpaperAgentProcessName
+            )
             if !currentOwnerPIDs.isEmpty,
                currentOwnerPIDs.isDisjoint(with: previousOwnerPIDs) {
                 return true
@@ -3907,8 +3919,12 @@ public final class AerialLockScreenInstaller: LockScreenSaverInstalling {
     private static func waitForWallpaperRuntime() -> Bool {
         let deadline = Date().addingTimeInterval(5.0)
         while Date() < deadline {
-            if !processIdentifiers(named: "WallpaperAerialsExtension").isEmpty
-                || !processIdentifiers(named: "WallpaperAgent").isEmpty {
+            if !processIdentifiers(
+                named: WallpaperPlatformConstants.aerialExtensionProcessName
+            ).isEmpty
+                || !processIdentifiers(
+                    named: WallpaperPlatformConstants.wallpaperAgentProcessName
+                ).isEmpty {
                 return true
             }
             Thread.sleep(forTimeInterval: 0.1)

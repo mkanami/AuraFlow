@@ -37,7 +37,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private let store = WallpaperRuntimeStore()
     private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
-    private let lockScreenInstaller = AerialLockScreenInstaller()
+    private let lockScreenPlatform: LockScreenPlatformOperating =
+        ModernMacOS26Adapter()
     private let nativeLockScreenBridge = NativeLockScreenWallpaperBridge()
     private let lockScreenRepairQueue = DispatchQueue(
         label: "com.auraflow.lock-screen-repair",
@@ -139,7 +140,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 reason: "startup"
             )
         } else if config.show_on_lock_screen == true,
-                  lockScreenInstaller.isInstalled {
+                  lockScreenPlatform.isInstalled {
             // Start owns both surfaces. Prepare the native bridge in advance
             // so Stop can freeze the Lock Screen layer without installing or
             // removing anything at the time of the click.
@@ -496,12 +497,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func restoreDesktopStoreAfterSession() {
         guard config.show_on_lock_screen == true,
-              lockScreenInstaller.requiresLockScreenSessionPromotion
+              lockScreenPlatform.requiresLockScreenSessionPromotion
         else {
             return
         }
         do {
-            _ = try lockScreenInstaller.restoreDesktopAfterLockScreenSession()
+            _ = try lockScreenPlatform.restoreDesktopAfterLockScreenSession()
             displaySleepRestorePending = false
             displaySleepLockObserved = false
         } catch {
@@ -517,12 +518,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminating,
               lockScreenOnlyMode,
               config.show_on_lock_screen == true,
-              lockScreenInstaller.requiresLockScreenSessionPromotion
+              lockScreenPlatform.requiresLockScreenSessionPromotion
         else {
             return
         }
         do {
-            _ = try lockScreenInstaller
+            _ = try lockScreenPlatform
                 .activateLockScreenForCurrentSession()
         } catch {
             writeHealth(
@@ -535,7 +536,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func scheduleDesktopStoreRestoration() {
         guard config.show_on_lock_screen == true,
-              lockScreenInstaller.requiresLockScreenSessionPromotion
+              lockScreenPlatform.requiresLockScreenSessionPromotion
         else {
             return
         }
@@ -790,7 +791,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let status = lockScreenInstaller.lockScreenOnlyStatus(
+        let status = lockScreenPlatform.lockScreenOnlyStatus(
             videoURL: videoURL
         )
         lastLockScreenOnlyStatus = status
@@ -822,7 +823,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             var repairError: Error?
             do {
-                _ = try self.lockScreenInstaller
+                _ = try self.lockScreenPlatform
                     .repairLockScreenOnlyGeneration(
                         videoURL: videoURL,
                         shouldProceed: { [weak self] in
@@ -855,7 +856,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     }
                     return
                 }
-                let repairedStatus = self.lockScreenInstaller
+                let repairedStatus = self.lockScreenPlatform
                     .lockScreenOnlyStatus(videoURL: videoURL)
                 self.lastLockScreenOnlyStatus = repairedStatus
                 self.store.markLockScreenAgentReady(
@@ -1585,7 +1586,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !lockScreenOnlyMode,
               config.show_on_lock_screen == true,
               let videoURL = effectiveLockScreenVideoURL(),
-              lockScreenInstaller.isInstalled,
+              lockScreenPlatform.isInstalled,
               !lockScreenRepairInProgress,
               !sessionInactive,
               lockScreenState.sessionState == .unlocked,
@@ -1603,7 +1604,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             let repairError: Error?
             do {
-                _ = try self.lockScreenInstaller.repair(
+                _ = try self.lockScreenPlatform.repair(
                     videoURL: videoURL,
                     shouldProceed: { [weak self] in
                         guard let self else { return false }
@@ -1641,7 +1642,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !lockScreenOnlyMode,
               config.show_on_lock_screen == true,
               let videoURL = effectiveLockScreenVideoURL(),
-              lockScreenInstaller.isInstalled,
+              lockScreenPlatform.isInstalled,
               !sessionInactive,
               lockScreenState.sessionState == .unlocked,
               lockScreenState.previewState == .inactive,
@@ -1666,7 +1667,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             let didRearm: Bool
             let rearmError: Error?
             do {
-                didRearm = try self.lockScreenInstaller.rearmForNextLock(
+                didRearm = try self.lockScreenPlatform.rearmForNextLock(
                     videoURL: videoURL,
                     shouldProceed: { [weak self] in
                         guard let self else { return false }
@@ -1692,11 +1693,11 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                    !self.sessionInactive {
                     self.lastRearmedToken = token
                 }
-                if self.lockScreenInstaller.requiresLockScreenSessionPromotion,
+                if self.lockScreenPlatform.requiresLockScreenSessionPromotion,
                    !self.sessionInactive,
                    self.systemSessionIsLocked() == false {
                     do {
-                        _ = try self.lockScreenInstaller
+                        _ = try self.lockScreenPlatform
                             .restoreDesktopAfterLockScreenSession()
                     } catch {
                         self.writeHealth(

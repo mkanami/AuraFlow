@@ -216,6 +216,7 @@ func catalogOriginHeaderValue(for url: URL) -> String? {
 }
 
 protocol WallpaperControlling {
+    var lockScreenCapabilities: PlatformCapabilities { get }
     func status() throws -> ControlStatus
     func start(videoURL: URL?, speed: Double?) throws -> ControlStatus
     func resume() throws -> ControlStatus
@@ -234,6 +235,12 @@ protocol WallpaperControlling {
     func setScaleMode(_ mode: WallpaperScaleMode) throws -> ControlStatus
     func setAutostart(_ enabled: Bool) throws -> ControlStatus
     func metrics() throws -> DaemonMetrics
+}
+
+extension WallpaperControlling {
+    var lockScreenCapabilities: PlatformCapabilities {
+        .legacyMacOS
+    }
 }
 
 extension WallpaperControlling {
@@ -268,14 +275,18 @@ final class NativeWallpaperController: WallpaperControlling {
 
     private let store: WallpaperRuntimeStore
     private let helperURL: URL
-    private let lockScreenSaverInstaller: LockScreenSaverInstalling
+    private let lockScreenPlatform: LockScreenPlatformOperating
     private let lifecycleLock = NSRecursiveLock()
     private var nextRuntimeOperationID: UInt64 = 0
+
+    var lockScreenCapabilities: PlatformCapabilities {
+        lockScreenPlatform.capabilities
+    }
 
     init(
         store: WallpaperRuntimeStore = WallpaperRuntimeStore(),
         helperURL: URL? = nil,
-        lockScreenSaverInstaller: LockScreenSaverInstalling? = nil
+        lockScreenSaverInstaller: LockScreenPlatformOperating? = nil
     ) throws {
         self.store = store
         let helperResolution: RuntimeHelperResolution
@@ -288,8 +299,8 @@ final class NativeWallpaperController: WallpaperControlling {
             helperResolution = try Self.resolveHelperURL()
         }
         self.helperURL = helperResolution.url
-        self.lockScreenSaverInstaller =
-            lockScreenSaverInstaller ?? LockScreenWallpaperInstaller()
+        self.lockScreenPlatform =
+            lockScreenSaverInstaller ?? WallpaperPlatformAdapter()
         self.nextRuntimeOperationID =
             store.loadCommand()?.operationID ?? 0
         if helperResolution.didUpdateInstalledCopy {
@@ -392,7 +403,7 @@ final class NativeWallpaperController: WallpaperControlling {
         if store.restoreWallpaperBackup() {
             store.removeManagedFallback()
         } else {
-            _ = WallpaperDesktopSupport
+            _ = WallpaperDesktopPlatform
                 .repairCurrentDesktopWallpaperIfNeeded()
         }
     }
@@ -491,7 +502,7 @@ final class NativeWallpaperController: WallpaperControlling {
                 )
             }
 
-            let status = lockScreenSaverInstaller.lockScreenOnlyStatus(
+            let status = lockScreenPlatform.lockScreenOnlyStatus(
                 videoURL: videoURL
             )
             if status.isReady,
@@ -542,13 +553,13 @@ final class NativeWallpaperController: WallpaperControlling {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
         store.clearLockScreenOnlySource()
-        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(appSupportPath: store.appSupportURL.path)
+        _ = WallpaperDesktopPlatform.captureCurrentDesktopWallpaperBackup(appSupportPath: store.appSupportURL.path)
         // Start keeps the original all-surfaces behavior: the selected
         // wallpaper is applied to the Desktop and Lock Screen together.
         // The separate Lock button uses installLockScreenOnly() and is the
         // only path that leaves the user's Desktop untouched.
         try installLockScreenSaver(using: config)
-        guard lockScreenSaverInstaller.installationConfirmed else {
+        guard lockScreenPlatform.installationConfirmed else {
             throw NativeWallpaperControllerError.unavailable(
                 "macOS did not confirm the Desktop and Lock Screen wallpaper configuration."
             )
@@ -619,12 +630,12 @@ final class NativeWallpaperController: WallpaperControlling {
         store.removeCommand()
         store.removeHealth()
         if currentConfig.show_on_lock_screen == true
-            || lockScreenSaverInstaller.isInstalled {
+            || lockScreenPlatform.isInstalled {
             if removingLockScreenOnly {
-                try lockScreenSaverInstaller
+                try lockScreenPlatform
                     .uninstallLockScreenOnlyPreservingCurrentDesktop()
             } else {
-                try lockScreenSaverInstaller.uninstall()
+                try lockScreenPlatform.uninstall()
             }
         }
         store.clearLockScreenOnlySource()
@@ -635,7 +646,7 @@ final class NativeWallpaperController: WallpaperControlling {
             // already preserved every current Desktop/Space in one wallpaper
             // store update. Reapplying URL backups here would affect only the
             // active Space and would visibly switch the Desktop a second time.
-            WallpaperDesktopSupport.discardWallpaperBackupFiles(
+            WallpaperDesktopPlatform.discardWallpaperBackupFiles(
                 appSupportPath: store.appSupportURL.path
             )
             restored = false
@@ -687,7 +698,7 @@ final class NativeWallpaperController: WallpaperControlling {
                 ensureStillFrame: true,
                 lockScreenOnly: true
             )
-            guard lockScreenSaverInstaller.installationConfirmed else {
+            guard lockScreenPlatform.installationConfirmed else {
                 throw NativeWallpaperControllerError.unavailable(
                     "macOS did not confirm the Lock Screen wallpaper configuration."
                 )
@@ -732,7 +743,7 @@ final class NativeWallpaperController: WallpaperControlling {
     func prepareLockScreenMedia(videoURL: URL) throws {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
-        try lockScreenSaverInstaller.prepareLockScreenMedia(videoURL: videoURL)
+        try lockScreenPlatform.prepareLockScreenMedia(videoURL: videoURL)
     }
 
     func setSpeed(_ speed: Double) throws -> ControlStatus {
@@ -785,7 +796,7 @@ final class NativeWallpaperController: WallpaperControlling {
                 let backupURL = store.appSupportURL
                     .appendingPathComponent("wallpaper_backup.json")
                 if !FileManager.default.fileExists(atPath: backupURL.path) {
-                    _ = WallpaperDesktopSupport
+                    _ = WallpaperDesktopPlatform
                         .captureCurrentDesktopWallpaperBackup(
                             appSupportPath: store.appSupportURL.path
                         )
@@ -798,7 +809,7 @@ final class NativeWallpaperController: WallpaperControlling {
             }
         } else {
             store.clearLockScreenOnlySource()
-            try lockScreenSaverInstaller.uninstall()
+            try lockScreenPlatform.uninstall()
             if store.isLockScreenOnlyAgent() {
                 if store.processIsAlive(pid: store.loadPID()) {
                     guard store.terminateDaemon(timeout: 2.0) else {
@@ -927,9 +938,9 @@ final class NativeWallpaperController: WallpaperControlling {
             }
         }
         if lockScreenOnly {
-            try lockScreenSaverInstaller.installLockScreenOnly(videoURL: videoURL)
+            try lockScreenPlatform.installLockScreenOnly(videoURL: videoURL)
         } else {
-            try lockScreenSaverInstaller.install(videoURL: videoURL)
+            try lockScreenPlatform.install(videoURL: videoURL)
         }
     }
 }
@@ -1000,6 +1011,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var catalogIsRefreshing: Bool = false
     @Published private(set) var downloadedCatalogWallpapers: [DownloadedCatalogWallpaper] = []
     @Published private(set) var controllerAvailable: Bool = false
+    @Published private(set) var lockScreenCapabilities: PlatformCapabilities = .legacyMacOS
     @Published private(set) var adaptiveGlassAppearance: AdaptiveGlassAppearance = .default
     @Published private(set) var lifecycleState: WallpaperLifecycleState = .idle
     @Published private(set) var isLifecycleBusy = false
@@ -1071,6 +1083,14 @@ final class AppViewModel: ObservableObject {
         controllerAvailable
     }
 
+    var lockScreenCapabilityMessage: String {
+        if lockScreenCapabilities.supportsSecureLockScreen {
+            return "On macOS 26 and later, AuraFlow uses Apple's native Aerial Lock Screen. Lock Screen-only mode leaves Desktop unchanged."
+        }
+        return lockScreenCapabilities.availabilityMessage
+            ?? "Lock Screen is unavailable on this macOS version."
+    }
+
     var selectedVideoName: String {
         selectedVideoURL?.lastPathComponent ?? "Not selected"
     }
@@ -1120,6 +1140,7 @@ final class AppViewModel: ObservableObject {
 
     var canApplyLockScreenOnly: Bool {
         isControllerAvailable
+            && lockScreenCapabilities.supportsLockScreenOnly
             && !isDesktopAndLockModeActiveForControls
             && selectedVideoURL != nil
     }
@@ -1149,11 +1170,14 @@ final class AppViewModel: ObservableObject {
     }
 
     var canToggleShowOnLockScreen: Bool {
-        isControllerAvailable && !isBusy
+        isControllerAvailable
+            && lockScreenCapabilities.supportsLockScreen
+            && !isBusy
     }
 
     var canPreviewLockScreen: Bool {
         isPlaybackRunningForControls
+            && lockScreenCapabilities.supportsLockScreen
             && showOnLockScreenEnabled
             && !isLockScreenPreviewActive
     }
@@ -1219,6 +1243,7 @@ final class AppViewModel: ObservableObject {
         if let controller {
             self.controller = controller
             self.controllerAvailable = true
+            self.lockScreenCapabilities = controller.lockScreenCapabilities
         } else {
             self.controller = nil
             self.controllerAvailable = false
@@ -1277,6 +1302,7 @@ final class AppViewModel: ObservableObject {
             }
             return
         }
+        lockScreenCapabilities = controller.lockScreenCapabilities
         guard !isBusy else { return }
         isBusy = true
         defer { isBusy = false }
@@ -1556,6 +1582,7 @@ final class AppViewModel: ObservableObject {
                     guard let self else { return }
                     self.controller = controller
                     self.controllerAvailable = true
+                    self.lockScreenCapabilities = controller.lockScreenCapabilities
                     self.isControllerBootstrapInProgress = false
                     self.controllerBootstrapTask = nil
                     self.scheduleLockScreenMediaPreparationForCurrentPreview()

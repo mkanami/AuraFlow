@@ -1,0 +1,237 @@
+import Foundation
+
+/// Adapter for the native Aerial route introduced for the modern macOS
+/// Lock Screen. All knowledge of the private installer stays behind this
+/// type; callers use only `LockScreenPlatformOperating`.
+public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
+    private let installer: AerialLockScreenInstaller
+    private let operatingSystemVersion: OperatingSystemVersion
+
+    public init(
+        installer: AerialLockScreenInstaller = AerialLockScreenInstaller(),
+        operatingSystemVersion: OperatingSystemVersion = ProcessInfo.processInfo
+            .operatingSystemVersion
+    ) {
+        self.installer = installer
+        self.operatingSystemVersion = operatingSystemVersion
+    }
+
+    public var capabilities: PlatformCapabilities {
+        .modernMacOS26(isAvailable: isModernOS && installer.isAvailable)
+    }
+
+    public var isInstalled: Bool {
+        installer.isInstalled
+    }
+
+    public var installationConfirmed: Bool {
+        guard capabilities.isAvailable else { return false }
+        return installer.installationConfirmed
+    }
+
+    public func install(_ media: URL) throws {
+        try requireAvailability()
+        try installer.install(videoURL: media)
+    }
+
+    public func install(videoURL: URL) throws {
+        try install(videoURL)
+    }
+
+    public func installLockScreenOnly(videoURL: URL) throws {
+        try requireAvailability()
+        try installer.installLockScreenOnly(videoURL: videoURL)
+    }
+
+    public func prepareLockScreenMedia(videoURL: URL) throws {
+        try requireAvailability()
+        try installer.prepareLockScreenMedia(videoURL: videoURL)
+    }
+
+    public func lockScreenOnlyStatus(
+        videoURL: URL?
+    ) -> LockScreenOnlyGenerationStatus {
+        guard capabilities.isAvailable else {
+            return LockScreenOnlyGenerationStatus()
+        }
+        return installer.lockScreenOnlyStatus(videoURL: videoURL)
+    }
+
+    @discardableResult
+    public func repairLockScreenOnlyGeneration(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) throws -> Bool {
+        try requireAvailability()
+        return try installer.repairLockScreenOnlyGeneration(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
+    }
+
+    public func uninstall() throws {
+        // Cleanup remains allowed if a macOS update removed the provider after
+        // installation. This prevents stale AuraFlow markers from becoming
+        // permanent just because the provider is no longer available.
+        try installer.uninstall()
+    }
+
+    public func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
+        try installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    }
+
+    public func status() -> LockScreenStatus {
+        guard capabilities.isAvailable else {
+            return .unavailable(
+                capabilities.availabilityMessage
+                    ?? "Lock Screen is unavailable on this macOS version."
+            )
+        }
+
+        let confirmed = installer.installationConfirmed
+        let detailedStatus = installer.lockScreenOnlyStatus(videoURL: nil)
+        return LockScreenStatus(
+            available: true,
+            installed: installer.isInstalled,
+            confirmed: confirmed,
+            needsRepair: installer.isInstalled && !confirmed,
+            generation: detailedStatus.generation,
+            message: capabilities.availabilityMessage
+        )
+    }
+
+    public var requiresLockScreenSessionPromotion: Bool {
+        guard capabilities.isAvailable else { return false }
+        return installer.requiresLockScreenSessionPromotion
+    }
+
+    @discardableResult
+    public func activateLockScreenForCurrentSession() throws -> Bool {
+        try requireAvailability()
+        return try installer.activateLockScreenForCurrentSession()
+    }
+
+    @discardableResult
+    public func restoreDesktopAfterLockScreenSession() throws -> Bool {
+        try requireAvailability()
+        return try installer.restoreDesktopAfterLockScreenSession()
+    }
+
+    @discardableResult
+    public func applyCurrentDesktopFallback() -> Bool {
+        guard capabilities.isAvailable else { return false }
+        return installer.applyCurrentDesktopFallback()
+    }
+
+    @discardableResult
+    public func repair(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) throws -> Bool {
+        try requireAvailability()
+        return try installer.repair(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
+    }
+
+    @discardableResult
+    public func rearmForNextLock(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) throws -> Bool {
+        try requireAvailability()
+        return try installer.rearmForNextLock(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
+    }
+
+    private var isModernOS: Bool {
+        operatingSystemVersion.majorVersion >= 26
+    }
+
+    private func requireAvailability() throws {
+        guard capabilities.isAvailable else {
+            throw LockScreenPlatformError.unsupported(
+                capabilities.availabilityMessage
+                    ?? "Lock Screen is unavailable on this macOS version."
+            )
+        }
+    }
+}
+
+/// Safe terminal adapter used when neither the modern provider nor the legacy
+/// screen saver can service the requested operation.
+public final class UnsupportedAdapter: LockScreenSaverInstalling {
+    public let capabilities: PlatformCapabilities
+
+    public init(
+        message: String = "Lock Screen is unavailable on this macOS version."
+    ) {
+        capabilities = PlatformCapabilities(
+            platformName: "Unsupported macOS",
+            minimumMajorOSVersion: 13,
+            supportsLockScreen: false,
+            supportsLockScreenOnly: false,
+            supportsSecureLockScreen: false,
+            supportsAnimatedMedia: false,
+            usesPrivateWallpaperFramework: false,
+            availabilityMessage: message
+        )
+    }
+
+    public var isInstalled: Bool { false }
+    public var installationConfirmed: Bool { false }
+
+    public func install(_ media: URL) throws {
+        try fail()
+    }
+
+    public func install(videoURL: URL) throws {
+        try fail()
+    }
+
+    public func installLockScreenOnly(videoURL: URL) throws {
+        try fail()
+    }
+
+    public func prepareLockScreenMedia(videoURL: URL) throws {
+        try fail()
+    }
+
+    public func lockScreenOnlyStatus(
+        videoURL: URL?
+    ) -> LockScreenOnlyGenerationStatus {
+        LockScreenOnlyGenerationStatus()
+    }
+
+    @discardableResult
+    public func repairLockScreenOnlyGeneration(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) throws -> Bool {
+        throw LockScreenPlatformError.unsupported(
+            capabilities.availabilityMessage
+                ?? "Lock Screen is unavailable on this macOS version."
+        )
+    }
+
+    public func uninstall() throws {}
+
+    public func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {}
+
+    public func status() -> LockScreenStatus {
+        .unavailable(
+            capabilities.availabilityMessage
+                ?? "Lock Screen is unavailable on this macOS version."
+        )
+    }
+
+    private func fail() throws {
+        throw LockScreenPlatformError.unsupported(
+            capabilities.availabilityMessage
+                ?? "Lock Screen is unavailable on this macOS version."
+        )
+    }
+}

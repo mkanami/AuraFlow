@@ -218,10 +218,13 @@ final class NativeLockScreenWallpaperBridge {
 
     private static let startScreenSaverFunction: StartScreenSaverFunction? = {
         guard let handle = dlopen(
-            "/System/Library/PrivateFrameworks/login.framework/login",
+            WallpaperPlatformConstants.loginFrameworkPath,
             RTLD_NOW | RTLD_LOCAL
         ),
-        let symbol = dlsym(handle, "SACScreenSaverStartNow")
+        let symbol = dlsym(
+            handle,
+            WallpaperPlatformConstants.startScreenSaverSymbol
+        )
         else {
             return nil
         }

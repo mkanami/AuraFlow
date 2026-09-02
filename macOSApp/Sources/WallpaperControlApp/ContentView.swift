@@ -844,7 +844,7 @@ struct SettingsPopupCard: View {
                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             }
 
-            Text("On macOS 26 and later, AuraFlow uses Apple's Aerial wallpaper provider for the real Lock Screen. Lock Screen-only mode leaves Desktop unchanged.")
+            Text(viewModel.lockScreenCapabilityMessage)
                 .font(.caption2)
                 .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 .fixedSize(horizontal: false, vertical: true)

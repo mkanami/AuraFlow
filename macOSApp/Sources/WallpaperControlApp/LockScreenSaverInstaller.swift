@@ -56,7 +56,8 @@ protocol ScreenSaverPreferenceManaging: AnyObject {
 }
 
 final class HostScreenSaverPreferences: ScreenSaverPreferenceManaging {
-    private let applicationID = "com.apple.screensaver" as CFString
+    private let applicationID =
+        WallpaperPlatformConstants.screenSaverApplicationID as CFString
 
     var selectedModule: ScreenSaverModulePreference? {
         guard let dictionary = copyValue(forKey: "moduleDict") as? [String: Any],
@@ -204,7 +205,7 @@ struct ScreenSaverSelectionCoordinator {
             .flatMap { try? JSONDecoder().decode(Backup.self, from: $0) }
         let fallbackModule = ScreenSaverModulePreference(
             moduleName: "Ventura",
-            path: "/System/Library/ExtensionKit/Extensions/Ventura.appex",
+            path: WallpaperPlatformConstants.fallbackScreenSaverPath,
             type: 0
         )
         let previousModule = backup?.module ?? fallbackModule

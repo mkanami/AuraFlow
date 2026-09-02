@@ -472,13 +472,13 @@ public final class WallpaperRuntimeStore {
         let videoURL = URL(fileURLWithPath: videoPath)
         guard FileManager.default.fileExists(atPath: videoURL.path) else { return nil }
         guard let frameURL = try? captureStillFrame(from: videoURL) else { return nil }
-        WallpaperDesktopSupport.applyToAllDesktops(imagePath: frameURL.path)
+        WallpaperDesktopPlatform.applyToAllDesktops(imagePath: frameURL.path)
         return frameURL.path
     }
 
     @discardableResult
     public func restoreWallpaperBackup() -> Bool {
-        WallpaperDesktopSupport.restoreFromBackupFiles(appSupportPath: appSupportURL.path)
+        WallpaperDesktopPlatform.restoreFromBackupFiles(appSupportPath: appSupportURL.path)
     }
 
     private func readJSON<T: Decodable>(_ type: T.Type, from url: URL) throws -> T {

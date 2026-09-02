@@ -301,12 +301,9 @@ public enum WallpaperDesktopSupport {
             }
         }
 
-        let storeURL = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Application Support/com.apple.wallpaper/Store",
-                isDirectory: true
-            )
-            .appendingPathComponent("Index.plist")
+        let storeURL = WallpaperPlatformConstants.wallpaperStoreURL(
+            homeURL: fileManager.homeDirectoryForCurrentUser
+        )
         if let data = try? Data(contentsOf: storeURL),
            let root = try? PropertyListSerialization.propertyList(
                 from: data,
@@ -540,12 +537,9 @@ public enum WallpaperDesktopSupport {
         imagePath: String
     ) -> Bool {
         let fileManager = FileManager.default
-        let storeURL = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Application Support/com.apple.wallpaper/Store",
-                isDirectory: true
-            )
-            .appendingPathComponent("Index.plist")
+        let storeURL = WallpaperPlatformConstants.wallpaperStoreURL(
+            homeURL: fileManager.homeDirectoryForCurrentUser
+        )
         guard let data = try? Data(contentsOf: storeURL),
               var root = (
                 try? PropertyListSerialization.propertyList(
@@ -629,12 +623,9 @@ public enum WallpaperDesktopSupport {
     }
 
     private static func wallpaperStoreHasNoManagedDesktopReferences() -> Bool {
-        let storeURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Application Support/com.apple.wallpaper/Store",
-                isDirectory: true
-            )
-            .appendingPathComponent("Index.plist")
+        let storeURL = WallpaperPlatformConstants.wallpaperStoreURL(
+            homeURL: FileManager.default.homeDirectoryForCurrentUser
+        )
         guard let data = try? Data(contentsOf: storeURL),
               let root = try? PropertyListSerialization.propertyList(
                 from: data,
@@ -669,12 +660,9 @@ public enum WallpaperDesktopSupport {
     }
 
     private static func wallpaperStoreImageDescriptorsAreValid() -> Bool {
-        let storeURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Application Support/com.apple.wallpaper/Store",
-                isDirectory: true
-            )
-            .appendingPathComponent("Index.plist")
+        let storeURL = WallpaperPlatformConstants.wallpaperStoreURL(
+            homeURL: FileManager.default.homeDirectoryForCurrentUser
+        )
         guard let data = try? Data(contentsOf: storeURL),
               let root = try? PropertyListSerialization.propertyList(
                 from: data,
@@ -690,7 +678,7 @@ public enum WallpaperDesktopSupport {
     private static func imageDescriptorsAreValid(in value: Any) -> Bool {
         if let dictionary = value as? [String: Any] {
             if dictionary["Provider"] as? String
-                == "com.apple.wallpaper.choice.image" {
+                == WallpaperPlatformConstants.imageProviderID {
                 guard let files = dictionary["Files"] as? [Any],
                       !files.isEmpty
                 else {
@@ -762,7 +750,7 @@ public enum WallpaperDesktopSupport {
             "LastUse": date,
             "Content": [
                 "Choices": [[
-                    "Provider": "com.apple.wallpaper.choice.image",
+                    "Provider": WallpaperPlatformConstants.imageProviderID,
                     "Files": [encodedURL],
                     "Configuration": configurationData,
                 ]],
@@ -778,7 +766,8 @@ public enum WallpaperDesktopSupport {
         let configuration: [String: Any] = [
             "module": [
                 "relative":
-                    "file:///System/Library/ExtensionKit/Extensions/Ventura.appex",
+                    URL(fileURLWithPath: WallpaperPlatformConstants.fallbackScreenSaverPath)
+                        .absoluteString,
             ],
         ]
         let configurationData = (
@@ -794,7 +783,7 @@ public enum WallpaperDesktopSupport {
             "Content": [
                 "Choices": [[
                     "Provider":
-                        "com.apple.wallpaper.choice.screen-saver",
+                        WallpaperPlatformConstants.screenSaverProviderID,
                     "Files": [],
                     "Configuration": configurationData,
                 ]],
@@ -1016,7 +1005,7 @@ public enum WallpaperDesktopSupport {
     private static func restartWallpaperAgent() {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-        process.arguments = ["WallpaperAgent"]
+        process.arguments = [WallpaperPlatformConstants.wallpaperAgentProcessName]
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         do {

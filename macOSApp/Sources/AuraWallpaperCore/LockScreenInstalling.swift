@@ -1,5 +1,180 @@
 import Foundation
 
+/// Describes which Lock Screen implementation was selected without exposing
+/// its macOS-specific implementation to the application layer.
+public struct PlatformCapabilities: Equatable, Sendable {
+    public let platformName: String
+    public let minimumMajorOSVersion: Int
+    public let supportsLockScreen: Bool
+    public let supportsLockScreenOnly: Bool
+    public let supportsSecureLockScreen: Bool
+    public let supportsAnimatedMedia: Bool
+    public let usesPrivateWallpaperFramework: Bool
+    public let availabilityMessage: String?
+
+    public init(
+        platformName: String,
+        minimumMajorOSVersion: Int,
+        supportsLockScreen: Bool,
+        supportsLockScreenOnly: Bool,
+        supportsSecureLockScreen: Bool,
+        supportsAnimatedMedia: Bool,
+        usesPrivateWallpaperFramework: Bool,
+        availabilityMessage: String? = nil
+    ) {
+        self.platformName = platformName
+        self.minimumMajorOSVersion = minimumMajorOSVersion
+        self.supportsLockScreen = supportsLockScreen
+        self.supportsLockScreenOnly = supportsLockScreenOnly
+        self.supportsSecureLockScreen = supportsSecureLockScreen
+        self.supportsAnimatedMedia = supportsAnimatedMedia
+        self.usesPrivateWallpaperFramework = usesPrivateWallpaperFramework
+        self.availabilityMessage = availabilityMessage
+    }
+
+    public var isAvailable: Bool { supportsLockScreen }
+
+    public static let legacyMacOS = PlatformCapabilities(
+        platformName: "Legacy macOS screen saver",
+        minimumMajorOSVersion: 13,
+        supportsLockScreen: true,
+        supportsLockScreenOnly: true,
+        supportsSecureLockScreen: false,
+        supportsAnimatedMedia: true,
+        usesPrivateWallpaperFramework: false,
+        availabilityMessage:
+            "Secure Aerial Lock Screen requires macOS 26 or later."
+    )
+
+    public static func modernMacOS26(isAvailable: Bool) -> PlatformCapabilities {
+        PlatformCapabilities(
+            platformName: "macOS 26 Aerial",
+            minimumMajorOSVersion: 26,
+            supportsLockScreen: isAvailable,
+            supportsLockScreenOnly: isAvailable,
+            supportsSecureLockScreen: isAvailable,
+            supportsAnimatedMedia: isAvailable,
+            usesPrivateWallpaperFramework: true,
+            availabilityMessage: isAvailable
+                ? "AuraFlow uses the native macOS 26 Aerial Lock Screen."
+                : "Lock Screen is unavailable because the macOS 26 Aerial provider is not present."
+        )
+    }
+
+    public static let unsupported = PlatformCapabilities(
+        platformName: "Unsupported macOS",
+        minimumMajorOSVersion: 13,
+        supportsLockScreen: false,
+        supportsLockScreenOnly: false,
+        supportsSecureLockScreen: false,
+        supportsAnimatedMedia: false,
+        usesPrivateWallpaperFramework: false,
+        availabilityMessage: "Lock Screen is unavailable on this macOS version."
+    )
+}
+
+/// Stable status returned by a platform adapter. The detailed generation
+/// status remains available to the runtime, while UI code can rely on this
+/// small, implementation-independent value.
+public struct LockScreenStatus: Equatable, Sendable {
+    public let available: Bool
+    public let installed: Bool
+    public let confirmed: Bool
+    public let needsRepair: Bool
+    public let generation: UInt64?
+    public let message: String?
+
+    public init(
+        available: Bool,
+        installed: Bool,
+        confirmed: Bool,
+        needsRepair: Bool = false,
+        generation: UInt64? = nil,
+        message: String? = nil
+    ) {
+        self.available = available
+        self.installed = installed
+        self.confirmed = confirmed
+        self.needsRepair = needsRepair
+        self.generation = generation
+        self.message = message
+    }
+
+    public var isReady: Bool {
+        available && installed && confirmed && !needsRepair
+    }
+
+    public static func unavailable(_ message: String) -> LockScreenStatus {
+        LockScreenStatus(
+            available: false,
+            installed: false,
+            confirmed: false,
+            message: message
+        )
+    }
+}
+
+public enum LockScreenPlatformError: LocalizedError, Equatable {
+    case unsupported(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unsupported(let message):
+            return message
+        }
+    }
+}
+
+/// The application-facing boundary for all macOS Lock Screen behavior.
+/// Implementations may use a screen saver, the macOS 26 Aerial provider, or a
+/// safe unsupported implementation, but callers do not depend on those
+/// details.
+public protocol LockScreenPlatform: AnyObject {
+    var capabilities: PlatformCapabilities { get }
+
+    func install(_ media: URL) throws
+    func uninstall() throws
+    func status() -> LockScreenStatus
+}
+
+/// Runtime operations needed by the wallpaper agent and controller. The
+/// smaller `LockScreenPlatform` protocol is intentionally kept as the public
+/// conceptual API; this refinement carries lifecycle and recovery hooks that
+/// are still required by the existing runtime.
+public protocol LockScreenPlatformOperating: LockScreenPlatform {
+    var isInstalled: Bool { get }
+    var installationConfirmed: Bool { get }
+
+    func install(videoURL: URL) throws
+    func installLockScreenOnly(videoURL: URL) throws
+    func prepareLockScreenMedia(videoURL: URL) throws
+    func lockScreenOnlyStatus(videoURL: URL?) -> LockScreenOnlyGenerationStatus
+    @discardableResult
+    func repairLockScreenOnlyGeneration(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) throws -> Bool
+    func uninstallLockScreenOnlyPreservingCurrentDesktop() throws
+
+    var requiresLockScreenSessionPromotion: Bool { get }
+    @discardableResult
+    func activateLockScreenForCurrentSession() throws -> Bool
+    @discardableResult
+    func restoreDesktopAfterLockScreenSession() throws -> Bool
+    @discardableResult
+    func applyCurrentDesktopFallback() -> Bool
+    @discardableResult
+    func repair(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) throws -> Bool
+    @discardableResult
+    func rearmForNextLock(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) throws -> Bool
+}
+
 /// A read-only snapshot of the lock-only installation.  The runtime uses this
 /// instead of treating the presence of a marker file as proof that macOS is
 /// still presenting AuraFlow.
@@ -52,10 +227,7 @@ public struct LockScreenOnlyGenerationStatus: Equatable, Sendable {
     }
 }
 
-public protocol LockScreenSaverInstalling {
-    var isInstalled: Bool { get }
-    var installationConfirmed: Bool { get }
-
+public protocol LockScreenSaverInstalling: LockScreenPlatformOperating {
     func install(videoURL: URL) throws
     func installLockScreenOnly(videoURL: URL) throws
     /// Prepares native Lock Screen media without changing the active
@@ -72,8 +244,29 @@ public protocol LockScreenSaverInstalling {
 }
 
 public extension LockScreenSaverInstalling {
+    var capabilities: PlatformCapabilities {
+        .legacyMacOS
+    }
+
     var installationConfirmed: Bool {
         isInstalled
+    }
+
+    func install(_ media: URL) throws {
+        try install(videoURL: media)
+    }
+
+    func status() -> LockScreenStatus {
+        let detailedStatus = lockScreenOnlyStatus(videoURL: nil)
+        let confirmed = installationConfirmed
+        return LockScreenStatus(
+            available: capabilities.isAvailable,
+            installed: isInstalled,
+            confirmed: confirmed,
+            needsRepair: isInstalled && !confirmed,
+            generation: detailedStatus.generation,
+            message: capabilities.availabilityMessage
+        )
     }
 
     func installLockScreenOnly(videoURL: URL) throws {
@@ -110,5 +303,35 @@ public extension LockScreenSaverInstalling {
 
     func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
         try uninstall()
+    }
+
+    var requiresLockScreenSessionPromotion: Bool { false }
+
+    func activateLockScreenForCurrentSession() throws -> Bool { false }
+
+    func restoreDesktopAfterLockScreenSession() throws -> Bool { false }
+
+    func applyCurrentDesktopFallback() -> Bool { false }
+
+    @discardableResult
+    func repair(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) throws -> Bool {
+        try repairLockScreenOnlyGeneration(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
+    }
+
+    @discardableResult
+    func rearmForNextLock(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) throws -> Bool {
+        try repairLockScreenOnlyGeneration(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
     }
 }
