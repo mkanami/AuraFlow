@@ -52,6 +52,33 @@ private enum TestInstallerError: Error {
     case uninstallFailed
 }
 
+private enum NativeTestAgentError: Error {
+    case readinessHandshakeFailed
+}
+
+private func launchReadyTestAgent() throws -> Process {
+    let agent = Process()
+    let readinessPipe = Pipe()
+    agent.executableURL = URL(fileURLWithPath: "/bin/bash")
+    agent.arguments = [
+        "-c",
+        "trap 'exit 0' TERM; printf 'ready\\n'; while :; do :; done"
+    ]
+    agent.standardOutput = readinessPipe
+    agent.standardError = Pipe()
+    try agent.run()
+
+    let readiness = try readinessPipe.fileHandleForReading.read(upToCount: 6)
+    guard String(data: readiness ?? Data(), encoding: .utf8) == "ready\n" else {
+        if agent.isRunning {
+            kill(agent.processIdentifier, SIGKILL)
+            agent.waitUntilExit()
+        }
+        throw NativeTestAgentError.readinessHandshakeFailed
+    }
+    return agent
+}
+
 private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling {
     var capabilities: PlatformCapabilities {
         // These controller tests exercise the dedicated native route. The
@@ -187,10 +214,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     defer { fixture.cleanup() }
 
     let shellURL = URL(fileURLWithPath: "/bin/bash")
-    let agent = Process()
-    agent.executableURL = shellURL
-    agent.arguments = ["-c", "trap '' TERM; while :; do :; done"]
-    try agent.run()
+    let agent = try launchReadyTestAgent()
     defer {
         if agent.isRunning {
             kill(agent.processIdentifier, SIGKILL)
@@ -198,8 +222,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         }
     }
 
-    // Give the child time to finish exec before capturing the legacy PID.
-    Thread.sleep(forTimeInterval: 0.05)
+    // launchReadyTestAgent() completes only after the shell has installed its
+    // TERM trap, so the identity fallback check does not depend on timing.
     var executablePath = [Int8](repeating: 0, count: 4_096)
     let pathLength = proc_pidpath(
         agent.processIdentifier,
@@ -422,22 +446,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
     try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
 
-    let agent = Process()
-    agent.executableURL = fixture.helperURL
-    try agent.run()
-    // The helper stops itself immediately. Wait until exec completed before
-    // persisting its PID, otherwise savePID may run during the short fork/exec
-    // window and remove the identity metadata as unavailable.
-    for _ in 0..<20 {
-        try fixture.store.savePID(agent.processIdentifier)
-        if FileManager.default.fileExists(atPath: fixture.store.daemonIdentityURL.path) {
-            break
-        }
-        Thread.sleep(forTimeInterval: 0.025)
-    }
-    #expect(
-        FileManager.default.fileExists(atPath: fixture.store.daemonIdentityURL.path)
-    )
+    let agent = try launchReadyTestAgent()
+    try fixture.store.savePID(agent.processIdentifier)
     fixture.store.markLockScreenOnlyAgent(true)
     try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .reload))
     try fixture.store.saveHealth(
@@ -518,22 +528,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         fixture.root.appendingPathComponent("missing.mp4")
     )
 
-    let agent = Process()
-    agent.executableURL = fixture.helperURL
-    try agent.run()
-    // The helper stops itself immediately. Wait until exec completed before
-    // persisting its PID, otherwise savePID may run during the short fork/exec
-    // window and remove the identity metadata as unavailable.
-    for _ in 0..<20 {
-        try fixture.store.savePID(agent.processIdentifier)
-        if FileManager.default.fileExists(atPath: fixture.store.daemonIdentityURL.path) {
-            break
-        }
-        Thread.sleep(forTimeInterval: 0.025)
-    }
-    #expect(
-        FileManager.default.fileExists(atPath: fixture.store.daemonIdentityURL.path)
-    )
+    let agent = try launchReadyTestAgent()
+    try fixture.store.savePID(agent.processIdentifier)
     fixture.store.markLockScreenOnlyAgent(true)
     try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .reload))
     try fixture.store.saveHealth(
@@ -569,21 +565,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
     try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
 
-    let agent = Process()
-    agent.executableURL = fixture.helperURL
-    try agent.run()
-    // Wait for the stopped helper to finish exec before persisting its PID;
-    // otherwise the identity file can be absent during the fork/exec window.
-    for _ in 0..<20 {
-        try fixture.store.savePID(agent.processIdentifier)
-        if FileManager.default.fileExists(atPath: fixture.store.daemonIdentityURL.path) {
-            break
-        }
-        Thread.sleep(forTimeInterval: 0.025)
-    }
-    #expect(
-        FileManager.default.fileExists(atPath: fixture.store.daemonIdentityURL.path)
-    )
+    let agent = try launchReadyTestAgent()
+    try fixture.store.savePID(agent.processIdentifier)
     fixture.store.markLockScreenOnlyAgent(true)
     try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .reload))
     try fixture.store.saveHealth(
