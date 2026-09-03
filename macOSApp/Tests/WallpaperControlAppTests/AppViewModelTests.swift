@@ -338,6 +338,29 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func loadStatusAppliesStatusAfterLockScreenSync() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("status-after-lock-sync-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let beforeURL = root.appendingPathComponent("before.mp4")
+    let afterURL = root.appendingPathComponent("after.mp4")
+    FileManager.default.createFile(atPath: beforeURL.path, contents: Data([1]), attributes: nil)
+    FileManager.default.createFile(atPath: afterURL.path, contents: Data([2]), attributes: nil)
+
+    let controller = MockNativeWallpaperController()
+    controller.configuredVideoURL = beforeURL
+    controller.statusAfterSyncVideoURL = afterURL
+    let viewModel = AppViewModel(controller: controller)
+
+    await viewModel.loadStatus()
+
+    #expect(controller.syncLockScreenCallCount == 1)
+    #expect(viewModel.currentVideoURL == afterURL.standardizedFileURL)
+}
+
+@MainActor
 @Test func localVideoSelectionWaitsForExplicitStartWhileWallpaperRuns() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.local-preview-start")!
@@ -1514,6 +1537,7 @@ final class MockNativeWallpaperController: WallpaperControlling {
     var statusShowOnLockScreen = false
     var statusLockScreenOnly = false
     var syncLockScreenCallCount = 0
+    var statusAfterSyncVideoURL: URL?
     var setVideoStatusOverride: ControlStatus?
     var lockCallCount = 0
     var lockDelay: TimeInterval = 0
@@ -1614,6 +1638,9 @@ final class MockNativeWallpaperController: WallpaperControlling {
 
     func syncLockScreenSaver() throws {
         syncLockScreenCallCount += 1
+        if let statusAfterSyncVideoURL {
+            configuredVideoURL = statusAfterSyncVideoURL
+        }
     }
 
     func beginLockScreenPreview() throws -> ControlStatus {

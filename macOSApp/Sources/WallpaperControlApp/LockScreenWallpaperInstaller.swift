@@ -46,6 +46,13 @@ final class LegacyMacOSAdapter: LockScreenSaverInstalling {
         try installer.installLockScreenOnly(videoURL: videoURL)
     }
 
+    func installLegacyLockScreenFallback(
+        videoURL: URL,
+        restoringLockScreenOnlyVideoURL: URL?
+    ) throws {
+        try install(videoURL: videoURL)
+    }
+
     func prepareLockScreenMedia(videoURL: URL) throws {
         try requireAvailability()
         try installer.prepareLockScreenMedia(videoURL: videoURL)
@@ -158,6 +165,32 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
             try legacy.installLockScreenOnly(videoURL: videoURL)
         } else {
             try unsupported.installLockScreenOnly(videoURL: videoURL)
+        }
+    }
+
+    func installLegacyLockScreenFallback(
+        videoURL: URL,
+        restoringLockScreenOnlyVideoURL: URL?
+    ) throws {
+        do {
+            // This is an explicit downgrade transaction. Remove only the
+            // modern lock-only route so the user's Desktop routes survive;
+            // leave the existing legacy saver in place until its own atomic
+            // install has succeeded.
+            if modern.isInstalled {
+                try modern.uninstallLockScreenOnlyPreservingCurrentDesktop()
+            }
+            try legacy.install(videoURL: videoURL)
+        } catch {
+            // Best-effort recovery: if the legacy install or modern cleanup
+            // failed, restore the previous native Lock Screen source. The
+            // original error remains authoritative for the caller.
+            if let restoringLockScreenOnlyVideoURL {
+                try? modern.installLockScreenOnly(
+                    videoURL: restoringLockScreenOnlyVideoURL
+                )
+            }
+            throw error
         }
     }
 

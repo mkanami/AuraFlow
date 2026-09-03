@@ -43,6 +43,15 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
         try installer.installLockScreenOnly(videoURL: videoURL)
     }
 
+    public func installLegacyLockScreenFallback(
+        videoURL: URL,
+        restoringLockScreenOnlyVideoURL: URL?
+    ) throws {
+        throw LockScreenPlatformError.unsupported(
+            "The legacy Lock Screen fallback is not owned by the modern adapter."
+        )
+    }
+
     public func prepareLockScreenMedia(videoURL: URL) throws {
         try requireAvailability()
         try installer.prepareLockScreenMedia(videoURL: videoURL)
@@ -224,6 +233,13 @@ public final class UnsupportedAdapter: LockScreenSaverInstalling {
     }
 
     public func installLockScreenOnly(videoURL: URL) throws {
+        try fail()
+    }
+
+    public func installLegacyLockScreenFallback(
+        videoURL: URL,
+        restoringLockScreenOnlyVideoURL: URL?
+    ) throws {
         try fail()
     }
 

@@ -147,6 +147,13 @@ public protocol LockScreenPlatformOperating: LockScreenPlatform {
 
     func install(videoURL: URL) throws
     func installLockScreenOnly(videoURL: URL) throws
+    /// Installs the compatibility screen saver without routing through a
+    /// modern provider. Platform adapters may use the optional previous
+    /// source to restore native Lock Screen state if the fallback fails.
+    func installLegacyLockScreenFallback(
+        videoURL: URL,
+        restoringLockScreenOnlyVideoURL: URL?
+    ) throws
     func prepareLockScreenMedia(videoURL: URL) throws
     func lockScreenOnlyStatus(videoURL: URL?) -> LockScreenOnlyGenerationStatus
     @discardableResult
@@ -262,6 +269,13 @@ public extension LockScreenSaverInstalling {
 
     func install(_ media: URL) throws {
         try install(videoURL: media)
+    }
+
+    func installLegacyLockScreenFallback(
+        videoURL: URL,
+        restoringLockScreenOnlyVideoURL: URL?
+    ) throws {
+        try install(videoURL: videoURL)
     }
 
     func status() -> LockScreenStatus {

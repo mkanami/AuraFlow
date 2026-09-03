@@ -169,7 +169,10 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     let pid = Int(agent.processIdentifier)
-    #expect(fixture.store.terminateDaemon(timeout: 0.2) == false)
+    #expect(
+        fixture.store.terminateDaemon(timeout: 0.2)
+            == .identityMismatch
+    )
     #expect(fixture.store.loadPID() == nil)
     #expect(
         FileManager.default.fileExists(
@@ -183,10 +186,10 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let fixture = try NativeRuntimeFixture("legacy-pid-identity")
     defer { fixture.cleanup() }
 
-    let sleepURL = URL(fileURLWithPath: "/bin/sleep")
+    let shellURL = URL(fileURLWithPath: "/bin/bash")
     let agent = Process()
-    agent.executableURL = sleepURL
-    agent.arguments = ["1000000"]
+    agent.executableURL = shellURL
+    agent.arguments = ["-c", "trap '' TERM; while :; do :; done"]
     try agent.run()
     defer {
         if agent.isRunning {
@@ -195,6 +198,16 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         }
     }
 
+    // Give the child time to finish exec before capturing the legacy PID.
+    Thread.sleep(forTimeInterval: 0.05)
+    var executablePath = [Int8](repeating: 0, count: 4_096)
+    let pathLength = proc_pidpath(
+        agent.processIdentifier,
+        &executablePath,
+        UInt32(executablePath.count)
+    )
+    #expect(pathLength > 0)
+    #expect(String(cString: executablePath) == shellURL.path)
     try fixture.store.savePID(agent.processIdentifier)
     try FileManager.default.removeItem(at: fixture.store.daemonIdentityURL)
 
@@ -202,8 +215,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(
         fixture.store.terminateDaemon(
             timeout: 0.2,
-            expectedExecutableURL: sleepURL
-        )
+            expectedExecutableURL: shellURL
+        ) == .terminated
     )
     #expect(fixture.store.loadPID() == nil)
     #expect(fixture.store.processIsAlive(pid: pid) == false)
@@ -412,7 +425,19 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let agent = Process()
     agent.executableURL = fixture.helperURL
     try agent.run()
-    try fixture.store.savePID(agent.processIdentifier)
+    // The helper stops itself immediately. Wait until exec completed before
+    // persisting its PID, otherwise savePID may run during the short fork/exec
+    // window and remove the identity metadata as unavailable.
+    for _ in 0..<20 {
+        try fixture.store.savePID(agent.processIdentifier)
+        if FileManager.default.fileExists(atPath: fixture.store.daemonIdentityURL.path) {
+            break
+        }
+        Thread.sleep(forTimeInterval: 0.025)
+    }
+    #expect(
+        FileManager.default.fileExists(atPath: fixture.store.daemonIdentityURL.path)
+    )
     fixture.store.markLockScreenOnlyAgent(true)
     try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .reload))
     try fixture.store.saveHealth(
@@ -496,7 +521,19 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let agent = Process()
     agent.executableURL = fixture.helperURL
     try agent.run()
-    try fixture.store.savePID(agent.processIdentifier)
+    // The helper stops itself immediately. Wait until exec completed before
+    // persisting its PID, otherwise savePID may run during the short fork/exec
+    // window and remove the identity metadata as unavailable.
+    for _ in 0..<20 {
+        try fixture.store.savePID(agent.processIdentifier)
+        if FileManager.default.fileExists(atPath: fixture.store.daemonIdentityURL.path) {
+            break
+        }
+        Thread.sleep(forTimeInterval: 0.025)
+    }
+    #expect(
+        FileManager.default.fileExists(atPath: fixture.store.daemonIdentityURL.path)
+    )
     fixture.store.markLockScreenOnlyAgent(true)
     try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .reload))
     try fixture.store.saveHealth(

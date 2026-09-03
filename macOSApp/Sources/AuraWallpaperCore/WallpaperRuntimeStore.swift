@@ -13,6 +13,22 @@ public enum WallpaperRuntimeNotifications {
     public static let lockScreenFallbackReasonKey = "reason"
 }
 
+public enum DaemonTerminationResult: Equatable, Sendable {
+    case terminated
+    case alreadyExited
+    case identityMismatch
+    case failed
+
+    public var succeeded: Bool {
+        switch self {
+        case .terminated, .alreadyExited:
+            return true
+        case .identityMismatch, .failed:
+            return false
+        }
+    }
+}
+
 public enum WallpaperRuntimeCommandAction: String, Codable, Equatable {
     case reload
     case update
@@ -430,62 +446,86 @@ public final class WallpaperRuntimeStore {
     public func terminateDaemon(
         timeout: TimeInterval = 1.0,
         expectedExecutableURL: URL? = nil
-    ) -> Bool {
-        guard let pid = loadPID(), processIsAlive(pid: pid) else {
+    ) -> DaemonTerminationResult {
+        guard let pid = loadPID() else {
             clearDaemonProcessMetadata()
-            return true
+            return .alreadyExited
         }
-        guard daemonProcessIdentityMatches(
+        switch daemonProcessIdentityStatus(
             pid,
             expectedExecutableURL: expectedExecutableURL
-        ) else {
+        ) {
+        case .alreadyExited:
+            clearDaemonProcessMetadata()
+            return .alreadyExited
+        case .mismatch:
             // A PID can be reused after AuraFlow exits. Remove only our stale
             // metadata when the executable/start-time identity is unknown or
             // no longer matches; never signal an unrelated process. The
             // caller must not continue as if the process had been stopped.
             clearDaemonProcessMetadata()
-            return false
+            return .identityMismatch
+        case .matched:
+            break
         }
         kill(pid_t(pid), SIGTERM)
         let deadline = Date().addingTimeInterval(max(timeout, 0.2))
         while Date() < deadline {
             if !processIsAlive(pid: pid) {
                 clearDaemonProcessMetadata()
-                return true
+                return .terminated
             }
-            guard daemonProcessIdentityMatches(
+            switch daemonProcessIdentityStatus(
                 pid,
                 expectedExecutableURL: expectedExecutableURL
-            ) else {
+            ) {
+            case .matched:
+                break
+            case .alreadyExited:
                 clearDaemonProcessMetadata()
-                return false
+                return .alreadyExited
+            case .mismatch:
+                clearDaemonProcessMetadata()
+                return .identityMismatch
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
-        guard daemonProcessIdentityMatches(
+        switch daemonProcessIdentityStatus(
             pid,
             expectedExecutableURL: expectedExecutableURL
-        ) else {
+        ) {
+        case .matched:
+            break
+        case .alreadyExited:
             clearDaemonProcessMetadata()
-            return false
+            return .alreadyExited
+        case .mismatch:
+            clearDaemonProcessMetadata()
+            return .identityMismatch
         }
         kill(pid_t(pid), SIGKILL)
         let killDeadline = Date().addingTimeInterval(1.0)
         while Date() < killDeadline {
             if !processIsAlive(pid: pid) {
                 clearDaemonProcessMetadata()
-                return true
+                return .terminated
             }
-            guard daemonProcessIdentityMatches(
+            switch daemonProcessIdentityStatus(
                 pid,
                 expectedExecutableURL: expectedExecutableURL
-            ) else {
+            ) {
+            case .matched:
+                break
+            case .alreadyExited:
                 clearDaemonProcessMetadata()
-                return false
+                return .alreadyExited
+            case .mismatch:
+                clearDaemonProcessMetadata()
+                return .identityMismatch
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
-        return false
+        return .failed
     }
 
     private func clearDaemonProcessMetadata() {
@@ -493,28 +533,37 @@ public final class WallpaperRuntimeStore {
         markPaused(false)
     }
 
-    private func daemonProcessIdentityMatches(
+    private enum DaemonIdentityStatus {
+        case matched
+        case alreadyExited
+        case mismatch
+    }
+
+    private func daemonProcessIdentityStatus(
         _ pid: Int,
         expectedExecutableURL: URL?
-    ) -> Bool {
+    ) -> DaemonIdentityStatus {
+        guard processIsAlive(pid: pid) else {
+            return .alreadyExited
+        }
         guard let actual = processIdentity(for: pid) else {
-            // The process can exit between the liveness check and the
-            // identity lookup. Treat that race as a successful termination;
-            // an identity lookup failure for a still-live process remains a
-            // mismatch and is therefore never signalled.
-            return !processIsAlive(pid: pid)
+            // The process is still reported alive, but its identity cannot be
+            // verified. Treat it as unconfirmed and never send a signal.
+            return .mismatch
         }
         if let expected = try? readJSON(
             DaemonProcessIdentity.self,
             from: daemonIdentityURL
         ) {
-            return expected == actual
+            return expected == actual ? .matched : .mismatch
         }
         guard let expectedExecutableURL else {
-            return false
+            return .mismatch
         }
         return actual.executablePath
             == expectedExecutableURL.standardizedFileURL.path
+            ? .matched
+            : .mismatch
     }
 
     private func processIdentity(for pid: Int) -> DaemonProcessIdentity? {

@@ -479,6 +479,15 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         }
     }
 
+    public func installLegacyLockScreenFallback(
+        videoURL: URL,
+        restoringLockScreenOnlyVideoURL: URL?
+    ) throws {
+        throw LockScreenPlatformError.unsupported(
+            "The legacy Lock Screen fallback is owned by the application adapter."
+        )
+    }
+
     /// Warms the persistent Aerial media cache without touching the wallpaper
     /// store or provider. Installation still performs its normal validation
     /// and atomic commit checks; this only moves HEVC conversion off the

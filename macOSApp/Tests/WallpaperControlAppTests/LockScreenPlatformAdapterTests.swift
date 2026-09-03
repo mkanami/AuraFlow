@@ -5,9 +5,13 @@ import Testing
 
 private final class PlatformRecordingInstaller: LockScreenSaverInstalling {
     var installedURL: URL?
+    var installError: Error?
     var isInstalled: Bool { installedURL != nil }
 
     func install(videoURL: URL) throws {
+        if let installError {
+            throw installError
+        }
         installedURL = videoURL
     }
 
@@ -21,6 +25,8 @@ private final class RecordingModernInstaller: ModernLockScreenInstalling {
     var isInstalled: Bool
     private(set) var installCallCount = 0
     private(set) var repairCallCount = 0
+    var lockScreenOnlyStatusOverride: LockScreenOnlyGenerationStatus?
+    private(set) var restoredLockScreenOnlyVideoURL: URL?
 
     init(isAvailable: Bool, isInstalled: Bool = false) {
         self.isAvailable = isAvailable
@@ -30,6 +36,28 @@ private final class RecordingModernInstaller: ModernLockScreenInstalling {
     func install(videoURL: URL) throws {
         installCallCount += 1
         isInstalled = true
+    }
+
+    func installLockScreenOnly(videoURL: URL) throws {
+        restoredLockScreenOnlyVideoURL = videoURL
+        isInstalled = true
+    }
+
+    func lockScreenOnlyStatus(
+        videoURL: URL?
+    ) -> LockScreenOnlyGenerationStatus {
+        if let lockScreenOnlyStatusOverride {
+            return lockScreenOnlyStatusOverride
+        }
+        return LockScreenOnlyGenerationStatus(
+            installed: isInstalled,
+            sourceMatches: isInstalled,
+            assetValid: isInstalled,
+            providerAvailable: isAvailable && isInstalled,
+            providerRunning: isAvailable && isInstalled,
+            wallpaperStoreValid: isInstalled,
+            screenSaverSelected: isInstalled
+        )
     }
 
     func repairLockScreenOnlyGeneration(
@@ -42,7 +70,12 @@ private final class RecordingModernInstaller: ModernLockScreenInstalling {
 
     func uninstall() throws {
         isInstalled = false
+        restoredLockScreenOnlyVideoURL = nil
     }
+}
+
+private enum PlatformRecordingError: Error {
+    case installFailed
 }
 
 @Test func modernAdapterUsesInjectedInstallerOnSupportedRuntime() throws {
@@ -145,4 +178,75 @@ private final class RecordingModernInstaller: ModernLockScreenInstalling {
         shouldProceed: { true }
     )
     #expect(modernInstaller.repairCallCount == 0)
+}
+
+@Test func wallpaperPlatformAdapterUsesExplicitLegacyFallbackWhenModernAssetIsUnavailable() throws {
+    let modernInstaller = RecordingModernInstaller(
+        isAvailable: true,
+        isInstalled: true
+    )
+    modernInstaller.lockScreenOnlyStatusOverride = LockScreenOnlyGenerationStatus(
+        installed: true,
+        sourceMatches: true,
+        assetValid: true,
+        providerAvailable: false,
+        providerRunning: false,
+        wallpaperStoreValid: true,
+        screenSaverSelected: true
+    )
+    let modern = ModernMacOS26Adapter(
+        installer: modernInstaller,
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 27,
+            minorVersion: 0,
+            patchVersion: 0
+        )
+    )
+    let legacyInstaller = PlatformRecordingInstaller()
+    let legacy = LegacyMacOSAdapter(installer: legacyInstaller)
+    let adapter = WallpaperPlatformAdapter(modern: modern, legacy: legacy)
+    let previousURL = URL(fileURLWithPath: "/tmp/old-lock-screen.mov")
+    let fallbackURL = URL(fileURLWithPath: "/tmp/legacy-fallback.mov")
+
+    try adapter.installLegacyLockScreenFallback(
+        videoURL: fallbackURL,
+        restoringLockScreenOnlyVideoURL: previousURL
+    )
+
+    #expect(legacyInstaller.installedURL == fallbackURL)
+    #expect(modernInstaller.isInstalled == false)
+    #expect(modernInstaller.installCallCount == 0)
+    #expect(modernInstaller.restoredLockScreenOnlyVideoURL == nil)
+}
+
+@Test func explicitLegacyFallbackRestoresModernInstallationWhenLegacyFails() throws {
+    let modernInstaller = RecordingModernInstaller(
+        isAvailable: true,
+        isInstalled: true
+    )
+    let modern = ModernMacOS26Adapter(
+        installer: modernInstaller,
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 27,
+            minorVersion: 0,
+            patchVersion: 0
+        )
+    )
+    let legacyInstaller = PlatformRecordingInstaller()
+    legacyInstaller.installError = PlatformRecordingError.installFailed
+    let previousLegacyURL = URL(fileURLWithPath: "/tmp/previous-legacy.mov")
+    legacyInstaller.installedURL = previousLegacyURL
+    let legacy = LegacyMacOSAdapter(installer: legacyInstaller)
+    let adapter = WallpaperPlatformAdapter(modern: modern, legacy: legacy)
+    let previousURL = URL(fileURLWithPath: "/tmp/old-lock-screen.mov")
+
+    #expect(throws: PlatformRecordingError.self) {
+        try adapter.installLegacyLockScreenFallback(
+            videoURL: URL(fileURLWithPath: "/tmp/legacy-fallback.mov"),
+            restoringLockScreenOnlyVideoURL: previousURL
+        )
+    }
+    #expect(modernInstaller.isInstalled)
+    #expect(modernInstaller.restoredLockScreenOnlyVideoURL == previousURL)
+    #expect(legacyInstaller.installedURL == previousLegacyURL)
 }

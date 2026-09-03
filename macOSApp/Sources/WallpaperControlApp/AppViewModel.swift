@@ -374,7 +374,7 @@ final class NativeWallpaperController: WallpaperControlling {
         guard store.terminateDaemon(
             timeout: 1.0,
             expectedExecutableURL: helperURL
-        ) else {
+        ).succeeded else {
             throw NativeWallpaperControllerError.unavailable(
                 "The previous wallpaper agent did not stop during the update."
             )
@@ -533,7 +533,7 @@ final class NativeWallpaperController: WallpaperControlling {
             guard store.terminateDaemon(
                 timeout: 2.0,
                 expectedExecutableURL: helperURL
-            ) else {
+            ).succeeded else {
                 throw NativeWallpaperControllerError.unavailable(
                     "The Lock Screen agent did not stop before starting desktop wallpaper."
                 )
@@ -631,7 +631,7 @@ final class NativeWallpaperController: WallpaperControlling {
         guard store.terminateDaemon(
             timeout: 2.0,
             expectedExecutableURL: helperURL
-        ) else {
+        ).succeeded else {
             throw NativeWallpaperControllerError.unavailable(
                 "The wallpaper agent did not stop, so its desktop window could not be removed."
             )
@@ -735,7 +735,7 @@ final class NativeWallpaperController: WallpaperControlling {
             guard store.terminateDaemon(
                 timeout: 2.0,
                 expectedExecutableURL: helperURL
-            ) else {
+            ).succeeded else {
                 throw NativeWallpaperControllerError.unavailable(
                     "The desktop wallpaper agent did not stop before enabling Lock Screen only mode."
                 )
@@ -842,7 +842,7 @@ final class NativeWallpaperController: WallpaperControlling {
                     guard store.terminateDaemon(
                         timeout: 2.0,
                         expectedExecutableURL: helperURL
-                    ) else {
+                    ).succeeded else {
                         throw NativeWallpaperControllerError.unavailable(
                             "The Lock Screen agent did not stop after disabling Lock Screen wallpaper."
                         )
@@ -906,7 +906,7 @@ final class NativeWallpaperController: WallpaperControlling {
             guard store.terminateDaemon(
                 timeout: 2.0,
                 expectedExecutableURL: helperURL
-            ) else {
+            ).succeeded else {
                 throw NativeWallpaperControllerError.unavailable(
                     "The Lock Screen agent did not stop during fallback cleanup."
                 )
@@ -932,14 +932,14 @@ final class NativeWallpaperController: WallpaperControlling {
             && lockScreenOnlyProviderAvailable
         if lockScreenOnlySource != nil, !useLockScreenOnly {
             // A lock-only marker can survive a downgrade or removal of the
-            // modern provider. Migrate it to the legacy screen-saver route so
-            // startup does not repeatedly fail trying to launch a native-only
-            // agent on a platform that cannot support it.
+            // modern provider. Migrate it through the explicit legacy route
+            // so the modern adapter cannot accidentally install a shared
+            // wallpaper and alter the user's Desktop.
             if store.isLockScreenOnlyAgent() {
                 guard store.terminateDaemon(
                     timeout: 2.0,
                     expectedExecutableURL: helperURL
-                ) else {
+                ).succeeded else {
                     throw NativeWallpaperControllerError.unavailable(
                         "The Lock Screen agent did not stop during legacy fallback."
                     )
@@ -948,12 +948,18 @@ final class NativeWallpaperController: WallpaperControlling {
                 store.removeHealth()
                 store.markLockScreenOnlyAgent(false)
             }
+            _ = try store.ensureCurrentStillFrame(from: sourceURL)
+            try lockScreenPlatform.installLegacyLockScreenFallback(
+                videoURL: sourceURL,
+                restoringLockScreenOnlyVideoURL: lockScreenOnlySource
+            )
             if lockScreenOnlySource?.standardizedFileURL == sourceURL {
                 _ = try updateConfig { config in
                     config.video_path = sourceURL.path
                 }
             }
             store.clearLockScreenOnlySource()
+            return
         }
         try installLockScreenSaver(
             videoURL: sourceURL,
@@ -1471,6 +1477,15 @@ final class AppViewModel: ObservableObject {
                     "Lock Screen sync failed: \(error.localizedDescription)"
                 return
             }
+            do {
+                let synchronizedStatus = try await runAsync {
+                    try controller.status()
+                }
+                apply(status: synchronizedStatus)
+            } catch {
+                recordBridgeFailure(error, context: "status-after-lock-screen-sync")
+                return
+            }
             if let needsNormalizationURL {
                 Task { @MainActor [weak self] in
                     try? await Task.sleep(nanoseconds: 120_000_000)
@@ -1525,18 +1540,30 @@ final class AppViewModel: ObservableObject {
             defer {
                 self?.lockScreenProviderFallbackRetryTask = nil
             }
+            var retryDelay: UInt64 = 100_000_000
+            var bootstrapRetryCount = 0
+            let maximumBootstrapRetries = 8
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 100_000_000)
+                try? await Task.sleep(nanoseconds: retryDelay)
                 guard let self, !Task.isCancelled else { return }
                 guard self.pendingLockScreenProviderFallback,
                       !self.isShuttingDown
                 else {
                     return
                 }
-                guard self.controller != nil,
-                      !self.isBusy,
-                      !self.isLifecycleBusy
-                else {
+                guard self.controller != nil else {
+                    guard self.isControllerBootstrapInProgress else {
+                        return
+                    }
+                    bootstrapRetryCount += 1
+                    guard bootstrapRetryCount < maximumBootstrapRetries else {
+                        return
+                    }
+                    retryDelay = min(retryDelay * 2, 2_000_000_000)
+                    continue
+                }
+                guard !self.isBusy, !self.isLifecycleBusy else {
+                    retryDelay = min(retryDelay * 2, 1_000_000_000)
                     continue
                 }
                 await self.handleLockScreenProviderBecameUnavailable()
@@ -1792,8 +1819,12 @@ final class AppViewModel: ObservableObject {
                     self.isControllerBootstrapInProgress = false
                     self.controllerBootstrapTask = nil
                     self.scheduleLockScreenMediaPreparationForCurrentPreview()
-                    Task { @MainActor [weak self] in
-                        await self?.loadStatus()
+                    if self.pendingLockScreenProviderFallback {
+                        self.scheduleLockScreenProviderFallbackRetry()
+                    } else {
+                        Task { @MainActor [weak self] in
+                            await self?.loadStatus()
+                        }
                     }
                 }
             } catch {
@@ -1803,6 +1834,10 @@ final class AppViewModel: ObservableObject {
                     self.controllerAvailable = false
                     self.isControllerBootstrapInProgress = false
                     self.controllerBootstrapTask = nil
+                    self.pendingLockScreenProviderFallback = false
+                    self.pendingLockScreenProviderFallbackReason = nil
+                    self.lockScreenProviderFallbackRetryTask?.cancel()
+                    self.lockScreenProviderFallbackRetryTask = nil
                     self.alertMessage = error.localizedDescription
                 }
             }
