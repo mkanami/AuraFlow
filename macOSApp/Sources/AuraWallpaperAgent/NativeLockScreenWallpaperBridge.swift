@@ -26,7 +26,7 @@ final class NativeLockScreenWallpaperBridge {
         subsystem: "com.auraflow.wallpaper",
         category: "native-lock-screen-client"
     )
-    private static let requestTimeout: TimeInterval = 5.0
+    private let requestTimeout: TimeInterval
 
     private let executableURL: URL?
     private let ioQueue = DispatchQueue(
@@ -45,8 +45,9 @@ final class NativeLockScreenWallpaperBridge {
     private var requestTimeouts: [String: DispatchWorkItem] = [:]
     private var preparationWaiters: [(Bool) -> Void] = []
 
-    init(executableURL: URL?) {
+    init(executableURL: URL?, requestTimeout: TimeInterval = 5.0) {
         self.executableURL = executableURL
+        self.requestTimeout = requestTimeout
     }
 
     var isReady: Bool {
@@ -150,8 +151,11 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     private func startIfNeeded() -> Bool {
-        guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26,
-              let executableURL,
+        // Platform adapters gate native operations by OS version. Keeping
+        // this transport client OS-agnostic lets the client be tested with a
+        // fixture process and keeps the executable boundary responsible for
+        // the private-framework availability check.
+        guard let executableURL,
               FileManager.default.isExecutableFile(atPath: executableURL.path)
         else {
             state = .failed
@@ -202,22 +206,15 @@ final class NativeLockScreenWallpaperBridge {
         output = outputPipe.fileHandleForReading
         outputBuffer.removeAll(keepingCapacity: true)
         output?.readabilityHandler = { [weak self] handle in
-            do {
-                guard let data = try handle.read(upToCount: 64 * 1024),
-                      !data.isEmpty
-                else {
-                    self?.ioQueue.async { [weak self] in
-                        self?.handleTransportClosed(generation: processGeneration)
-                    }
-                    return
-                }
-                self?.ioQueue.async { [weak self] in
-                    self?.consume(data, generation: processGeneration)
-                }
-            } catch {
+            let data = handle.availableData
+            guard !data.isEmpty else {
                 self?.ioQueue.async { [weak self] in
                     self?.handleTransportClosed(generation: processGeneration)
                 }
+                return
+            }
+            self?.ioQueue.async { [weak self] in
+                self?.consume(data, generation: processGeneration)
             }
         }
         return true
@@ -268,7 +265,7 @@ final class NativeLockScreenWallpaperBridge {
             return false
         }
         ioQueue.asyncAfter(
-            deadline: .now() + Self.requestTimeout,
+            deadline: .now() + requestTimeout,
             execute: timeout
         )
         return true

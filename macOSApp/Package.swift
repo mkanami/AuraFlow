@@ -66,6 +66,7 @@ let package = Package(
             dependencies: [
                 "AuraWallpaperCore",
                 "WallpaperControlApp",
+                "AuraWallpaperAgent",
             ],
             path: "Tests/WallpaperControlAppTests",
             resources: [

@@ -654,35 +654,40 @@ final class NativeWallpaperController: WallpaperControlling {
     func start(videoURL: URL?, speed: Double?) throws -> ControlStatus {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
-        let wasLockScreenOnlyAgent = store.isLockScreenOnlyAgent()
-        if wasLockScreenOnlyAgent, store.processIsAlive(pid: store.loadPID()) {
-            guard store.terminateDaemon(
-                timeout: 2.0,
-                expectedExecutableURL: helperURL
-            ).succeeded else {
-                throw NativeWallpaperControllerError.unavailable(
-                    "The Lock Screen agent did not stop before starting desktop wallpaper."
-                )
-            }
-            store.removeCommand()
-            store.removeHealth()
+        let previousConfig = store.loadConfig()
+        let previousLockScreenOnlySource = store.loadLockScreenOnlySource()
+        let previousLockScreenOnlyAgent = store.isLockScreenOnlyAgent()
+        let previousPID = store.loadPID()
+        let previousAgentWasAlive = store.processIsAlive(pid: previousPID)
+        let previousCommand = store.loadCommand()
+        let previousHealth = store.loadHealth()
+
+        // Resolve and validate the next configuration before touching the
+        // running lock-only agent or any persistent runtime state. A failed
+        // file selection must leave the previous working configuration intact.
+        var nextConfig = previousConfig
+        if let videoURL {
+            nextConfig.video_path = videoURL.path
         }
-        store.markLockScreenOnlyAgent(false)
-        let config = try updateConfig { config in
-            if let videoURL {
-                config.video_path = videoURL.path
-            }
-            if let speed {
-                config.playback_speed = speed
-            }
+        if let speed {
+            nextConfig.playback_speed = speed
         }
-        guard !config.video_path.isEmpty else {
-            throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
+        nextConfig = store.normalized(nextConfig)
+        guard !nextConfig.video_path.isEmpty else {
+            throw NativeWallpaperControllerError.unavailable(
+                "No video configured. Choose a wallpaper first."
+            )
         }
-        guard FileManager.default.fileExists(atPath: config.video_path) else {
-            throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
+        guard FileManager.default.fileExists(atPath: nextConfig.video_path) else {
+            throw NativeWallpaperControllerError.unavailable(
+                "Video file not found: \(nextConfig.video_path)"
+            )
         }
-        store.clearLockScreenOnlySource()
+
+        // The desktop backup is the last operation that can fail without
+        // requiring a rollback. Keep the old lock-only route alive until this
+        // succeeds, otherwise Start could destroy a working Lock Screen mode
+        // and then return an error.
         let didCaptureDesktopBackup =
             WallpaperDesktopPlatform.captureCurrentDesktopWallpaperBackup(
                 appSupportPath: store.appSupportURL.path
@@ -699,20 +704,56 @@ final class NativeWallpaperController: WallpaperControlling {
                 "AuraFlow could not save the current Desktop wallpaper before starting."
             )
         }
-        // Start keeps the original all-surfaces behavior: the selected
-        // wallpaper is applied to the Desktop and Lock Screen together.
-        // The separate Lock button uses installLockScreenOnly() and is the
-        // only path that leaves the user's Desktop untouched.
-        try installLockScreenSaver(using: config)
-        guard lockScreenPlatform.installationConfirmed else {
-            throw NativeWallpaperControllerError.unavailable(
-                "macOS did not confirm the Desktop and Lock Screen wallpaper configuration."
+
+        var previousAgentWasStopped = false
+        do {
+            if previousLockScreenOnlyAgent, previousAgentWasAlive {
+                guard store.terminateDaemon(
+                    timeout: 2.0,
+                    expectedExecutableURL: helperURL
+                ).succeeded else {
+                    throw NativeWallpaperControllerError.unavailable(
+                        "The Lock Screen agent did not stop before starting desktop wallpaper."
+                    )
+                }
+                previousAgentWasStopped = true
+            }
+            if previousLockScreenOnlyAgent {
+                store.removeCommand()
+                store.removeHealth()
+                store.markLockScreenOnlyAgent(false)
+            }
+
+            try store.saveConfig(nextConfig)
+            store.clearLockScreenOnlySource()
+
+            // Start keeps the original all-surfaces behavior: the selected
+            // wallpaper is applied to the Desktop and Lock Screen together.
+            // The separate Lock button uses installLockScreenOnly() and is the
+            // only path that leaves the user's Desktop untouched.
+            try installLockScreenSaver(using: nextConfig)
+            guard lockScreenPlatform.installationConfirmed else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "macOS did not confirm the Desktop and Lock Screen wallpaper configuration."
+                )
+            }
+            store.markPaused(false)
+            try launchAgentIfNeeded()
+            try send(.reload, config: nextConfig)
+            return store.status()
+        } catch {
+            rollbackStart(
+                previousConfig: previousConfig,
+                previousLockScreenOnlySource: previousLockScreenOnlySource,
+                previousLockScreenOnlyAgent: previousLockScreenOnlyAgent,
+                previousAgentWasAlive: previousAgentWasAlive,
+                previousAgentWasStopped: previousAgentWasStopped,
+                previousPID: previousPID,
+                previousCommand: previousCommand,
+                previousHealth: previousHealth
             )
+            throw error
         }
-        store.markPaused(false)
-        try launchAgentIfNeeded()
-        try send(.reload, config: config)
-        return store.status()
     }
 
     func resume() throws -> ControlStatus {
@@ -1177,19 +1218,42 @@ final class NativeWallpaperController: WallpaperControlling {
     func setAutostart(_ enabled: Bool) throws -> ControlStatus {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
-        let config = try updateConfig { config in
-            config.autostart = enabled
-        }
+        let previousConfig = store.loadConfig()
+        var config = previousConfig
         if enabled {
-            guard !config.video_path.isEmpty else {
-                throw NativeWallpaperControllerError.unavailable("Choose a video before enabling launch at login.")
+            config = store.normalized(config)
+            guard !config.video_path.isEmpty,
+                  FileManager.default.fileExists(atPath: config.video_path)
+            else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "Choose an existing video before enabling launch at login."
+                )
             }
-            try store.enableLaunchAgent(
-                helperPath: helperURL.path,
-                nativeBridgePath: nativeBridgeURL?.path
-            )
+            config.autostart = true
+            config = store.normalized(config)
+            // Persist only after validation. If launchctl rejects the new
+            // service, restore the previous config so Autostart cannot appear
+            // enabled without a registered LaunchAgent.
+            try store.saveConfig(config)
+            do {
+                try store.enableLaunchAgent(
+                    helperPath: helperURL.path,
+                    nativeBridgePath: nativeBridgeURL?.path
+                )
+            } catch {
+                try? store.saveConfig(previousConfig)
+                throw error
+            }
         } else {
-            store.disableLaunchAgent()
+            config.autostart = false
+            config = store.normalized(config)
+            try store.saveConfig(config)
+            guard store.disableLaunchAgent() else {
+                try? store.saveConfig(previousConfig)
+                throw NativeWallpaperControllerError.unavailable(
+                    "Could not disable the AuraFlow LaunchAgent."
+                )
+            }
         }
         return store.status()
     }
@@ -1204,6 +1268,153 @@ final class NativeWallpaperController: WallpaperControlling {
             videoURL: videoURL,
             ensureStillFrame: true,
             lockScreenOnly: false
+        )
+    }
+
+    private func rollbackStart(
+        previousConfig: ControlConfig,
+        previousLockScreenOnlySource: URL?,
+        previousLockScreenOnlyAgent: Bool,
+        previousAgentWasAlive: Bool,
+        previousAgentWasStopped: Bool,
+        previousPID: Int?,
+        previousCommand: WallpaperRuntimeCommand?,
+        previousHealth: DaemonHealth?
+    ) {
+        var rollbackFailures: [String] = []
+
+        do {
+            try store.saveConfig(previousConfig)
+        } catch {
+            rollbackFailures.append("config: \(error.localizedDescription)")
+        }
+        store.restoreLockScreenOnlySource(previousLockScreenOnlySource)
+
+        // An identity mismatch means the persisted PID no longer belongs to
+        // AuraFlow. Never start a replacement while the old process could
+        // still be alive; preserve the old marker and leave ownership-safe
+        // cleanup to the next explicit recovery attempt.
+        if previousLockScreenOnlyAgent,
+           previousAgentWasAlive,
+           !previousAgentWasStopped {
+            store.markLockScreenOnlyAgent(true)
+            restoreStartRuntimeMetadata(
+                previousCommand: previousCommand,
+                previousHealth: previousHealth
+            )
+            reportStartRollbackFailures(rollbackFailures)
+            return
+        }
+
+        // If Start launched a replacement desktop agent before failing, stop
+        // it before restoring the previous route. This also prevents the
+        // replacement from racing the old lock-only state during rollback.
+        let currentPID = store.loadPID()
+        if currentPID != previousPID,
+           store.processIsAlive(pid: currentPID) {
+            if !store.terminateDaemon(
+                timeout: 2.0,
+                expectedExecutableURL: helperURL
+            ).succeeded {
+                rollbackFailures.append("replacement agent did not stop")
+            }
+        }
+
+        if previousLockScreenOnlyAgent {
+            guard let sourceURL = previousLockScreenOnlySource
+                ?? (previousConfig.video_path.isEmpty
+                    ? nil
+                    : URL(fileURLWithPath: previousConfig.video_path))
+            else {
+                store.markLockScreenOnlyAgent(previousAgentWasAlive)
+                rollbackFailures.append("previous Lock Screen source is unavailable")
+                restoreStartRuntimeMetadata(
+                    previousCommand: previousCommand,
+                    previousHealth: previousHealth
+                )
+                reportStartRollbackFailures(rollbackFailures)
+                return
+            }
+
+            if previousAgentWasAlive {
+                do {
+                    try installLockScreenSaver(
+                        videoURL: sourceURL,
+                        ensureStillFrame: true,
+                        lockScreenOnly: true
+                    )
+                    guard lockScreenPlatform.installationConfirmed else {
+                        throw NativeWallpaperControllerError.unavailable(
+                            "macOS did not confirm the previous Lock Screen configuration."
+                        )
+                    }
+                    try store.saveLockScreenOnlySource(sourceURL)
+                    store.markLockScreenOnlyAgent(false)
+                    try launchAgentIfNeeded(lockScreenOnly: true)
+                    try send(.reload, config: previousConfig)
+                } catch {
+                    rollbackFailures.append(
+                        "previous Lock Screen route: \(error.localizedDescription)"
+                    )
+                    store.markLockScreenOnlyAgent(false)
+                }
+            } else {
+                // Preserve the pre-existing configured/stale state. A failed
+                // Start must not silently remove a Lock Screen-only selection.
+                store.markLockScreenOnlyAgent(true)
+            }
+        } else {
+            store.clearLockScreenOnlySource()
+            store.markLockScreenOnlyAgent(false)
+            if previousAgentWasAlive,
+               !previousConfig.video_path.isEmpty,
+               FileManager.default.fileExists(atPath: previousConfig.video_path) {
+                do {
+                    try installLockScreenSaver(using: previousConfig)
+                    guard lockScreenPlatform.installationConfirmed else {
+                        throw NativeWallpaperControllerError.unavailable(
+                            "macOS did not confirm the previous wallpaper configuration."
+                        )
+                    }
+                    try launchAgentIfNeeded()
+                    try send(.reload, config: previousConfig)
+                } catch {
+                    rollbackFailures.append(
+                        "previous wallpaper route: \(error.localizedDescription)"
+                    )
+                }
+            }
+        }
+
+        if !previousAgentWasAlive {
+            restoreStartRuntimeMetadata(
+                previousCommand: previousCommand,
+                previousHealth: previousHealth
+            )
+        }
+        reportStartRollbackFailures(rollbackFailures)
+    }
+
+    private func restoreStartRuntimeMetadata(
+        previousCommand: WallpaperRuntimeCommand?,
+        previousHealth: DaemonHealth?
+    ) {
+        if let previousCommand {
+            try? store.saveCommand(previousCommand)
+        } else {
+            store.removeCommand()
+        }
+        if let previousHealth {
+            try? store.saveHealth(previousHealth)
+        } else {
+            store.removeHealth()
+        }
+    }
+
+    private func reportStartRollbackFailures(_ failures: [String]) {
+        guard !failures.isEmpty else { return }
+        lockScreenLifecycleLogger.error(
+            "Start failed and rollback was incomplete: \(failures.joined(separator: "; "), privacy: .public)"
         )
     }
 

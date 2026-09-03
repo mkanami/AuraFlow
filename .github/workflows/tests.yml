@@ -26,3 +26,100 @@ jobs:
       - name: Run Swift tests
         working-directory: macOSApp
         run: swift test
+
+      - name: Build portable release targets
+        working-directory: macOSApp
+        run: |
+          swift build -c release --product WallpaperControlApp
+          swift build -c release --product AuraWallpaperAgent
+
+      - name: Resolve release binary path
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          bin_path="$(swift build -c release --show-bin-path)"
+          if [[ ! -x "$bin_path/WallpaperControlApp" ]]; then
+            app_binary="$(find .build -type f -path '*/release/WallpaperControlApp' -perm -111 -print -quit)"
+            test -n "$app_binary"
+            bin_path="$(dirname "$app_binary")"
+          fi
+          echo "AURAFLOW_RELEASE_BIN=$bin_path" >> "$GITHUB_ENV"
+
+      - name: Verify private framework isolation
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          for binary in WallpaperControlApp AuraWallpaperAgent; do
+            binary_path="$AURAFLOW_RELEASE_BIN/$binary"
+            test -x "$binary_path"
+            if otool -L "$binary_path" | grep -Eq 'Wallpaper(Types)?\.framework'; then
+              echo "$binary must not link private Wallpaper frameworks: $binary_path" >&2
+              exit 1
+            fi
+          done
+
+      - name: Build native bridge when private framework is available
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          if [[ -d /System/Library/PrivateFrameworks/Wallpaper.framework ]]; then
+            swift build -c release --product AuraWallpaperNativeBridge
+            test -x "$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge"
+          else
+            echo "Skipping native bridge build: Wallpaper.framework is unavailable on this runner."
+          fi
+
+      - name: Stage and ad-hoc sign release app bundle
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          bundle_path="$RUNNER_TEMP/AuraFlow.app"
+          mkdir -p "$bundle_path/Contents/MacOS" "$bundle_path/Contents/Resources"
+          cp "$AURAFLOW_RELEASE_BIN/WallpaperControlApp" "$bundle_path/Contents/MacOS/WallpaperControlApp"
+          cp "$AURAFLOW_RELEASE_BIN/AuraWallpaperAgent" "$bundle_path/Contents/MacOS/AuraWallpaperAgent"
+          if [[ -x "$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge" ]]; then
+            cp "$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge" "$bundle_path/Contents/MacOS/AuraWallpaperNativeBridge"
+          fi
+          cat > "$bundle_path/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>WallpaperControlApp</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.andrijvergeles.auraflow.ci</string>
+            <key>CFBundleName</key>
+            <string>AuraFlow</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>13.0</string>
+            <key>NSPrincipalClass</key>
+            <string>NSApplication</string>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$bundle_path/Contents/Info.plist"
+          find "$bundle_path/Contents/MacOS" -type f -perm -111 -exec codesign --force --sign - {} \;
+          codesign --force --sign - "$bundle_path"
+          codesign --verify --deep --strict "$bundle_path"
+
+      - name: Launch native bridge on macOS 26 runners
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          if [[ "$(sw_vers -productVersion)" == 26.* && -d /System/Library/PrivateFrameworks/Wallpaper.framework ]]; then
+            bridge="$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge"
+            "$bridge" </dev/null >"$RUNNER_TEMP/auraflow-native-bridge.log" 2>&1 &
+            bridge_pid=$!
+            sleep 2
+            if ! kill -0 "$bridge_pid" 2>/dev/null; then
+              wait "$bridge_pid"
+            else
+              kill "$bridge_pid" 2>/dev/null || true
+              wait "$bridge_pid" || true
+            fi
+          else
+            echo "Skipping native bridge launch: this runner is not macOS 26 with Wallpaper.framework."
+          fi

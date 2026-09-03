@@ -29,6 +29,34 @@ public enum DaemonTerminationResult: Equatable, Sendable {
     }
 }
 
+public struct LaunchctlResult: Equatable, Sendable {
+    public let succeeded: Bool
+    public let output: String
+    public let terminationStatus: Int32
+
+    public init(
+        succeeded: Bool,
+        output: String = "",
+        terminationStatus: Int32 = 0
+    ) {
+        self.succeeded = succeeded
+        self.output = output
+        self.terminationStatus = terminationStatus
+    }
+
+    var isServiceNotLoaded: Bool {
+        guard !succeeded else { return false }
+        let normalized = output.lowercased()
+        return normalized.contains("could not find service")
+            || normalized.contains("could not find specified service")
+            || normalized.contains("service is not loaded")
+            || normalized.contains("no such process")
+            || normalized.contains("domain does not exist")
+    }
+}
+
+public typealias LaunchctlRunner = ([String]) -> LaunchctlResult
+
 public enum WallpaperRuntimeCommandAction: String, Codable, Equatable {
     case reload
     case update
@@ -80,14 +108,17 @@ public final class WallpaperRuntimeStore {
 
     public let appSupportURL: URL
     private let launchAgentFileURL: URL
+    private let launchctlRunner: LaunchctlRunner
 
     public init(
         appSupportURL: URL = WallpaperRuntimeStore.defaultAppSupportURL(),
-        launchAgentURL: URL? = nil
+        launchAgentURL: URL? = nil,
+        launchctlRunner: LaunchctlRunner? = nil
     ) {
         self.appSupportURL = appSupportURL
         self.launchAgentFileURL = launchAgentURL ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents/com.andrijvergeles.auraflow.plist")
+        self.launchctlRunner = launchctlRunner ?? WallpaperRuntimeStore.executeLaunchctl
     }
 
     public static func defaultAppSupportURL() -> URL {
@@ -443,45 +474,90 @@ public final class WallpaperRuntimeStore {
         nativeBridgePath: String? = nil
     ) throws {
         try ensureDirectories()
-        // bootstrap rejects an already-loaded label. Boot out first so an app
-        // update can replace an old plist that predates the native bridge
-        // argument without requiring the user to toggle Autostart manually.
-        _ = runLaunchctl(["bootout", "gui/\(getuid())/com.andrijvergeles.auraflow"])
         let configPath = configURL.path
-        let nativeBridgeArguments = nativeBridgePath.map {
-            """
-              <string>--native-bridge-path</string>
-              <string>\($0.escapedXML)</string>
-            """
-        } ?? ""
-        let plist = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-          <key>Label</key>
-          <string>com.andrijvergeles.auraflow</string>
-          <key>ProgramArguments</key>
-          <array>
-            <string>\(helperPath.escapedXML)</string>
-            <string>--config</string>
-            <string>\(configPath.escapedXML)</string>
-        \(nativeBridgeArguments)
-          </array>
-          <key>RunAtLoad</key>
-          <true/>
-          <key>KeepAlive</key>
-          <false/>
-        </dict>
-        </plist>
-        """
-        try plist.write(to: launchAgentURL, atomically: true, encoding: .utf8)
-        _ = runLaunchctl(["bootstrap", "gui/\(getuid())", launchAgentURL.path])
+        let expectedArguments = launchAgentProgramArguments(
+            helperPath: helperPath,
+            configPath: configPath,
+            nativeBridgePath: nativeBridgePath
+        )
+        let expectedPlist = try launchAgentPlistData(
+            programArguments: expectedArguments
+        )
+        let service = "gui/\(getuid())/com.andrijvergeles.auraflow"
+        let previousPlistData = try? Data(contentsOf: launchAgentURL)
+        let currentPlistMatches = launchAgentPlistMatches(
+            expectedProgramArguments: expectedArguments
+        )
+
+        // An unchanged plist and a loaded service need no migration. This is
+        // the common path during every normal GUI launch and avoids restarting
+        // playback merely because the controller was reconstructed.
+        if currentPlistMatches,
+           launchctlRunner(["print", service]).succeeded {
+            return
+        }
+
+        if !currentPlistMatches {
+            let previousPID = loadPID()
+            let bootout = launchctlRunner(["bootout", service])
+            guard bootout.succeeded || bootout.isServiceNotLoaded else {
+                throw WallpaperRuntimeError.unavailable(
+                    "Could not stop the existing AuraFlow LaunchAgent: \(bootout.output)"
+                )
+            }
+            if let previousPID,
+               !waitForProcessExit(previousPID, timeout: 2.0) {
+                // launchctl normally waits for the job, but older agents can
+                // delay their termination handler. Never bootstrap a new job
+                // while the old process can still mutate shared runtime files.
+                guard terminateDaemon(
+                    timeout: 1.0,
+                    expectedExecutableURL: URL(fileURLWithPath: helperPath)
+                ).succeeded,
+                waitForProcessExit(previousPID, timeout: 1.0)
+                else {
+                    throw WallpaperRuntimeError.unavailable(
+                        "The existing AuraFlow wallpaper agent did not stop during migration."
+                    )
+                }
+            }
+        }
+
+        try expectedPlist.write(to: launchAgentURL, options: .atomic)
+        let bootstrap = launchctlRunner([
+            "bootstrap",
+            "gui/\(getuid())",
+            launchAgentURL.path
+        ])
+        guard bootstrap.succeeded else {
+            if let previousPlistData {
+                try? previousPlistData.write(to: launchAgentURL, options: .atomic)
+            } else {
+                try? FileManager.default.removeItem(at: launchAgentURL)
+            }
+            throw WallpaperRuntimeError.unavailable(
+                "Could not start the AuraFlow LaunchAgent: \(bootstrap.output)"
+            )
+        }
     }
 
-    public func disableLaunchAgent() {
-        _ = runLaunchctl(["bootout", "gui/\(getuid())/com.andrijvergeles.auraflow"])
-        try? FileManager.default.removeItem(at: launchAgentURL)
+    @discardableResult
+    public func disableLaunchAgent() -> Bool {
+        let bootout = launchctlRunner([
+            "bootout",
+            "gui/\(getuid())/com.andrijvergeles.auraflow"
+        ])
+        guard bootout.succeeded || bootout.isServiceNotLoaded else {
+            return false
+        }
+        do {
+            try FileManager.default.removeItem(at: launchAgentURL)
+            return true
+        } catch CocoaError.fileNoSuchFile {
+            return true
+        } catch {
+            return false
+        }
     }
 
     @discardableResult
@@ -739,18 +815,89 @@ public final class WallpaperRuntimeStore {
         )
     }
 
-    private func runLaunchctl(_ arguments: [String]) -> Bool {
+    private func launchAgentProgramArguments(
+        helperPath: String,
+        configPath: String,
+        nativeBridgePath: String?
+    ) -> [String] {
+        var arguments = [helperPath, "--config", configPath]
+        if let nativeBridgePath {
+            arguments.append(contentsOf: ["--native-bridge-path", nativeBridgePath])
+        }
+        return arguments
+    }
+
+    private func launchAgentPlistData(programArguments: [String]) throws -> Data {
+        let plist: [String: Any] = [
+            "Label": "com.andrijvergeles.auraflow",
+            "ProgramArguments": programArguments,
+            "RunAtLoad": true,
+            "KeepAlive": false,
+        ]
+        return try PropertyListSerialization.data(
+            fromPropertyList: plist,
+            format: .xml,
+            options: 0
+        )
+    }
+
+    private func launchAgentPlistMatches(
+        expectedProgramArguments: [String]
+    ) -> Bool {
+        guard let data = try? Data(contentsOf: launchAgentURL),
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: data,
+                  options: [],
+                  format: nil
+              ) as? [String: Any],
+              plist["Label"] as? String == "com.andrijvergeles.auraflow",
+              plist["ProgramArguments"] as? [String] == expectedProgramArguments,
+              plist["RunAtLoad"] as? Bool == true,
+              plist["KeepAlive"] as? Bool == false
+        else {
+            return false
+        }
+        return true
+    }
+
+    private func waitForProcessExit(_ pid: Int, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(max(timeout, 0))
+        while Date() < deadline {
+            if !processIsAlive(pid: pid) {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return !processIsAlive(pid: pid)
+    }
+
+    private static func executeLaunchctl(_ arguments: [String]) -> LaunchctlResult {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         task.arguments = arguments
-        task.standardOutput = Pipe()
-        task.standardError = Pipe()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        task.standardOutput = outputPipe
+        task.standardError = errorPipe
         do {
             try task.run()
             task.waitUntilExit()
-            return task.terminationStatus == 0
+            let output = String(
+                data: outputPipe.fileHandleForReading.readDataToEndOfFile()
+                    + errorPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? ""
+            return LaunchctlResult(
+                succeeded: task.terminationStatus == 0,
+                output: output.trimmingCharacters(in: .whitespacesAndNewlines),
+                terminationStatus: task.terminationStatus
+            )
         } catch {
-            return false
+            return LaunchctlResult(
+                succeeded: false,
+                output: error.localizedDescription,
+                terminationStatus: -1
+            )
         }
     }
 }
@@ -763,15 +910,5 @@ public enum WallpaperRuntimeError: LocalizedError {
         case .unavailable(let message):
             return message
         }
-    }
-}
-
-private extension String {
-    var escapedXML: String {
-        replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "\"", with: "&quot;")
-            .replacingOccurrences(of: "'", with: "&apos;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
     }
 }

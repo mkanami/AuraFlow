@@ -15,14 +15,20 @@ private struct NativeRuntimeFixture {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         store = WallpaperRuntimeStore(
             appSupportURL: root.appendingPathComponent("Support", isDirectory: true),
-            launchAgentURL: root.appendingPathComponent("LaunchAgents/com.andrijvergeles.auraflow.plist")
+            launchAgentURL: root.appendingPathComponent("LaunchAgents/com.andrijvergeles.auraflow.plist"),
+            launchctlRunner: { _ in
+                LaunchctlResult(succeeded: true)
+            }
         )
         try store.ensureDirectories()
 
         helperURL = root.appendingPathComponent("mock-agent.sh")
         let script = """
         #!/bin/sh
-        kill -STOP $$
+        trap '' TERM
+        while :; do
+            sleep 0.1
+        done
         """
         try script.write(to: helperURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helperURL.path)
@@ -103,6 +109,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     private(set) var uninstallCallCount = 0
     private(set) var preservingUninstallCallCount = 0
     var installError: TestInstallerError?
+    var failNextDesktopInstall = false
     var uninstallError: TestInstallerError?
     var lockScreenOnlyStatusOverride: LockScreenOnlyGenerationStatus?
 
@@ -112,6 +119,10 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     }
 
     func install(videoURL: URL) throws {
+        if failNextDesktopInstall {
+            failNextDesktopInstall = false
+            throw TestInstallerError.installFailed
+        }
         if let installError {
             throw installError
         }
@@ -859,6 +870,138 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(plist.contains(fixture.helperURL.path))
     #expect(plist.contains("--config"))
     #expect(plist.contains(fixture.store.configURL.path))
+}
+
+@Test func unchangedLaunchAgentDoesNotRestartLoadedService() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlowLaunchAgentNoOp-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    var launchctlCalls: [[String]] = []
+    let store = WallpaperRuntimeStore(
+        appSupportURL: root.appendingPathComponent("Support"),
+        launchAgentURL: root.appendingPathComponent("LaunchAgents/agent.plist"),
+        launchctlRunner: { arguments in
+            launchctlCalls.append(arguments)
+            return LaunchctlResult(succeeded: true)
+        }
+    )
+
+    try store.enableLaunchAgent(helperPath: "/tmp/AuraWallpaperAgent")
+    launchctlCalls.removeAll()
+    try store.enableLaunchAgent(helperPath: "/tmp/AuraWallpaperAgent")
+
+    #expect(launchctlCalls == [["print", "gui/\(getuid())/com.andrijvergeles.auraflow"]])
+}
+
+@Test func launchAgentBootstrapFailureIsSurfaced() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlowLaunchAgentFailure-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let store = WallpaperRuntimeStore(
+        appSupportURL: root.appendingPathComponent("Support"),
+        launchAgentURL: root.appendingPathComponent("LaunchAgents/agent.plist"),
+        launchctlRunner: { arguments in
+            if arguments.first == "bootstrap" {
+                return LaunchctlResult(
+                    succeeded: false,
+                    output: "Operation not permitted",
+                    terminationStatus: 1
+                )
+            }
+            return LaunchctlResult(succeeded: true)
+        }
+    )
+
+    #expect(throws: WallpaperRuntimeError.self) {
+        try store.enableLaunchAgent(helperPath: "/tmp/AuraWallpaperAgent")
+    }
+    #expect(FileManager.default.fileExists(atPath: store.launchAgentURL.path) == false)
+}
+
+@Test func autostartValidationDoesNotPersistAnInvalidConfiguration() throws {
+    let fixture = try NativeRuntimeFixture("autostart-invalid")
+    defer { fixture.cleanup() }
+    try fixture.store.saveConfig(
+        ControlConfig(video_path: "", playback_speed: 1.0, autostart: false)
+    )
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller()
+    )
+
+    #expect(throws: NativeWallpaperControllerError.self) {
+        try controller.setAutostart(true)
+    }
+    #expect(fixture.store.loadConfig().autostart == false)
+    #expect(FileManager.default.fileExists(atPath: fixture.store.launchAgentURL.path) == false)
+}
+
+@Test func startValidationPreservesTheExistingLockScreenOnlyAgent() throws {
+    let fixture = try NativeRuntimeFixture("start-validation-preserves-lock-only")
+    defer { fixture.cleanup() }
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: fixture.videoURL.path,
+            playback_speed: 1.0,
+            show_on_lock_screen: true
+        )
+    )
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+    let agent = try launchReadyTestAgent()
+    try fixture.store.savePID(agent.processIdentifier)
+    fixture.store.markLockScreenOnlyAgent(true)
+
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller()
+    )
+    let missingURL = fixture.root.appendingPathComponent("missing.mp4")
+
+    #expect(throws: NativeWallpaperControllerError.self) {
+        try controller.start(videoURL: missingURL, speed: 1.0)
+    }
+    #expect(fixture.store.isLockScreenOnlyAgent())
+    #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
+    #expect(fixture.store.loadConfig().video_path == fixture.videoURL.path)
+    #expect(fixture.store.processIsAlive(pid: Int(agent.processIdentifier)))
+}
+
+@Test func failedStartRestoresThePreviousLockScreenOnlyRoute() throws {
+    let fixture = try NativeRuntimeFixture("start-rollback-lock-only")
+    defer { fixture.cleanup() }
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: fixture.videoURL.path,
+            playback_speed: 1.0,
+            show_on_lock_screen: true
+        )
+    )
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+    let agent = try launchReadyTestAgent()
+    try fixture.store.savePID(agent.processIdentifier)
+    fixture.store.markLockScreenOnlyAgent(true)
+
+    let installer = RecordingLockScreenSaverInstaller()
+    installer.failNextDesktopInstall = true
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    #expect(throws: TestInstallerError.self) {
+        try controller.start(videoURL: fixture.videoURL, speed: 1.0)
+    }
+    #expect(fixture.store.isLockScreenOnlyAgent())
+    #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
+    #expect(installer.installedLockScreenOnlyVideoURL == fixture.videoURL)
+    #expect(fixture.store.processIsAlive(pid: fixture.store.loadPID()))
 }
 
 @Test func nativeAutostartPlistIncludesNativeBridgePathWhenConfigured() throws {

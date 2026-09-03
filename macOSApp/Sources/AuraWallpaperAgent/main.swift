@@ -186,6 +186,11 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // LaunchAgent migration can replace one helper process with another.
+        // Only the process that still owns the persisted PID may clear shared
+        // runtime state; an old termination callback must never erase the
+        // replacement agent's PID or lock-only marker.
+        let ownsRuntimePID = store.loadPID() == Int(getpid())
         isTerminating = true
         let preserveCurrentDesktop =
             store.loadCommand()?.action == .terminatePreservingDesktop
@@ -199,7 +204,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         lockSessionGeneration &+= 1
         publishRearmGuardState()
         pendingRearmToken = nil
-        writeHealth(reason: terminationHealthReason ?? "terminating")
+        if ownsRuntimePID {
+            writeHealth(reason: terminationHealthReason ?? "terminating")
+        }
         DistributedNotificationCenter.default().removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
@@ -217,15 +224,17 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             notify_cancel(token)
         }
         lockShieldNotificationTokens.removeAll()
-        if lockScreenOnlyMode {
+        if lockScreenOnlyMode, ownsRuntimePID {
             store.markLockScreenAgentReady(false)
         }
         lockScreenLifecycleCoordinator.invalidate()
         tearDownPlayback()
-        store.removePID()
-        store.markPaused(false)
-        if lockScreenOnlyMode {
-            store.markLockScreenOnlyAgent(false)
+        if ownsRuntimePID {
+            store.removePID()
+            store.markPaused(false)
+            if lockScreenOnlyMode {
+                store.markLockScreenOnlyAgent(false)
+            }
         }
         ProcessInfo.processInfo.enableAutomaticTermination(
             "AuraFlow wallpaper agent is active"
