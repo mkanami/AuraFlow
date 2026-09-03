@@ -13,22 +13,16 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         FileHandle.standardInput.readabilityHandler = { [weak self] handle in
-            do {
-                guard let data = try handle.read(upToCount: 64 * 1024),
-                      !data.isEmpty
-                else {
-                    DispatchQueue.main.async {
-                        NSApp.terminate(nil)
-                    }
-                    return
-                }
-                self?.inputQueue.async { [weak self] in
-                    self?.consume(data)
-                }
-            } catch {
+            let data = handle.availableData
+            guard !data.isEmpty
+            else {
                 DispatchQueue.main.async {
                     NSApp.terminate(nil)
                 }
+                return
+            }
+            self?.inputQueue.async { [weak self] in
+                self?.consume(data)
             }
         }
     }

@@ -1117,12 +1117,13 @@ final class NativeWallpaperController: WallpaperControlling {
                 || !hasUsableLockScreenOnlySource
                 || !supportsLockScreenOnly
                 || !lockScreenOnlyProviderAvailable) {
-            guard store.terminateDaemon(
+            let terminationResult = store.terminateDaemon(
                 timeout: 2.0,
                 expectedExecutableURL: helperURL
-            ).succeeded else {
+            )
+            guard terminationResult.succeeded else {
                 throw NativeWallpaperControllerError.unavailable(
-                    "The Lock Screen agent did not stop during fallback cleanup."
+                    "The Lock Screen agent did not stop during fallback cleanup (\(terminationResult))."
                 )
             }
             store.removeCommand()
@@ -3429,6 +3430,9 @@ final class AppViewModel: ObservableObject {
         }
         if status.autostart_service_loaded == false {
             return "Launch at Login is enabled, but the AuraFlow LaunchAgent is not loaded."
+        }
+        if status.autostart_service_running == false {
+            return "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
         }
         return "Launch at Login is enabled, but the AuraFlow LaunchAgent is unavailable."
     }

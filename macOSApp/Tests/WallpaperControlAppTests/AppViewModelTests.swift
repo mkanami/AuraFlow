@@ -1377,6 +1377,24 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func autostartWarningIsShownWhenLaunchAgentIsNotRunning() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.statusConfigAutostart = true
+    controller.statusAutostart = false
+    controller.statusAutostartPlistExists = true
+    controller.statusAutostartServiceLoaded = true
+    controller.statusAutostartServiceRunning = false
+    let viewModel = AppViewModel(controller: controller)
+
+    await viewModel.loadStatus()
+
+    #expect(
+        viewModel.alertMessage
+            == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
+    )
+}
+
+@MainActor
 @Test func activeLockScreenOnlyWallpaperKeepsStopAvailable() async throws {
     let controller = MockNativeWallpaperController()
     controller.statusRunning = false

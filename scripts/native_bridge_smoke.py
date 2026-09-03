@@ -43,8 +43,23 @@ def main() -> int:
         show = request(bridge, "show")
         hide = request(bridge, "hide")
         shutdown = request(bridge, "shutdown")
-        if not hide["succeeded"] or not shutdown["succeeded"]:
-            raise RuntimeError("native bridge hide/shutdown smoke request failed")
+        if not all(
+            response["succeeded"]
+            for response in (prepare, show, hide, shutdown)
+        ):
+            failed_actions = [
+                action
+                for action, response in (
+                    ("prepare", prepare),
+                    ("show", show),
+                    ("hide", hide),
+                    ("shutdown", shutdown),
+                )
+                if not response["succeeded"]
+            ]
+            raise RuntimeError(
+                "native bridge request failed: " + ", ".join(failed_actions)
+            )
         if bridge.wait(timeout=10) != 0:
             raise RuntimeError("native bridge exited with a failure status")
         print(

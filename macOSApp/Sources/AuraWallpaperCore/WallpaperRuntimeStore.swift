@@ -71,7 +71,7 @@ public struct LaunchAgentStatus: Equatable, Sendable {
     }
 
     public var enabled: Bool {
-        plistExists && serviceLoaded
+        plistExists && serviceLoaded && serviceRunning
     }
 }
 
@@ -129,16 +129,21 @@ public final class WallpaperRuntimeStore {
     public let appSupportURL: URL
     private let launchAgentFileURL: URL
     private let launchctlRunner: LaunchctlRunner
+    private let launchAgentFileRemover: (URL) throws -> Void
 
     public init(
         appSupportURL: URL = WallpaperRuntimeStore.defaultAppSupportURL(),
         launchAgentURL: URL? = nil,
-        launchctlRunner: LaunchctlRunner? = nil
+        launchctlRunner: LaunchctlRunner? = nil,
+        launchAgentFileRemover: ((URL) throws -> Void)? = nil
     ) {
         self.appSupportURL = appSupportURL
         self.launchAgentFileURL = launchAgentURL ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents/com.andrijvergeles.auraflow.plist")
         self.launchctlRunner = launchctlRunner ?? WallpaperRuntimeStore.executeLaunchctl
+        self.launchAgentFileRemover = launchAgentFileRemover ?? {
+            try FileManager.default.removeItem(at: $0)
+        }
     }
 
     public static func defaultAppSupportURL() -> URL {
@@ -559,16 +564,17 @@ public final class WallpaperRuntimeStore {
         let currentPlistMatches = launchAgentPlistMatches(
             expectedProgramArguments: expectedArguments
         )
+        let currentLaunchAgent = launchAgentStatus()
 
         // An unchanged plist and a loaded service need no migration. This is
         // the common path during every normal GUI launch and avoids restarting
         // playback merely because the controller was reconstructed.
         if currentPlistMatches,
-           launchctlRunner(["print", service]).succeeded {
+           currentLaunchAgent.enabled {
             return
         }
 
-        if !currentPlistMatches {
+        if !currentPlistMatches || currentLaunchAgent.serviceLoaded {
             let previousPID = loadPID()
             let bootout = launchctlRunner(["bootout", service])
             guard bootout.succeeded || bootout.isServiceNotLoaded else {
@@ -645,6 +651,7 @@ public final class WallpaperRuntimeStore {
 
     @discardableResult
     public func disableLaunchAgent() -> Bool {
+        let previousPlistData = try? Data(contentsOf: launchAgentURL)
         let bootout = launchctlRunner([
             "bootout",
             "gui/\(getuid())/com.andrijvergeles.auraflow"
@@ -653,11 +660,19 @@ public final class WallpaperRuntimeStore {
             return false
         }
         do {
-            try FileManager.default.removeItem(at: launchAgentURL)
+            try launchAgentFileRemover(launchAgentURL)
             return true
         } catch CocoaError.fileNoSuchFile {
             return true
         } catch {
+            if let previousPlistData {
+                try? previousPlistData.write(to: launchAgentURL, options: .atomic)
+            }
+            _ = launchctlRunner([
+                "bootstrap",
+                "gui/\(getuid())",
+                launchAgentURL.path
+            ])
             return false
         }
     }
@@ -685,6 +700,9 @@ public final class WallpaperRuntimeStore {
             // caller must not continue as if the process had been stopped.
             clearDaemonProcessMetadata()
             return .identityMismatch
+        case .unavailable:
+            clearDaemonProcessMetadata()
+            return .identityMismatch
         case .matched:
             break
         }
@@ -707,6 +725,13 @@ public final class WallpaperRuntimeStore {
             case .mismatch:
                 clearDaemonProcessMetadata()
                 return .identityMismatch
+            case .unavailable:
+                // A process that has accepted SIGTERM can briefly lose its
+                // procfs identity before launchd/its parent reaps it. Keep
+                // waiting in that transition instead of reporting a false
+                // PID mismatch; never send another signal until identity is
+                // confirmed again.
+                break
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
@@ -720,6 +745,9 @@ public final class WallpaperRuntimeStore {
             clearDaemonProcessMetadata()
             return .alreadyExited
         case .mismatch:
+            clearDaemonProcessMetadata()
+            return .identityMismatch
+        case .unavailable:
             clearDaemonProcessMetadata()
             return .identityMismatch
         }
@@ -742,6 +770,8 @@ public final class WallpaperRuntimeStore {
             case .mismatch:
                 clearDaemonProcessMetadata()
                 return .identityMismatch
+            case .unavailable:
+                break
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
@@ -757,6 +787,7 @@ public final class WallpaperRuntimeStore {
         case matched
         case alreadyExited
         case mismatch
+        case unavailable
     }
 
     private func daemonProcessIdentityStatus(
@@ -769,7 +800,10 @@ public final class WallpaperRuntimeStore {
         guard let actual = processIdentity(for: pid) else {
             // The process is still reported alive, but its identity cannot be
             // verified. Treat it as unconfirmed and never send a signal.
-            return .mismatch
+            if reapExitedChildProcess(pid) {
+                return .alreadyExited
+            }
+            return .unavailable
         }
         if let expected = try? readJSON(
             DaemonProcessIdentity.self,
@@ -784,6 +818,11 @@ public final class WallpaperRuntimeStore {
             == expectedExecutableURL.standardizedFileURL.path
             ? .matched
             : .mismatch
+    }
+
+    private func reapExitedChildProcess(_ pid: Int) -> Bool {
+        var status: Int32 = 0
+        return waitpid(pid_t(pid), &status, WNOHANG) == pid_t(pid)
     }
 
     private func processIdentity(for pid: Int) -> DaemonProcessIdentity? {
@@ -814,12 +853,16 @@ public final class WallpaperRuntimeStore {
     }
 
     private func processIdentityWithRetry(for pid: Int) -> DaemonProcessIdentity? {
-        for attempt in 0..<10 {
+        // A freshly spawned process can briefly be visible to kill(2) before
+        // proc_pidpath/proc_pidinfo have a complete record, especially while
+        // the system is under load. Keep the PID metadata paired with its
+        // identity instead of falling back to an unverified PID.
+        for attempt in 0..<50 {
             if let identity = processIdentity(for: pid) {
                 return identity
             }
-            if attempt < 9 {
-                Thread.sleep(forTimeInterval: 0.01)
+            if attempt < 49 {
+                Thread.sleep(forTimeInterval: 0.02)
             }
         }
         return nil
