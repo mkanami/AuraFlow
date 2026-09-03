@@ -371,7 +371,10 @@ final class NativeWallpaperController: WallpaperControlling {
         guard store.processIsAlive(pid: store.loadPID()) else { return }
         let config = store.loadConfig()
         let lockScreenOnlyAgent = store.isLockScreenOnlyAgent()
-        guard store.terminateDaemon(timeout: 1.0) else {
+        guard store.terminateDaemon(
+            timeout: 1.0,
+            expectedExecutableURL: helperURL
+        ) else {
             throw NativeWallpaperControllerError.unavailable(
                 "The previous wallpaper agent did not stop during the update."
             )
@@ -527,7 +530,10 @@ final class NativeWallpaperController: WallpaperControlling {
         defer { lifecycleLock.unlock() }
         let wasLockScreenOnlyAgent = store.isLockScreenOnlyAgent()
         if wasLockScreenOnlyAgent, store.processIsAlive(pid: store.loadPID()) {
-            guard store.terminateDaemon(timeout: 2.0) else {
+            guard store.terminateDaemon(
+                timeout: 2.0,
+                expectedExecutableURL: helperURL
+            ) else {
                 throw NativeWallpaperControllerError.unavailable(
                     "The Lock Screen agent did not stop before starting desktop wallpaper."
                 )
@@ -622,7 +628,10 @@ final class NativeWallpaperController: WallpaperControlling {
                 config: currentConfig
             )
         }
-        guard store.terminateDaemon(timeout: 2.0) else {
+        guard store.terminateDaemon(
+            timeout: 2.0,
+            expectedExecutableURL: helperURL
+        ) else {
             throw NativeWallpaperControllerError.unavailable(
                 "The wallpaper agent did not stop, so its desktop window could not be removed."
             )
@@ -723,7 +732,10 @@ final class NativeWallpaperController: WallpaperControlling {
             // would continue presenting AuraFlow windows on the Desktop.
             // Replace it with the dedicated lock-only agent so this button
             // never changes the user's Desktop wallpaper.
-            guard store.terminateDaemon(timeout: 2.0) else {
+            guard store.terminateDaemon(
+                timeout: 2.0,
+                expectedExecutableURL: helperURL
+            ) else {
                 throw NativeWallpaperControllerError.unavailable(
                     "The desktop wallpaper agent did not stop before enabling Lock Screen only mode."
                 )
@@ -827,7 +839,10 @@ final class NativeWallpaperController: WallpaperControlling {
             try lockScreenPlatform.uninstall()
             if store.isLockScreenOnlyAgent() {
                 if store.processIsAlive(pid: store.loadPID()) {
-                    guard store.terminateDaemon(timeout: 2.0) else {
+                    guard store.terminateDaemon(
+                        timeout: 2.0,
+                        expectedExecutableURL: helperURL
+                    ) else {
                         throw NativeWallpaperControllerError.unavailable(
                             "The Lock Screen agent did not stop after disabling Lock Screen wallpaper."
                         )
@@ -866,6 +881,19 @@ final class NativeWallpaperController: WallpaperControlling {
             FileManager.default.fileExists(atPath: $0.path)
         } == true
         let lockScreenEnabled = config.show_on_lock_screen ?? true
+        let lockScreenOnlyStatus: LockScreenOnlyGenerationStatus?
+        if lockScreenEnabled,
+           supportsLockScreenOnly,
+           let lockScreenOnlySource,
+           hasUsableLockScreenOnlySource {
+            lockScreenOnlyStatus = lockScreenPlatform.lockScreenOnlyStatus(
+                videoURL: lockScreenOnlySource
+            )
+        } else {
+            lockScreenOnlyStatus = nil
+        }
+        let lockScreenOnlyProviderAvailable =
+            lockScreenOnlyStatus?.providerAvailable == true
 
         // A stale lock-only agent must not survive merely because the source
         // disappeared or Lock Screen was disabled before this sync reached
@@ -873,8 +901,12 @@ final class NativeWallpaperController: WallpaperControlling {
         if store.isLockScreenOnlyAgent(),
            (!lockScreenEnabled
                 || !hasUsableLockScreenOnlySource
-                || !supportsLockScreenOnly) {
-            guard store.terminateDaemon(timeout: 2.0) else {
+                || !supportsLockScreenOnly
+                || !lockScreenOnlyProviderAvailable) {
+            guard store.terminateDaemon(
+                timeout: 2.0,
+                expectedExecutableURL: helperURL
+            ) else {
                 throw NativeWallpaperControllerError.unavailable(
                     "The Lock Screen agent did not stop during fallback cleanup."
                 )
@@ -897,13 +929,17 @@ final class NativeWallpaperController: WallpaperControlling {
         }
         let useLockScreenOnly = lockScreenOnlySource != nil
             && supportsLockScreenOnly
+            && lockScreenOnlyProviderAvailable
         if lockScreenOnlySource != nil, !useLockScreenOnly {
             // A lock-only marker can survive a downgrade or removal of the
             // modern provider. Migrate it to the legacy screen-saver route so
             // startup does not repeatedly fail trying to launch a native-only
             // agent on a platform that cannot support it.
             if store.isLockScreenOnlyAgent() {
-                guard store.terminateDaemon(timeout: 2.0) else {
+                guard store.terminateDaemon(
+                    timeout: 2.0,
+                    expectedExecutableURL: helperURL
+                ) else {
                     throw NativeWallpaperControllerError.unavailable(
                         "The Lock Screen agent did not stop during legacy fallback."
                     )
@@ -1110,6 +1146,8 @@ final class AppViewModel: ObservableObject {
     private var isHealthCheckInProgress = false
     private var lockScreenProviderUnavailableObserver: NSObjectProtocol?
     private var pendingLockScreenProviderFallback = false
+    private var pendingLockScreenProviderFallbackReason: String?
+    private var lockScreenProviderFallbackRetryTask: Task<Void, Never>?
     private var bridgeFailureCount = 0
     private var daemonSuspiciousPolls = 0
     private var lowPowerAutoPauseActive = false
@@ -1351,9 +1389,14 @@ final class AppViewModel: ObservableObject {
                     .lockScreenProviderBecameUnavailable,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
+            ) { [weak self] notification in
+                let reason = notification.userInfo?[
+                    WallpaperRuntimeNotifications.lockScreenFallbackReasonKey
+                ] as? String
                 Task { @MainActor [weak self] in
-                    await self?.handleLockScreenProviderBecameUnavailable()
+                    await self?.handleLockScreenProviderBecameUnavailable(
+                        reason: reason
+                    )
                 }
             }
         Task { [weak self] in
@@ -1377,6 +1420,7 @@ final class AppViewModel: ObservableObject {
         glassAnalysisTask?.cancel()
         previewPreparationTask?.cancel()
         lockScreenPreparationTask?.cancel()
+        lockScreenProviderFallbackRetryTask?.cancel()
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver)
         }
@@ -1403,15 +1447,12 @@ final class AppViewModel: ObservableObject {
             return
         }
         lockScreenCapabilities = controller.lockScreenCapabilities
-        guard !isBusy else { return }
+        guard !isBusy, !isLifecycleBusy else { return }
         isBusy = true
         defer {
             isBusy = false
-            if pendingLockScreenProviderFallback, !isShuttingDown {
-                pendingLockScreenProviderFallback = false
-                Task { @MainActor [weak self] in
-                    await self?.handleLockScreenProviderBecameUnavailable()
-                }
+            if pendingLockScreenProviderFallback {
+                scheduleLockScreenProviderFallbackRetry()
             }
         }
 
@@ -1445,18 +1486,63 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func handleLockScreenProviderBecameUnavailable() async {
+    private func handleLockScreenProviderBecameUnavailable(
+        reason: String? = nil
+    ) async {
+        if let reason, !reason.isEmpty {
+            pendingLockScreenProviderFallbackReason = reason
+        }
         guard !isShuttingDown else { return }
         guard controller != nil else {
             pendingLockScreenProviderFallback = true
+            scheduleLockScreenProviderFallbackRetry()
             return
         }
-        guard !isBusy else {
+        guard !isBusy, !isLifecycleBusy else {
             pendingLockScreenProviderFallback = true
+            scheduleLockScreenProviderFallbackRetry()
             return
         }
         pendingLockScreenProviderFallback = false
+        if let reason = pendingLockScreenProviderFallbackReason {
+            lockScreenLifecycleLogger.notice(
+                "Lock Screen fallback requested: \(reason, privacy: .public)"
+            )
+        }
+        pendingLockScreenProviderFallbackReason = nil
         await loadStatus()
+    }
+
+    private func scheduleLockScreenProviderFallbackRetry() {
+        guard pendingLockScreenProviderFallback,
+              !isShuttingDown,
+              lockScreenProviderFallbackRetryTask == nil
+        else {
+            return
+        }
+
+        lockScreenProviderFallbackRetryTask = Task { @MainActor [weak self] in
+            defer {
+                self?.lockScreenProviderFallbackRetryTask = nil
+            }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard let self, !Task.isCancelled else { return }
+                guard self.pendingLockScreenProviderFallback,
+                      !self.isShuttingDown
+                else {
+                    return
+                }
+                guard self.controller != nil,
+                      !self.isBusy,
+                      !self.isLifecycleBusy
+                else {
+                    continue
+                }
+                await self.handleLockScreenProviderBecameUnavailable()
+                return
+            }
+        }
     }
 
     private func restoreInitialPreviewFromSavedConfig() {
@@ -2047,6 +2133,9 @@ final class AppViewModel: ObservableObject {
             activeLifecycleIntent = nil
             lifecycleTask = nil
             isLifecycleBusy = false
+            if pendingLockScreenProviderFallback {
+                scheduleLockScreenProviderFallbackRetry()
+            }
         }
 
         while !Task.isCancelled,

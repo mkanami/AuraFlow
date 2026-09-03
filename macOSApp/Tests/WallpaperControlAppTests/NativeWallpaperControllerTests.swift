@@ -64,6 +64,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     private(set) var preservingUninstallCallCount = 0
     var installError: TestInstallerError?
     var uninstallError: TestInstallerError?
+    var lockScreenOnlyStatusOverride: LockScreenOnlyGenerationStatus?
 
     var isInstalled: Bool {
         (installedVideoURL != nil || installedLockScreenOnlyVideoURL != nil)
@@ -97,6 +98,27 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         }
         preservingUninstallCallCount += 1
         uninstallCallCount += 1
+    }
+
+    func lockScreenOnlyStatus(
+        videoURL: URL?
+    ) -> LockScreenOnlyGenerationStatus {
+        if let lockScreenOnlyStatusOverride {
+            return lockScreenOnlyStatusOverride
+        }
+        let installed = isInstalled
+        let sourceMatches = installedLockScreenOnlyVideoURL
+            .map { $0.standardizedFileURL == videoURL?.standardizedFileURL }
+            ?? false
+        return LockScreenOnlyGenerationStatus(
+            installed: installed,
+            sourceMatches: sourceMatches,
+            assetValid: installed,
+            providerAvailable: installed,
+            providerRunning: installed,
+            wallpaperStoreValid: installed,
+            screenSaverSelected: installed
+        )
     }
 }
 
@@ -147,7 +169,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     let pid = Int(agent.processIdentifier)
-    #expect(fixture.store.terminateDaemon(timeout: 0.2))
+    #expect(fixture.store.terminateDaemon(timeout: 0.2) == false)
     #expect(fixture.store.loadPID() == nil)
     #expect(
         FileManager.default.fileExists(
@@ -155,6 +177,36 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         ) == false
     )
     #expect(fixture.store.processIsAlive(pid: pid))
+}
+
+@Test func terminateDaemonStopsLegacyProcessByExpectedExecutablePath() throws {
+    let fixture = try NativeRuntimeFixture("legacy-pid-identity")
+    defer { fixture.cleanup() }
+
+    let sleepURL = URL(fileURLWithPath: "/bin/sleep")
+    let agent = Process()
+    agent.executableURL = sleepURL
+    agent.arguments = ["1000000"]
+    try agent.run()
+    defer {
+        if agent.isRunning {
+            kill(agent.processIdentifier, SIGKILL)
+            agent.waitUntilExit()
+        }
+    }
+
+    try fixture.store.savePID(agent.processIdentifier)
+    try FileManager.default.removeItem(at: fixture.store.daemonIdentityURL)
+
+    let pid = Int(agent.processIdentifier)
+    #expect(
+        fixture.store.terminateDaemon(
+            timeout: 0.2,
+            expectedExecutableURL: sleepURL
+        )
+    )
+    #expect(fixture.store.loadPID() == nil)
+    #expect(fixture.store.processIsAlive(pid: pid) == false)
 }
 
 @Test func nativeStartWritesConfigAndLaunchesMockHelper() throws {
@@ -386,6 +438,44 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadCommand() == nil)
     #expect(fixture.store.loadHealth() == nil)
     #expect(fixture.store.isLockScreenAgentReady() == false)
+}
+
+@Test func syncFallsBackWhenLockScreenAssetProviderIsUnavailable() throws {
+    let fixture = try NativeRuntimeFixture("sync-unavailable-lock-screen-asset")
+    defer { fixture.cleanup() }
+
+    let desktopURL = fixture.root.appendingPathComponent("desktop.mp4")
+    try Data([2, 4, 6]).write(to: desktopURL)
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: desktopURL.path,
+            playback_speed: 1.0,
+            show_on_lock_screen: true
+        )
+    )
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+
+    let installer = RecordingLockScreenSaverInstaller()
+    installer.lockScreenOnlyStatusOverride = LockScreenOnlyGenerationStatus(
+        installed: true,
+        sourceMatches: true,
+        assetValid: true,
+        providerAvailable: false,
+        providerRunning: false,
+        wallpaperStoreValid: true,
+        screenSaverSelected: true
+    )
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    try controller.syncLockScreenSaver()
+
+    #expect(installer.installedVideoURL == fixture.videoURL)
+    #expect(fixture.store.loadConfig().video_path == fixture.videoURL.path)
+    #expect(fixture.store.loadLockScreenOnlySource() == nil)
 }
 
 @Test func syncCleansLockOnlyAgentWhenSourceIsMissing() throws {

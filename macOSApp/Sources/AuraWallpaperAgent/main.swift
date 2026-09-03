@@ -807,7 +807,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
         guard let videoURL = effectiveLockScreenVideoURL() else {
             lastLockScreenOnlyStatus = LockScreenOnlyGenerationStatus()
-            terminateLockScreenOnlyAgent(reason: "lock-screen-source-missing")
+            terminateLockScreenOnlyAgent(
+                reason: "lock-screen-source-missing",
+                notifyController: true
+            )
             return
         }
 
@@ -1005,7 +1008,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func terminateLockScreenOnlyAgent(
         reason: String,
-        notifyController: Bool = false
+        notifyController: Bool = true
     ) {
         guard lockScreenOnlyMode, !isTerminating else { return }
         terminationHealthReason = reason
@@ -1016,7 +1019,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             DistributedNotificationCenter.default().post(
                 name: WallpaperRuntimeNotifications
                     .lockScreenProviderBecameUnavailable,
-                object: nil
+                object: nil,
+                userInfo: [
+                    WallpaperRuntimeNotifications.lockScreenFallbackReasonKey: reason
+                ]
             )
         }
         NSApp.terminate(nil)
