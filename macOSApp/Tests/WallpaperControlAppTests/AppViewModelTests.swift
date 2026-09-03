@@ -1358,6 +1358,25 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func autostartWarningIsShownWhenLaunchAgentIsNotLoaded() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.statusConfigAutostart = true
+    controller.statusAutostart = false
+    controller.statusAutostartPlistExists = true
+    controller.statusAutostartServiceLoaded = false
+    controller.statusAutostartServiceRunning = false
+    let viewModel = AppViewModel(controller: controller)
+
+    await viewModel.loadStatus()
+
+    #expect(viewModel.autostartEnabled == false)
+    #expect(
+        viewModel.alertMessage
+            == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not loaded."
+    )
+}
+
+@MainActor
 @Test func activeLockScreenOnlyWallpaperKeepsStopAvailable() async throws {
     let controller = MockNativeWallpaperController()
     controller.statusRunning = false
@@ -1536,6 +1555,11 @@ final class MockNativeWallpaperController: WallpaperControlling {
     var statusHealth: DaemonHealth?
     var statusShowOnLockScreen = false
     var statusLockScreenOnly = false
+    var statusConfigAutostart: Bool? = false
+    var statusAutostart: Bool? = false
+    var statusAutostartPlistExists: Bool?
+    var statusAutostartServiceLoaded: Bool?
+    var statusAutostartServiceRunning: Bool?
     var syncLockScreenCallCount = 0
     var statusAfterSyncVideoURL: URL?
     var setVideoStatusOverride: ControlStatus?
@@ -1674,14 +1698,17 @@ final class MockNativeWallpaperController: WallpaperControlling {
                 video_path: configuredVideoURL?.path ?? "",
                 playback_speed: 1.0,
                 volume: 0.0,
-                autostart: false,
+                autostart: statusConfigAutostart,
                 show_on_lock_screen: statusShowOnLockScreen
             ),
             pid: running ? 1234 : nil,
-            autostart: false,
+            autostart: statusAutostart,
             paused: paused ?? !running,
             health: health,
-            lock_screen_only: statusLockScreenOnly
+            lock_screen_only: statusLockScreenOnly,
+            autostart_plist_exists: statusAutostartPlistExists,
+            autostart_service_loaded: statusAutostartServiceLoaded,
+            autostart_service_running: statusAutostartServiceRunning
         )
     }
 }

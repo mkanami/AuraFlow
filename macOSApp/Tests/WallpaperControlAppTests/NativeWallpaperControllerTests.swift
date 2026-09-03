@@ -25,7 +25,7 @@ private struct NativeRuntimeFixture {
         helperURL = root.appendingPathComponent("mock-agent.sh")
         let script = """
         #!/bin/sh
-        trap '' TERM
+        trap 'exit 0' TERM INT
         while :; do
             sleep 0.1
         done
@@ -47,8 +47,15 @@ private struct NativeRuntimeFixture {
     }
 
     func cleanup() {
+        let pid = store.loadPID()
         store.disableLaunchAgent()
-        _ = store.terminateDaemon(timeout: 0.2)
+        _ = store.terminateDaemon(
+            timeout: 0.2,
+            expectedExecutableURL: helperURL
+        )
+        if let pid {
+            reapTestChild(pid)
+        }
         try? FileManager.default.removeItem(at: root)
     }
 }
@@ -60,6 +67,24 @@ private enum TestInstallerError: Error {
 
 private enum NativeTestAgentError: Error {
     case readinessHandshakeFailed
+}
+
+private func terminateAndReapTestAgent(_ agent: Process) {
+    if agent.isRunning {
+        kill(agent.processIdentifier, SIGKILL)
+    }
+    agent.waitUntilExit()
+}
+
+private func reapTestChild(_ pid: Int) {
+    var status: Int32 = 0
+    for _ in 0..<20 {
+        let result = waitpid(pid_t(pid), &status, WNOHANG)
+        if result == pid_t(pid) || result == -1 {
+            return
+        }
+        usleep(50_000)
+    }
 }
 
 private func launchReadyTestAgent() throws -> Process {
@@ -76,10 +101,7 @@ private func launchReadyTestAgent() throws -> Process {
 
     let readiness = try readinessPipe.fileHandleForReading.read(upToCount: 6)
     guard String(data: readiness ?? Data(), encoding: .utf8) == "ready\n" else {
-        if agent.isRunning {
-            kill(agent.processIdentifier, SIGKILL)
-            agent.waitUntilExit()
-        }
+        terminateAndReapTestAgent(agent)
         throw NativeTestAgentError.readinessHandshakeFailed
     }
     return agent
@@ -216,12 +238,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let agent = Process()
     agent.executableURL = fixture.helperURL
     try agent.run()
-    defer {
-        if agent.isRunning {
-            kill(agent.processIdentifier, SIGKILL)
-            agent.waitUntilExit()
-        }
-    }
+    defer { terminateAndReapTestAgent(agent) }
 
     try fixture.store.savePID(agent.processIdentifier)
     #expect(
@@ -250,6 +267,27 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         ) == false
     )
     #expect(fixture.store.processIsAlive(pid: pid))
+}
+
+@Test func runtimeOwnershipRequiresMatchingProcessIdentity() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlowRuntimeOwnership-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let store = WallpaperRuntimeStore(
+        appSupportURL: root.appendingPathComponent("Support"),
+        launchAgentURL: root.appendingPathComponent("LaunchAgents/agent.plist"),
+        launchctlRunner: { _ in LaunchctlResult(succeeded: true) }
+    )
+    try store.ensureDirectories()
+    try store.savePID()
+    #expect(store.ownsRuntimeProcess())
+
+    try Data("{\"executablePath\":\"/definitely/not/auraflow\",\"startTimeMicros\":1}".utf8)
+        .write(to: store.daemonIdentityURL, options: .atomic)
+    #expect(store.ownsRuntimeProcess() == false)
+    store.removePID()
 }
 
 @Test func terminateDaemonStopsLegacyProcessByExpectedExecutablePath() throws {
@@ -490,6 +528,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
 
     let agent = try launchReadyTestAgent()
+    defer { terminateAndReapTestAgent(agent) }
     try fixture.store.savePID(agent.processIdentifier)
     fixture.store.markLockScreenOnlyAgent(true)
     try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .reload))
@@ -572,6 +611,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     let agent = try launchReadyTestAgent()
+    defer { terminateAndReapTestAgent(agent) }
     try fixture.store.savePID(agent.processIdentifier)
     fixture.store.markLockScreenOnlyAgent(true)
     try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .reload))
@@ -609,6 +649,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
 
     let agent = try launchReadyTestAgent()
+    defer { terminateAndReapTestAgent(agent) }
     try fixture.store.savePID(agent.processIdentifier)
     fixture.store.markLockScreenOnlyAgent(true)
     try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .reload))
@@ -681,6 +722,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let desktopAgent = Process()
     desktopAgent.executableURL = fixture.helperURL
     try desktopAgent.run()
+    defer { terminateAndReapTestAgent(desktopAgent) }
     try fixture.store.savePID(desktopAgent.processIdentifier)
     let desktopAgentPID = fixture.store.loadPID()
     #expect(desktopAgentPID != nil)
@@ -756,6 +798,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let agent = Process()
     agent.executableURL = fixture.helperURL
     try agent.run()
+    defer { terminateAndReapTestAgent(agent) }
     try fixture.store.savePID(agent.processIdentifier)
     fixture.store.markLockScreenOnlyAgent(true)
 
@@ -786,6 +829,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let agent = Process()
     agent.executableURL = fixture.helperURL
     try agent.run()
+    defer { terminateAndReapTestAgent(agent) }
     try fixture.store.savePID(agent.processIdentifier)
     fixture.store.markLockScreenOnlyAgent(true)
 
@@ -922,6 +966,99 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(FileManager.default.fileExists(atPath: store.launchAgentURL.path) == false)
 }
 
+@Test func launchAgentBootstrapFailureRestoresAndReloadsPreviousService() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlowLaunchAgentRollback-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    var bootstrapCount = 0
+    let store = WallpaperRuntimeStore(
+        appSupportURL: root.appendingPathComponent("Support"),
+        launchAgentURL: root.appendingPathComponent("LaunchAgents/agent.plist"),
+        launchctlRunner: { arguments in
+            if arguments.first == "bootstrap" {
+                bootstrapCount += 1
+                return LaunchctlResult(
+                    succeeded: bootstrapCount > 1,
+                    output: bootstrapCount > 1 ? "restored" : "new bootstrap failed",
+                    terminationStatus: bootstrapCount > 1 ? 0 : 1
+                )
+            }
+            return LaunchctlResult(succeeded: true)
+        }
+    )
+    try store.ensureDirectories()
+    let previousPlist = Data("previous launch agent".utf8)
+    try previousPlist.write(to: store.launchAgentURL, options: .atomic)
+
+    #expect(throws: WallpaperRuntimeError.self) {
+        try store.enableLaunchAgent(helperPath: "/tmp/AuraWallpaperAgent")
+    }
+    #expect(bootstrapCount == 2)
+    #expect(try Data(contentsOf: store.launchAgentURL) == previousPlist)
+}
+
+@Test func launchAgentRollbackFailureIsIncludedInTheReportedError() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlowLaunchAgentRollbackFailure-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let store = WallpaperRuntimeStore(
+        appSupportURL: root.appendingPathComponent("Support"),
+        launchAgentURL: root.appendingPathComponent("LaunchAgents/agent.plist"),
+        launchctlRunner: { arguments in
+            if arguments.first == "bootstrap" {
+                return LaunchctlResult(
+                    succeeded: false,
+                    output: "bootstrap failed",
+                    terminationStatus: 1
+                )
+            }
+            return LaunchctlResult(succeeded: true)
+        }
+    )
+    try store.ensureDirectories()
+    try Data("previous launch agent".utf8)
+        .write(to: store.launchAgentURL, options: .atomic)
+
+    do {
+        try store.enableLaunchAgent(helperPath: "/tmp/AuraWallpaperAgent")
+        Issue.record("Expected LaunchAgent bootstrap to fail")
+    } catch {
+        #expect(error.localizedDescription.contains("Could not start the AuraFlow LaunchAgent"))
+        #expect(error.localizedDescription.contains("rollback failed"))
+        #expect(error.localizedDescription.contains("restore LaunchAgent"))
+    }
+}
+
+@Test func statusDistinguishesLaunchAgentFileAndServiceState() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlowLaunchAgentStatus-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let store = WallpaperRuntimeStore(
+        appSupportURL: root.appendingPathComponent("Support"),
+        launchAgentURL: root.appendingPathComponent("LaunchAgents/agent.plist"),
+        launchctlRunner: { _ in
+            LaunchctlResult(
+                succeeded: true,
+                output: "state = waiting"
+            )
+        }
+    )
+    try store.ensureDirectories()
+    try Data("plist".utf8).write(to: store.launchAgentURL, options: .atomic)
+
+    let status = store.status()
+    #expect(status.autostart == true)
+    #expect(status.autostart_plist_exists == true)
+    #expect(status.autostart_service_loaded == true)
+    #expect(status.autostart_service_running == false)
+}
+
 @Test func autostartValidationDoesNotPersistAnInvalidConfiguration() throws {
     let fixture = try NativeRuntimeFixture("autostart-invalid")
     defer { fixture.cleanup() }
@@ -953,6 +1090,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
     try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
     let agent = try launchReadyTestAgent()
+    defer { terminateAndReapTestAgent(agent) }
     try fixture.store.savePID(agent.processIdentifier)
     fixture.store.markLockScreenOnlyAgent(true)
 
@@ -983,7 +1121,19 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         )
     )
     try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+    try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .pause))
+    try fixture.store.saveHealth(
+        DaemonHealth(
+            available: true,
+            fresh: true,
+            suspicious: false,
+            reason: "before-start",
+            paused: true
+        )
+    )
+    fixture.store.markPaused(true)
     let agent = try launchReadyTestAgent()
+    defer { terminateAndReapTestAgent(agent) }
     try fixture.store.savePID(agent.processIdentifier)
     fixture.store.markLockScreenOnlyAgent(true)
 
@@ -1001,7 +1151,44 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.isLockScreenOnlyAgent())
     #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
     #expect(installer.installedLockScreenOnlyVideoURL == fixture.videoURL)
+    #expect(fixture.store.isPaused())
+    #expect(fixture.store.loadCommand()?.action == .pause)
     #expect(fixture.store.processIsAlive(pid: fixture.store.loadPID()))
+}
+
+@Test func failedStartReportsAnIncompleteRollback() throws {
+    let fixture = try NativeRuntimeFixture("start-rollback-failure")
+    defer { fixture.cleanup() }
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: fixture.videoURL.path,
+            playback_speed: 1.0,
+            show_on_lock_screen: true
+        )
+    )
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+    let agent = try launchReadyTestAgent()
+    defer { terminateAndReapTestAgent(agent) }
+    try fixture.store.savePID(agent.processIdentifier)
+    fixture.store.markLockScreenOnlyAgent(true)
+
+    let installer = RecordingLockScreenSaverInstaller()
+    installer.installError = .installFailed
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    do {
+        _ = try controller.start(videoURL: fixture.videoURL, speed: 1.0)
+        Issue.record("Expected Start to fail")
+    } catch {
+        #expect(error.localizedDescription.contains("Start failed"))
+        #expect(error.localizedDescription.contains("rollback failed"))
+        #expect(fixture.store.isLockScreenOnlyAgent())
+        #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
+    }
 }
 
 @Test func nativeAutostartPlistIncludesNativeBridgePathWhenConfigured() throws {

@@ -395,7 +395,7 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     private func migrateExistingLaunchAgentIfNeeded() {
-        guard store.launchAgentEnabled(),
+        guard store.launchAgentPlistExists(),
               store.loadConfig().autostart == true
         else {
             return
@@ -577,6 +577,11 @@ final class NativeWallpaperController: WallpaperControlling {
             arguments.append(nativeBridgeURL.path)
         }
         task.arguments = arguments
+        // The agent is a background runtime process. Do not let an orphaned
+        // child keep the app's stdout/stderr pipes open during shutdown or
+        // test teardown; runtime diagnostics are written through OSLog.
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
         try task.run()
         try store.savePID(task.processIdentifier)
         store.markLockScreenOnlyAgent(lockScreenOnly)
@@ -655,6 +660,7 @@ final class NativeWallpaperController: WallpaperControlling {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         let previousConfig = store.loadConfig()
+        let previousPaused = store.isPaused()
         let previousLockScreenOnlySource = store.loadLockScreenOnlySource()
         let previousLockScreenOnlyAgent = store.isLockScreenOnlyAgent()
         let previousPID = store.loadPID()
@@ -742,16 +748,24 @@ final class NativeWallpaperController: WallpaperControlling {
             try send(.reload, config: nextConfig)
             return store.status()
         } catch {
-            rollbackStart(
+            let rollbackFailures = rollbackStart(
                 previousConfig: previousConfig,
                 previousLockScreenOnlySource: previousLockScreenOnlySource,
                 previousLockScreenOnlyAgent: previousLockScreenOnlyAgent,
                 previousAgentWasAlive: previousAgentWasAlive,
                 previousAgentWasStopped: previousAgentWasStopped,
+                previousPaused: previousPaused,
                 previousPID: previousPID,
                 previousCommand: previousCommand,
                 previousHealth: previousHealth
             )
+            if !rollbackFailures.isEmpty {
+                throw NativeWallpaperControllerError.unavailable(
+                    "Start failed: \(error.localizedDescription); "
+                        + "rollback failed: "
+                        + rollbackFailures.joined(separator: "; ")
+                )
+            }
             throw error
         }
     }
@@ -1277,10 +1291,11 @@ final class NativeWallpaperController: WallpaperControlling {
         previousLockScreenOnlyAgent: Bool,
         previousAgentWasAlive: Bool,
         previousAgentWasStopped: Bool,
+        previousPaused: Bool,
         previousPID: Int?,
         previousCommand: WallpaperRuntimeCommand?,
         previousHealth: DaemonHealth?
-    ) {
+    ) -> [String] {
         var rollbackFailures: [String] = []
 
         do {
@@ -1288,6 +1303,7 @@ final class NativeWallpaperController: WallpaperControlling {
         } catch {
             rollbackFailures.append("config: \(error.localizedDescription)")
         }
+        store.markPaused(previousPaused)
         store.restoreLockScreenOnlySource(previousLockScreenOnlySource)
 
         // An identity mismatch means the persisted PID no longer belongs to
@@ -1303,7 +1319,7 @@ final class NativeWallpaperController: WallpaperControlling {
                 previousHealth: previousHealth
             )
             reportStartRollbackFailures(rollbackFailures)
-            return
+            return rollbackFailures
         }
 
         // If Start launched a replacement desktop agent before failing, stop
@@ -1333,7 +1349,7 @@ final class NativeWallpaperController: WallpaperControlling {
                     previousHealth: previousHealth
                 )
                 reportStartRollbackFailures(rollbackFailures)
-                return
+                return rollbackFailures
             }
 
             if previousAgentWasAlive {
@@ -1352,11 +1368,22 @@ final class NativeWallpaperController: WallpaperControlling {
                     store.markLockScreenOnlyAgent(false)
                     try launchAgentIfNeeded(lockScreenOnly: true)
                     try send(.reload, config: previousConfig)
+                    if previousPaused {
+                        try send(.pause, config: previousConfig)
+                    } else {
+                        store.markPaused(false)
+                    }
                 } catch {
                     rollbackFailures.append(
                         "previous Lock Screen route: \(error.localizedDescription)"
                     )
-                    store.markLockScreenOnlyAgent(false)
+                    // Preserve the configured route for the next recovery
+                    // attempt when reinstalling the previous route fails.
+                    store.markLockScreenOnlyAgent(true)
+                    restoreStartRuntimeMetadata(
+                        previousCommand: previousCommand,
+                        previousHealth: previousHealth
+                    )
                 }
             } else {
                 // Preserve the pre-existing configured/stale state. A failed
@@ -1378,6 +1405,11 @@ final class NativeWallpaperController: WallpaperControlling {
                     }
                     try launchAgentIfNeeded()
                     try send(.reload, config: previousConfig)
+                    if previousPaused {
+                        try send(.pause, config: previousConfig)
+                    } else {
+                        store.markPaused(false)
+                    }
                 } catch {
                     rollbackFailures.append(
                         "previous wallpaper route: \(error.localizedDescription)"
@@ -1393,6 +1425,7 @@ final class NativeWallpaperController: WallpaperControlling {
             )
         }
         reportStartRollbackFailures(rollbackFailures)
+        return rollbackFailures
     }
 
     private func restoreStartRuntimeMetadata(
@@ -1865,6 +1898,9 @@ final class AppViewModel: ObservableObject {
                     try controller.status()
                 }
                 apply(status: synchronizedStatus)
+                if autostartWarning(for: synchronizedStatus) == nil {
+                    alertMessage = nil
+                }
             } catch {
                 recordBridgeFailure(error, context: "status-after-lock-screen-sync")
                 return
@@ -1878,7 +1914,6 @@ final class AppViewModel: ObservableObject {
                     )
                 }
             }
-            alertMessage = nil
         } catch {
             recordBridgeFailure(error, context: "status")
         }
@@ -3316,6 +3351,13 @@ final class AppViewModel: ObservableObject {
         )
         Self.setIfChanged(&playbackSpeed, to: status.config.playback_speed)
         Self.setIfChanged(&autostartEnabled, to: status.autostart ?? status.config.autostart ?? false)
+        if let warning = autostartWarning(for: status) {
+            if backgroundUpdate {
+                statusMessage = warning
+            } else {
+                alertMessage = warning
+            }
+        }
         Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
         Self.setIfChanged(&pauseOnFullscreenEnabled, to: status.config.pause_on_fullscreen ?? true)
         Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? false)
@@ -3371,6 +3413,24 @@ final class AppViewModel: ObservableObject {
                 await self?.recoverPlaybackIfUnexpectedlyStopped()
             }
         }
+    }
+
+    private func autostartWarning(for status: ControlStatus) -> String? {
+        guard status.config.autostart == true,
+              status.autostart != true,
+              status.autostart_plist_exists != nil
+                || status.autostart_service_loaded != nil
+        else {
+            return nil
+        }
+
+        if status.autostart_plist_exists == false {
+            return "Launch at Login is enabled, but its LaunchAgent plist is missing."
+        }
+        if status.autostart_service_loaded == false {
+            return "Launch at Login is enabled, but the AuraFlow LaunchAgent is not loaded."
+        }
+        return "Launch at Login is enabled, but the AuraFlow LaunchAgent is unavailable."
     }
 
     private func recoverPlaybackIfUnexpectedlyStopped() async {

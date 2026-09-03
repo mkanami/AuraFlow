@@ -105,21 +105,31 @@ jobs:
           codesign --force --sign - "$bundle_path"
           codesign --verify --deep --strict "$bundle_path"
 
-      - name: Launch native bridge on macOS 26 runners
+
+  native-bridge-smoke:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          selected_app="$(ls -td /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+          if [[ -n "$selected_app" && -d "$selected_app/Contents/Developer" ]]; then
+            echo "DEVELOPER_DIR=$selected_app/Contents/Developer" >> "${GITHUB_ENV}"
+          fi
+          xcodebuild -version
+
+      - name: Build native bridge
+        working-directory: macOSApp
+        run: swift build -c release --product AuraWallpaperNativeBridge
+
+      - name: Run native bridge JSON protocol smoke test
         working-directory: macOSApp
         shell: bash
         run: |
-          if [[ "$(sw_vers -productVersion)" == 26.* && -d /System/Library/PrivateFrameworks/Wallpaper.framework ]]; then
-            bridge="$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge"
-            "$bridge" </dev/null >"$RUNNER_TEMP/auraflow-native-bridge.log" 2>&1 &
-            bridge_pid=$!
-            sleep 2
-            if ! kill -0 "$bridge_pid" 2>/dev/null; then
-              wait "$bridge_pid"
-            else
-              kill "$bridge_pid" 2>/dev/null || true
-              wait "$bridge_pid" || true
-            fi
-          else
-            echo "Skipping native bridge launch: this runner is not macOS 26 with Wallpaper.framework."
-          fi
+          bridge_path="$(find .build -type f -path '*/release/AuraWallpaperNativeBridge' -perm -111 -print -quit)"
+          test -n "$bridge_path"
+          test -d /System/Library/PrivateFrameworks/Wallpaper.framework
+          python3 ../scripts/native_bridge_smoke.py "$bridge_path"

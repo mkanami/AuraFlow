@@ -136,6 +136,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             "AuraFlow wallpaper agent is active"
         )
         NSApp.setActivationPolicy(.accessory)
+        // Claim the runtime before any startup cleanup. This lets the same
+        // ownership check protect the legacy fallback path below when an old
+        // helper is terminating during LaunchAgent migration.
+        try? store.savePID()
         if lockScreenOnlyMode,
            !lockScreenPlatform.capabilities.supportsLockScreenOnly {
             // The legacy screen saver is managed by the main app. An old
@@ -148,7 +152,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
         publishRearmGuardState()
-        try? store.savePID()
         store.markPaused(false)
         installSignalHandlers()
         if !lockScreenOnlyMode {
@@ -190,11 +193,11 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         // Only the process that still owns the persisted PID may clear shared
         // runtime state; an old termination callback must never erase the
         // replacement agent's PID or lock-only marker.
-        let ownsRuntimePID = store.loadPID() == Int(getpid())
+        let ownsRuntimePID = store.ownsRuntimeProcess()
         isTerminating = true
         let preserveCurrentDesktop =
             store.loadCommand()?.action == .terminatePreservingDesktop
-        if lockScreenOnlyMode, !preserveCurrentDesktop {
+        if ownsRuntimePID, lockScreenOnlyMode, !preserveCurrentDesktop {
             restoreDesktopStoreAfterSession()
         }
         if lockScreenOnlyMode {
@@ -202,7 +205,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
         transitionGeneration += 1
         lockSessionGeneration &+= 1
-        publishRearmGuardState()
+        if ownsRuntimePID {
+            publishRearmGuardState()
+        }
         pendingRearmToken = nil
         if ownsRuntimePID {
             writeHealth(reason: terminationHealthReason ?? "terminating")
@@ -535,7 +540,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func restoreDesktopStoreAfterSession() {
-        guard config.show_on_lock_screen == true,
+        guard ownsRuntimeState(),
+              config.show_on_lock_screen == true,
               lockScreenPlatform.requiresLockScreenSessionPromotion
         else {
             return
@@ -800,7 +806,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleNativeLockScreenBridgeFailure(reason: String) {
-        guard !isTerminating else { return }
+        guard ownsRuntimeState(), !isTerminating else { return }
         let healthReason = "native-lock-bridge-unavailable: " + reason
         writeHealth(reason: healthReason)
         if lockScreenOnlyMode {
@@ -1060,7 +1066,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         reason: String,
         notifyController: Bool = true
     ) {
-        guard lockScreenOnlyMode, !isTerminating else { return }
+        guard lockScreenOnlyMode,
+              ownsRuntimeState(),
+              !isTerminating
+        else { return }
         terminationHealthReason = reason
         isTerminating = true
         store.markLockScreenAgentReady(false)
@@ -1076,6 +1085,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             )
         }
         NSApp.terminate(nil)
+    }
+
+    private func ownsRuntimeState() -> Bool {
+        store.ownsRuntimeProcess()
     }
 
     private func setCurrentLockScreenLifecycleOperation(

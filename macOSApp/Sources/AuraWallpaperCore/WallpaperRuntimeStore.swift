@@ -55,6 +55,26 @@ public struct LaunchctlResult: Equatable, Sendable {
     }
 }
 
+public struct LaunchAgentStatus: Equatable, Sendable {
+    public let plistExists: Bool
+    public let serviceLoaded: Bool
+    public let serviceRunning: Bool
+
+    public init(
+        plistExists: Bool,
+        serviceLoaded: Bool,
+        serviceRunning: Bool
+    ) {
+        self.plistExists = plistExists
+        self.serviceLoaded = serviceLoaded
+        self.serviceRunning = serviceRunning
+    }
+
+    public var enabled: Bool {
+        plistExists && serviceLoaded
+    }
+}
+
 public typealias LaunchctlRunner = ([String]) -> LaunchctlResult
 
 public enum WallpaperRuntimeCommandAction: String, Codable, Equatable {
@@ -306,7 +326,7 @@ public final class WallpaperRuntimeStore {
 
     public func savePID(_ pid: Int32 = getpid()) throws {
         try ensureDirectories()
-        if let identity = processIdentity(for: Int(pid)) {
+        if let identity = processIdentityWithRetry(for: Int(pid)) {
             try writeJSON(identity, to: daemonIdentityURL)
         } else {
             try? FileManager.default.removeItem(at: daemonIdentityURL)
@@ -317,6 +337,19 @@ public final class WallpaperRuntimeStore {
     public func removePID() {
         try? FileManager.default.removeItem(at: pidURL)
         try? FileManager.default.removeItem(at: daemonIdentityURL)
+    }
+
+    public func ownsRuntimeProcess(_ pid: Int32 = getpid()) -> Bool {
+        guard loadPID() == Int(pid),
+              let expected = try? readJSON(
+                  DaemonProcessIdentity.self,
+                  from: daemonIdentityURL
+              ),
+              let actual = processIdentity(for: Int(pid))
+        else {
+            return false
+        }
+        return expected == actual
     }
 
     public func markPaused(_ paused: Bool) {
@@ -388,17 +421,21 @@ public final class WallpaperRuntimeStore {
         let paused = isPaused()
         let lockScreenOnly = isLockScreenOnlyAgent()
         let health = healthForStatus(alive: alive, paused: paused)
+        let launchAgent = launchAgentStatus()
         return ControlStatus(
             running: alive && !paused && !lockScreenOnly,
             config: config,
             pid: alive && !lockScreenOnly ? pid : nil,
-            autostart: launchAgentEnabled(),
+            autostart: launchAgent.enabled,
             paused: paused,
             wallpaper_restored: wallpaperRestored,
             wallpaper_restore_status: wallpaperRestoreStatus,
             wallpaper: wallpaper,
             health: health,
-            lock_screen_only: lockScreenOnly
+            lock_screen_only: lockScreenOnly,
+            autostart_plist_exists: launchAgent.plistExists,
+            autostart_service_loaded: launchAgent.serviceLoaded,
+            autostart_service_running: launchAgent.serviceRunning
         )
     }
 
@@ -465,8 +502,42 @@ public final class WallpaperRuntimeStore {
         )
     }
 
-    public func launchAgentEnabled() -> Bool {
+    public func launchAgentPlistExists() -> Bool {
         FileManager.default.fileExists(atPath: launchAgentURL.path)
+    }
+
+    public func launchAgentStatus() -> LaunchAgentStatus {
+        let plistExists = launchAgentPlistExists()
+        let service = "gui/\(getuid())/com.andrijvergeles.auraflow"
+        let result = launchctlRunner(["print", service])
+        let serviceLoaded = result.succeeded
+        let serviceRunning = serviceLoaded
+            && result.output
+                .split(whereSeparator: \.isNewline)
+                .contains { line in
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed == "state = running" {
+                        return true
+                    }
+                    guard trimmed.hasPrefix("pid = "),
+                          let pid = Int(
+                              trimmed.dropFirst("pid = ".count)
+                                  .trimmingCharacters(in: .whitespaces)
+                          )
+                    else {
+                        return false
+                    }
+                    return pid > 0
+                }
+        return LaunchAgentStatus(
+            plistExists: plistExists,
+            serviceLoaded: serviceLoaded,
+            serviceRunning: serviceRunning
+        )
+    }
+
+    public func launchAgentEnabled() -> Bool {
+        launchAgentStatus().enabled
     }
 
     public func enableLaunchAgent(
@@ -530,13 +601,44 @@ public final class WallpaperRuntimeStore {
             launchAgentURL.path
         ])
         guard bootstrap.succeeded else {
+            var rollbackFailures: [String] = []
             if let previousPlistData {
-                try? previousPlistData.write(to: launchAgentURL, options: .atomic)
+                do {
+                    try previousPlistData.write(to: launchAgentURL, options: .atomic)
+                } catch {
+                    rollbackFailures.append(
+                        "restore plist: \(error.localizedDescription)"
+                    )
+                }
+                if rollbackFailures.isEmpty {
+                    let restoreBootstrap = launchctlRunner([
+                        "bootstrap",
+                        "gui/\(getuid())",
+                        launchAgentURL.path
+                    ])
+                    if !restoreBootstrap.succeeded {
+                        rollbackFailures.append(
+                            "restore LaunchAgent: \(restoreBootstrap.output)"
+                        )
+                    }
+                }
             } else {
-                try? FileManager.default.removeItem(at: launchAgentURL)
+                do {
+                    try FileManager.default.removeItem(at: launchAgentURL)
+                } catch CocoaError.fileNoSuchFile {
+                    // The failed bootstrap did not leave a plist behind.
+                } catch {
+                    rollbackFailures.append(
+                        "remove failed plist: \(error.localizedDescription)"
+                    )
+                }
             }
+            let rollbackDescription = rollbackFailures.isEmpty
+                ? ""
+                : "; rollback failed: " + rollbackFailures.joined(separator: "; ")
             throw WallpaperRuntimeError.unavailable(
                 "Could not start the AuraFlow LaunchAgent: \(bootstrap.output)"
+                    + rollbackDescription
             )
         }
     }
@@ -709,6 +811,18 @@ public final class WallpaperRuntimeStore {
             executablePath: String(cString: path),
             startTimeMicros: startTimeMicros
         )
+    }
+
+    private func processIdentityWithRetry(for pid: Int) -> DaemonProcessIdentity? {
+        for attempt in 0..<10 {
+            if let identity = processIdentity(for: pid) {
+                return identity
+            }
+            if attempt < 9 {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+        return nil
     }
 
     public func captureStillFrame(from videoURL: URL, time: CMTime = CMTime(seconds: 0.2, preferredTimescale: 600)) throws -> URL {
