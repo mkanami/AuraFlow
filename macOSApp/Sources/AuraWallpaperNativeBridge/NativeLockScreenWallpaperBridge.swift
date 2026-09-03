@@ -20,14 +20,14 @@ final class NativeLockScreenWallpaperBridge {
     private var preparing = false
     private var showing = false
     private var paused = false
-    private var pendingCompletions: [(Bool) -> Void] = []
+    private var pendingCompletions: [(Bool, String?) -> Void] = []
     private var presentationRequestID: UInt64 = 0
 
     var isReady: Bool {
         displayAssertion != nil && window != nil
     }
 
-    func prepare(completion: @escaping (Bool) -> Void) {
+    func prepare(completion: @escaping (Bool, String?) -> Void) {
         // Stop persists its marker before the runtime command reaches this
         // process. Pick it up before creating a new assertion so a late
         // preparation cannot start the Lock Screen video again.
@@ -36,7 +36,7 @@ final class NativeLockScreenWallpaperBridge {
         }
 
         if isReady {
-            completion(true)
+            completion(true, nil)
             return
         }
         pendingCompletions.append(completion)
@@ -62,7 +62,10 @@ final class NativeLockScreenWallpaperBridge {
                 Self.logger.error(
                     "Native Lock Screen preparation failed: \(error.localizedDescription, privacy: .public)"
                 )
-                self.finishPreparation(succeeded: false)
+                self.finishPreparation(
+                    succeeded: false,
+                    errorDescription: error.localizedDescription
+                )
             }
         }
     }
@@ -80,7 +83,7 @@ final class NativeLockScreenWallpaperBridge {
         )
     }
 
-    func showForLockTransition(completion: ((Bool) -> Void)? = nil) {
+    func showForLockTransition(completion: ((Bool, String?) -> Void)? = nil) {
         // Close the small Stop -> Lock race: the marker is committed before
         // the .pause command is delivered to the agent.
         if WallpaperRuntimeStore().isPaused() {
@@ -88,7 +91,7 @@ final class NativeLockScreenWallpaperBridge {
         }
 
         if showing {
-            completion?(isReady)
+            completion?(isReady, nil)
             return
         }
         showing = true
@@ -97,7 +100,7 @@ final class NativeLockScreenWallpaperBridge {
         startSystemScreenSaverNow()
         guard let displayAssertion else {
             showing = false
-            completion?(false)
+            completion?(false, "Native Lock Screen display assertion is not ready.")
             return
         }
         // Keep the prewarmed layer hidden. Making it visible here creates a
@@ -120,13 +123,13 @@ final class NativeLockScreenWallpaperBridge {
                 if self.paused {
                     self.pauseLayer(displayAssertion.layer)
                 }
-                completion?(true)
+                completion?(true, nil)
             } catch {
                 Self.logger.error(
                     "Native locked presentation failed: \(error.localizedDescription, privacy: .public)"
                 )
                 self.showing = false
-                completion?(false)
+                completion?(false, error.localizedDescription)
             }
         }
     }
@@ -270,12 +273,15 @@ final class NativeLockScreenWallpaperBridge {
         return window
     }
 
-    private func finishPreparation(succeeded: Bool) {
+    private func finishPreparation(
+        succeeded: Bool,
+        errorDescription: String? = nil
+    ) {
         preparing = false
         let completions = pendingCompletions
         pendingCompletions.removeAll()
         for completion in completions {
-            completion(succeeded)
+            completion(succeeded, errorDescription)
         }
     }
 }

@@ -60,12 +60,20 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
     private func handle(_ request: NativeLockScreenBridgeRequest) {
         switch request.action {
         case .prepare:
-            bridge.prepare { [weak self] succeeded in
-                self?.respond(to: request, succeeded: succeeded)
+            bridge.prepare { [weak self] succeeded, errorDescription in
+                self?.respond(
+                    to: request,
+                    succeeded: succeeded,
+                    errorDescription: errorDescription
+                )
             }
         case .show:
-            bridge.showForLockTransition { [weak self] succeeded in
-                self?.respond(to: request, succeeded: succeeded)
+            bridge.showForLockTransition { [weak self] succeeded, errorDescription in
+                self?.respond(
+                    to: request,
+                    succeeded: succeeded,
+                    errorDescription: errorDescription
+                )
             }
         case .hide:
             bridge.hideAfterUnlock()

@@ -171,9 +171,9 @@ public enum WallpaperDesktopSupport {
     }
 
     @discardableResult
-    public static func restoreFromBackupFiles(
+    public static func restoreFromBackupFilesResult(
         appSupportPath: String
-    ) -> Bool {
+    ) -> WallpaperRestoreStatus {
         // The modern lock-screen installer restores the exact binary
         // Index.plist, including distinct wallpapers per Space and display.
         // If that restoration is already clean, do not flatten it through the
@@ -182,10 +182,14 @@ public enum WallpaperDesktopSupport {
            wallpaperStoreHasNoManagedDesktopReferences(),
            !modernLockScreenRecoveryStateExists() {
             removeWallpaperBackupFiles(appSupportPath: appSupportPath)
-            return true
+            return .notNeeded
         }
 
-        guard let wallpapers = loadWallpaperBackup(appSupportPath: appSupportPath) else { return false }
+        guard let wallpapers = loadWallpaperBackup(appSupportPath: appSupportPath) else {
+            return hasWallpaperBackupFiles(appSupportPath: appSupportPath)
+                ? .failed
+                : .notNeeded
+        }
         let fallbackPath = wallpapers.values.first
         let workspace = NSWorkspace.shared
         var appliedAny = false
@@ -206,13 +210,13 @@ public enum WallpaperDesktopSupport {
         }
 
         guard appliedAny, let path = appliedPathForAllDesktops else {
-            return false
+            return .failed
         }
         guard applyToAllDesktops(imagePath: path) else {
-            return false
+            return .failed
         }
         guard repairWallpaperStoreForRestore(imagePath: path) else {
-            return false
+            return .failed
         }
 
         // On recent macOS versions WallpaperAgent may report the restored URL
@@ -231,7 +235,7 @@ public enum WallpaperDesktopSupport {
         // overwrite `Files` again, which makes WallpaperImageExtension render
         // black on its next launch.
         guard repairWallpaperStoreForRestore(imagePath: path) else {
-            return false
+            return .failed
         }
         refreshDesktopPresentation()
         Thread.sleep(forTimeInterval: 0.2)
@@ -239,10 +243,27 @@ public enum WallpaperDesktopSupport {
               wallpaperStoreHasNoManagedDesktopReferences(),
               wallpaperStoreImageDescriptorsAreValid()
         else {
-            return false
+            return .failed
         }
         removeWallpaperBackupFiles(appSupportPath: appSupportPath)
-        return true
+        return .restored
+    }
+
+    @discardableResult
+    public static func restoreFromBackupFiles(
+        appSupportPath: String
+    ) -> Bool {
+        restoreFromBackupFilesResult(appSupportPath: appSupportPath) != .failed
+    }
+
+    public static func hasWallpaperBackupFiles(appSupportPath: String) -> Bool {
+        backupNames.contains {
+            FileManager.default.fileExists(
+                atPath: URL(fileURLWithPath: appSupportPath)
+                    .appendingPathComponent($0)
+                    .path
+            )
+        }
     }
 
     /// Deletes legacy Desktop snapshots without applying them. Lock-screen-

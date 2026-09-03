@@ -103,6 +103,9 @@ public final class WallpaperRuntimeStore {
     public var daemonIdentityURL: URL {
         appSupportURL.appendingPathComponent("wallpaper_daemon_identity.json")
     }
+    public var wallpaperRestorePendingURL: URL {
+        appSupportURL.appendingPathComponent("wallpaper_restore_pending")
+    }
     public var lastFrameURL: URL { appSupportURL.appendingPathComponent("last_frame.png") }
     public var lastFrameSourceURL: URL {
         appSupportURL.appendingPathComponent("last_frame_source.json")
@@ -132,19 +135,13 @@ public final class WallpaperRuntimeStore {
         else {
             return .defaultConfig
         }
-        let hadEmptyVideoPath = config.video_path
+        if config.video_path
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty
-        if hadEmptyVideoPath,
+            .isEmpty,
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let legacyLockScreenPath = object["lock_screen_path"] as? String,
            !legacyLockScreenPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             config.video_path = legacyLockScreenPath
-        }
-        if hadEmptyVideoPath, config.show_on_lock_screen == false {
-            // Older Remove wrote false together with an empty video path.
-            // Keep the Lock Screen preference enabled for the next wallpaper.
-            config.show_on_lock_screen = true
         }
         return normalized(config)
     }
@@ -218,6 +215,23 @@ public final class WallpaperRuntimeStore {
 
     public func isLockScreenAgentReady() -> Bool {
         FileManager.default.fileExists(atPath: lockScreenAgentReadyURL.path)
+    }
+
+    public func markWallpaperRestorePending(_ pending: Bool) {
+        if pending {
+            try? ensureDirectories()
+            FileManager.default.createFile(
+                atPath: wallpaperRestorePendingURL.path,
+                contents: Data(),
+                attributes: nil
+            )
+        } else {
+            try? FileManager.default.removeItem(at: wallpaperRestorePendingURL)
+        }
+    }
+
+    public func isWallpaperRestorePending() -> Bool {
+        FileManager.default.fileExists(atPath: wallpaperRestorePendingURL.path)
     }
 
     public func effectiveLockScreenSourceURL(for config: ControlConfig) -> URL? {
@@ -304,7 +318,16 @@ public final class WallpaperRuntimeStore {
             Int32(MemoryLayout<proc_bsdinfo>.size)
         )
         guard infoSize == Int32(MemoryLayout<proc_bsdinfo>.size) else {
-            return true
+            // `kill(pid, 0)` can continue to succeed for a zombie until its
+            // parent reaps it. `proc_pidpath` returns no executable for that
+            // state, so use it as the conservative liveness check when the
+            // BSD-info query itself is no longer available.
+            var executablePath = [Int8](repeating: 0, count: 4_096)
+            return proc_pidpath(
+                pid_t(pid),
+                &executablePath,
+                UInt32(executablePath.count)
+            ) > 0
         }
         return processInfo.pbi_status != UInt32(SZOMB)
     }
@@ -316,14 +339,18 @@ public final class WallpaperRuntimeStore {
         normalized.autostart = config.autostart ?? false
         normalized.blend_interpolation = config.blend_interpolation ?? false
         normalized.pause_on_fullscreen = config.pause_on_fullscreen ?? true
-        normalized.show_on_lock_screen = config.show_on_lock_screen ?? true
+        normalized.show_on_lock_screen = config.show_on_lock_screen ?? false
         if WallpaperScaleMode(rawValue: config.scale_mode ?? "") == nil {
             normalized.scale_mode = WallpaperScaleMode.fill.rawValue
         }
         return normalized
     }
 
-    public func status(wallpaperRestored: Bool? = nil, wallpaper: String? = nil) -> ControlStatus {
+    public func status(
+        wallpaperRestored: Bool? = nil,
+        wallpaperRestoreStatus: WallpaperRestoreStatus? = nil,
+        wallpaper: String? = nil
+    ) -> ControlStatus {
         let config = loadConfig()
         let pid = loadPID()
         let alive = processIsAlive(pid: pid)
@@ -337,6 +364,7 @@ public final class WallpaperRuntimeStore {
             autostart: launchAgentEnabled(),
             paused: paused,
             wallpaper_restored: wallpaperRestored,
+            wallpaper_restore_status: wallpaperRestoreStatus,
             wallpaper: wallpaper,
             health: health,
             lock_screen_only: lockScreenOnly
@@ -389,7 +417,7 @@ public final class WallpaperRuntimeStore {
             pause_on_fullscreen: saved?.pause_on_fullscreen,
             fullscreen_app_detected: saved?.fullscreen_app_detected ?? false,
             auto_paused_for_fullscreen: saved?.auto_paused_for_fullscreen ?? false,
-            lock_screen_enabled: saved?.lock_screen_enabled ?? config.show_on_lock_screen ?? true,
+            lock_screen_enabled: saved?.lock_screen_enabled ?? config.show_on_lock_screen ?? false,
             session_inactive: saved?.session_inactive ?? false,
             lock_screen_preview_active: saved?.lock_screen_preview_active ?? false,
             presentation_mode: saved?.presentation_mode ?? WallpaperPresentationMode.desktop.rawValue,
@@ -415,6 +443,10 @@ public final class WallpaperRuntimeStore {
         nativeBridgePath: String? = nil
     ) throws {
         try ensureDirectories()
+        // bootstrap rejects an already-loaded label. Boot out first so an app
+        // update can replace an old plist that predates the native bridge
+        // argument without requiring the user to toggle Autostart manually.
+        _ = runLaunchctl(["bootout", "gui/\(getuid())/com.andrijvergeles.auraflow"])
         let configPath = configURL.path
         let nativeBridgeArguments = nativeBridgePath.map {
             """
@@ -668,8 +700,10 @@ public final class WallpaperRuntimeStore {
     }
 
     @discardableResult
-    public func restoreWallpaperBackup() -> Bool {
-        WallpaperDesktopPlatform.restoreFromBackupFiles(appSupportPath: appSupportURL.path)
+    public func restoreWallpaperBackup() -> WallpaperRestoreStatus {
+        WallpaperDesktopPlatform.restoreFromBackupFilesResult(
+            appSupportPath: appSupportURL.path
+        )
     }
 
     private func readJSON<T: Decodable>(_ type: T.Type, from url: URL) throws -> T {

@@ -273,6 +273,11 @@ final class NativeWallpaperController: WallpaperControlling {
         let didUpdateInstalledCopy: Bool
     }
 
+    private struct RuntimeBinaryResolution {
+        let url: URL
+        let didUpdateInstalledCopy: Bool
+    }
+
     private let store: WallpaperRuntimeStore
     private let helperURL: URL
     private let nativeBridgeURL: URL?
@@ -281,13 +286,28 @@ final class NativeWallpaperController: WallpaperControlling {
     private var nextRuntimeOperationID: UInt64 = 0
 
     var lockScreenCapabilities: PlatformCapabilities {
-        lockScreenPlatform.capabilities
+        let capabilities = lockScreenPlatform.capabilities
+        guard nativeBridgeRequired, nativeBridgeURL == nil else {
+            return capabilities
+        }
+        return PlatformCapabilities(
+            platformName: capabilities.platformName,
+            minimumMajorOSVersion: capabilities.minimumMajorOSVersion,
+            supportsLockScreen: false,
+            supportsLockScreenOnly: false,
+            supportsSecureLockScreen: false,
+            supportsAnimatedMedia: false,
+            usesPrivateWallpaperFramework: capabilities.usesPrivateWallpaperFramework,
+            availabilityMessage:
+                "Native Lock Screen bridge is unavailable in this AuraFlow build."
+        )
     }
 
     init(
         store: WallpaperRuntimeStore = WallpaperRuntimeStore(),
         helperURL: URL? = nil,
-        lockScreenSaverInstaller: LockScreenPlatformOperating? = nil
+        lockScreenSaverInstaller: LockScreenPlatformOperating? = nil,
+        nativeBridgeURL: URL? = nil
     ) throws {
         self.store = store
         let helperResolution: RuntimeHelperResolution
@@ -300,11 +320,12 @@ final class NativeWallpaperController: WallpaperControlling {
             helperResolution = try Self.resolveHelperURL()
         }
         self.helperURL = helperResolution.url
-        self.nativeBridgeURL = Self.resolveNativeBridgeURL()
+        self.nativeBridgeURL = nativeBridgeURL ?? Self.resolveNativeBridgeURL()
         self.lockScreenPlatform =
             lockScreenSaverInstaller ?? WallpaperPlatformAdapter()
         self.nextRuntimeOperationID =
             store.loadCommand()?.operationID ?? 0
+        migrateExistingLaunchAgentIfNeeded()
         if helperResolution.didUpdateInstalledCopy {
             try restartRunningAgentAfterHelperUpdate()
         }
@@ -340,7 +361,10 @@ final class NativeWallpaperController: WallpaperControlling {
         var candidates: [URL] = []
         let environment = ProcessInfo.processInfo.environment
         if let override = environment["AURAFLOW_NATIVE_BRIDGE_PATH"] {
-            candidates.append(URL(fileURLWithPath: override))
+            let overrideURL = URL(fileURLWithPath: override)
+            if fileManager.isExecutableFile(atPath: overrideURL.path) {
+                return overrideURL
+            }
         }
         candidates.append(
             Bundle.main.bundleURL
@@ -354,24 +378,68 @@ final class NativeWallpaperController: WallpaperControlling {
                     .appendingPathComponent("AuraWallpaperNativeBridge")
             )
         }
-        return candidates.first {
+        if let bundledURL = candidates.first(where: {
             fileManager.isExecutableFile(atPath: $0.path)
+        }) {
+            return try? installRuntimeBinary(
+                from: bundledURL,
+                named: "AuraWallpaperNativeBridge"
+            ).url
+        }
+
+        let runtimeURL = WallpaperRuntimeStore.defaultAppSupportURL()
+            .appendingPathComponent("Runtime/AuraWallpaperNativeBridge")
+        return fileManager.isExecutableFile(atPath: runtimeURL.path)
+            ? runtimeURL
+            : nil
+    }
+
+    private func migrateExistingLaunchAgentIfNeeded() {
+        guard store.launchAgentEnabled(),
+              store.loadConfig().autostart == true
+        else {
+            return
+        }
+
+        do {
+            try store.enableLaunchAgent(
+                helperPath: helperURL.path,
+                nativeBridgePath: nativeBridgeURL?.path
+            )
+        } catch {
+            lockScreenLifecycleLogger.error(
+                "Could not migrate the existing LaunchAgent: \(error.localizedDescription, privacy: .public)"
+            )
         }
     }
 
     private static func installRuntimeHelper(
         from bundledHelperURL: URL
     ) throws -> RuntimeHelperResolution {
+        let resolution = try installRuntimeBinary(
+            from: bundledHelperURL,
+            named: "AuraWallpaperAgent"
+        )
+        return RuntimeHelperResolution(
+            url: resolution.url,
+            didUpdateInstalledCopy: resolution.didUpdateInstalledCopy
+        )
+    }
+
+    private static func installRuntimeBinary(
+        from bundledURL: URL,
+        named name: String
+    ) throws -> RuntimeBinaryResolution {
         let fileManager = FileManager.default
         let runtimeDirectory = WallpaperRuntimeStore.defaultAppSupportURL()
             .appendingPathComponent("Runtime", isDirectory: true)
-        let helperURL = runtimeDirectory.appendingPathComponent("AuraWallpaperAgent")
+        let installedURL = runtimeDirectory.appendingPathComponent(name)
         try fileManager.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
 
         let shouldCopy: Bool
-        if fileManager.fileExists(atPath: helperURL.path) {
-            let bundledAttributes = try fileManager.attributesOfItem(atPath: bundledHelperURL.path)
-            let installedAttributes = try fileManager.attributesOfItem(atPath: helperURL.path)
+        if fileManager.fileExists(atPath: installedURL.path) {
+            let bundledAttributes = try fileManager.attributesOfItem(atPath: bundledURL.path)
+            let installedAttributes = try fileManager.attributesOfItem(atPath: installedURL.path)
             shouldCopy = bundledAttributes[.size] as? NSNumber != installedAttributes[.size] as? NSNumber ||
                 bundledAttributes[.modificationDate] as? Date != installedAttributes[.modificationDate] as? Date
         } else {
@@ -379,21 +447,28 @@ final class NativeWallpaperController: WallpaperControlling {
         }
 
         if shouldCopy {
-            let temporaryURL = runtimeDirectory.appendingPathComponent(".AuraWallpaperAgent.\(UUID().uuidString).tmp")
+            let temporaryURL = runtimeDirectory.appendingPathComponent(".\(name).\(UUID().uuidString).tmp")
             try? fileManager.removeItem(at: temporaryURL)
-            try fileManager.copyItem(at: bundledHelperURL, to: temporaryURL)
+            try fileManager.copyItem(at: bundledURL, to: temporaryURL)
             _ = try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temporaryURL.path)
-            if fileManager.fileExists(atPath: helperURL.path) {
-                _ = try fileManager.replaceItemAt(helperURL, withItemAt: temporaryURL)
+            if fileManager.fileExists(atPath: installedURL.path) {
+                _ = try fileManager.replaceItemAt(installedURL, withItemAt: temporaryURL)
             } else {
-                try fileManager.moveItem(at: temporaryURL, to: helperURL)
+                try fileManager.moveItem(at: temporaryURL, to: installedURL)
             }
         }
 
-        return RuntimeHelperResolution(
-            url: helperURL,
+        return RuntimeBinaryResolution(
+            url: installedURL,
             didUpdateInstalledCopy: shouldCopy
         )
+    }
+
+    private var nativeBridgeRequired: Bool {
+        // The selected adapter is the source of truth for private-framework
+        // usage. The factory never selects this capability before macOS 26,
+        // while injected adapters remain testable on the host OS.
+        lockScreenPlatform.capabilities.usesPrivateWallpaperFramework
     }
 
     private func restartRunningAgentAfterHelperUpdate() throws {
@@ -426,13 +501,27 @@ final class NativeWallpaperController: WallpaperControlling {
         else {
             return
         }
+        if store.isWallpaperRestorePending() {
+            let restoreStatus = store.restoreWallpaperBackup()
+            switch restoreStatus {
+            case .restored, .notNeeded:
+                store.markWallpaperRestorePending(false)
+                store.removeManagedFallback()
+            case .failed:
+                lockScreenLifecycleLogger.error(
+                    "Deferred Desktop wallpaper restore failed; keeping the backup for retry"
+                )
+            }
+            return
+        }
         let config = store.loadConfig()
         guard config.video_path.isEmpty,
               config.show_on_lock_screen != true
         else {
             return
         }
-        if store.restoreWallpaperBackup() {
+        let restoreStatus = store.restoreWallpaperBackup()
+        if restoreStatus != .failed {
             store.removeManagedFallback()
         } else {
             _ = WallpaperDesktopPlatform
@@ -586,8 +675,6 @@ final class NativeWallpaperController: WallpaperControlling {
             if let speed {
                 config.playback_speed = speed
             }
-            // Start is explicitly the all-surfaces action.
-            config.show_on_lock_screen = true
         }
         guard !config.video_path.isEmpty else {
             throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
@@ -596,7 +683,22 @@ final class NativeWallpaperController: WallpaperControlling {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
         store.clearLockScreenOnlySource()
-        _ = WallpaperDesktopPlatform.captureCurrentDesktopWallpaperBackup(appSupportPath: store.appSupportURL.path)
+        let didCaptureDesktopBackup =
+            WallpaperDesktopPlatform.captureCurrentDesktopWallpaperBackup(
+                appSupportPath: store.appSupportURL.path
+            )
+        if !didCaptureDesktopBackup,
+           !WallpaperDesktopPlatform.hasWallpaperBackupFiles(
+               appSupportPath: store.appSupportURL.path
+           ),
+           !NSScreen.screens.isEmpty {
+            lockScreenLifecycleLogger.error(
+                "Desktop wallpaper backup could not be captured before Start"
+            )
+            throw NativeWallpaperControllerError.unavailable(
+                "AuraFlow could not save the current Desktop wallpaper before starting."
+            )
+        }
         // Start keeps the original all-surfaces behavior: the selected
         // wallpaper is applied to the Desktop and Lock Screen together.
         // The separate Lock button uses installLockScreenOnly() and is the
@@ -686,7 +788,7 @@ final class NativeWallpaperController: WallpaperControlling {
         }
         store.clearLockScreenOnlySource()
         store.markLockScreenOnlyAgent(false)
-        let restored: Bool
+        let restoreStatus: WallpaperRestoreStatus
         if removingLockScreenOnly {
             // Lock-only mode never owns Desktop. The modern uninstaller has
             // already preserved every current Desktop/Space in one wallpaper
@@ -695,17 +797,29 @@ final class NativeWallpaperController: WallpaperControlling {
             WallpaperDesktopPlatform.discardWallpaperBackupFiles(
                 appSupportPath: store.appSupportURL.path
             )
-            restored = false
+            store.markWallpaperRestorePending(false)
+            restoreStatus = .notNeeded
         } else {
-            restored = store.restoreWallpaperBackup()
+            if WallpaperDesktopPlatform.hasWallpaperBackupFiles(
+                appSupportPath: store.appSupportURL.path
+            ) {
+                store.markWallpaperRestorePending(true)
+            }
+            restoreStatus = store.restoreWallpaperBackup()
+            if restoreStatus != .failed {
+                store.markWallpaperRestorePending(false)
+            }
         }
         _ = try updateConfig { config in
             config.video_path = ""
         }
-        if restored {
+        if !removingLockScreenOnly, restoreStatus != .failed {
             store.removeManagedFallback()
         }
-        return store.status(wallpaperRestored: restored)
+        return store.status(
+            wallpaperRestored: restoreStatus == .failed ? nil : restoreStatus == .restored,
+            wallpaperRestoreStatus: restoreStatus
+        )
     }
 
     func setVideo(_ url: URL) throws -> ControlStatus {
@@ -799,6 +913,7 @@ final class NativeWallpaperController: WallpaperControlling {
     func prepareLockScreenMedia(videoURL: URL) throws {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
+        try requireNativeBridgeIfNeeded()
         try lockScreenPlatform.prepareLockScreenMedia(videoURL: videoURL)
     }
 
@@ -853,10 +968,17 @@ final class NativeWallpaperController: WallpaperControlling {
                 let backupURL = store.appSupportURL
                     .appendingPathComponent("wallpaper_backup.json")
                 if !FileManager.default.fileExists(atPath: backupURL.path) {
-                    _ = WallpaperDesktopPlatform
-                        .captureCurrentDesktopWallpaperBackup(
-                            appSupportPath: store.appSupportURL.path
+                    let didCaptureDesktopBackup =
+                        WallpaperDesktopPlatform
+                            .captureCurrentDesktopWallpaperBackup(
+                                appSupportPath: store.appSupportURL.path
+                            )
+                    if !didCaptureDesktopBackup,
+                       !NSScreen.screens.isEmpty {
+                        throw NativeWallpaperControllerError.unavailable(
+                            "AuraFlow could not save the current Desktop wallpaper before enabling Lock Screen."
                         )
+                    }
                 }
                 let lockScreenOnlySource = store.loadLockScreenOnlySource()
                 let useLockScreenOnly = lockScreenOnlySource != nil
@@ -917,7 +1039,7 @@ final class NativeWallpaperController: WallpaperControlling {
         let hasUsableLockScreenOnlySource = lockScreenOnlySource.map {
             FileManager.default.fileExists(atPath: $0.path)
         } == true
-        let lockScreenEnabled = config.show_on_lock_screen ?? true
+        let lockScreenEnabled = config.show_on_lock_screen ?? false
         let lockScreenOnlyStatus: LockScreenOnlyGenerationStatus?
         if lockScreenEnabled,
            supportsLockScreenOnly,
@@ -964,6 +1086,7 @@ final class NativeWallpaperController: WallpaperControlling {
         else {
             return
         }
+        try requireNativeBridgeIfNeeded()
         let useLockScreenOnly = lockScreenOnlySource != nil
             && supportsLockScreenOnly
             && lockScreenOnlyProviderAvailable
@@ -1009,7 +1132,7 @@ final class NativeWallpaperController: WallpaperControlling {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
-        guard config.show_on_lock_screen ?? true else {
+        guard config.show_on_lock_screen ?? false else {
             throw NativeWallpaperControllerError.unavailable(
                 "Enable Lock Screen before previewing the transition."
             )
@@ -1089,6 +1212,7 @@ final class NativeWallpaperController: WallpaperControlling {
         ensureStillFrame: Bool,
         lockScreenOnly: Bool
     ) throws {
+        try requireNativeBridgeIfNeeded()
         // Keep a cached frame for the app's desktop recovery path, but do not
         // replace macOS's live Lock Screen descriptor with an image wallpaper.
         if ensureStillFrame {
@@ -1105,6 +1229,14 @@ final class NativeWallpaperController: WallpaperControlling {
             try lockScreenPlatform.installLockScreenOnly(videoURL: videoURL)
         } else {
             try lockScreenPlatform.install(videoURL: videoURL)
+        }
+    }
+
+    private func requireNativeBridgeIfNeeded() throws {
+        guard !nativeBridgeRequired || nativeBridgeURL != nil else {
+            throw NativeWallpaperControllerError.unavailable(
+                "Native Lock Screen bridge is unavailable in this AuraFlow build."
+            )
         }
     }
 }
@@ -1142,7 +1274,7 @@ final class AppViewModel: ObservableObject {
     @Published var autostartEnabled: Bool = false
     @Published var blendInterpolationEnabled: Bool = false
     @Published var pauseOnFullscreenEnabled: Bool = true
-    @Published var showOnLockScreenEnabled: Bool = true
+    @Published var showOnLockScreenEnabled: Bool = false
     @Published private(set) var isLockScreenPreviewActive: Bool = false
     @Published var scaleMode: WallpaperScaleMode = .fill
     @Published var isSettingsOpen: Bool = false
@@ -2352,13 +2484,24 @@ final class AppViewModel: ObservableObject {
             let status = try await runAsync {
                 try controller.clearWallpaper()
             }
+            let removalStatusMessage: String
+            let removalSuccessMessage: String?
+            switch status.wallpaper_restore_status {
+            case .restored:
+                removalStatusMessage = "Original wallpaper restored."
+                removalSuccessMessage = "Wallpaper removed."
+            case .failed:
+                removalStatusMessage = "Wallpaper removed, but the original wallpaper could not be restored. AuraFlow will retry on the next launch."
+                removalSuccessMessage = nil
+            case .notNeeded, .none:
+                removalStatusMessage = "Wallpaper removed."
+                removalSuccessMessage = "Wallpaper removed."
+            }
             return LifecycleResult(
                 status: status,
                 state: .idle,
-                statusMessage: status.wallpaper_restored == true
-                    ? "Original wallpaper restored."
-                    : "Wallpaper removed.",
-                successMessage: "Wallpaper removed.",
+                statusMessage: removalStatusMessage,
+                successMessage: removalSuccessMessage,
                 previewURL: nil,
                 clearPendingPreview: false,
                 refreshPreview: true
@@ -2964,7 +3107,7 @@ final class AppViewModel: ObservableObject {
         Self.setIfChanged(&autostartEnabled, to: status.autostart ?? status.config.autostart ?? false)
         Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
         Self.setIfChanged(&pauseOnFullscreenEnabled, to: status.config.pause_on_fullscreen ?? true)
-        Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? true)
+        Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? false)
         let previousScaleMode = scaleMode
         let resolvedScaleMode = WallpaperScaleMode(rawValue: status.config.scale_mode ?? "fill") ?? .fill
         Self.setIfChanged(&scaleMode, to: resolvedScaleMode)

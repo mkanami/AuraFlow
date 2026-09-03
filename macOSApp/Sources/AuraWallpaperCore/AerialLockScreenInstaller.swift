@@ -3349,12 +3349,18 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     private func aerialAssetIsCompatible(at url: URL) -> Bool {
         let asset = AVURLAsset(url: url)
         guard let track = asset.tracks(withMediaType: .video).first,
-              let formatDescription = track.formatDescriptions.first
+              let formatDescriptionObject = track.formatDescriptions.first
         else {
             return false
         }
+        let formatDescription: CMFormatDescription
+        if case let candidate as CMFormatDescription = formatDescriptionObject {
+            formatDescription = candidate
+        } else {
+            return false
+        }
         return CMFormatDescriptionGetMediaSubType(
-            formatDescription as! CMFormatDescription
+            formatDescription
         )
             == kCMVideoCodecType_HEVC
     }

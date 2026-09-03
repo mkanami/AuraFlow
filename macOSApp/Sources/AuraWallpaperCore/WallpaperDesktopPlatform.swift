@@ -31,7 +31,19 @@ public enum WallpaperDesktopPlatform {
 
     @discardableResult
     public static func restoreFromBackupFiles(appSupportPath: String) -> Bool {
-        WallpaperDesktopSupport.restoreFromBackupFiles(
+        restoreFromBackupFilesResult(appSupportPath: appSupportPath) != .failed
+    }
+
+    public static func restoreFromBackupFilesResult(
+        appSupportPath: String
+    ) -> WallpaperRestoreStatus {
+        WallpaperDesktopSupport.restoreFromBackupFilesResult(
+            appSupportPath: appSupportPath
+        )
+    }
+
+    public static func hasWallpaperBackupFiles(appSupportPath: String) -> Bool {
+        WallpaperDesktopSupport.hasWallpaperBackupFiles(
             appSupportPath: appSupportPath
         )
     }

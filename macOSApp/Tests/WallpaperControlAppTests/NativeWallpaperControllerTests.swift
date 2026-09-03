@@ -80,10 +80,23 @@ private func launchReadyTestAgent() throws -> Process {
 }
 
 private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling {
+    var requiresNativeBridge = false
+
     var capabilities: PlatformCapabilities {
-        // These controller tests exercise the dedicated native route. The
-        // production legacy adapter advertises this capability as unavailable.
-        .modernMacOS26(isAvailable: true)
+        // Keep the recording adapter independent from the private framework.
+        // The dedicated fail-closed test opts into the production capability
+        // explicitly, without requiring every controller fixture to launch a
+        // real macOS 26 bridge process.
+        PlatformCapabilities(
+            platformName: "macOS 26 test provider",
+            minimumMajorOSVersion: 26,
+            supportsLockScreen: true,
+            supportsLockScreenOnly: true,
+            supportsSecureLockScreen: true,
+            supportsAnimatedMedia: true,
+            usesPrivateWallpaperFramework: requiresNativeBridge,
+            availabilityMessage: "Test Lock Screen provider"
+        )
     }
     private(set) var installedVideoURL: URL?
     private(set) var installedLockScreenOnlyVideoURL: URL?
@@ -164,6 +177,25 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(status.running == false)
     #expect(status.pid == nil)
     #expect(status.health?.available == false)
+}
+
+@Test func nativeLockScreenCapabilitiesFailClosedWithoutBridge() throws {
+    let fixture = try NativeRuntimeFixture("missing-native-bridge")
+    defer { fixture.cleanup() }
+
+    let installer = RecordingLockScreenSaverInstaller()
+    installer.requiresNativeBridge = true
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    #expect(controller.lockScreenCapabilities.supportsLockScreen == false)
+    #expect(controller.lockScreenCapabilities.supportsSecureLockScreen == false)
+    #expect(throws: NativeWallpaperControllerError.self) {
+        try controller.prepareLockScreenMedia(videoURL: fixture.videoURL)
+    }
 }
 
 @Test func terminateDaemonDoesNotSignalProcessWithMismatchedIdentity() throws {
@@ -262,7 +294,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
 
     #expect(config.video_path == fixture.videoURL.path)
     #expect(config.playback_speed == 1.75)
-    #expect(config.show_on_lock_screen == true)
+    #expect(config.show_on_lock_screen == false)
     #expect(status.pid != nil)
     #expect(fixture.store.processIsAlive(pid: status.pid))
     #expect(command?.action == .reload)
@@ -695,7 +727,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadCommand() == nil)
     #expect(fixture.store.loadConfig().video_path.isEmpty)
     #expect(
-        fixture.store.loadConfig().show_on_lock_screen == true
+        fixture.store.loadConfig().show_on_lock_screen == false
     )
 }
 
@@ -850,6 +882,54 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(plist.contains(nativeBridgeURL.path))
 }
 
+@Test func existingAutostartPlistIsMigratedWithNativeBridgePath() throws {
+    let fixture = try NativeRuntimeFixture("autostart-migration")
+    defer { fixture.cleanup() }
+
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: fixture.videoURL.path,
+            playback_speed: 1.0,
+            autostart: true
+        )
+    )
+    let legacyPlist = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <plist version="1.0">
+    <dict>
+      <key>ProgramArguments</key>
+      <array>
+        <string>/old/AuraWallpaperAgent</string>
+        <string>--config</string>
+        <string>/old/config.json</string>
+      </array>
+    </dict>
+    </plist>
+    """
+    try legacyPlist.write(
+        to: fixture.store.launchAgentURL,
+        atomically: true,
+        encoding: .utf8
+    )
+    let nativeBridgeURL = fixture.root.appendingPathComponent("AuraWallpaperNativeBridge")
+
+    _ = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller(),
+        nativeBridgeURL: nativeBridgeURL
+    )
+    let migratedPlist = try String(
+        contentsOf: fixture.store.launchAgentURL,
+        encoding: .utf8
+    )
+
+    #expect(migratedPlist.contains(fixture.helperURL.path))
+    #expect(migratedPlist.contains("--native-bridge-path"))
+    #expect(migratedPlist.contains(nativeBridgeURL.path))
+    #expect(!migratedPlist.contains("/old/AuraWallpaperAgent"))
+}
+
 @Test func nativeLockScreenSettingInstallsSaverAndSendsPreviewCommands() throws {
     let fixture = try NativeRuntimeFixture("lock-screen")
     defer { fixture.cleanup() }
@@ -945,7 +1025,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(installer.installedVideoURL == nil)
 }
 
-@Test func runtimeNormalizationDefaultsLegacyLockScreenSettingToEnabled() throws {
+@Test func runtimeNormalizationDefaultsLockScreenSettingToDisabled() throws {
     let fixture = try NativeRuntimeFixture("legacy-lock-default")
     defer { fixture.cleanup() }
 
@@ -963,10 +1043,10 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     let config = fixture.store.loadConfig()
-    #expect(config.show_on_lock_screen == true)
+    #expect(config.show_on_lock_screen == false)
 }
 
-@Test func legacyRemoveStateKeepsLockScreenEnabledForNextWallpaper() throws {
+@Test func legacyRemoveStateKeepsLockScreenDisabledUntilOptIn() throws {
     let fixture = try NativeRuntimeFixture("legacy-remove-lock-default")
     defer { fixture.cleanup() }
 
@@ -984,7 +1064,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         options: .atomic
     )
 
-    #expect(fixture.store.loadConfig().show_on_lock_screen == true)
+    #expect(fixture.store.loadConfig().show_on_lock_screen == false)
 }
 
 @Test func currentLockScreenOnlyConfigMigratesToDesktopSource() throws {

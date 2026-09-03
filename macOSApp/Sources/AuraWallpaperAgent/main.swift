@@ -30,7 +30,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         var sessionGeneration: UInt64 = 0
         var wallpaperRevision: UInt64 = 0
         var sessionInactive = false
-        var showOnLockScreen = true
+        var showOnLockScreen = false
         var terminating = false
         var lastSessionTransitionUptime = -Double.infinity
     }
@@ -109,12 +109,16 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     override init() {
         self.config = store.loadConfig()
         self.lockScreenState = LockScreenStateMachine(
-            isEnabled: self.config.show_on_lock_screen ?? true
+            isEnabled: self.config.show_on_lock_screen ?? false
         )
         self.nativeLockScreenBridge = NativeLockScreenWallpaperBridge(
             executableURL: Self.nativeBridgeURLFromArguments()
         )
         super.init()
+        self.nativeLockScreenBridge.onFailure = { [weak self] reason in
+            guard let self else { return }
+            self.handleNativeLockScreenBridgeFailure(reason: reason)
+        }
     }
 
     private static func nativeBridgeURLFromArguments() -> URL? {
@@ -709,7 +713,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         switch command.action {
         case .reload:
             _ = lockScreenState.apply(
-                .setEnabled(config.show_on_lock_screen ?? true)
+                .setEnabled(config.show_on_lock_screen ?? false)
             )
             manualPaused = false
             store.markPaused(false)
@@ -782,6 +786,30 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 reason: succeeded
                     ? "native-lock-bridge-ready"
                     : "native-lock-bridge-not-ready"
+            )
+        }
+    }
+
+    private func handleNativeLockScreenBridgeFailure(reason: String) {
+        guard !isTerminating else { return }
+        let healthReason = "native-lock-bridge-unavailable: " + reason
+        writeHealth(reason: healthReason)
+        if lockScreenOnlyMode {
+            terminateLockScreenOnlyAgent(
+                reason: healthReason,
+                notifyController: true
+            )
+        } else {
+            // Desktop playback can continue, but the controller must get an
+            // immediate chance to retry the native route and refresh UI state.
+            DistributedNotificationCenter.default().post(
+                name: WallpaperRuntimeNotifications
+                    .lockScreenProviderBecameUnavailable,
+                object: nil,
+                userInfo: [
+                    WallpaperRuntimeNotifications.lockScreenFallbackReasonKey:
+                        healthReason
+                ]
             )
         }
     }
@@ -1268,7 +1296,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func syncLockScreenSetting(reason: String) {
         let previousMode = lockScreenState.presentationMode
         let stateChanged = lockScreenState.apply(
-            .setEnabled(config.show_on_lock_screen ?? true)
+            .setEnabled(config.show_on_lock_screen ?? false)
         )
         guard stateChanged else { return }
         if previousMode != lockScreenState.presentationMode {

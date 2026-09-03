@@ -56,6 +56,7 @@ let package = Package(
             dependencies: [
                 "AuraWallpaperCore",
             ],
+            exclude: ["WallpaperControlApp.entitlements"],
             resources: [
                 .process("Resources")
             ]

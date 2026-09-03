@@ -18,7 +18,7 @@ public struct ControlConfig: Codable, Equatable {
         autostart: Bool? = false,
         blend_interpolation: Bool? = false,
         pause_on_fullscreen: Bool? = true,
-        show_on_lock_screen: Bool? = true,
+        show_on_lock_screen: Bool? = false,
         scale_mode: String? = WallpaperScaleMode.fill.rawValue
     ) {
         self.video_path = video_path
@@ -34,8 +34,14 @@ public struct ControlConfig: Codable, Equatable {
     public static let defaultConfig = ControlConfig(
         video_path: "",
         playback_speed: 1.0,
-        show_on_lock_screen: true
+        show_on_lock_screen: false
     )
+}
+
+public enum WallpaperRestoreStatus: String, Codable, Equatable, Sendable {
+    case restored
+    case notNeeded
+    case failed
 }
 
 /// Media classification retained for the catalog's static-image playback path.
@@ -64,6 +70,7 @@ public struct ControlStatus: Codable, Equatable {
     public var autostart: Bool?
     public var paused: Bool?
     public var wallpaper_restored: Bool?
+    public var wallpaper_restore_status: WallpaperRestoreStatus?
     public var wallpaper: String?
     public var health: DaemonHealth?
     public var lock_screen_only: Bool?
@@ -76,6 +83,7 @@ public struct ControlStatus: Codable, Equatable {
         autostart: Bool? = nil,
         paused: Bool? = nil,
         wallpaper_restored: Bool? = nil,
+        wallpaper_restore_status: WallpaperRestoreStatus? = nil,
         wallpaper: String? = nil,
         health: DaemonHealth? = nil,
         lock_screen_only: Bool? = nil
@@ -87,6 +95,7 @@ public struct ControlStatus: Codable, Equatable {
         self.autostart = autostart
         self.paused = paused
         self.wallpaper_restored = wallpaper_restored
+        self.wallpaper_restore_status = wallpaper_restore_status
         self.wallpaper = wallpaper
         self.health = health
         self.lock_screen_only = lock_screen_only

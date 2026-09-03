@@ -1,0 +1,28 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  swift-test:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          selected_app="$(ls -td /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+          if [[ -n "$selected_app" && -d "$selected_app/Contents/Developer" ]]; then
+            echo "DEVELOPER_DIR=$selected_app/Contents/Developer" >> "${GITHUB_ENV}"
+          fi
+          xcodebuild -version
+
+      - name: Run Swift tests
+        working-directory: macOSApp
+        run: swift test
