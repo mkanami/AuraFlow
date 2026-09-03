@@ -16,6 +16,10 @@ let package = Package(
     products: [
         .executable(name: "WallpaperControlApp", targets: ["WallpaperControlApp"]),
         .executable(name: "AuraWallpaperAgent", targets: ["AuraWallpaperAgent"]),
+        .executable(
+            name: "AuraWallpaperNativeBridge",
+            targets: ["AuraWallpaperNativeBridge"]
+        ),
     ],
     targets: [
         .target(
@@ -25,7 +29,12 @@ let package = Package(
         .executableTarget(
             name: "AuraWallpaperAgent",
             dependencies: ["AuraWallpaperCore"],
-            path: "Sources/AuraWallpaperAgent",
+            path: "Sources/AuraWallpaperAgent"
+        ),
+        .executableTarget(
+            name: "AuraWallpaperNativeBridge",
+            dependencies: ["AuraWallpaperCore"],
+            path: "Sources/AuraWallpaperNativeBridge",
             swiftSettings: [
                 .unsafeFlags([
                     "-I",

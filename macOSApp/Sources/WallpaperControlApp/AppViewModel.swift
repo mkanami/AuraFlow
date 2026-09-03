@@ -275,6 +275,7 @@ final class NativeWallpaperController: WallpaperControlling {
 
     private let store: WallpaperRuntimeStore
     private let helperURL: URL
+    private let nativeBridgeURL: URL?
     private let lockScreenPlatform: LockScreenPlatformOperating
     private let lifecycleLock = NSRecursiveLock()
     private var nextRuntimeOperationID: UInt64 = 0
@@ -299,6 +300,7 @@ final class NativeWallpaperController: WallpaperControlling {
             helperResolution = try Self.resolveHelperURL()
         }
         self.helperURL = helperResolution.url
+        self.nativeBridgeURL = Self.resolveNativeBridgeURL()
         self.lockScreenPlatform =
             lockScreenSaverInstaller ?? WallpaperPlatformAdapter()
         self.nextRuntimeOperationID =
@@ -328,6 +330,33 @@ final class NativeWallpaperController: WallpaperControlling {
         }
 
         throw NativeWallpaperControllerError.unavailable("Native wallpaper agent is not bundled with AuraFlow.")
+    }
+
+    private static func resolveNativeBridgeURL() -> URL? {
+        guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 else {
+            return nil
+        }
+        let fileManager = FileManager.default
+        var candidates: [URL] = []
+        let environment = ProcessInfo.processInfo.environment
+        if let override = environment["AURAFLOW_NATIVE_BRIDGE_PATH"] {
+            candidates.append(URL(fileURLWithPath: override))
+        }
+        candidates.append(
+            Bundle.main.bundleURL
+                .appendingPathComponent("Contents/MacOS/AuraWallpaperNativeBridge")
+        )
+        if let executableDirectory = Bundle.main.executableURL?
+            .deletingLastPathComponent()
+        {
+            candidates.append(
+                executableDirectory
+                    .appendingPathComponent("AuraWallpaperNativeBridge")
+            )
+        }
+        return candidates.first {
+            fileManager.isExecutableFile(atPath: $0.path)
+        }
     }
 
     private static func installRuntimeHelper(
@@ -447,10 +476,18 @@ final class NativeWallpaperController: WallpaperControlling {
         }
         let task = Process()
         task.executableURL = helperURL
-        task.arguments = [
+        var arguments = [
             "--config",
             store.configURL.path,
-        ] + (lockScreenOnly ? ["--lock-screen-only"] : [])
+        ]
+        if lockScreenOnly {
+            arguments.append("--lock-screen-only")
+        }
+        if let nativeBridgeURL {
+            arguments.append("--native-bridge-path")
+            arguments.append(nativeBridgeURL.path)
+        }
+        task.arguments = arguments
         try task.run()
         try store.savePID(task.processIdentifier)
         store.markLockScreenOnlyAgent(lockScreenOnly)
@@ -1024,7 +1061,10 @@ final class NativeWallpaperController: WallpaperControlling {
             guard !config.video_path.isEmpty else {
                 throw NativeWallpaperControllerError.unavailable("Choose a video before enabling launch at login.")
             }
-            try store.enableLaunchAgent(helperPath: helperURL.path)
+            try store.enableLaunchAgent(
+                helperPath: helperURL.path,
+                nativeBridgePath: nativeBridgeURL?.path
+            )
         } else {
             store.disableLaunchAgent()
         }

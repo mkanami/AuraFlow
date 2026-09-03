@@ -39,7 +39,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
     private let lockScreenPlatform: LockScreenPlatformOperating =
         LockScreenPlatformFactory.makeAgentPlatform()
-    private let nativeLockScreenBridge = NativeLockScreenWallpaperBridge()
+    private let nativeLockScreenBridge: NativeLockScreenWallpaperBridge
     private let lockScreenRepairQueue = DispatchQueue(
         label: "com.auraflow.lock-screen-repair",
         qos: .utility
@@ -111,7 +111,20 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         self.lockScreenState = LockScreenStateMachine(
             isEnabled: self.config.show_on_lock_screen ?? true
         )
+        self.nativeLockScreenBridge = NativeLockScreenWallpaperBridge(
+            executableURL: Self.nativeBridgeURLFromArguments()
+        )
         super.init()
+    }
+
+    private static func nativeBridgeURLFromArguments() -> URL? {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--native-bridge-path"),
+              arguments.indices.contains(index + 1)
+        else {
+            return nil
+        }
+        return URL(fileURLWithPath: arguments[index + 1])
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

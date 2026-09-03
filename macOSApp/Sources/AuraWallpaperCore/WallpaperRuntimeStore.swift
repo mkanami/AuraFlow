@@ -410,9 +410,18 @@ public final class WallpaperRuntimeStore {
         FileManager.default.fileExists(atPath: launchAgentURL.path)
     }
 
-    public func enableLaunchAgent(helperPath: String) throws {
+    public func enableLaunchAgent(
+        helperPath: String,
+        nativeBridgePath: String? = nil
+    ) throws {
         try ensureDirectories()
         let configPath = configURL.path
+        let nativeBridgeArguments = nativeBridgePath.map {
+            """
+              <string>--native-bridge-path</string>
+              <string>\($0.escapedXML)</string>
+            """
+        } ?? ""
         let plist = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -425,6 +434,7 @@ public final class WallpaperRuntimeStore {
             <string>\(helperPath.escapedXML)</string>
             <string>--config</string>
             <string>\(configPath.escapedXML)</string>
+        \(nativeBridgeArguments)
           </array>
           <key>RunAtLoad</key>
           <true/>

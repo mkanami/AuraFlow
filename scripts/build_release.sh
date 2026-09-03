@@ -7,6 +7,7 @@ SWIFT_DIR="$ROOT_DIR/macOSApp"
 DIST_DIR="$ROOT_DIR/dist"
 APP_TARGET="WallpaperControlApp"
 HELPER_TARGET="AuraWallpaperAgent"
+NATIVE_BRIDGE_TARGET="AuraWallpaperNativeBridge"
 APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-AuraFlow}"
 APP_VERSION="${AURAFLOW_VERSION:-1.3.1}"
 APP_BUILD="${AURAFLOW_BUILD:-10}"
@@ -188,8 +189,10 @@ build_swift_app() {
 
   local arm_binary="$SWIFT_DIR/.build/arm64-apple-macosx/release/${APP_TARGET}"
   local arm_helper="$SWIFT_DIR/.build/arm64-apple-macosx/release/${HELPER_TARGET}"
+  local arm_native_bridge="$SWIFT_DIR/.build/arm64-apple-macosx/release/${NATIVE_BRIDGE_TARGET}"
   local x86_binary="$SWIFT_DIR/.build/x86_64-apple-macosx/release/${APP_TARGET}"
   local x86_helper="$SWIFT_DIR/.build/x86_64-apple-macosx/release/${HELPER_TARGET}"
+  local x86_native_bridge="$SWIFT_DIR/.build/x86_64-apple-macosx/release/${NATIVE_BRIDGE_TARGET}"
   local universal_dir="$SWIFT_DIR/.build/universal"
   local built_x86="0"
 
@@ -217,19 +220,24 @@ build_swift_app() {
 
   local bin_path=""
   local helper_path=""
-  if [[ "$built_x86" == "1" && -f "$arm_binary" && -f "$x86_binary" && -f "$arm_helper" && -f "$x86_helper" ]]; then
+  local native_bridge_path=""
+  if [[ "$built_x86" == "1" && -f "$arm_binary" && -f "$x86_binary" && -f "$arm_helper" && -f "$x86_helper" && -f "$arm_native_bridge" && -f "$x86_native_bridge" ]]; then
     mkdir -p "$universal_dir"
     lipo -create -output "$universal_dir/${APP_TARGET}" "$arm_binary" "$x86_binary"
     lipo -create -output "$universal_dir/${HELPER_TARGET}" "$arm_helper" "$x86_helper"
+    lipo -create -output "$universal_dir/${NATIVE_BRIDGE_TARGET}" "$arm_native_bridge" "$x86_native_bridge"
     bin_path="$universal_dir"
     helper_path="$universal_dir/${HELPER_TARGET}"
+    native_bridge_path="$universal_dir/${NATIVE_BRIDGE_TARGET}"
     log "Created universal binary"
-  elif [[ -f "$arm_binary" && -f "$arm_helper" ]]; then
+  elif [[ -f "$arm_binary" && -f "$arm_helper" && -f "$arm_native_bridge" ]]; then
     bin_path="$(dirname "$arm_binary")"
     helper_path="$arm_helper"
+    native_bridge_path="$arm_native_bridge"
   else
     bin_path="$("$SWIFT_BIN" build -c release "${SWIFT_SDK_ARGS[@]}" --show-bin-path)"
     helper_path="$bin_path/${HELPER_TARGET}"
+    native_bridge_path="$bin_path/${NATIVE_BRIDGE_TARGET}"
   fi
   popd >/dev/null
 
@@ -253,6 +261,10 @@ build_swift_app() {
     log "Helper binary not found: $helper_path"
     exit 1
   fi
+  if [[ ! -x "$native_bridge_path" ]]; then
+    log "Native bridge binary not found: $native_bridge_path"
+    exit 1
+  fi
 
   rm -rf "$APP_BUNDLE"
   mkdir -p "$APP_BUNDLE/Contents/MacOS"
@@ -260,19 +272,26 @@ build_swift_app() {
 
   cp "$binary" "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
   cp "$helper_path" "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
+  cp "$native_bridge_path" "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
+  chmod +x "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
 
   if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
-    local app_archs helper_archs
+    local app_archs helper_archs native_bridge_archs
     app_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}" 2>/dev/null || true)"
     helper_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}" 2>/dev/null || true)"
+    native_bridge_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}" 2>/dev/null || true)"
     if [[ "$app_archs" != *"arm64"* || "$app_archs" != *"x86_64"* ]]; then
       log "Universal app binary required, produced: ${app_archs:-unknown}"
       exit 1
     fi
     if [[ "$helper_archs" != *"arm64"* || "$helper_archs" != *"x86_64"* ]]; then
       log "Universal helper binary required, produced: ${helper_archs:-unknown}"
+      exit 1
+    fi
+    if [[ "$native_bridge_archs" != *"arm64"* || "$native_bridge_archs" != *"x86_64"* ]]; then
+      log "Universal native bridge binary required, produced: ${native_bridge_archs:-unknown}"
       exit 1
     fi
   fi

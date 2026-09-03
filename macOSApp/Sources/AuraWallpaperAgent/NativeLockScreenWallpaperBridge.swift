@@ -1,280 +1,242 @@
-import AppKit
-import CoreGraphics
-import Darwin
-import OSLog
-import QuartzCore
-import Wallpaper
 import AuraWallpaperCore
+import Foundation
+import OSLog
 
+/// Client for the optional native bridge. The agent stays linkable and
+/// runnable on macOS 13–25 because it only speaks JSON-lines over pipes; the
+/// process that imports Apple's private Wallpaper framework is launched only
+/// when a modern Lock Screen operation is actually requested.
 final class NativeLockScreenWallpaperBridge {
-    private typealias StartScreenSaverFunction = @convention(c) () -> Int32
-
     private static let logger = Logger(
         subsystem: "com.auraflow.wallpaper",
-        category: "native-lock-screen"
+        category: "native-lock-screen-client"
     )
 
-    private var displayAssertion: WallpaperDisplayAssertion?
-    private var presentationAssertion: WallpaperPresentationModeAssertion?
-    private var window: NSWindow?
-    private var preparing = false
-    private var showing = false
-    private var paused = false
-    private var pendingCompletions: [(Bool) -> Void] = []
-    private var presentationRequestID: UInt64 = 0
+    private let executableURL: URL?
+    private let ioQueue = DispatchQueue(
+        label: "com.auraflow.native-lock-screen-bridge-client"
+    )
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+    private var process: Process?
+    private var input: FileHandle?
+    private var output: FileHandle?
+    private var outputBuffer = Data()
+    private var pending: [String: (Bool) -> Void] = [:]
+    private var ready = false
+
+    init(executableURL: URL?) {
+        self.executableURL = executableURL
+    }
 
     var isReady: Bool {
-        displayAssertion != nil && window != nil
+        ioQueue.sync { ready }
     }
 
     func prepare(completion: @escaping (Bool) -> Void) {
-        // Stop persists its marker before the runtime command reaches this
-        // process. Pick it up before creating a new assertion so a late
-        // preparation cannot start the Lock Screen video again.
-        if WallpaperRuntimeStore().isPaused() {
-            paused = true
-        }
-
-        if isReady {
-            completion(true)
-            return
-        }
-        pendingCompletions.append(completion)
-        guard !preparing else { return }
-        preparing = true
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let assertion = try await makeDisplayAssertion()
-                let presentation = try await WallpaperPresentationModeAssertion
-                    .takeIdleAssertion(displayAssertion: assertion)
-                let window = makeWindow(for: assertion.layer)
-                self.displayAssertion = assertion
-                self.presentationAssertion = presentation
-                self.window = window
-                if self.paused {
-                    self.pauseLayer(assertion.layer)
-                }
-                self.finishPreparation(succeeded: true)
-                Self.logger.notice("Native Lock Screen layer prepared")
-            } catch {
-                Self.logger.error(
-                    "Native Lock Screen preparation failed: \(error.localizedDescription, privacy: .public)"
-                )
-                self.finishPreparation(succeeded: false)
+        ioQueue.async { [weak self] in
+            guard let self,
+                  self.startIfNeeded()
+            else {
+                Self.completeOnMain(completion, succeeded: false)
+                return
+            }
+            guard self.send(.prepare, completion: completion) else {
+                Self.completeOnMain(completion, succeeded: false)
+                return
             }
         }
     }
 
-    // Wallpaper is a private, library-evolution framework. Whole-module
-    // optimization otherwise devirtualizes this allocation to its hidden
-    // initializing entry point; keep the call on the exported allocator.
-    @_optimize(none)
-    private func makeDisplayAssertion() async throws
-        -> WallpaperDisplayAssertion
-    {
-        try await WallpaperDisplayAssertion(
-            displayID: CGMainDisplayID(),
-            attributes: .screenSaver
-        )
-    }
-
     func showForLockTransition(completion: ((Bool) -> Void)? = nil) {
-        // Close the small Stop -> Lock race: the marker is committed before
-        // the .pause command is delivered to the agent.
-        if WallpaperRuntimeStore().isPaused() {
-            paused = true
-        }
-
-        if showing {
-            completion?(isReady)
-            return
-        }
-        showing = true
-        presentationRequestID &+= 1
-        let requestID = presentationRequestID
-        startSystemScreenSaverNow()
-        guard let displayAssertion else {
-            showing = false
-            completion?(false)
-            return
-        }
-        // Keep the prewarmed layer hidden. Making it visible here creates a
-        // three-frame transition: Aura, loginwindow's Desktop snapshot, then
-        // the real Aura Lock Screen. loginwindow owns the secure surface and
-        // presents the prepared screen-saver route itself.
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let assertion = try await
-                    WallpaperPresentationModeAssertion.takeLockedAssertion(
-                        displayAssertion: displayAssertion
-                    )
-                guard self.presentationRequestID == requestID,
-                      self.showing
-                else {
-                    return
+        ioQueue.async { [weak self] in
+            guard let self,
+                  self.startIfNeeded()
+            else {
+                if let completion {
+                    Self.completeOnMain(completion, succeeded: false)
                 }
-                self.presentationAssertion = assertion
-                if self.paused {
-                    self.pauseLayer(displayAssertion.layer)
+                return
+            }
+            guard self.send(.show, completion: completion) else {
+                if let completion {
+                    Self.completeOnMain(completion, succeeded: false)
                 }
-                completion?(true)
-            } catch {
-                Self.logger.error(
-                    "Native locked presentation failed: \(error.localizedDescription, privacy: .public)"
-                )
-                self.showing = false
-                completion?(false)
+                return
             }
         }
     }
 
     func resumeAfterPause() {
-        if let layer = displayAssertion?.layer, layer.speed == 0 {
-            let pausedTime = layer.timeOffset
-            layer.speed = 1
-            layer.timeOffset = 0
-            layer.beginTime = 0
-            let resumedTime = layer.convertTime(
-                CACurrentMediaTime(),
-                from: nil
-            )
-            layer.beginTime = resumedTime - pausedTime
-        }
-        paused = false
+        sendWithoutResponse(.resume)
     }
 
     func pause() {
-        let wasPaused = paused
-        paused = true
-        if let layer = displayAssertion?.layer {
-            pauseLayer(layer)
-        }
-        if !wasPaused {
-            Self.logger.notice("Native Lock Screen layer paused")
-        }
-    }
-
-    private func pauseLayer(_ layer: CALayer) {
-        guard layer.speed != 0 else { return }
-        let pausedTime = layer.convertTime(
-            CACurrentMediaTime(),
-            from: nil
-        )
-        layer.speed = 0
-        layer.timeOffset = pausedTime
+        sendWithoutResponse(.pause)
     }
 
     func hideAfterUnlock() {
-        showing = false
-        presentationRequestID &+= 1
-        let requestID = presentationRequestID
-        window?.alphaValue = 0
-        guard let displayAssertion else { return }
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            guard let assertion = try? await
-                WallpaperPresentationModeAssertion.takeIdleAssertion(
-                    displayAssertion: displayAssertion
-                ),
-                self.presentationRequestID == requestID,
-                !self.showing
-            else {
-                return
-            }
-            self.presentationAssertion = assertion
-            if self.paused {
-                self.pauseLayer(displayAssertion.layer)
-            }
-        }
+        sendWithoutResponse(.hide)
     }
 
     func shutdown() {
-        presentationRequestID &+= 1
-        window?.orderOut(nil)
-        window = nil
-        presentationAssertion = nil
-        displayAssertion = nil
-        pendingCompletions.removeAll()
-        preparing = false
-        showing = false
-        paused = false
-    }
-
-    private func startSystemScreenSaverNow() {
-        guard let function = Self.startScreenSaverFunction else {
-            Self.logger.error("SACScreenSaverStartNow is unavailable")
-            return
-        }
-        let result = function()
-        if result != 0 {
-            Self.logger.error(
-                "SACScreenSaverStartNow failed: \(result, privacy: .public)"
-            )
+        ioQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.process?.isRunning == true else {
+                self.resetTransport()
+                return
+            }
+            _ = self.send(.shutdown, completion: nil)
         }
     }
 
-    private static let startScreenSaverFunction: StartScreenSaverFunction? = {
-        guard let handle = dlopen(
-            WallpaperPlatformConstants.loginFrameworkPath,
-            RTLD_NOW | RTLD_LOCAL
-        ),
-        let symbol = dlsym(
-            handle,
-            WallpaperPlatformConstants.startScreenSaverSymbol
-        )
+    private func sendWithoutResponse(_ action: NativeLockScreenBridgeAction) {
+        ioQueue.async { [weak self] in
+            guard let self,
+                  self.process?.isRunning == true
+            else {
+                return
+            }
+            _ = self.send(action, completion: nil)
+        }
+    }
+
+    private func startIfNeeded() -> Bool {
+        guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26,
+              let executableURL,
+              FileManager.default.isExecutableFile(atPath: executableURL.path)
         else {
-            return nil
+            return false
         }
-        return unsafeBitCast(symbol, to: StartScreenSaverFunction.self)
-    }()
+        if process?.isRunning == true {
+            return true
+        }
 
-    private func makeWindow(for wallpaperLayer: CALayer) -> NSWindow {
-        let frame = NSScreen.main?.frame
-            ?? NSScreen.screens.first?.frame
-            ?? .zero
-        let window = NSWindow(
-            contentRect: frame,
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        window.isReleasedWhenClosed = false
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        window.hasShadow = false
-        window.level = .screenSaver
-        window.ignoresMouseEvents = true
-        window.animationBehavior = .none
-        window.hidesOnDeactivate = false
-        window.canHide = false
-        window.collectionBehavior = [
-            .canJoinAllSpaces,
-            .stationary,
-            .ignoresCycle,
-            .fullScreenAuxiliary,
-        ]
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        let bridgeProcess = Process()
+        bridgeProcess.executableURL = executableURL
+        bridgeProcess.standardInput = inputPipe
+        bridgeProcess.standardOutput = outputPipe
+        bridgeProcess.standardError = Pipe()
+        bridgeProcess.terminationHandler = { [weak self] _ in
+            self?.ioQueue.async { [weak self] in
+                self?.handleTransportClosed()
+            }
+        }
 
-        let content = NSView(
-            frame: NSRect(origin: .zero, size: frame.size)
-        )
-        content.wantsLayer = true
-        wallpaperLayer.frame = content.bounds
-        wallpaperLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-        content.layer?.addSublayer(wallpaperLayer)
-        window.contentView = content
-        window.alphaValue = 0
-        window.orderFrontRegardless()
-        return window
+        do {
+            try bridgeProcess.run()
+        } catch {
+            Self.logger.error(
+                "Could not launch native bridge: \(error.localizedDescription, privacy: .public)"
+            )
+            return false
+        }
+
+        process = bridgeProcess
+        input = inputPipe.fileHandleForWriting
+        output = outputPipe.fileHandleForReading
+        outputBuffer.removeAll(keepingCapacity: true)
+        ready = false
+        output?.readabilityHandler = { [weak self] handle in
+            do {
+                guard let data = try handle.read(upToCount: 64 * 1024),
+                      !data.isEmpty
+                else {
+                    self?.ioQueue.async { [weak self] in
+                        self?.handleTransportClosed()
+                    }
+                    return
+                }
+                self?.ioQueue.async { [weak self] in
+                    self?.consume(data)
+                }
+            } catch {
+                self?.ioQueue.async { [weak self] in
+                    self?.handleTransportClosed()
+                }
+            }
+        }
+        return true
     }
 
-    private func finishPreparation(succeeded: Bool) {
-        preparing = false
-        let completions = pendingCompletions
-        pendingCompletions.removeAll()
+    @discardableResult
+    private func send(
+        _ action: NativeLockScreenBridgeAction,
+        completion: ((Bool) -> Void)?
+    ) -> Bool {
+        guard let input else { return false }
+        let request = NativeLockScreenBridgeRequest(action: action)
+        guard let encoded = try? encoder.encode(request) else { return false }
+        var line = encoded
+        line.append(0x0A)
+        do {
+            try input.write(contentsOf: line)
+        } catch {
+            handleTransportClosed()
+            return false
+        }
+        if let completion {
+            pending[request.id] = completion
+        }
+        return true
+    }
+
+    private func consume(_ data: Data) {
+        outputBuffer.append(data)
+        while let newline = outputBuffer.firstIndex(of: 0x0A) {
+            let line = outputBuffer.prefix(upTo: newline)
+            outputBuffer.removeSubrange(...newline)
+            guard !line.isEmpty,
+                  let response = try? decoder.decode(
+                      NativeLockScreenBridgeResponse.self,
+                      from: line
+                  )
+            else {
+                continue
+            }
+            if response.action == .prepare {
+                ready = response.succeeded
+            }
+            if let completion = pending.removeValue(forKey: response.id) {
+                Self.completeOnMain(
+                    completion,
+                    succeeded: response.succeeded
+                )
+            }
+        }
+    }
+
+    private func handleTransportClosed() {
+        output?.readabilityHandler = nil
+        let completions = pending.values
+        pending.removeAll()
+        ready = false
+        process = nil
+        input = nil
+        output = nil
+        outputBuffer.removeAll(keepingCapacity: true)
         for completion in completions {
+            Self.completeOnMain(completion, succeeded: false)
+        }
+    }
+
+    private func resetTransport() {
+        output?.readabilityHandler = nil
+        process = nil
+        input = nil
+        output = nil
+        outputBuffer.removeAll(keepingCapacity: true)
+        pending.removeAll()
+        ready = false
+    }
+
+    private static func completeOnMain(
+        _ completion: @escaping (Bool) -> Void,
+        succeeded: Bool
+    ) {
+        DispatchQueue.main.async {
             completion(succeeded)
         }
     }

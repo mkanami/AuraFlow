@@ -829,6 +829,27 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(plist.contains(fixture.store.configURL.path))
 }
 
+@Test func nativeAutostartPlistIncludesNativeBridgePathWhenConfigured() throws {
+    let fixture = try NativeRuntimeFixture("autostart-native-bridge")
+    defer { fixture.cleanup() }
+
+    let nativeBridgeURL = fixture.root.appendingPathComponent("AuraWallpaperNativeBridge")
+    FileManager.default.createFile(
+        atPath: nativeBridgeURL.path,
+        contents: Data("native bridge fixture".utf8),
+        attributes: [.posixPermissions: 0o755]
+    )
+
+    try fixture.store.enableLaunchAgent(
+        helperPath: fixture.helperURL.path,
+        nativeBridgePath: nativeBridgeURL.path
+    )
+    let plist = try String(contentsOf: fixture.store.launchAgentURL, encoding: .utf8)
+
+    #expect(plist.contains("--native-bridge-path"))
+    #expect(plist.contains(nativeBridgeURL.path))
+}
+
 @Test func nativeLockScreenSettingInstallsSaverAndSendsPreviewCommands() throws {
     let fixture = try NativeRuntimeFixture("lock-screen")
     defer { fixture.cleanup() }
