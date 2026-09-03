@@ -2,9 +2,26 @@
 """Exercise the AuraWallpaperNativeBridge JSON-lines protocol."""
 
 import json
+import os
 import select
 import subprocess
 import sys
+
+
+def available_stderr(bridge: subprocess.Popen) -> str:
+    if bridge.stderr is None:
+        return ""
+    fd = bridge.stderr.fileno()
+    chunks = []
+    while True:
+        readable, _, _ = select.select([fd], [], [], 0)
+        if not readable:
+            break
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8", errors="replace").strip()
 
 
 def request(bridge: subprocess.Popen, action: str) -> dict:
@@ -34,45 +51,53 @@ def main() -> int:
         [sys.argv[1]],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
     )
     try:
-        prepare = request(bridge, "prepare")
-        show = request(bridge, "show")
-        hide = request(bridge, "hide")
-        shutdown = request(bridge, "shutdown")
-        if not all(
-            response["succeeded"]
-            for response in (prepare, show, hide, shutdown)
-        ):
-            failed_actions = [
-                action
-                for action, response in (
-                    ("prepare", prepare),
-                    ("show", show),
-                    ("hide", hide),
-                    ("shutdown", shutdown),
+        try:
+            prepare = request(bridge, "prepare")
+            show = request(bridge, "show")
+            hide = request(bridge, "hide")
+            shutdown = request(bridge, "shutdown")
+            if not all(
+                response["succeeded"]
+                for response in (prepare, show, hide, shutdown)
+            ):
+                failed_actions = [
+                    action
+                    for action, response in (
+                        ("prepare", prepare),
+                        ("show", show),
+                        ("hide", hide),
+                        ("shutdown", shutdown),
+                    )
+                    if not response["succeeded"]
+                ]
+                raise RuntimeError(
+                    "native bridge request failed: " + ", ".join(failed_actions)
                 )
-                if not response["succeeded"]
-            ]
-            raise RuntimeError(
-                "native bridge request failed: " + ", ".join(failed_actions)
+            if bridge.wait(timeout=10) != 0:
+                raise RuntimeError("native bridge exited with a failure status")
+            print(
+                json.dumps(
+                    {
+                        "prepare": prepare["succeeded"],
+                        "show": show["succeeded"],
+                        "hide": hide["succeeded"],
+                        "shutdown": shutdown["succeeded"],
+                    }
+                )
             )
-        if bridge.wait(timeout=10) != 0:
-            raise RuntimeError("native bridge exited with a failure status")
-        print(
-            json.dumps(
-                {
-                    "prepare": prepare["succeeded"],
-                    "show": show["succeeded"],
-                    "hide": hide["succeeded"],
-                    "shutdown": shutdown["succeeded"],
-                }
-            )
-        )
-        return 0
+            return 0
+        except Exception as error:
+            diagnostics = available_stderr(bridge)
+            if diagnostics:
+                raise RuntimeError(
+                    f"{error}; native bridge stderr:\n{diagnostics}"
+                ) from error
+            raise
     finally:
         if bridge.poll() is None:
             bridge.terminate()

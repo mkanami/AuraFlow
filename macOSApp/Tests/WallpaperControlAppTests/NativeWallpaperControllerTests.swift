@@ -48,7 +48,7 @@ private struct NativeRuntimeFixture {
 
     func cleanup() {
         let pid = store.loadPID()
-        store.disableLaunchAgent()
+        try? store.disableLaunchAgent()
         _ = store.terminateDaemon(
             timeout: 0.2,
             expectedExecutableURL: helperURL
@@ -1016,7 +1016,13 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let previousPlist = Data("previous launch agent".utf8)
     try previousPlist.write(to: store.launchAgentURL, options: .atomic)
 
-    #expect(store.disableLaunchAgent() == false)
+    do {
+        try store.disableLaunchAgent()
+        Issue.record("Expected LaunchAgent removal to fail")
+    } catch {
+        #expect(error.localizedDescription.contains("permission denied"))
+        #expect(error.localizedDescription.contains("previous service restored"))
+    }
     #expect(try Data(contentsOf: store.launchAgentURL) == previousPlist)
     #expect(
         launchctlCalls == [
@@ -1024,6 +1030,48 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
             ["bootstrap", "gui/\(getuid())", store.launchAgentURL.path]
         ]
     )
+}
+
+@Test func launchAgentRemovalRollbackFailureIncludesBothErrors() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlowLaunchAgentRemovalRollbackFailure-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let removalError = NSError(
+        domain: "AuraFlowTests",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "permission denied"]
+    )
+    let store = WallpaperRuntimeStore(
+        appSupportURL: root.appendingPathComponent("Support"),
+        launchAgentURL: root.appendingPathComponent("LaunchAgents/agent.plist"),
+        launchctlRunner: { arguments in
+            if arguments.first == "bootstrap" {
+                return LaunchctlResult(
+                    succeeded: false,
+                    output: "bootstrap denied",
+                    terminationStatus: 1
+                )
+            }
+            return LaunchctlResult(succeeded: true)
+        },
+        launchAgentFileRemover: { _ in
+            throw removalError
+        }
+    )
+    try store.ensureDirectories()
+    try Data("previous launch agent".utf8)
+        .write(to: store.launchAgentURL, options: .atomic)
+
+    do {
+        try store.disableLaunchAgent()
+        Issue.record("Expected LaunchAgent removal to fail")
+    } catch {
+        #expect(error.localizedDescription.contains("permission denied"))
+        #expect(error.localizedDescription.contains("bootstrap denied"))
+        #expect(error.localizedDescription.contains("rollback failed"))
+    }
 }
 
 @Test func launchAgentBootstrapFailureIsSurfaced() throws {

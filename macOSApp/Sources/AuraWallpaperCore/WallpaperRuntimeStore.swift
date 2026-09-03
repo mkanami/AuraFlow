@@ -649,31 +649,56 @@ public final class WallpaperRuntimeStore {
         }
     }
 
-    @discardableResult
-    public func disableLaunchAgent() -> Bool {
+    public func disableLaunchAgent() throws {
         let previousPlistData = try? Data(contentsOf: launchAgentURL)
         let bootout = launchctlRunner([
             "bootout",
             "gui/\(getuid())/com.andrijvergeles.auraflow"
         ])
         guard bootout.succeeded || bootout.isServiceNotLoaded else {
-            return false
+            throw WallpaperRuntimeError.unavailable(
+                "Could not unload the AuraFlow LaunchAgent: \(bootout.output)"
+            )
         }
         do {
             try launchAgentFileRemover(launchAgentURL)
-            return true
         } catch CocoaError.fileNoSuchFile {
-            return true
+            return
         } catch {
+            var rollbackFailures: [String] = []
             if let previousPlistData {
-                try? previousPlistData.write(to: launchAgentURL, options: .atomic)
+                do {
+                    try previousPlistData.write(to: launchAgentURL, options: .atomic)
+                } catch {
+                    rollbackFailures.append(
+                        "restore plist: \(error.localizedDescription)"
+                    )
+                }
+            } else {
+                rollbackFailures.append(
+                    "restore plist: previous plist could not be read"
+                )
             }
-            _ = launchctlRunner([
-                "bootstrap",
-                "gui/\(getuid())",
-                launchAgentURL.path
-            ])
-            return false
+
+            if FileManager.default.fileExists(atPath: launchAgentURL.path) {
+                let restoreBootstrap = launchctlRunner([
+                    "bootstrap",
+                    "gui/\(getuid())",
+                    launchAgentURL.path
+                ])
+                if !restoreBootstrap.succeeded {
+                    rollbackFailures.append(
+                        "restore LaunchAgent: \(restoreBootstrap.output)"
+                    )
+                }
+            } else {
+                rollbackFailures.append("restore LaunchAgent: plist is missing")
+            }
+
+            throw WallpaperRuntimeError.launchAgentDisableFailed(
+                removalError: error.localizedDescription,
+                rollbackFailures: rollbackFailures
+            )
         }
     }
 
@@ -1061,11 +1086,20 @@ public final class WallpaperRuntimeStore {
 
 public enum WallpaperRuntimeError: LocalizedError {
     case unavailable(String)
+    case launchAgentDisableFailed(
+        removalError: String,
+        rollbackFailures: [String]
+    )
 
     public var errorDescription: String? {
         switch self {
         case .unavailable(let message):
             return message
+        case let .launchAgentDisableFailed(removalError, rollbackFailures):
+            if rollbackFailures.isEmpty {
+                return "Could not remove the AuraFlow LaunchAgent plist: \(removalError); previous service restored."
+            }
+            return "Could not remove the AuraFlow LaunchAgent plist: \(removalError); rollback failed: \(rollbackFailures.joined(separator: "; "))."
         }
     }
 }

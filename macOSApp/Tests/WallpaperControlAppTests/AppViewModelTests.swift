@@ -1395,6 +1395,49 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func toggleAutostartDoesNotHideLaunchAgentWarning() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("autostart-warning-toggle-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let videoURL = root.appendingPathComponent("wallpaper.mp4")
+    try Data([1, 2, 3]).write(to: videoURL, options: .atomic)
+    let controller = MockNativeWallpaperController()
+    controller.statusConfigAutostart = true
+    controller.statusAutostart = false
+    controller.statusAutostartPlistExists = true
+    controller.statusAutostartServiceLoaded = true
+    controller.statusAutostartServiceRunning = false
+    let viewModel = AppViewModel(
+        controller: controller,
+        appSupportDirectoryURL: root,
+        previewStateURL: root.appendingPathComponent("preview.json")
+    )
+    viewModel.selectLocalVideoForPreview(videoURL)
+    viewModel.toggleAutostart(true)
+
+    for _ in 0..<40 {
+        if !viewModel.isBusy,
+           viewModel.alertMessage ==
+                "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
+        {
+            break
+        }
+        try await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(
+        viewModel.alertMessage
+            == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
+    )
+    #expect(
+        viewModel.statusMessage
+            == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
+    )
+}
+
+@MainActor
 @Test func activeLockScreenOnlyWallpaperKeepsStopAvailable() async throws {
     let controller = MockNativeWallpaperController()
     controller.statusRunning = false

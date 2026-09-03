@@ -1263,11 +1263,11 @@ final class NativeWallpaperController: WallpaperControlling {
             config.autostart = false
             config = store.normalized(config)
             try store.saveConfig(config)
-            guard store.disableLaunchAgent() else {
+            do {
+                try store.disableLaunchAgent()
+            } catch {
                 try? store.saveConfig(previousConfig)
-                throw NativeWallpaperControllerError.unavailable(
-                    "Could not disable the AuraFlow LaunchAgent."
-                )
+                throw NativeWallpaperControllerError.unavailable(error.localizedDescription)
             }
         }
         return store.status()
@@ -2832,8 +2832,15 @@ final class AppViewModel: ObservableObject {
                 let status = try await runAsync { try controller.setAutostart(enabled) }
                 apply(status: status)
                 recordBridgeSuccess()
-                statusMessage = enabled ? "Launch at login enabled." : "Launch at login disabled."
-                alertMessage = nil
+                if let warning = autostartWarning(for: status) {
+                    statusMessage = warning
+                    alertMessage = warning
+                } else {
+                    statusMessage = enabled
+                        ? "Launch at login enabled."
+                        : "Launch at login disabled."
+                    alertMessage = nil
+                }
             } catch {
                 autostartEnabled = previous
                 recordBridgeFailure(error, context: "set-autostart")

@@ -3,6 +3,7 @@ import AuraWallpaperCore
 import Foundation
 
 private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegate {
+    private static let maxInputBufferSize = 64 * 1024
     private let bridge = NativeLockScreenWallpaperBridge()
     private let inputQueue = DispatchQueue(
         label: "com.auraflow.native-lock-screen-bridge-input"
@@ -33,6 +34,18 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
     }
 
     private func consume(_ data: Data) {
+        guard data.count <= Self.maxInputBufferSize,
+              inputBuffer.count <= Self.maxInputBufferSize - data.count
+        else {
+            // A command must be newline-delimited. Drop the process rather
+            // than allowing malformed input without a newline to grow the
+            // long-lived bridge buffer indefinitely.
+            inputBuffer.removeAll(keepingCapacity: false)
+            DispatchQueue.main.async {
+                NSApp.terminate(nil)
+            }
+            return
+        }
         inputBuffer.append(data)
         while let newline = inputBuffer.firstIndex(of: 0x0A) {
             let line = inputBuffer.prefix(upTo: newline)
