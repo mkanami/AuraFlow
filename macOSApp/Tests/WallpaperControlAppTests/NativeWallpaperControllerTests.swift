@@ -572,7 +572,18 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let agent = Process()
     agent.executableURL = fixture.helperURL
     try agent.run()
-    try fixture.store.savePID(agent.processIdentifier)
+    // Wait for the stopped helper to finish exec before persisting its PID;
+    // otherwise the identity file can be absent during the fork/exec window.
+    for _ in 0..<20 {
+        try fixture.store.savePID(agent.processIdentifier)
+        if FileManager.default.fileExists(atPath: fixture.store.daemonIdentityURL.path) {
+            break
+        }
+        Thread.sleep(forTimeInterval: 0.025)
+    }
+    #expect(
+        FileManager.default.fileExists(atPath: fixture.store.daemonIdentityURL.path)
+    )
     fixture.store.markLockScreenOnlyAgent(true)
     try fixture.store.saveCommand(WallpaperRuntimeCommand(action: .reload))
     try fixture.store.saveHealth(

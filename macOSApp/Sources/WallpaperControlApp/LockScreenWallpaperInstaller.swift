@@ -1,5 +1,11 @@
 import AuraWallpaperCore
 import Foundation
+import OSLog
+
+private let lockScreenFallbackLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "LockScreenFallback"
+)
 
 /// Legacy implementation boundary. The screen-saver installer is kept in the
 /// application target because it also owns the bundled screen-saver component;
@@ -172,25 +178,37 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
         videoURL: URL,
         restoringLockScreenOnlyVideoURL: URL?
     ) throws {
+        let removedModernRoute = modern.isInstalled
         do {
             // This is an explicit downgrade transaction. Remove only the
             // modern lock-only route so the user's Desktop routes survive;
             // leave the existing legacy saver in place until its own atomic
             // install has succeeded.
-            if modern.isInstalled {
+            if removedModernRoute {
                 try modern.uninstallLockScreenOnlyPreservingCurrentDesktop()
             }
             try legacy.install(videoURL: videoURL)
-        } catch {
-            // Best-effort recovery: if the legacy install or modern cleanup
-            // failed, restore the previous native Lock Screen source. The
-            // original error remains authoritative for the caller.
-            if let restoringLockScreenOnlyVideoURL {
-                try? modern.installLockScreenOnly(
-                    videoURL: restoringLockScreenOnlyVideoURL
-                )
+        } catch let installError {
+            // Recover the previous native route when this operation removed
+            // one. If recovery also fails, surface both failures so the UI
+            // and diagnostics do not mistake a partial downgrade for a
+            // complete rollback.
+            if removedModernRoute, let restoringLockScreenOnlyVideoURL {
+                do {
+                    try modern.installLockScreenOnly(
+                        videoURL: restoringLockScreenOnlyVideoURL
+                    )
+                } catch let rollbackError {
+                    lockScreenFallbackLogger.error(
+                        "Legacy fallback failed and modern Lock Screen rollback failed. install=\(installError.localizedDescription, privacy: .public) rollback=\(rollbackError.localizedDescription, privacy: .public)"
+                    )
+                    throw LockScreenPlatformError.fallbackRollbackFailed(
+                        installError: installError.localizedDescription,
+                        rollbackError: rollbackError.localizedDescription
+                    )
+                }
             }
-            throw error
+            throw installError
         }
     }
 

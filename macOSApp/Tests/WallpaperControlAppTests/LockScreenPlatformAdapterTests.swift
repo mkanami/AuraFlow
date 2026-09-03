@@ -26,6 +26,7 @@ private final class RecordingModernInstaller: ModernLockScreenInstalling {
     private(set) var installCallCount = 0
     private(set) var repairCallCount = 0
     var lockScreenOnlyStatusOverride: LockScreenOnlyGenerationStatus?
+    var restoreError: Error?
     private(set) var restoredLockScreenOnlyVideoURL: URL?
 
     init(isAvailable: Bool, isInstalled: Bool = false) {
@@ -39,6 +40,9 @@ private final class RecordingModernInstaller: ModernLockScreenInstalling {
     }
 
     func installLockScreenOnly(videoURL: URL) throws {
+        if let restoreError {
+            throw restoreError
+        }
         restoredLockScreenOnlyVideoURL = videoURL
         isInstalled = true
     }
@@ -76,6 +80,7 @@ private final class RecordingModernInstaller: ModernLockScreenInstalling {
 
 private enum PlatformRecordingError: Error {
     case installFailed
+    case restoreFailed
 }
 
 @Test func modernAdapterUsesInjectedInstallerOnSupportedRuntime() throws {
@@ -249,4 +254,42 @@ private enum PlatformRecordingError: Error {
     #expect(modernInstaller.isInstalled)
     #expect(modernInstaller.restoredLockScreenOnlyVideoURL == previousURL)
     #expect(legacyInstaller.installedURL == previousLegacyURL)
+}
+
+@Test func explicitLegacyFallbackReportsRollbackFailure() throws {
+    let modernInstaller = RecordingModernInstaller(
+        isAvailable: true,
+        isInstalled: true
+    )
+    modernInstaller.restoreError = PlatformRecordingError.restoreFailed
+    let modern = ModernMacOS26Adapter(
+        installer: modernInstaller,
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 27,
+            minorVersion: 0,
+            patchVersion: 0
+        )
+    )
+    let legacyInstaller = PlatformRecordingInstaller()
+    legacyInstaller.installError = PlatformRecordingError.installFailed
+    let legacy = LegacyMacOSAdapter(installer: legacyInstaller)
+    let adapter = WallpaperPlatformAdapter(modern: modern, legacy: legacy)
+
+    do {
+        try adapter.installLegacyLockScreenFallback(
+            videoURL: URL(fileURLWithPath: "/tmp/legacy-fallback.mov"),
+            restoringLockScreenOnlyVideoURL: URL(
+                fileURLWithPath: "/tmp/old-lock-screen.mov"
+            )
+        )
+        #expect(Bool(false), "Expected fallback rollback failure")
+    } catch let error as LockScreenPlatformError {
+        guard case let .fallbackRollbackFailed(installError, rollbackError) = error else {
+            #expect(Bool(false), "Expected a fallback rollback error")
+            return
+        }
+        #expect(!installError.isEmpty)
+        #expect(!rollbackError.isEmpty)
+    }
+    #expect(modernInstaller.isInstalled == false)
 }

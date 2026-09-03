@@ -116,11 +116,19 @@ public struct LockScreenStatus: Equatable, Sendable {
 
 public enum LockScreenPlatformError: LocalizedError, Equatable {
     case unsupported(String)
+    case fallbackRollbackFailed(
+        installError: String,
+        rollbackError: String
+    )
 
     public var errorDescription: String? {
         switch self {
         case .unsupported(let message):
             return message
+        case let .fallbackRollbackFailed(installError, rollbackError):
+            return "Legacy Lock Screen fallback failed (\(installError)); "
+                + "restoring the modern Lock Screen route also failed "
+                + "(\(rollbackError))."
         }
     }
 }
