@@ -111,11 +111,6 @@ public struct WallpaperRuntimeCommand: Codable, Equatable {
 }
 
 public final class WallpaperRuntimeStore {
-    private struct DaemonProcessIdentity: Codable, Equatable {
-        var executablePath: String
-        var startTimeMicros: Int64
-    }
-
     private struct LastFrameSourceRevision: Codable, Equatable {
         var path: String
         var size: UInt64?
@@ -330,13 +325,7 @@ public final class WallpaperRuntimeStore {
     }
 
     public func savePID(_ pid: Int32 = getpid()) throws {
-        try ensureDirectories()
-        if let identity = processIdentityWithRetry(for: Int(pid)) {
-            try writeJSON(identity, to: daemonIdentityURL)
-        } else {
-            try? FileManager.default.removeItem(at: daemonIdentityURL)
-        }
-        try "\(pid)\n".write(to: pidURL, atomically: true, encoding: .utf8)
+        try DaemonProcessManager(store: self).recordPID(pid)
     }
 
     public func removePID() {
@@ -345,16 +334,7 @@ public final class WallpaperRuntimeStore {
     }
 
     public func ownsRuntimeProcess(_ pid: Int32 = getpid()) -> Bool {
-        guard loadPID() == Int(pid),
-              let expected = try? readJSON(
-                  DaemonProcessIdentity.self,
-                  from: daemonIdentityURL
-              ),
-              let actual = processIdentity(for: Int(pid))
-        else {
-            return false
-        }
-        return expected == actual
+        DaemonProcessManager(store: self).ownsRuntimeProcess(pid)
     }
 
     public func markPaused(_ paused: Bool) {
@@ -371,34 +351,7 @@ public final class WallpaperRuntimeStore {
     }
 
     public func processIsAlive(pid: Int?) -> Bool {
-        guard let pid, pid > 0 else { return false }
-        guard kill(pid_t(pid), 0) == 0 else { return false }
-
-        // `kill(pid, 0)` also succeeds for a zombie until its parent collects
-        // it. A terminated daemon must not be treated as active during that
-        // short window, otherwise cleanup can report a false failure and
-        // leave the runtime state behind.
-        var processInfo = proc_bsdinfo()
-        let infoSize = proc_pidinfo(
-            pid_t(pid),
-            PROC_PIDTBSDINFO,
-            0,
-            &processInfo,
-            Int32(MemoryLayout<proc_bsdinfo>.size)
-        )
-        guard infoSize == Int32(MemoryLayout<proc_bsdinfo>.size) else {
-            // `kill(pid, 0)` can continue to succeed for a zombie until its
-            // parent reaps it. `proc_pidpath` returns no executable for that
-            // state, so use it as the conservative liveness check when the
-            // BSD-info query itself is no longer available.
-            var executablePath = [Int8](repeating: 0, count: 4_096)
-            return proc_pidpath(
-                pid_t(pid),
-                &executablePath,
-                UInt32(executablePath.count)
-            ) > 0
-        }
-        return processInfo.pbi_status != UInt32(SZOMB)
+        DaemonProcessManager.isProcessAlive(pid: pid)
     }
 
     public func normalized(_ config: ControlConfig) -> ControlConfig {
@@ -583,15 +536,15 @@ public final class WallpaperRuntimeStore {
                 )
             }
             if let previousPID,
-               !waitForProcessExit(previousPID, timeout: 2.0) {
+               !DaemonProcessManager.waitForExit(pid: previousPID, timeout: 2.0) {
                 // launchctl normally waits for the job, but older agents can
                 // delay their termination handler. Never bootstrap a new job
                 // while the old process can still mutate shared runtime files.
-                guard terminateDaemon(
-                    timeout: 1.0,
+                guard DaemonProcessManager(
+                    store: self,
                     expectedExecutableURL: URL(fileURLWithPath: helperPath)
-                ).succeeded,
-                waitForProcessExit(previousPID, timeout: 1.0)
+                ).terminate(timeout: 1.0).succeeded,
+                DaemonProcessManager.waitForExit(pid: previousPID, timeout: 1.0)
                 else {
                     throw WallpaperRuntimeError.unavailable(
                         "The existing AuraFlow wallpaper agent did not stop during migration."
@@ -707,190 +660,10 @@ public final class WallpaperRuntimeStore {
         timeout: TimeInterval = 1.0,
         expectedExecutableURL: URL? = nil
     ) -> DaemonTerminationResult {
-        guard let pid = loadPID() else {
-            clearDaemonProcessMetadata()
-            return .alreadyExited
-        }
-        switch daemonProcessIdentityStatus(
-            pid,
+        DaemonProcessManager(
+            store: self,
             expectedExecutableURL: expectedExecutableURL
-        ) {
-        case .alreadyExited:
-            clearDaemonProcessMetadata()
-            return .alreadyExited
-        case .mismatch:
-            // A PID can be reused after AuraFlow exits. Remove only our stale
-            // metadata when the executable/start-time identity is unknown or
-            // no longer matches; never signal an unrelated process. The
-            // caller must not continue as if the process had been stopped.
-            clearDaemonProcessMetadata()
-            return .identityMismatch
-        case .unavailable:
-            clearDaemonProcessMetadata()
-            return .identityMismatch
-        case .matched:
-            break
-        }
-        kill(pid_t(pid), SIGTERM)
-        let deadline = Date().addingTimeInterval(max(timeout, 0.2))
-        while Date() < deadline {
-            if !processIsAlive(pid: pid) {
-                clearDaemonProcessMetadata()
-                return .terminated
-            }
-            switch daemonProcessIdentityStatus(
-                pid,
-                expectedExecutableURL: expectedExecutableURL
-            ) {
-            case .matched:
-                break
-            case .alreadyExited:
-                clearDaemonProcessMetadata()
-                return .alreadyExited
-            case .mismatch:
-                clearDaemonProcessMetadata()
-                return .identityMismatch
-            case .unavailable:
-                // A process that has accepted SIGTERM can briefly lose its
-                // procfs identity before launchd/its parent reaps it. Keep
-                // waiting in that transition instead of reporting a false
-                // PID mismatch; never send another signal until identity is
-                // confirmed again.
-                break
-            }
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        switch daemonProcessIdentityStatus(
-            pid,
-            expectedExecutableURL: expectedExecutableURL
-        ) {
-        case .matched:
-            break
-        case .alreadyExited:
-            clearDaemonProcessMetadata()
-            return .alreadyExited
-        case .mismatch:
-            clearDaemonProcessMetadata()
-            return .identityMismatch
-        case .unavailable:
-            clearDaemonProcessMetadata()
-            return .identityMismatch
-        }
-        kill(pid_t(pid), SIGKILL)
-        let killDeadline = Date().addingTimeInterval(1.0)
-        while Date() < killDeadline {
-            if !processIsAlive(pid: pid) {
-                clearDaemonProcessMetadata()
-                return .terminated
-            }
-            switch daemonProcessIdentityStatus(
-                pid,
-                expectedExecutableURL: expectedExecutableURL
-            ) {
-            case .matched:
-                break
-            case .alreadyExited:
-                clearDaemonProcessMetadata()
-                return .alreadyExited
-            case .mismatch:
-                clearDaemonProcessMetadata()
-                return .identityMismatch
-            case .unavailable:
-                break
-            }
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        return .failed
-    }
-
-    private func clearDaemonProcessMetadata() {
-        removePID()
-        markPaused(false)
-    }
-
-    private enum DaemonIdentityStatus {
-        case matched
-        case alreadyExited
-        case mismatch
-        case unavailable
-    }
-
-    private func daemonProcessIdentityStatus(
-        _ pid: Int,
-        expectedExecutableURL: URL?
-    ) -> DaemonIdentityStatus {
-        guard processIsAlive(pid: pid) else {
-            return .alreadyExited
-        }
-        guard let actual = processIdentity(for: pid) else {
-            // The process is still reported alive, but its identity cannot be
-            // verified. Treat it as unconfirmed and never send a signal.
-            if reapExitedChildProcess(pid) {
-                return .alreadyExited
-            }
-            return .unavailable
-        }
-        if let expected = try? readJSON(
-            DaemonProcessIdentity.self,
-            from: daemonIdentityURL
-        ) {
-            return expected == actual ? .matched : .mismatch
-        }
-        guard let expectedExecutableURL else {
-            return .mismatch
-        }
-        return actual.executablePath
-            == expectedExecutableURL.standardizedFileURL.path
-            ? .matched
-            : .mismatch
-    }
-
-    private func reapExitedChildProcess(_ pid: Int) -> Bool {
-        var status: Int32 = 0
-        return waitpid(pid_t(pid), &status, WNOHANG) == pid_t(pid)
-    }
-
-    private func processIdentity(for pid: Int) -> DaemonProcessIdentity? {
-        guard pid > 0 else { return nil }
-        var path = [Int8](repeating: 0, count: 4_096)
-        guard proc_pidpath(pid_t(pid), &path, UInt32(path.count)) > 0 else {
-            return nil
-        }
-
-        var processInfo = proc_bsdinfo()
-        let infoSize = proc_pidinfo(
-            pid_t(pid),
-            PROC_PIDTBSDINFO,
-            0,
-            &processInfo,
-            Int32(MemoryLayout<proc_bsdinfo>.stride)
-        )
-        guard infoSize == Int32(MemoryLayout<proc_bsdinfo>.stride) else {
-            return nil
-        }
-
-        let startTimeMicros = Int64(processInfo.pbi_start_tvsec) * 1_000_000
-            + Int64(processInfo.pbi_start_tvusec)
-        return DaemonProcessIdentity(
-            executablePath: String(cString: path),
-            startTimeMicros: startTimeMicros
-        )
-    }
-
-    private func processIdentityWithRetry(for pid: Int) -> DaemonProcessIdentity? {
-        // A freshly spawned process can briefly be visible to kill(2) before
-        // proc_pidpath/proc_pidinfo have a complete record, especially while
-        // the system is under load. Keep the PID metadata paired with its
-        // identity instead of falling back to an unverified PID.
-        for attempt in 0..<50 {
-            if let identity = processIdentity(for: pid) {
-                return identity
-            }
-            if attempt < 49 {
-                Thread.sleep(forTimeInterval: 0.02)
-            }
-        }
-        return nil
+        ).terminate(timeout: timeout)
     }
 
     public func captureStillFrame(from videoURL: URL, time: CMTime = CMTime(seconds: 0.2, preferredTimescale: 600)) throws -> URL {
@@ -1040,17 +813,6 @@ public final class WallpaperRuntimeStore {
             return false
         }
         return true
-    }
-
-    private func waitForProcessExit(_ pid: Int, timeout: TimeInterval) -> Bool {
-        let deadline = Date().addingTimeInterval(max(timeout, 0))
-        while Date() < deadline {
-            if !processIsAlive(pid: pid) {
-                return true
-            }
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        return !processIsAlive(pid: pid)
     }
 
     private static func executeLaunchctl(_ arguments: [String]) -> LaunchctlResult {

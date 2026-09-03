@@ -282,6 +282,9 @@ final class NativeWallpaperController: WallpaperControlling {
     private let helperURL: URL
     private let nativeBridgeURL: URL?
     private let lockScreenPlatform: LockScreenPlatformOperating
+    private let daemonProcessManager: DaemonProcessManager
+    private let autostartManager: AutostartManager
+    private let recoveryCoordinator: WallpaperRecoveryCoordinator
     private let lifecycleLock = NSRecursiveLock()
     private var nextRuntimeOperationID: UInt64 = 0
 
@@ -320,9 +323,20 @@ final class NativeWallpaperController: WallpaperControlling {
             helperResolution = try Self.resolveHelperURL()
         }
         self.helperURL = helperResolution.url
-        self.nativeBridgeURL = nativeBridgeURL ?? Self.resolveNativeBridgeURL()
+        let resolvedNativeBridgeURL = nativeBridgeURL ?? Self.resolveNativeBridgeURL()
+        self.nativeBridgeURL = resolvedNativeBridgeURL
         self.lockScreenPlatform =
             lockScreenSaverInstaller ?? WallpaperPlatformAdapter()
+        self.daemonProcessManager = DaemonProcessManager(
+            store: store,
+            expectedExecutableURL: helperResolution.url
+        )
+        self.autostartManager = AutostartManager(
+            store: store,
+            helperURL: helperResolution.url,
+            nativeBridgeURL: resolvedNativeBridgeURL
+        )
+        self.recoveryCoordinator = WallpaperRecoveryCoordinator(store: store)
         self.nextRuntimeOperationID =
             store.loadCommand()?.operationID ?? 0
         migrateExistingLaunchAgentIfNeeded()
@@ -395,17 +409,8 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     private func migrateExistingLaunchAgentIfNeeded() {
-        guard store.launchAgentPlistExists(),
-              store.loadConfig().autostart == true
-        else {
-            return
-        }
-
         do {
-            try store.enableLaunchAgent(
-                helperPath: helperURL.path,
-                nativeBridgePath: nativeBridgeURL?.path
-            )
+            try autostartManager.migrateExistingLaunchAgentIfNeeded()
         } catch {
             lockScreenLifecycleLogger.error(
                 "Could not migrate the existing LaunchAgent: \(error.localizedDescription, privacy: .public)"
@@ -472,13 +477,10 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     private func restartRunningAgentAfterHelperUpdate() throws {
-        guard store.processIsAlive(pid: store.loadPID()) else { return }
+        guard daemonProcessManager.isRunning else { return }
         let config = store.loadConfig()
         let lockScreenOnlyAgent = store.isLockScreenOnlyAgent()
-        guard store.terminateDaemon(
-            timeout: 1.0,
-            expectedExecutableURL: helperURL
-        ).succeeded else {
+        guard daemonProcessManager.terminate(timeout: 1.0).succeeded else {
             throw NativeWallpaperControllerError.unavailable(
                 "The previous wallpaper agent did not stop during the update."
             )
@@ -495,38 +497,7 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     private func recoverInterruptedWallpaperRemovalIfNeeded() {
-        guard store.appSupportURL.standardizedFileURL
-            == WallpaperRuntimeStore.defaultAppSupportURL()
-                .standardizedFileURL
-        else {
-            return
-        }
-        if store.isWallpaperRestorePending() {
-            let restoreStatus = store.restoreWallpaperBackup()
-            switch restoreStatus {
-            case .restored, .notNeeded:
-                store.markWallpaperRestorePending(false)
-                store.removeManagedFallback()
-            case .failed:
-                lockScreenLifecycleLogger.error(
-                    "Deferred Desktop wallpaper restore failed; keeping the backup for retry"
-                )
-            }
-            return
-        }
-        let config = store.loadConfig()
-        guard config.video_path.isEmpty,
-              config.show_on_lock_screen != true
-        else {
-            return
-        }
-        let restoreStatus = store.restoreWallpaperBackup()
-        if restoreStatus != .failed {
-            store.removeManagedFallback()
-        } else {
-            _ = WallpaperDesktopPlatform
-                .repairCurrentDesktopWallpaperIfNeeded()
-        }
+        _ = recoveryCoordinator.recoverInterruptedWallpaperRemovalIfNeeded()
     }
 
     private func updateConfig(_ block: (inout ControlConfig) -> Void) throws -> ControlConfig {
@@ -554,7 +525,7 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     private func launchAgentIfNeeded(lockScreenOnly: Bool = false) throws {
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             return
         }
 
@@ -601,7 +572,7 @@ final class NativeWallpaperController: WallpaperControlling {
 
         let deadline = Date().addingTimeInterval(6.0)
         while Date() < deadline {
-            guard store.processIsAlive(pid: store.loadPID()) else {
+            guard daemonProcessManager.isRunning else {
                 throw NativeWallpaperControllerError.unavailable(
                     "The Lock Screen agent stopped during initialization."
                 )
@@ -630,7 +601,7 @@ final class NativeWallpaperController: WallpaperControlling {
 
         let deadline = Date().addingTimeInterval(8.0)
         while Date() < deadline {
-            guard store.processIsAlive(pid: store.loadPID()) else {
+            guard daemonProcessManager.isRunning else {
                 throw NativeWallpaperControllerError.unavailable(
                     "The Lock Screen agent stopped before the wallpaper was ready."
                 )
@@ -664,7 +635,7 @@ final class NativeWallpaperController: WallpaperControlling {
         let previousLockScreenOnlySource = store.loadLockScreenOnlySource()
         let previousLockScreenOnlyAgent = store.isLockScreenOnlyAgent()
         let previousPID = store.loadPID()
-        let previousAgentWasAlive = store.processIsAlive(pid: previousPID)
+        let previousAgentWasAlive = daemonProcessManager.isRunning(pid: previousPID)
         let previousCommand = store.loadCommand()
         let previousHealth = store.loadHealth()
 
@@ -714,10 +685,7 @@ final class NativeWallpaperController: WallpaperControlling {
         var previousAgentWasStopped = false
         do {
             if previousLockScreenOnlyAgent, previousAgentWasAlive {
-                guard store.terminateDaemon(
-                    timeout: 2.0,
-                    expectedExecutableURL: helperURL
-                ).succeeded else {
+                guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
                     throw NativeWallpaperControllerError.unavailable(
                         "The Lock Screen agent did not stop before starting desktop wallpaper."
                     )
@@ -783,7 +751,7 @@ final class NativeWallpaperController: WallpaperControlling {
 
         store.markPaused(false)
         try launchAgentIfNeeded()
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.resume, config: config)
         } else {
             try send(.reload, config: config)
@@ -801,7 +769,7 @@ final class NativeWallpaperController: WallpaperControlling {
             return store.status()
         }
         store.markPaused(true)
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.pause, config: config)
         }
         return store.status()
@@ -814,7 +782,7 @@ final class NativeWallpaperController: WallpaperControlling {
         let removingLockScreenOnly =
             store.isLockScreenOnlyAgent()
             || store.loadLockScreenOnlySource() != nil
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try? send(
                 removingLockScreenOnly
                     ? .terminatePreservingDesktop
@@ -822,10 +790,7 @@ final class NativeWallpaperController: WallpaperControlling {
                 config: currentConfig
             )
         }
-        guard store.terminateDaemon(
-            timeout: 2.0,
-            expectedExecutableURL: helperURL
-        ).succeeded else {
+        guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
             throw NativeWallpaperControllerError.unavailable(
                 "The wallpaper agent did not stop, so its desktop window could not be removed."
             )
@@ -886,7 +851,7 @@ final class NativeWallpaperController: WallpaperControlling {
         let config = try updateConfig { config in
             config.video_path = url.path
         }
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.reload, config: config)
         }
         return store.status()
@@ -932,16 +897,13 @@ final class NativeWallpaperController: WallpaperControlling {
         let config = try updateConfig { config in
             config.show_on_lock_screen = true
         }
-        if store.processIsAlive(pid: store.loadPID()),
+        if daemonProcessManager.isRunning,
            !store.isLockScreenOnlyAgent() {
             // A normal desktop agent cannot be repurposed by a reload: it
             // would continue presenting AuraFlow windows on the Desktop.
             // Replace it with the dedicated lock-only agent so this button
             // never changes the user's Desktop wallpaper.
-            guard store.terminateDaemon(
-                timeout: 2.0,
-                expectedExecutableURL: helperURL
-            ).succeeded else {
+            guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
                 throw NativeWallpaperControllerError.unavailable(
                     "The desktop wallpaper agent did not stop before enabling Lock Screen only mode."
                 )
@@ -950,7 +912,7 @@ final class NativeWallpaperController: WallpaperControlling {
             store.removeHealth()
             store.markLockScreenOnlyAgent(false)
         }
-        if store.processIsAlive(pid: store.loadPID()),
+        if daemonProcessManager.isRunning,
            store.isLockScreenOnlyAgent() {
             // The lock-only agent reads its source from the dedicated marker;
             // reload it when the user replaces that source so the next lock
@@ -978,7 +940,7 @@ final class NativeWallpaperController: WallpaperControlling {
         let config = try updateConfig { config in
             config.playback_speed = speed
         }
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.update, config: config)
         }
         return store.status()
@@ -990,7 +952,7 @@ final class NativeWallpaperController: WallpaperControlling {
         let config = try updateConfig { config in
             config.blend_interpolation = enabled
         }
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.update, config: config)
         }
         return store.status()
@@ -1002,7 +964,7 @@ final class NativeWallpaperController: WallpaperControlling {
         let config = try updateConfig { config in
             config.pause_on_fullscreen = enabled
         }
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.update, config: config)
         }
         return store.status()
@@ -1052,11 +1014,8 @@ final class NativeWallpaperController: WallpaperControlling {
         } else {
             try lockScreenPlatform.uninstall()
             if store.isLockScreenOnlyAgent() {
-                if store.processIsAlive(pid: store.loadPID()) {
-                    guard store.terminateDaemon(
-                        timeout: 2.0,
-                        expectedExecutableURL: helperURL
-                    ).succeeded else {
+                if daemonProcessManager.isRunning {
+                    guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
                         throw NativeWallpaperControllerError.unavailable(
                             "The Lock Screen agent did not stop after disabling Lock Screen wallpaper."
                         )
@@ -1078,7 +1037,7 @@ final class NativeWallpaperController: WallpaperControlling {
         if migratedLockScreenOnlySource != nil {
             store.clearLockScreenOnlySource()
         }
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.update, config: config)
         }
         return store.status()
@@ -1117,10 +1076,7 @@ final class NativeWallpaperController: WallpaperControlling {
                 || !hasUsableLockScreenOnlySource
                 || !supportsLockScreenOnly
                 || !lockScreenOnlyProviderAvailable) {
-            let terminationResult = store.terminateDaemon(
-                timeout: 2.0,
-                expectedExecutableURL: helperURL
-            )
+            let terminationResult = daemonProcessManager.terminate(timeout: 2.0)
             guard terminationResult.succeeded else {
                 throw NativeWallpaperControllerError.unavailable(
                     "The Lock Screen agent did not stop during fallback cleanup (\(terminationResult))."
@@ -1152,10 +1108,7 @@ final class NativeWallpaperController: WallpaperControlling {
             // so the modern adapter cannot accidentally install a shared
             // wallpaper and alter the user's Desktop.
             if store.isLockScreenOnlyAgent() {
-                guard store.terminateDaemon(
-                    timeout: 2.0,
-                    expectedExecutableURL: helperURL
-                ).succeeded else {
+                guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
                     throw NativeWallpaperControllerError.unavailable(
                         "The Lock Screen agent did not stop during legacy fallback."
                     )
@@ -1199,7 +1152,7 @@ final class NativeWallpaperController: WallpaperControlling {
                     ?? "Lock Screen transition preview is unavailable."
             )
         }
-        guard store.processIsAlive(pid: store.loadPID()) else {
+        guard daemonProcessManager.isRunning else {
             throw NativeWallpaperControllerError.unavailable(
                 "Start the wallpaper before previewing the Lock Screen transition."
             )
@@ -1212,7 +1165,7 @@ final class NativeWallpaperController: WallpaperControlling {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.previewUnlock, config: config)
         }
         return store.status()
@@ -1224,7 +1177,7 @@ final class NativeWallpaperController: WallpaperControlling {
         let config = try updateConfig { config in
             config.scale_mode = mode.commandValue
         }
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.update, config: config)
         }
         return store.status()
@@ -1233,44 +1186,19 @@ final class NativeWallpaperController: WallpaperControlling {
     func setAutostart(_ enabled: Bool) throws -> ControlStatus {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
-        let previousConfig = store.loadConfig()
-        var config = previousConfig
         if enabled {
-            config = store.normalized(config)
+            let config = store.normalized(store.loadConfig())
             guard !config.video_path.isEmpty,
                   FileManager.default.fileExists(atPath: config.video_path)
             else {
+                // Keep the controller's user-facing error contract while the
+                // persistence/LaunchAgent transaction lives in the manager.
                 throw NativeWallpaperControllerError.unavailable(
                     "Choose an existing video before enabling launch at login."
                 )
             }
-            config.autostart = true
-            config = store.normalized(config)
-            // Persist only after validation. If launchctl rejects the new
-            // service, restore the previous config so Autostart cannot appear
-            // enabled without a registered LaunchAgent.
-            try store.saveConfig(config)
-            do {
-                try store.enableLaunchAgent(
-                    helperPath: helperURL.path,
-                    nativeBridgePath: nativeBridgeURL?.path
-                )
-            } catch {
-                try? store.saveConfig(previousConfig)
-                throw error
-            }
-        } else {
-            config.autostart = false
-            config = store.normalized(config)
-            try store.saveConfig(config)
-            do {
-                try store.disableLaunchAgent()
-            } catch {
-                try? store.saveConfig(previousConfig)
-                throw NativeWallpaperControllerError.unavailable(error.localizedDescription)
-            }
         }
-        return store.status()
+        return try autostartManager.setEnabled(enabled)
     }
 
     func metrics() throws -> DaemonMetrics {
@@ -1329,10 +1257,7 @@ final class NativeWallpaperController: WallpaperControlling {
         let currentPID = store.loadPID()
         if currentPID != previousPID,
            store.processIsAlive(pid: currentPID) {
-            if !store.terminateDaemon(
-                timeout: 2.0,
-                expectedExecutableURL: helperURL
-            ).succeeded {
+            if !daemonProcessManager.terminate(timeout: 2.0).succeeded {
                 rollbackFailures.append("replacement agent did not stop")
             }
         }
@@ -1488,12 +1413,6 @@ final class NativeWallpaperController: WallpaperControlling {
 
 @MainActor
 final class AppViewModel: ObservableObject {
-    private struct WallpaperPreviewSeed: Codable, Equatable {
-        let video_path: String
-        let playback_speed: Double
-        let scale_mode: String?
-    }
-
     private struct LifecycleRequest: Equatable {
         let id: UInt64
         let intent: WallpaperLifecycleIntent
@@ -1509,19 +1428,14 @@ final class AppViewModel: ObservableObject {
         let refreshPreview: Bool
     }
 
-    @Published private(set) var appliedVideoURL: URL?
-    @Published private(set) var pendingPreviewVideoURL: URL?
-    @Published var playbackSpeed: Double = 1.0
-    @Published var isRunning: Bool = false
-    @Published private(set) var isPlaybackActive: Bool = false
-    @Published private(set) var isPlaybackPaused: Bool = false
-    @Published private(set) var isLockScreenOnlyActive: Bool = false
+    let catalogViewModel: CatalogViewModel
+    let previewViewModel: PreviewViewModel
+    let lifecycleViewModel: LifecycleViewModel
+
     @Published var autostartEnabled: Bool = false
     @Published var blendInterpolationEnabled: Bool = false
     @Published var pauseOnFullscreenEnabled: Bool = true
     @Published var showOnLockScreenEnabled: Bool = false
-    @Published private(set) var isLockScreenPreviewActive: Bool = false
-    @Published var scaleMode: WallpaperScaleMode = .fill
     @Published var isSettingsOpen: Bool = false
     @Published var isMonitoringOpen: Bool = false
     @Published var monitoringSnapshot: DaemonMetrics?
@@ -1540,25 +1454,124 @@ final class AppViewModel: ObservableObject {
     @Published var statusMessage: String?
     @Published var alertMessage: String?
     @Published var successBannerMessage: String?
-    @Published var previewPlayer: AVPlayer?
-    @Published var isCatalogOpen: Bool = false
-    @Published var isDownloadedWallpapersOpen: Bool = false
-    @Published var selectedCatalogWallpaper: CatalogWallpaper?
-    @Published var catalogScrollTargetID: String?
-    @Published var catalogSearchText: String = ""
-    @Published var selectedCatalogGroup: CatalogWallpaperGroup?
-    @Published var catalogDownloadID: String?
-    @Published private(set) var catalogWallpapers: [CatalogWallpaper] = []
-    @Published private(set) var catalogIsRefreshing: Bool = false
-    @Published private(set) var downloadedCatalogWallpapers: [DownloadedCatalogWallpaper] = []
     @Published private(set) var controllerAvailable: Bool = false
     @Published private(set) var lockScreenCapabilities: PlatformCapabilities = .legacyMacOS
     @Published private(set) var adaptiveGlassAppearance: AdaptiveGlassAppearance = .default
-    @Published private(set) var lifecycleState: WallpaperLifecycleState = .idle
-    @Published private(set) var isLifecycleBusy = false
+
+    var appliedVideoURL: URL? {
+        get { previewViewModel.appliedVideoURL }
+        set { previewViewModel.appliedVideoURL = newValue }
+    }
+
+    var pendingPreviewVideoURL: URL? {
+        get { previewViewModel.pendingVideoURL }
+        set { previewViewModel.pendingVideoURL = newValue }
+    }
+
+    var playbackSpeed: Double {
+        get { previewViewModel.playbackSpeed }
+        set { previewViewModel.playbackSpeed = newValue }
+    }
+
+    var previewPlayer: AVPlayer? {
+        get { previewViewModel.player }
+        set { previewViewModel.player = newValue }
+    }
+
+    var scaleMode: WallpaperScaleMode {
+        get { previewViewModel.scaleMode }
+        set { previewViewModel.scaleMode = newValue }
+    }
+
+    var isRunning: Bool {
+        get { lifecycleViewModel.isRunning }
+        set { lifecycleViewModel.isRunning = newValue }
+    }
+
+    var isPlaybackActive: Bool {
+        get { lifecycleViewModel.isPlaybackActive }
+        set { lifecycleViewModel.isPlaybackActive = newValue }
+    }
+
+    var isPlaybackPaused: Bool {
+        get { lifecycleViewModel.isPlaybackPaused }
+        set { lifecycleViewModel.isPlaybackPaused = newValue }
+    }
+
+    var isLockScreenOnlyActive: Bool {
+        get { lifecycleViewModel.isLockScreenOnlyActive }
+        set { lifecycleViewModel.isLockScreenOnlyActive = newValue }
+    }
+
+    var isLockScreenPreviewActive: Bool {
+        get { lifecycleViewModel.isLockScreenPreviewActive }
+        set { lifecycleViewModel.isLockScreenPreviewActive = newValue }
+    }
+
+    var lifecycleState: WallpaperLifecycleState {
+        get { lifecycleViewModel.state }
+        set { lifecycleViewModel.state = newValue }
+    }
+
+    var isLifecycleBusy: Bool {
+        get { lifecycleViewModel.isBusy }
+        set { lifecycleViewModel.isBusy = newValue }
+    }
+
+    var isCatalogOpen: Bool {
+        get { catalogViewModel.isCatalogOpen }
+        set { catalogViewModel.isCatalogOpen = newValue }
+    }
+
+    var isDownloadedWallpapersOpen: Bool {
+        get { catalogViewModel.isDownloadedWallpapersOpen }
+        set { catalogViewModel.isDownloadedWallpapersOpen = newValue }
+    }
+
+    var selectedCatalogWallpaper: CatalogWallpaper? {
+        get { catalogViewModel.selectedWallpaper }
+        set { catalogViewModel.selectedWallpaper = newValue }
+    }
+
+    var catalogScrollTargetID: String? {
+        get { catalogViewModel.scrollTargetID }
+        set { catalogViewModel.scrollTargetID = newValue }
+    }
+
+    var catalogSearchText: String {
+        get { catalogViewModel.searchText }
+        set { catalogViewModel.searchText = newValue }
+    }
+
+    var selectedCatalogGroup: CatalogWallpaperGroup? {
+        get { catalogViewModel.selectedGroup }
+        set { catalogViewModel.selectedGroup = newValue }
+    }
+
+    var catalogDownloadID: String? {
+        get { catalogViewModel.downloadID }
+        set { catalogViewModel.downloadID = newValue }
+    }
+
+    var catalogWallpapers: [CatalogWallpaper] {
+        get { catalogViewModel.wallpapers }
+        set { catalogViewModel.wallpapers = newValue }
+    }
+
+    var catalogIsRefreshing: Bool {
+        get { catalogViewModel.isRefreshing }
+        set { catalogViewModel.isRefreshing = newValue }
+    }
+
+    var downloadedCatalogWallpapers: [DownloadedCatalogWallpaper] {
+        get { catalogViewModel.downloadedWallpapers }
+        set { catalogViewModel.downloadedWallpapers = newValue }
+    }
 
     private var controller: WallpaperControlling?
     private let catalogProvider: WallpaperCatalogProviding
+    private let catalogDownloadService: CatalogDownloadService
+    private var featureViewModelCancellables = Set<AnyCancellable>()
     private let optimizer = VideoOptimizer()
     private let optimizationStore: VideoOptimizationStore
     private var previewEndObserver: NSObjectProtocol?
@@ -1622,7 +1635,6 @@ final class AppViewModel: ObservableObject {
     }
 
     private let appSupportDirectoryURL: URL
-    private let previewStateURL: URL
 
     var isControllerAvailable: Bool {
         controllerAvailable
@@ -1751,7 +1763,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private var selectedVideoURL: URL? {
-        pendingPreviewVideoURL ?? appliedVideoURL
+        previewViewModel.selectedVideoURL
     }
 
     private var previewPlayerURL: URL? {
@@ -1759,16 +1771,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var filteredCatalogWallpapers: [CatalogWallpaper] {
-        let groupFiltered = catalogWallpapers.filter { wallpaper in
-            guard let selectedCatalogGroup else { return true }
-            return wallpaper.catalogGroup == selectedCatalogGroup
-        }
-        let query = catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return groupFiltered }
-        return groupFiltered.filter { wallpaper in
-            wallpaper.title.localizedCaseInsensitiveContains(query)
-                || wallpaper.category.localizedCaseInsensitiveContains(query)
-        }
+        catalogViewModel.filteredWallpapers
     }
 
     init(
@@ -1778,13 +1781,23 @@ final class AppViewModel: ObservableObject {
         appSupportDirectoryURL: URL? = nil,
         previewStateURL: URL? = nil
     ) {
-        self.optimizationStore = optimizationStore
-        self.catalogProvider = catalogProvider
         let resolvedAppSupportURL = appSupportDirectoryURL
             ?? Self.defaultAppSupportDirectoryForCurrentProcess()
-        self.appSupportDirectoryURL = resolvedAppSupportURL
-        self.previewStateURL = previewStateURL
+        let resolvedPreviewStateURL = previewStateURL
             ?? resolvedAppSupportURL.appendingPathComponent("last_preview.json")
+        self.catalogViewModel = CatalogViewModel()
+        self.previewViewModel = PreviewViewModel(
+            previewStateURL: resolvedPreviewStateURL
+        )
+        self.lifecycleViewModel = LifecycleViewModel()
+        self.optimizationStore = optimizationStore
+        self.catalogProvider = catalogProvider
+        self.catalogDownloadService = CatalogDownloadService(
+            provider: catalogProvider,
+            catalogDirectoryURL: resolvedAppSupportURL
+                .appendingPathComponent("Catalog", isDirectory: true)
+        )
+        self.appSupportDirectoryURL = resolvedAppSupportURL
         if let controller {
             self.controller = controller
             self.controllerAvailable = true
@@ -1797,6 +1810,15 @@ final class AppViewModel: ObservableObject {
         optimizationHardwareAV1DecodeAvailable = optimizer.supportsHardwareAV1Decode()
         applyOptimizationSettings(optimizationStore.load())
         restoreInitialPreviewFromSavedConfig()
+        catalogViewModel.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &featureViewModelCancellables)
+        previewViewModel.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &featureViewModelCancellables)
+        lifecycleViewModel.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &featureViewModelCancellables)
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
@@ -1994,11 +2016,11 @@ final class AppViewModel: ObservableObject {
     private func restoreInitialPreviewFromSavedConfig() {
         guard pendingPreviewVideoURL == nil else { return }
         let seeds = [
-            loadStartupPreviewSeed(),
-            loadSavedPreviewSeed(),
+            previewViewModel.loadStartupSeed(from: appSupportDirectoryURL),
+            previewViewModel.loadSavedSeed(),
         ].compactMap { $0 }
-        guard let seed = seeds.first(where: { Self.previewURL(for: $0) != nil }),
-              let videoURL = Self.previewURL(for: seed)
+        guard let seed = seeds.first(where: { PreviewViewModel.validPreviewURL(for: $0) != nil }),
+              let videoURL = PreviewViewModel.validPreviewURL(for: seed)
         else {
             return
         }
@@ -2012,26 +2034,9 @@ final class AppViewModel: ObservableObject {
         configurePreviewOrPrepare(for: videoURL)
     }
 
-    private static func previewURL(for seed: WallpaperPreviewSeed) -> URL? {
-        let path = seed.video_path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty else { return nil }
-
-        let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard let values = try? url.resourceValues(forKeys: [
-            .isRegularFileKey,
-            .isReadableKey,
-        ]),
-        values.isRegularFile == true,
-        values.isReadable != false
-        else {
-            return nil
-        }
-        return url
-    }
-
     private func refreshPreviewFromSavedSeedIfNeeded(refreshPreview: Bool) -> Bool {
-        guard let seed = loadSavedPreviewSeed(),
-              let savedURL = Self.previewURL(for: seed)
+        guard let seed = previewViewModel.loadSavedSeed(),
+              let savedURL = PreviewViewModel.validPreviewURL(for: seed)
         else {
             return false
         }
@@ -2183,43 +2188,11 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func loadSavedPreviewSeed() -> WallpaperPreviewSeed? {
-        guard let data = try? Data(contentsOf: previewStateURL) else { return nil }
-        return try? JSONDecoder().decode(WallpaperPreviewSeed.self, from: data)
-    }
-
     private func savePreviewSeed(for videoURL: URL) {
-        let normalizedURL = videoURL.standardizedFileURL
-        guard FileManager.default.fileExists(atPath: normalizedURL.path) else { return }
-        let seed = WallpaperPreviewSeed(
-            video_path: normalizedURL.path,
-            playback_speed: playbackSpeed,
-            scale_mode: scaleMode.rawValue
-        )
-        do {
-            try FileManager.default.createDirectory(
-                at: previewStateURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let data = try JSONEncoder().encode(seed)
-            try data.write(to: previewStateURL, options: .atomic)
-        } catch {
-            // Preview persistence is best-effort and must not block playback.
-        }
-    }
-
-    private func loadStartupPreviewSeed() -> WallpaperPreviewSeed? {
-        let startupConfigURL = appSupportDirectoryURL.appendingPathComponent("config.json")
-        guard let data = try? Data(contentsOf: startupConfigURL) else { return nil }
-        guard let config = try? JSONDecoder().decode(ControlConfig.self, from: data),
-              !config.video_path.isEmpty
-        else {
-            return nil
-        }
-        return WallpaperPreviewSeed(
-            video_path: config.video_path,
-            playback_speed: config.playback_speed,
-            scale_mode: config.scale_mode
+        previewViewModel.saveSeed(
+            for: videoURL,
+            playbackSpeed: playbackSpeed,
+            scaleMode: scaleMode
         )
     }
 
@@ -2420,16 +2393,15 @@ final class AppViewModel: ObservableObject {
     }
 
     func isDownloading(_ wallpaper: CatalogWallpaper) -> Bool {
-        catalogDownloadID == wallpaper.id
+        catalogViewModel.isDownloading(wallpaper)
     }
 
     func toggleCatalogGroup(_ group: CatalogWallpaperGroup) {
-        selectedCatalogGroup = selectedCatalogGroup == group ? nil : group
-        catalogScrollTargetID = filteredCatalogWallpapers.first?.id
+        catalogViewModel.toggleGroup(group)
     }
 
     func catalogWallpaperCount(in group: CatalogWallpaperGroup) -> Int {
-        catalogWallpapers.filter { $0.catalogGroup == group }.count
+        catalogViewModel.count(in: group)
     }
 
     func applyCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
@@ -2769,7 +2741,7 @@ final class AppViewModel: ObservableObject {
 
     private func applyLifecycleResult(_ result: LifecycleResult) {
         if result.clearPendingPreview {
-            pendingPreviewVideoURL = nil
+            previewViewModel.clearPendingVideo()
         }
         apply(status: result.status, refreshPreview: result.refreshPreview)
         if let previewURL = result.previewURL {
@@ -3670,222 +3642,7 @@ final class AppViewModel: ObservableObject {
         } else if let existing = downloadedCatalogWallpapers.first(where: { $0.wallpaperID == wallpaper.id }) {
             try? FileManager.default.removeItem(at: existing.localURL)
         }
-
-        var lastError: Error?
-
-        if isMoeWallsWallpaper(wallpaper) {
-            do {
-                if let detailSource = try await moeWallsDetailDownloadSource(for: wallpaper) {
-                    return try await downloadCatalogSource(detailSource, for: wallpaper)
-                }
-            } catch {
-                lastError = error
-            }
-        }
-
-        do {
-            let sources = try await catalogSources(for: wallpaper)
-
-            for source in sources {
-                do {
-                    // Try the direct CDN URL first. This is much faster than
-                    // opening a WKWebView and still works with browser-style
-                    // headers/cookies for protected catalog hosts.
-                    return try await downloadCatalogSource(source, for: wallpaper)
-                } catch {
-                    lastError = error
-                }
-            }
-        } catch {
-            lastError = error
-        }
-
-        // MoeWalls' browser flow remains a compatibility fallback for pages
-        // whose direct CDN URL requires a token generated by JavaScript.
-        if isMoeWallsWallpaper(wallpaper),
-           let pageURL = wallpaper.sourcePageURL {
-            do {
-                return try await downloadMoeWallsVideo(for: wallpaper, pageURL: pageURL)
-            } catch {
-                lastError = error
-            }
-        }
-
-        throw lastError ?? URLError(.badURL)
-    }
-
-    private func moeWallsDetailDownloadSource(for wallpaper: CatalogWallpaper) async throws -> CatalogVideoSource? {
-        guard let pageURL = wallpaper.sourcePageURL else { return nil }
-        guard let moeWallsSource = catalogProvider as? MoeWallsSource else { return nil }
-
-        let details = try await moeWallsSource.fetchDetails(pageURL: pageURL)
-        guard details.hasExplicitPlayableSource == true,
-              let downloadURL = details.downloadURL else {
-            return nil
-        }
-        let width = details.resolution?.width ?? 0
-        let height = details.resolution?.height ?? 0
-        return CatalogVideoSource(url: downloadURL, width: width, height: height)
-    }
-
-    private func downloadCatalogSource(_ source: CatalogVideoSource, for wallpaper: CatalogWallpaper) async throws -> URL {
-        let widthLabel = source.width > 0 ? String(source.width) : "auto"
-        let heightLabel = source.height > 0 ? String(source.height) : "auto"
-        let directory = try catalogDirectoryURL()
-        let fileStem = "\(wallpaper.id)-\(widthLabel)x\(heightLabel)"
-        let cachedDestination = directory.appendingPathComponent(
-            "\(fileStem).\(downloadFileExtension(for: source.url))"
-        )
-
-        if hasUsableCatalogFile(at: cachedDestination) {
-            return cachedDestination.standardizedFileURL
-        } else if FileManager.default.fileExists(atPath: cachedDestination.path) {
-            try? FileManager.default.removeItem(at: cachedDestination)
-        }
-
-        let useBrowserStyleHeaders = shouldUseBrowserStyleHeaders(for: source.url, wallpaper: wallpaper)
-        var request = URLRequest(url: source.url)
-        request.timeoutInterval = 45
-        request.setValue(
-            useBrowserStyleHeaders
-                ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15"
-                : "AuraFlow/1.1",
-            forHTTPHeaderField: "User-Agent"
-        )
-        request.setValue("*/*", forHTTPHeaderField: "Accept")
-        if useBrowserStyleHeaders {
-            request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
-            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-            request.setValue("no-cache", forHTTPHeaderField: "Pragma")
-        }
-        if let sourcePageURL = wallpaper.sourcePageURL {
-            request.setValue(sourcePageURL.absoluteString, forHTTPHeaderField: "Referer")
-            if source.url.host?.contains("moewalls.com") == true,
-               let origin = catalogOriginHeaderValue(for: sourcePageURL) {
-                request.setValue(origin, forHTTPHeaderField: "Origin")
-            }
-        }
-
-        let configuration = useBrowserStyleHeaders
-            ? URLSessionConfiguration.ephemeral
-            : URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 180
-        configuration.httpMaximumConnectionsPerHost = 4
-        configuration.waitsForConnectivity = false
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        if useBrowserStyleHeaders {
-            configuration.httpCookieAcceptPolicy = .always
-            configuration.httpShouldSetCookies = true
-        }
-        let session = URLSession(configuration: configuration)
-
-        let (temporaryURL, response) = try await CatalogFileDownloader.download(
-            request: request,
-            session: session
-        )
-        defer { try? FileManager.default.removeItem(at: temporaryURL) }
-        if let httpResponse = response as? HTTPURLResponse,
-           !(200...299).contains(httpResponse.statusCode) {
-            throw CatalogDownloadError.badStatus(url: source.url, statusCode: httpResponse.statusCode)
-        }
-        if let mimeType = response.mimeType?.lowercased(),
-           mimeType.hasPrefix("text/") || mimeType.contains("html") {
-            throw CatalogDownloadError.htmlResponse(url: source.url)
-        }
-        guard isLikelyCatalogMediaResponse(response: response, sourceURL: source.url) else {
-            throw CatalogDownloadError.unsupportedResponse(url: source.url)
-        }
-
-        let destination = directory.appendingPathComponent(
-            "\(fileStem).\(downloadFileExtension(for: source.url, response: response))"
-        )
-
-        if destination != cachedDestination {
-            try? FileManager.default.removeItem(at: destination)
-        }
-        try FileManager.default.moveItem(at: temporaryURL, to: destination)
-
-        return destination.standardizedFileURL
-    }
-
-    private func downloadMoeWallsVideo(for wallpaper: CatalogWallpaper, pageURL: URL) async throws -> URL {
-        let resolver = await MainActor.run {
-            let resolver = MoeWallsBrowserResolver()
-            return resolver
-        }
-        let destination = try catalogDirectoryURL().appendingPathComponent("\(wallpaper.id).mp4")
-        try? FileManager.default.removeItem(at: destination)
-        let downloadedURL = try await resolver.downloadWallpaper(from: pageURL, to: destination)
-        guard await isPreviewPlayableVideo(at: downloadedURL) else {
-            try? FileManager.default.removeItem(at: downloadedURL)
-            throw URLError(.cannotDecodeContentData)
-        }
-        return downloadedURL
-    }
-
-    private func catalogSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
-        if !wallpaper.sources.isEmpty {
-            var ordered = wallpaper.sources
-            if let preferred = preferredSource(for: wallpaper),
-               let preferredIndex = ordered.firstIndex(of: preferred),
-               preferredIndex != 0 {
-                ordered.remove(at: preferredIndex)
-                ordered.insert(preferred, at: 0)
-            }
-            return ordered
-        }
-
-        let resolvedURL = try await catalogProvider.resolveDownloadURL(for: wallpaper)
-        return [CatalogVideoSource(url: resolvedURL, width: 0, height: 0)]
-    }
-
-    private func downloadFileExtension(for url: URL) -> String {
-        let ext = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if ext.isEmpty {
-            return "mp4"
-        }
-        return ext
-    }
-
-    private func downloadFileExtension(for url: URL, response: URLResponse) -> String {
-        let ext = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let knownExtensions = Set([
-            "mp4", "mov", "m4v", "webm", "mkv", "avi", "flv", "ts", "m2ts", "gif",
-            "png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "bmp", "webp"
-        ])
-        if knownExtensions.contains(ext) {
-            return ext
-        }
-
-        switch response.mimeType?.lowercased() {
-        case "image/jpeg": return "jpg"
-        case "image/png": return "png"
-        case "image/gif": return "gif"
-        case "image/heic": return "heic"
-        case "image/heif": return "heif"
-        case "image/webp": return "webp"
-        case "video/quicktime": return "mov"
-        case "video/webm": return "webm"
-        default: return "mp4"
-        }
-    }
-
-    private func isLikelyCatalogMediaResponse(response: URLResponse, sourceURL: URL) -> Bool {
-        if let mime = response.mimeType?.lowercased() {
-            if mime.hasPrefix("video/") || mime.hasPrefix("image/")
-                || mime == "application/octet-stream" || mime == "binary/octet-stream" {
-                return true
-            }
-            if mime.hasPrefix("text/") || mime.contains("html") || mime.contains("json") {
-                return false
-            }
-        }
-        let ext = sourceURL.pathExtension.lowercased()
-        return [
-            "mp4", "webm", "mov", "m4v", "mkv", "avi", "flv", "ts", "m2ts", "gif",
-            "png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "bmp", "webp"
-        ].contains(ext)
+        return try await catalogDownloadService.download(wallpaper)
     }
 
     private func hasUsableCatalogFile(at url: URL) -> Bool {
@@ -3894,37 +3651,6 @@ final class AppViewModel: ObservableObject {
         return (attributes?[.size] as? NSNumber)?.int64Value ?? 0 > 0
     }
 
-    private func isMoeWallsWallpaper(_ wallpaper: CatalogWallpaper) -> Bool {
-        wallpaper.attribution == "MoeWalls" || wallpaper.sourcePageURL?.host?.contains("moewalls.com") == true
-    }
-
-    private func preferredSource(for wallpaper: CatalogWallpaper) -> CatalogVideoSource? {
-        guard !wallpaper.sources.isEmpty else { return nil }
-        guard wallpaper.sources.count > 1 else { return wallpaper.sources.first }
-
-        let nativeSources = wallpaper.sources.filter { source in
-            isNativePlaybackContainer(source.url)
-        }
-        let candidateSources = nativeSources.isEmpty ? wallpaper.sources : nativeSources
-
-        let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
-        let targetWidth = Int(screenFrame.width)
-        let targetHeight = Int(screenFrame.height)
-
-        let largerOrEqual = candidateSources.filter { source in
-            source.width >= targetWidth && source.height >= targetHeight
-        }
-
-        if let best = largerOrEqual.min(by: { lhs, rhs in
-            (lhs.width * lhs.height) < (rhs.width * rhs.height)
-        }) {
-            return best
-        }
-
-        return candidateSources.max(by: { lhs, rhs in
-            (lhs.width * lhs.height) < (rhs.width * rhs.height)
-        })
-    }
 
     private func isNativePlaybackContainer(_ url: URL) -> Bool {
         switch url.pathExtension.lowercased() {
@@ -3933,20 +3659,6 @@ final class AppViewModel: ObservableObject {
         default:
             return false
         }
-    }
-
-    private func shouldUseBrowserStyleHeaders(for sourceURL: URL, wallpaper: CatalogWallpaper) -> Bool {
-        guard isMoeWallsWallpaper(wallpaper) else {
-            return false
-        }
-
-        guard let host = sourceURL.host?.lowercased() else {
-            return false
-        }
-
-        return host.contains("moewalls.com")
-            || host.contains("media.moewalls.com")
-            || host.contains("cdn.moewalls.com")
     }
 
     private func catalogDirectoryURL() throws -> URL {
@@ -4270,7 +3982,7 @@ final class AppViewModel: ObservableObject {
 
     private func selectVideoForPreview(_ url: URL, summary: String?) {
         cancelPreviewPreparation()
-        pendingPreviewVideoURL = url
+        previewViewModel.selectPendingVideo(url)
         configurePreviewOrPrepare(for: url)
         savePreviewSeed(for: url)
         statusMessage = summary
@@ -4440,7 +4152,7 @@ final class AppViewModel: ObservableObject {
             : try await prepareVideoURLForPlayback(sourceURL)
         let finalStatus = try await runAsync { try controller.start(videoURL: prepared.url, speed: nil) }
 
-        pendingPreviewVideoURL = nil
+        previewViewModel.clearPendingVideo()
         apply(status: finalStatus, refreshPreview: false)
         let configuredPreviewURL = finalStatus.config.video_path.isEmpty
             ? prepared.url
