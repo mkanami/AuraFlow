@@ -18,23 +18,6 @@ private let lockScreenLifecycleLogger = Logger(
     category: "LockScreenLifecycle"
 )
 
-private actor AerialOperationGate {
-    private var isHeld = false
-
-    func acquire() async throws {
-        while isHeld {
-            try Task.checkCancellation()
-            try await Task.sleep(nanoseconds: 1_000_000)
-        }
-        try Task.checkCancellation()
-        isHeld = true
-    }
-
-    func release() {
-        isHeld = false
-    }
-}
-
 public enum AerialLockScreenInstallerError: LocalizedError {
     case wallpaperStoreUnavailable
     case aerialAssetUnavailable
@@ -87,8 +70,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     private let assetStore: AerialAssetStore
     private let mediaPreparer: AerialMediaPreparer
     private let wallpaperStoreTransaction: WallpaperStoreTransaction
-    private let operationLock = NSLock()
-    private let asyncOperationGate = AerialOperationGate()
+    private let mutationCoordinator = AerialMutationCoordinator()
     var lockOnlyRemovalCommitHook: (() -> Void)?
     var lockOnlyRepairCommitHook: (() -> Void)?
     private var usesCanonicalWallpaperStore: Bool {
@@ -371,7 +353,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         videoURL: URL,
         shouldProceed: @escaping () -> Bool = { true }
     ) async throws -> Bool {
-        try await withAsyncOperationGate {
+        try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
                 try await repairLockScreenOnlyGenerationLocked(
                     videoURL: videoURL,
@@ -395,16 +377,18 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     /// Desktop surfaces for every session keeps repeated locks consistent.
     @discardableResult
     public func applyCurrentDesktopFallback() -> Bool {
-        guard let stillFrameURL = currentStillFrameURL() else {
-            return false
+        mutationCoordinator.withExclusiveNonThrowing {
+            guard let stillFrameURL = currentStillFrameURL() else {
+                return false
+            }
+            return WallpaperDesktopSupport.applyToAllDesktops(
+                imagePath: stillFrameURL.path
+            )
         }
-        return WallpaperDesktopSupport.applyToAllDesktops(
-            imagePath: stillFrameURL.path
-        )
     }
 
     public func install(videoURL: URL) async throws {
-        try await withAsyncOperationGate {
+        try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
                 _ = try await installLocked(
                     videoURL: videoURL,
@@ -424,7 +408,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     }
 
     public func installLockScreenOnly(videoURL: URL) async throws {
-        try await withAsyncOperationGate {
+        try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
                 _ = try await installLocked(
                     videoURL: videoURL,
@@ -464,7 +448,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     /// and atomic commit checks; this only moves HEVC conversion off the
     /// button action.
     public func prepareLockScreenMedia(videoURL: URL) async throws {
-        try await withAsyncOperationGate {
+        try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
                 guard fileManager.fileExists(atPath: wallpaperStoreURL.path) else {
                     throw AerialLockScreenInstallerError.wallpaperStoreUnavailable
@@ -691,7 +675,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
     ) async throws -> Bool {
-        try await withAsyncOperationGate {
+        try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
                 try await installLocked(
                     videoURL: videoURL,
@@ -713,7 +697,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         videoURL: URL,
         shouldProceed: @escaping () -> Bool = { true }
     ) async throws -> Bool {
-        try await withAsyncOperationGate {
+        try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
                 try await installLocked(
                     videoURL: videoURL,
@@ -1129,41 +1113,41 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     }
 
     public func uninstall() throws {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        try withCrossProcessLock {
-            try uninstallLocked()
+        try withMutationCoordinator {
+            try withCrossProcessLock {
+                try uninstallLocked()
+            }
         }
     }
 
     public func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        try withCrossProcessLock {
-            guard let marker = loadMarker() else {
-                if fileManager.fileExists(atPath: markerURL.path) {
-                    // A corrupt lock-only marker must never route Remove into
-                    // the old full-store recovery path: that could overwrite
-                    // the live Desktop with the startup snapshot.
+        try withMutationCoordinator {
+            try withCrossProcessLock {
+                guard let marker = loadMarker() else {
+                    if fileManager.fileExists(atPath: markerURL.path) {
+                        // A corrupt lock-only marker must never route Remove into
+                        // the old full-store recovery path: that could overwrite
+                        // the live Desktop with the startup snapshot.
+                        throw AerialLockScreenInstallerError
+                            .malformedWallpaperStore
+                    }
+                    removeIncompleteBackupsIfSafe()
+                    return
+                }
+                guard marker.completed == true else {
                     throw AerialLockScreenInstallerError
                         .malformedWallpaperStore
                 }
-                removeIncompleteBackupsIfSafe()
-                return
+                guard marker.lockScreenOnly == true
+                        || marker.desktopIncluded == false
+                else {
+                    try uninstallLocked()
+                    return
+                }
+                try uninstallLockScreenOnlyPreservingCurrentDesktopLocked(
+                    marker: marker
+                )
             }
-            guard marker.completed == true else {
-                throw AerialLockScreenInstallerError
-                    .malformedWallpaperStore
-            }
-            guard marker.lockScreenOnly == true
-                    || marker.desktopIncluded == false
-            else {
-                try uninstallLocked()
-                return
-            }
-            try uninstallLockScreenOnlyPreservingCurrentDesktopLocked(
-                marker: marker
-            )
         }
     }
 
@@ -1504,18 +1488,20 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         return try await operation()
     }
 
-    private func withAsyncOperationGate<T>(
+    private func withMutationCoordinator<T>(
         _ operation: () async throws -> T
     ) async throws -> T {
-        try await asyncOperationGate.acquire()
-        do {
-            let result = try await operation()
-            await asyncOperationGate.release()
-            return result
-        } catch {
-            await asyncOperationGate.release()
-            throw error
-        }
+        try await mutationCoordinator.acquire()
+        defer { mutationCoordinator.release() }
+        return try await operation()
+    }
+
+    private func withMutationCoordinator<T>(
+        _ operation: () throws -> T
+    ) throws -> T {
+        mutationCoordinator.acquireSynchronously()
+        defer { mutationCoordinator.release() }
+        return try operation()
     }
 
     private func resolveAssetID() -> String? {
@@ -1585,84 +1571,84 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     /// route is restored after unlock.
     @discardableResult
     public func activateLockScreenForCurrentSession() throws -> Bool {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        return try withCrossProcessLock {
-            guard requiresLockScreenSessionPromotion,
-                  var marker = loadMarker(),
-                  marker.completed == true
-            else {
-                return false
-            }
-            let currentStoreData = try Data(contentsOf: wallpaperStoreURL)
-            let originalStoreData = try Data(
-                contentsOf: wallpaperStoreBackupURL
-            )
-            let latestUserStoreData = try
-                wallpaperStoreTransaction.captureLatestUserWallpaperStoreData(
-                    from: currentStoreData,
-                    fallbackData: originalStoreData,
-                    managedAssetID: marker.assetID
+        try withMutationCoordinator {
+            try withCrossProcessLock {
+                guard requiresLockScreenSessionPromotion,
+                      var marker = loadMarker(),
+                      marker.completed == true
+                else {
+                    return false
+                }
+                let currentStoreData = try Data(contentsOf: wallpaperStoreURL)
+                let originalStoreData = try Data(
+                    contentsOf: wallpaperStoreBackupURL
                 )
-            if markerStoreIncludesDesktop(marker),
-               wallpaperStoreTransaction.wallpaperStoreFullySelectsAerial(
-                   assetID: marker.assetID,
-                   scope: .sharedWallpaper
-               ),
-               systemWallpaperURLMatches(assetID: marker.assetID) {
-                return false
-            }
-            if marker.systemWallpaperURLWasCaptured == true {
-                // The user may change Desktop while lock-only mode is active.
-                // Index is authoritative here: SystemWallpaperURL can remain
-                // stale while macOS visibly switches a split Desktop route.
-                marker.originalSystemWallpaperURL =
-                    wallpaperStoreTransaction.latestUserSystemWallpaperURL(
-                        from: latestUserStoreData,
+                let latestUserStoreData = try
+                    wallpaperStoreTransaction.captureLatestUserWallpaperStoreData(
+                        from: currentStoreData,
+                        fallbackData: originalStoreData,
                         managedAssetID: marker.assetID
-                    ) ?? currentSystemWallpaperURL()
-                try saveMarker(marker)
-            }
-            if !wallpaperStoreTransaction.wallpaperStoreFullySelectsAerial(
-                assetID: marker.assetID,
-                scope: .sharedWallpaper
-            ) {
-                try latestUserStoreData.write(
-                    to: lockSessionStoreBackupURL,
-                    options: .atomic
-                )
-            }
-            let activeStoreData = try wallpaperStoreTransaction
-                .aerialWallpaperStoreData(
-                    from: latestUserStoreData,
+                    )
+                if markerStoreIncludesDesktop(marker),
+                   wallpaperStoreTransaction.wallpaperStoreFullySelectsAerial(
+                       assetID: marker.assetID,
+                       scope: .sharedWallpaper
+                   ),
+                   systemWallpaperURLMatches(assetID: marker.assetID) {
+                    return false
+                }
+                if marker.systemWallpaperURLWasCaptured == true {
+                    // The user may change Desktop while lock-only mode is active.
+                    // Index is authoritative here: SystemWallpaperURL can remain
+                    // stale while macOS visibly switches a split Desktop route.
+                    marker.originalSystemWallpaperURL =
+                        wallpaperStoreTransaction.latestUserSystemWallpaperURL(
+                            from: latestUserStoreData,
+                            managedAssetID: marker.assetID
+                        ) ?? currentSystemWallpaperURL()
+                    try saveMarker(marker)
+                }
+                if !wallpaperStoreTransaction.wallpaperStoreFullySelectsAerial(
                     assetID: marker.assetID,
                     scope: .sharedWallpaper
-                )
-            let storeChanged =
-                (try? Data(contentsOf: wallpaperStoreURL)) != activeStoreData
-            let systemWallpaperURLChanged =
-                !systemWallpaperURLMatches(assetID: marker.assetID)
-            if storeChanged {
-                try activeStoreData.write(
-                    to: wallpaperStoreURL,
-                    options: .atomic
-                )
+                ) {
+                    try latestUserStoreData.write(
+                        to: lockSessionStoreBackupURL,
+                        options: .atomic
+                    )
+                }
+                let activeStoreData = try wallpaperStoreTransaction
+                    .aerialWallpaperStoreData(
+                        from: latestUserStoreData,
+                        assetID: marker.assetID,
+                        scope: .sharedWallpaper
+                    )
+                let storeChanged =
+                    (try? Data(contentsOf: wallpaperStoreURL)) != activeStoreData
+                let systemWallpaperURLChanged =
+                    !systemWallpaperURLMatches(assetID: marker.assetID)
+                if storeChanged {
+                    try activeStoreData.write(
+                        to: wallpaperStoreURL,
+                        options: .atomic
+                    )
+                }
+                guard setSystemWallpaperURL(
+                    desiredSystemWallpaperURL(assetID: marker.assetID)
+                ) else {
+                    throw AerialLockScreenInstallerError
+                        .wallpaperStoreUpdateFailed
+                }
+                if storeChanged || systemWallpaperURLChanged {
+                    // The Aerial provider may already have a decoded first frame
+                    // when loginwindow raises the shield. Killing WallpaperAgent
+                    // here races that frame and leaves a forced lock on a blank
+                    // surface while the replacement provider starts. Keep the
+                    // current provider alive; only launch one when it is absent.
+                    try lockSessionHandoffSystem({ true })
+                }
+                return storeChanged || systemWallpaperURLChanged
             }
-            guard setSystemWallpaperURL(
-                desiredSystemWallpaperURL(assetID: marker.assetID)
-            ) else {
-                throw AerialLockScreenInstallerError
-                    .wallpaperStoreUpdateFailed
-            }
-            if storeChanged || systemWallpaperURLChanged {
-                // The Aerial provider may already have a decoded first frame
-                // when loginwindow raises the shield. Killing WallpaperAgent
-                // here races that frame and leaves a forced lock on a blank
-                // surface while the replacement provider starts. Keep the
-                // current provider alive; only launch one when it is absent.
-                try lockSessionHandoffSystem({ true })
-            }
-            return storeChanged || systemWallpaperURLChanged
         }
     }
 
@@ -1670,94 +1656,94 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     /// shared Aerial promotion used for the secure Lock Screen.
     @discardableResult
     public func restoreDesktopAfterLockScreenSession() throws -> Bool {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        return try withCrossProcessLock {
-            guard requiresLockScreenSessionPromotion,
-                  let marker = loadMarker(),
-                  marker.completed == true
-            else {
-                return false
-            }
-            let currentStoreData = try Data(contentsOf: wallpaperStoreURL)
-            let hasSessionBackup = fileManager.fileExists(
-                atPath: lockSessionStoreBackupURL.path
-            )
-            let hasManagedDesktop = wallpaperStoreTransaction
-                .wallpaperStoreHasManagedDesktop(
-                currentStoreData,
-                managedAssetID: marker.assetID
-            )
-            let hasManagedSystemURL = systemWallpaperURLMatches(
-                assetID: marker.assetID
-            )
-            guard hasManagedDesktop || hasManagedSystemURL else {
-                // No lock promotion is active. A leftover session snapshot is
-                // stale and must never overwrite a Desktop changed by the
-                // user while AuraFlow keeps running.
-                if hasSessionBackup {
-                    try? fileManager.removeItem(
-                        at: lockSessionStoreBackupURL
+        try withMutationCoordinator {
+            try withCrossProcessLock {
+                guard requiresLockScreenSessionPromotion,
+                      let marker = loadMarker(),
+                      marker.completed == true
+                else {
+                    return false
+                }
+                let currentStoreData = try Data(contentsOf: wallpaperStoreURL)
+                let hasSessionBackup = fileManager.fileExists(
+                    atPath: lockSessionStoreBackupURL.path
+                )
+                let hasManagedDesktop = wallpaperStoreTransaction
+                    .wallpaperStoreHasManagedDesktop(
+                        currentStoreData,
+                        managedAssetID: marker.assetID
+                    )
+                let hasManagedSystemURL = systemWallpaperURLMatches(
+                    assetID: marker.assetID
+                )
+                guard hasManagedDesktop || hasManagedSystemURL else {
+                    // No lock promotion is active. A leftover session snapshot is
+                    // stale and must never overwrite a Desktop changed by the
+                    // user while AuraFlow keeps running.
+                    if hasSessionBackup {
+                        try? fileManager.removeItem(
+                            at: lockSessionStoreBackupURL
+                        )
+                    }
+                    return false
+                }
+                let originalStoreData = try Data(
+                    contentsOf: wallpaperStoreBackupURL
+                )
+                let desktopStoreData = try wallpaperStoreTransaction
+                    .captureLatestUserWallpaperStoreData(
+                        from: currentStoreData,
+                        fallbackData: originalStoreData,
+                        managedAssetID: marker.assetID
+                    )
+                let lockOnlyStoreData = try wallpaperStoreTransaction
+                    .aerialWallpaperStoreData(
+                        from: desktopStoreData,
+                        assetID: marker.assetID,
+                        scope: .lockScreenOnly
+                    )
+                let storeChanged =
+                    (try? Data(contentsOf: wallpaperStoreURL)) != lockOnlyStoreData
+                if storeChanged {
+                    try lockOnlyStoreData.write(
+                        to: wallpaperStoreURL,
+                        options: .atomic
                     )
                 }
-                return false
-            }
-            let originalStoreData = try Data(
-                contentsOf: wallpaperStoreBackupURL
-            )
-            let desktopStoreData = try wallpaperStoreTransaction
-                .captureLatestUserWallpaperStoreData(
-                    from: currentStoreData,
-                    fallbackData: originalStoreData,
-                    managedAssetID: marker.assetID
-                )
-            let lockOnlyStoreData = try wallpaperStoreTransaction
-                .aerialWallpaperStoreData(
-                    from: desktopStoreData,
-                    assetID: marker.assetID,
-                    scope: .lockScreenOnly
-                )
-            let storeChanged =
-                (try? Data(contentsOf: wallpaperStoreURL)) != lockOnlyStoreData
-            if storeChanged {
-                try lockOnlyStoreData.write(
-                    to: wallpaperStoreURL,
-                    options: .atomic
-                )
-            }
-            if marker.systemWallpaperURLWasCaptured == true {
-                let restoredSystemWallpaperURL =
-                    wallpaperStoreTransaction.latestUserSystemWallpaperURL(
-                        from: desktopStoreData,
-                        managedAssetID: marker.assetID
-                    ) ?? marker.originalSystemWallpaperURL
-                guard setSystemWallpaperURL(
-                    restoredSystemWallpaperURL
-                ) else {
-                    throw AerialLockScreenInstallerError
-                        .wallpaperStoreUpdateFailed
+                if marker.systemWallpaperURLWasCaptured == true {
+                    let restoredSystemWallpaperURL =
+                        wallpaperStoreTransaction.latestUserSystemWallpaperURL(
+                            from: desktopStoreData,
+                            managedAssetID: marker.assetID
+                        ) ?? marker.originalSystemWallpaperURL
+                    guard setSystemWallpaperURL(
+                        restoredSystemWallpaperURL
+                    ) else {
+                        throw AerialLockScreenInstallerError
+                            .wallpaperStoreUpdateFailed
+                    }
                 }
+                if storeChanged, usesCanonicalWallpaperStore {
+                    // WallpaperAgent can keep the temporary Aerial route in
+                    // memory across unlock. Keep its provider warm only after
+                    // the user's Desktop/Idle data is written so it rereads the
+                    // original Desktop choice without a destructive restart.
+                    try desktopRestoreSystem { true }
+                }
+                if markerStoreIncludesDesktop(marker) {
+                    var migratedMarker = marker
+                    migratedMarker.desktopIncluded = false
+                    try saveMarker(migratedMarker)
+                }
+                if hasSessionBackup {
+                    try? fileManager.removeItem(at: lockSessionStoreBackupURL)
+                }
+                return storeChanged
             }
-            if storeChanged, usesCanonicalWallpaperStore {
-                // WallpaperAgent can keep the temporary Aerial route in
-                // memory across unlock. Keep its provider warm only after
-                // the user's Desktop/Idle data is written so it rereads the
-                // original Desktop choice without a destructive restart.
-                try desktopRestoreSystem { true }
-            }
-            if markerStoreIncludesDesktop(marker) {
-                var migratedMarker = marker
-                migratedMarker.desktopIncluded = false
-                try saveMarker(migratedMarker)
-            }
-            if hasSessionBackup {
-                try? fileManager.removeItem(at: lockSessionStoreBackupURL)
-            }
-            return storeChanged
         }
     }
 
-   private func currentSystemWallpaperURL() -> String? {
+    private func currentSystemWallpaperURL() -> String? {
         guard usesCanonicalWallpaperStore else { return nil }
         return CFPreferencesCopyValue(
             systemWallpaperURLPreferenceKey,

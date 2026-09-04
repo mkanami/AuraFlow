@@ -4,6 +4,110 @@ import CoreMedia
 import Foundation
 import UniformTypeIdentifiers
 
+private struct AerialConversionResult: Sendable {
+    let terminationStatus: Int32
+    let standardError: Data
+}
+
+/// Bridges Process termination into async/await without blocking a Swift
+/// concurrency executor. Process and Pipe are Foundation reference types with
+/// no useful Sendable annotations, so this small state holder serializes their
+/// access at the boundary where Foundation invokes the termination callback.
+private final class AerialConversionProcessState: @unchecked Sendable {
+    private let lock = NSLock()
+    private let errorPipe: Pipe
+    private var continuation:
+        CheckedContinuation<AerialConversionResult, Error>?
+    private var process: Process?
+    private var cancellationRequested = false
+    private var finished = false
+
+    init(errorPipe: Pipe) {
+        self.errorPipe = errorPipe
+    }
+
+    func register(
+        process: Process,
+        continuation: CheckedContinuation<AerialConversionResult, Error>
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !cancellationRequested, !finished else {
+            return false
+        }
+        self.process = process
+        self.continuation = continuation
+        return true
+    }
+
+    func didStart(_ process: Process) {
+        lock.lock()
+        let shouldTerminate = cancellationRequested && !finished
+        lock.unlock()
+
+        if shouldTerminate, process.isRunning {
+            process.terminate()
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancellationRequested = true
+        let process = self.process
+        let shouldTerminate = !finished && process?.isRunning == true
+        lock.unlock()
+
+        if shouldTerminate {
+            process?.terminate()
+        }
+    }
+
+    func didTerminate(_ process: Process) {
+        let standardError = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        finish(
+            result: AerialConversionResult(
+                terminationStatus: process.terminationStatus,
+                standardError: standardError
+            )
+        )
+    }
+
+    func didFail(_ error: Error) {
+        finish(error: error)
+    }
+
+    private func finish(result: AerialConversionResult? = nil, error: Error? = nil) {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        let continuation = self.continuation
+        let wasCancelled = cancellationRequested
+        self.continuation = nil
+        self.process = nil
+        lock.unlock()
+
+        guard let continuation else { return }
+        if wasCancelled {
+            continuation.resume(throwing: CancellationError())
+        } else if let error {
+            continuation.resume(throwing: error)
+        } else if let result {
+            continuation.resume(returning: result)
+        } else {
+            continuation.resume(
+                throwing: AerialLockScreenInstallerError
+                    .aerialVideoPreparationFailed(
+                        "The conversion process ended without a result."
+                    )
+            )
+        }
+    }
+}
+
 /// Prepares media for the native macOS Aerial Lock Screen provider.
 ///
 /// The native provider accepts HEVC video in a QuickTime movie. Noncanonical
@@ -13,15 +117,20 @@ internal final class AerialMediaPreparer {
     private let fileManager: FileManager
     private let usesCanonicalWallpaperStore: Bool
     private let preparedCacheDirectoryURL: URL
+    private let conversionExecutableURL: URL
 
     internal init(
         fileManager: FileManager,
         usesCanonicalWallpaperStore: Bool,
-        preparedCacheDirectoryURL: URL
+        preparedCacheDirectoryURL: URL,
+        conversionExecutableURL: URL = URL(
+            fileURLWithPath: "/usr/bin/avconvert"
+        )
     ) {
         self.fileManager = fileManager
         self.usesCanonicalWallpaperStore = usesCanonicalWallpaperStore
         self.preparedCacheDirectoryURL = preparedCacheDirectoryURL
+        self.conversionExecutableURL = conversionExecutableURL
     }
 
     internal func prepare(from sourceURL: URL) async throws -> URL {
@@ -70,42 +179,79 @@ internal final class AerialMediaPreparer {
 
         let errorPipe = Pipe()
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/avconvert")
+        process.executableURL = conversionExecutableURL
         process.arguments = [
             "--source", sourceURL.path,
             "--preset", "PresetHEVCHighestQuality",
             "--output", outputURL.path,
             "--replace",
         ]
-        process.standardOutput = Pipe()
+        process.standardOutput = FileHandle.nullDevice
         process.standardError = errorPipe
 
         do {
-            try process.run()
-            process.waitUntilExit()
+            let result = try await waitForConversion(
+                process,
+                errorPipe: errorPipe
+            )
+
+            guard result.terminationStatus == 0,
+                  fileManager.fileExists(atPath: outputURL.path),
+                  try await isCompatible(at: outputURL)
+            else {
+                let detail = String(
+                    data: result.standardError,
+                    encoding: .utf8
+                )?.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw AerialLockScreenInstallerError
+                    .aerialVideoPreparationFailed(
+                        detail?.isEmpty == false
+                            ? detail!
+                            : "HEVC QuickTime conversion failed."
+                    )
+            }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw AerialLockScreenInstallerError
                 .aerialVideoPreparationFailed(error.localizedDescription)
         }
 
-        guard process.terminationStatus == 0,
-              fileManager.fileExists(atPath: outputURL.path),
-              try await isCompatible(at: outputURL)
-        else {
-            let detail = String(
-                data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            )?.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw AerialLockScreenInstallerError
-                .aerialVideoPreparationFailed(
-                    detail?.isEmpty == false
-                        ? detail!
-                        : "HEVC QuickTime conversion failed."
-                )
-        }
-
         try replaceCacheItem(at: cacheURL, with: outputURL)
         return cacheURL
+    }
+
+    private func waitForConversion(
+        _ process: Process,
+        errorPipe: Pipe
+    ) async throws -> AerialConversionResult {
+        let state = AerialConversionProcessState(errorPipe: errorPipe)
+
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                guard state.register(
+                    process: process,
+                    continuation: continuation
+                ) else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+
+                process.terminationHandler = { [state] process in
+                    state.didTerminate(process)
+                }
+
+                do {
+                    try process.run()
+                    state.didStart(process)
+                } catch {
+                    process.terminationHandler = nil
+                    state.didFail(error)
+                }
+            }
+        }, onCancel: {
+            state.cancel()
+        })
     }
 
     /// Returns true only for a local QuickTime movie whose first video track

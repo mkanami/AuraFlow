@@ -223,7 +223,10 @@ private func stopBridge(
     defer { fixture.cleanup() }
     let bridge = NativeLockScreenWallpaperBridge(
         executableURL: fixture.executableURL,
-        requestTimeout: 0.5
+        // The fixture intentionally performs several shell parses before its
+        // response. Keep this test deterministic when Swift Testing runs the
+        // native-process tests concurrently on a loaded CI worker.
+        requestTimeout: 2.0
     )
 
     #expect(await awaitBridgeResult { bridge.prepare(completion: $0) })
