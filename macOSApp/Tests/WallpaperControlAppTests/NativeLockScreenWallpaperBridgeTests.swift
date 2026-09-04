@@ -119,7 +119,9 @@ private final class NativeBridgeFixture {
 }
 
 private func awaitBridgeResult(
-    _ operation: (@escaping (Bool) -> Void) -> Void
+    _ operation: @escaping @Sendable (
+        @escaping @Sendable (Bool) -> Void
+    ) -> Void
 ) async -> Bool {
     await withCheckedContinuation { continuation in
         operation { succeeded in

@@ -139,6 +139,7 @@ jobs:
           )
           swift build --target AuraWallpaperCore "${strict_flags[@]}"
           swift build --target WallpaperControlApp "${strict_flags[@]}"
+          swift build --target AuraWallpaperAgent "${strict_flags[@]}"
           swift build --target AuraWallpaperNativeBridge "${strict_flags[@]}"
 
 

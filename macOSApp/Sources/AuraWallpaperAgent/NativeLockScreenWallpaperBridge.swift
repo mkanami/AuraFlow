@@ -7,7 +7,11 @@ import OSLog
 /// runnable on macOS 13–25 because it only speaks JSON-lines over pipes; the
 /// process that imports Apple's private Wallpaper framework is launched only
 /// when a modern Lock Screen operation is actually requested.
-final class NativeLockScreenWallpaperBridge {
+/// The bridge owns Foundation process/pipe objects, but every mutable field is
+/// serialized on `ioQueue`. Marking the boundary explicitly lets callbacks
+/// from Foundation's `@Sendable` handlers carry the client into that queue
+/// without pretending that the individual Foundation objects are Sendable.
+final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
     private enum State {
         case stopped
         case starting
@@ -19,7 +23,7 @@ final class NativeLockScreenWallpaperBridge {
     private struct PendingRequest {
         let action: NativeLockScreenBridgeAction
         let generation: UInt64
-        let completion: ((Bool) -> Void)?
+        let completion: (@Sendable (Bool) -> Void)?
     }
 
     private static let logger = Logger(
@@ -34,7 +38,7 @@ final class NativeLockScreenWallpaperBridge {
     )
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
-    var onFailure: ((String) -> Void)?
+    var onFailure: (@Sendable (String) -> Void)?
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -43,7 +47,7 @@ final class NativeLockScreenWallpaperBridge {
     private var generation: UInt64 = 0
     private var pending: [String: PendingRequest] = [:]
     private var requestTimeouts: [String: DispatchWorkItem] = [:]
-    private var preparationWaiters: [(Bool) -> Void] = []
+    private var preparationWaiters: [@Sendable (Bool) -> Void] = []
 
     init(executableURL: URL?, requestTimeout: TimeInterval = 5.0) {
         self.executableURL = executableURL
@@ -57,7 +61,7 @@ final class NativeLockScreenWallpaperBridge {
         }
     }
 
-    func prepare(completion: @escaping (Bool) -> Void) {
+    func prepare(completion: @escaping @Sendable (Bool) -> Void) {
         ioQueue.async { [weak self] in
             guard let self else {
                 Self.completeOnMain(completion, succeeded: false)
@@ -69,7 +73,9 @@ final class NativeLockScreenWallpaperBridge {
         }
     }
 
-    func showForLockTransition(completion: ((Bool) -> Void)? = nil) {
+    func showForLockTransition(
+        completion: (@Sendable (Bool) -> Void)? = nil
+    ) {
         ioQueue.async { [weak self] in
             guard let self else {
                 if let completion {
@@ -120,7 +126,9 @@ final class NativeLockScreenWallpaperBridge {
         }
     }
 
-    private func ensureReady(_ continuation: @escaping (Bool) -> Void) {
+    private func ensureReady(
+        _ continuation: @escaping @Sendable (Bool) -> Void
+    ) {
         switch state {
         case .ready:
             continuation(true)
@@ -223,7 +231,7 @@ final class NativeLockScreenWallpaperBridge {
     @discardableResult
     private func send(
         _ action: NativeLockScreenBridgeAction,
-        completion: ((Bool) -> Void)?
+        completion: (@Sendable (Bool) -> Void)?
     ) -> Bool {
         guard let input,
               let process,
@@ -413,7 +421,7 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     private static func completeOnMain(
-        _ completion: @escaping (Bool) -> Void,
+        _ completion: @escaping @Sendable (Bool) -> Void,
         succeeded: Bool
     ) {
         DispatchQueue.main.async {

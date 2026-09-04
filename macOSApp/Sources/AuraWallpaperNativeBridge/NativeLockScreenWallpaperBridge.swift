@@ -48,8 +48,10 @@ final class NativeLockScreenWallpaperBridge {
             guard let self else { return }
             do {
                 let assertion = try await makeDisplayAssertion()
-                let presentation = try await WallpaperPresentationModeAssertion
-                    .takeIdleAssertion(displayAssertion: assertion)
+                let presentationBox = try await Self.takeIdleAssertion(
+                    displayAssertion: DisplayAssertionBox(assertion)
+                )
+                let presentation = presentationBox.value
                 let window = makeWindow(for: assertion.layer)
                 self.displayAssertion = assertion
                 self.presentationAssertion = presentation
@@ -84,6 +86,45 @@ final class NativeLockScreenWallpaperBridge {
         )
     }
 
+    // These private framework assertions are opaque Objective-C handles with
+    // no Sendable contract. The framework owns their cross-thread handoff;
+    // these audited boxes keep that unavoidable boundary explicit and local.
+    private final class DisplayAssertionBox: @unchecked Sendable {
+        let value: WallpaperDisplayAssertion
+
+        init(_ value: WallpaperDisplayAssertion) {
+            self.value = value
+        }
+    }
+
+    private final class PresentationAssertionBox: @unchecked Sendable {
+        let value: WallpaperPresentationModeAssertion
+
+        init(_ value: WallpaperPresentationModeAssertion) {
+            self.value = value
+        }
+    }
+
+    private nonisolated static func takeIdleAssertion(
+        displayAssertion: DisplayAssertionBox
+    ) async throws -> PresentationAssertionBox {
+        PresentationAssertionBox(
+            try await WallpaperPresentationModeAssertion.takeIdleAssertion(
+                displayAssertion: displayAssertion.value
+            )
+        )
+    }
+
+    private nonisolated static func takeLockedAssertion(
+        displayAssertion: DisplayAssertionBox
+    ) async throws -> PresentationAssertionBox {
+        PresentationAssertionBox(
+            try await WallpaperPresentationModeAssertion.takeLockedAssertion(
+                displayAssertion: displayAssertion.value
+            )
+        )
+    }
+
     func showForLockTransition(completion: ((Bool, String?) -> Void)? = nil) {
         // Close the small Stop -> Lock race: the marker is committed before
         // the .pause command is delivered to the agent.
@@ -111,10 +152,10 @@ final class NativeLockScreenWallpaperBridge {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let assertion = try await
-                    WallpaperPresentationModeAssertion.takeLockedAssertion(
-                        displayAssertion: displayAssertion
-                    )
+                let assertionBox = try await Self.takeLockedAssertion(
+                    displayAssertion: DisplayAssertionBox(displayAssertion)
+                )
+                let assertion = assertionBox.value
                 guard self.presentationRequestID == requestID,
                       self.showing
                 else {
@@ -179,10 +220,9 @@ final class NativeLockScreenWallpaperBridge {
         guard let displayAssertion else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
-            guard let assertion = try? await
-                WallpaperPresentationModeAssertion.takeIdleAssertion(
-                    displayAssertion: displayAssertion
-                ),
+            guard let assertion = (try? await Self.takeIdleAssertion(
+                displayAssertion: DisplayAssertionBox(displayAssertion)
+            ))?.value,
                 self.presentationRequestID == requestID,
                 !self.showing
             else {
