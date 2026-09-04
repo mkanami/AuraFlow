@@ -67,6 +67,48 @@ private enum TestInstallerError: Error {
     case uninstallFailed
 }
 
+private final class RuntimeModernInstaller: ModernLockScreenInstalling {
+    let isAvailable = true
+    var isInstalled: Bool
+
+    init(isInstalled: Bool) {
+        self.isInstalled = isInstalled
+    }
+
+    func install(videoURL: URL) throws {
+        isInstalled = true
+    }
+
+    func installLockScreenOnly(videoURL: URL) throws {
+        isInstalled = true
+    }
+
+    func uninstall() throws {
+        isInstalled = false
+    }
+
+    func lockScreenOnlyStatus(
+        videoURL: URL?
+    ) -> LockScreenOnlyGenerationStatus {
+        LockScreenOnlyGenerationStatus(
+            installed: isInstalled,
+            sourceMatches: isInstalled,
+            assetValid: isInstalled,
+            providerAvailable: isInstalled,
+            providerRunning: isInstalled,
+            wallpaperStoreValid: isInstalled,
+            screenSaverSelected: isInstalled
+        )
+    }
+
+    func repairLockScreenOnlyGeneration(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) throws -> Bool {
+        false
+    }
+}
+
 private enum NativeTestAgentError: Error {
     case readinessHandshakeFailed
 }
@@ -239,6 +281,57 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     await expectAsyncThrowing(NativeWallpaperControllerError.self) {
         try await controller.prepareLockScreenMedia(videoURL: fixture.videoURL)
     }
+}
+
+@Test func runtimeNativeBridgeFailureUsesLegacyFallback() async throws {
+    let fixture = try NativeRuntimeFixture("native-bridge-runtime-failure")
+    defer { fixture.cleanup() }
+
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: fixture.videoURL.path,
+            playback_speed: 1.0,
+            show_on_lock_screen: true
+        )
+    )
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+
+    let modernInstaller = RuntimeModernInstaller(isInstalled: true)
+    let modern = ModernMacOS26Adapter(
+        installer: modernInstaller,
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 27,
+            minorVersion: 0,
+            patchVersion: 0
+        )
+    )
+    let legacyInstaller = RecordingLockScreenSaverInstaller()
+    let adapter = WallpaperPlatformAdapter(
+        modern: modern,
+        legacy: LegacyMacOSAdapter(installer: legacyInstaller)
+    )
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: adapter,
+        nativeBridgeURL: fixture.root.appendingPathComponent("bridge")
+    )
+
+    controller.markNativeLockScreenBridgeUnavailable(
+        reason: "private provider ABI changed"
+    )
+
+    #expect(controller.lockScreenCapabilities.usesPrivateWallpaperFramework == false)
+    #expect(
+        controller.lockScreenCapabilities.availabilityMessage?
+            .contains("became unavailable") == true
+    )
+    try await controller.syncLockScreenSaver()
+
+    #expect(legacyInstaller.installedVideoURL == fixture.videoURL)
+    #expect(modernInstaller.isInstalled == false)
+    #expect(fixture.store.loadLockScreenOnlySource() == nil)
+    #expect(fixture.store.loadConfig().video_path == fixture.videoURL.path)
 }
 
 @Test func terminateDaemonDoesNotSignalProcessWithMismatchedIdentity() async throws {

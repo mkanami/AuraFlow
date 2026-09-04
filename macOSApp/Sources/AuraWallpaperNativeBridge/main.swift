@@ -1,5 +1,6 @@
 import AppKit
 import AuraWallpaperCore
+import Darwin
 import Foundation
 
 @MainActor
@@ -96,8 +97,20 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
     }
 }
 
-guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 else {
-    exit(1)
+let bridgeExecutableURL = Bundle.main.executableURL
+    ?? URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+let bridgeCapabilities = NativeLockScreenBridgeCapabilityChecker.check(
+    executableURL: bridgeExecutableURL
+)
+guard bridgeCapabilities.isAvailable else {
+    fputs(
+        "AuraWallpaperNativeBridge unavailable: "
+            + bridgeCapabilities.message
+            + "\n",
+        stderr
+    )
+    // EX_CONFIG: the process cannot provide this optional platform route.
+    exit(78)
 }
 
 let application = NSApplication.shared

@@ -68,6 +68,20 @@ time the wallpaper starts. Deleted Space records and old AuraFlow
 versions without the modern Aerial store, AuraFlow falls back to its bundled
 legacy Screen Saver module.
 
+The native Aerial route is an optional capability, not a requirement for starting
+AuraFlow. It is enabled only when the OS is macOS 26 or newer, the bundled
+`AuraWallpaperNativeBridge` is executable, and both required system providers are
+present. The control app and the portable wallpaper agent never link Apple's
+private `Wallpaper` frameworks. If a preflight or runtime check fails, AuraFlow
+disables the native route and uses the legacy Screen Saver path without claiming
+that the native installation succeeded.
+
+`Wallpaper.framework` and `WallpaperTypes.framework` are private Apple frameworks.
+The native bridge is therefore distributed as a separate optional executable and
+is supported only in the direct-download distribution. A future macOS update can
+disable this route until compatibility is added; a successful notarization does
+not guarantee private API compatibility.
+
 **Remove** stops the live wallpaper agent, restores the reserved Aerial asset
 and backed-up wallpaper configuration, clears the selected video, restores the
 original desktop on every current Space, and restarts the macOS wallpaper
@@ -80,7 +94,11 @@ For release builds, `ffmpeg` and `ffprobe` are bundled when available on the bui
 
 Download `AuraFlow.dmg` from GitHub Releases, open it, and drag `AuraFlow.app` into `/Applications`.
 
-If the release is not Developer ID notarized, macOS may block the first launch with a security warning. In that case, open System Settings, go to Privacy & Security, and allow AuraFlow from the blocked app section.
+GitHub Releases are the supported distribution channel. Release artifacts must
+be Developer ID signed and notarized; the project is not distributed through the
+Mac App Store because the optional native bridge links private Apple frameworks.
+Local ad-hoc builds are useful for development only and may show a Gatekeeper
+warning.
 
 ## Build
 
@@ -115,7 +133,11 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 
 `scripts/build_release.sh` builds the Swift targets, stages the app bundle, signs nested Mach-O binaries, signs the app bundle, and packages ZIP and DMG artifacts.
 
-When `CODESIGN_IDENTITY` is set to a Developer ID Application certificate, release builds can be notarized by the GitHub Actions release workflow. Without Developer ID credentials, the build falls back to valid ad-hoc signing so the bundle is structurally valid, but macOS will still show an unknown-developer warning.
+When `CODESIGN_IDENTITY` is set to a Developer ID Application certificate, the
+release workflow signs and notarizes the app and DMG. The packaging script also
+fails if private framework linkage leaks into the control app, wallpaper agent,
+or screen saver; only `AuraWallpaperNativeBridge` may contain those links. The
+GitHub release workflow refuses to publish an ad-hoc artifact.
 
 ## Project Layout
 

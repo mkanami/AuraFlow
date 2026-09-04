@@ -54,8 +54,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private let store = WallpaperRuntimeStore()
     private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
-    private let lockScreenPlatform: LockScreenPlatformOperating =
-        LockScreenPlatformFactory.makeAgentPlatform()
+    private let lockScreenPlatform: LockScreenPlatformOperating
     private let nativeLockScreenBridge: NativeLockScreenWallpaperBridge
     private let lockScreenRepairQueue = DispatchQueue(
         label: "com.auraflow.lock-screen-repair",
@@ -125,12 +124,16 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let stallRecoveryThreshold = 2
 
     override init() {
+        let nativeBridgeURL = Self.nativeBridgeURLFromArguments()
+        self.lockScreenPlatform = LockScreenPlatformFactory.makeAgentPlatform(
+            nativeBridgeURL: nativeBridgeURL
+        )
         self.config = store.loadConfig()
         self.lockScreenState = LockScreenStateMachine(
             isEnabled: self.config.show_on_lock_screen ?? false
         )
         self.nativeLockScreenBridge = NativeLockScreenWallpaperBridge(
-            executableURL: Self.nativeBridgeURLFromArguments()
+            executableURL: nativeBridgeURL
         )
         super.init()
         self.nativeLockScreenBridge.onFailure = { [weak self] reason in

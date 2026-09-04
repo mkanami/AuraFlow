@@ -142,7 +142,7 @@ private func stopBridge(
     defer { fixture.cleanup() }
     let bridge = NativeLockScreenWallpaperBridge(
         executableURL: fixture.executableURL,
-        requestTimeout: 0.5
+        requestTimeout: 2.0
     )
 
     #expect(await awaitBridgeResult { bridge.prepare(completion: $0) })

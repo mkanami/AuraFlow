@@ -15,7 +15,7 @@ jobs:
       CLANG_MODULE_CACHE_PATH: /tmp/auraflow-clang-module-cache
       BUILD_UNIVERSAL: "1"
       REQUIRE_UNIVERSAL: "1"
-      REQUIRE_CODESIGN: "0"
+      REQUIRE_CODESIGN: "1"
       APP_DISPLAY_NAME: AuraFlow
     steps:
       - name: Checkout
@@ -72,10 +72,9 @@ jobs:
             echo "REQUIRE_UNIVERSAL=1" >> "${GITHUB_ENV}"
             echo "Using Developer ID signing and notarization"
           else
-            echo "mode=ad-hoc" >> "${GITHUB_OUTPUT}"
-            echo "REQUIRE_CODESIGN=0" >> "${GITHUB_ENV}"
-            echo "REQUIRE_UNIVERSAL=0" >> "${GITHUB_ENV}"
-            printf 'Using ad-hoc signing; missing Apple release secrets: %s\n' "${missing[*]}"
+            printf 'Developer ID release credentials are incomplete: %s\n' "${missing[*]}"
+            printf 'Refusing to publish an ad-hoc artifact.\n'
+            exit 1
           fi
 
       - name: Import Developer ID certificate
@@ -191,13 +190,8 @@ jobs:
         shell: bash
         run: |
           codesign --verify --deep --strict --verbose=2 dist/AuraFlow.app
-          if [[ "${{ steps.signing.outputs.mode }}" == "developer-id" ]]; then
-            spctl -a -vv dist/AuraFlow.app
-            spctl -a -vv -t open dist/AuraFlow.dmg
-          else
-            spctl -a -vv dist/AuraFlow.app || true
-            spctl -a -vv -t open dist/AuraFlow.dmg || true
-          fi
+          spctl -a -vv dist/AuraFlow.app
+          spctl -a -vv -t open dist/AuraFlow.dmg
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4

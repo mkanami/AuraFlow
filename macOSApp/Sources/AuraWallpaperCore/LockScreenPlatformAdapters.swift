@@ -178,13 +178,22 @@ public enum LockScreenPlatformFactory {
     public static func makeAgentPlatform(
         operatingSystemVersion: OperatingSystemVersion = ProcessInfo.processInfo
             .operatingSystemVersion,
-        modernInstaller: ModernLockScreenInstalling? = nil
+        modernInstaller: ModernLockScreenInstalling? = nil,
+        nativeBridgeURL: URL? = nil
     ) -> LockScreenPlatformOperating {
         guard operatingSystemVersion.majorVersion >= 26 else {
             return UnsupportedAdapter(
                 message:
-                    "The legacy screen saver owns Lock Screen runtime on this macOS version."
+                "The legacy screen saver owns Lock Screen runtime on this macOS version."
             )
+        }
+
+        let nativeBridgeCapabilities = NativeLockScreenBridgeCapabilityChecker.check(
+            operatingSystemVersion: operatingSystemVersion,
+            executableURL: nativeBridgeURL
+        )
+        guard nativeBridgeCapabilities.isAvailable else {
+            return UnsupportedAdapter(message: nativeBridgeCapabilities.message)
         }
 
         let adapter = ModernMacOS26Adapter(

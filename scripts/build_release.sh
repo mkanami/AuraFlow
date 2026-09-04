@@ -393,6 +393,41 @@ bundle_lock_screen_saver() {
   fi
 }
 
+verify_private_framework_isolation() {
+  require_command otool
+
+  local app_binary="$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
+  local helper_binary="$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
+  local bridge_binary="$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
+  local saver_binary="$APP_BUNDLE/Contents/PlugIns/AuraFlowLockScreen.saver/Contents/MacOS/AuraFlowLockScreen"
+  local portable_binary
+
+  for portable_binary in "$app_binary" "$helper_binary" "$saver_binary"; do
+    if [[ ! -f "$portable_binary" ]]; then
+      log "Portable target is missing from the staged app bundle: $portable_binary"
+      exit 1
+    fi
+    if otool -L "$portable_binary" | grep -Eq '/(Wallpaper|WallpaperTypes)\.framework'; then
+      log "Private Wallpaper framework leaked into portable target: $portable_binary"
+      exit 1
+    fi
+  done
+
+  if [[ ! -f "$bridge_binary" ]]; then
+    log "Native bridge binary is missing from the staged app bundle."
+    exit 1
+  fi
+  if ! otool -L "$bridge_binary" | grep -Eq '/Wallpaper\.framework'; then
+    log "Native bridge is not linked with Wallpaper.framework."
+    exit 1
+  fi
+  if ! otool -L "$bridge_binary" | grep -Eq '/WallpaperTypes\.framework'; then
+    log "Native bridge is not linked with WallpaperTypes.framework."
+    exit 1
+  fi
+  log "Private framework linkage is isolated to ${NATIVE_BRIDGE_TARGET}"
+}
+
 codesign_args() {
   local identity="${CODESIGN_IDENTITY:--}"
   local args=(
@@ -527,6 +562,7 @@ main() {
   apply_plist_customizations
   bundle_runtime_tools
   bundle_lock_screen_saver
+  verify_private_framework_isolation
   sign_app_bundle
   package_distribution
   log "Done: $APP_BUNDLE"

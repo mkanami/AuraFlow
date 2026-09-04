@@ -193,6 +193,7 @@ func catalogOriginHeaderValue(for url: URL) -> String? {
 
 protocol WallpaperControlling: AnyObject, Sendable {
     var lockScreenCapabilities: PlatformCapabilities { get }
+    func markNativeLockScreenBridgeUnavailable(reason: String)
     func status() throws -> ControlStatus
     func start(videoURL: URL?, speed: Double?) async throws -> ControlStatus
     func resume() throws -> ControlStatus
@@ -217,6 +218,8 @@ extension WallpaperControlling {
     var lockScreenCapabilities: PlatformCapabilities {
         .legacyMacOS
     }
+
+    func markNativeLockScreenBridgeUnavailable(reason: String) {}
 }
 
 extension WallpaperControlling {
@@ -290,6 +293,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
     private let store: WallpaperRuntimeStore
     private let helperURL: URL
     private let nativeBridgeURL: URL?
+    private let nativeBridgeCapabilities: NativeLockScreenBridgeCapabilities
     private let lockScreenPlatform: LockScreenPlatformOperating
     private let daemonProcessManager: DaemonProcessManager
     private let autostartManager: AutostartManager
@@ -297,22 +301,62 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
     private let lifecycleLock = NSRecursiveLock()
     private let asyncLifecycleGate = NativeLifecycleOperationGate()
     private var nextRuntimeOperationID: UInt64 = 0
+    private var nativeBridgeRuntimeFailureReason: String?
 
     var lockScreenCapabilities: PlatformCapabilities {
         let capabilities = lockScreenPlatform.capabilities
-        guard nativeBridgeRequired, nativeBridgeURL == nil else {
+        guard nativeBridgeRequired else {
             return capabilities
         }
+
+        if let nativeBridgeRuntimeFailureReason {
+            let fallback = PlatformCapabilities.legacyMacOS
+            return PlatformCapabilities(
+                platformName: fallback.platformName,
+                minimumMajorOSVersion: fallback.minimumMajorOSVersion,
+                supportsLockScreen: fallback.supportsLockScreen,
+                supportsLockScreenOnly: fallback.supportsLockScreenOnly,
+                supportsSecureLockScreen: fallback.supportsSecureLockScreen,
+                supportsAnimatedMedia: fallback.supportsAnimatedMedia,
+                usesPrivateWallpaperFramework: false,
+                availabilityMessage: NativeLockScreenBridgeAvailability
+                    .runtimeFailure(reason: nativeBridgeRuntimeFailureReason)
+                    .message
+            )
+        }
+
+        guard nativeBridgeCapabilities.isAvailable else {
+            return unavailableNativeBridgeCapabilities(
+                message: nativeBridgeCapabilities.message
+            )
+        }
+        return capabilities
+    }
+
+    func markNativeLockScreenBridgeUnavailable(reason: String) {
+        lifecycleLock.lock()
+        nativeBridgeRuntimeFailureReason = reason
+        lifecycleLock.unlock()
+        (lockScreenPlatform as? WallpaperPlatformAdapter)?
+            .markNativeBridgeUnavailable(reason: reason)
+        lockScreenLifecycleLogger.error(
+            "Native Lock Screen bridge marked unavailable: \(reason, privacy: .public)"
+        )
+    }
+
+    private func unavailableNativeBridgeCapabilities(
+        message: String
+    ) -> PlatformCapabilities {
         return PlatformCapabilities(
-            platformName: capabilities.platformName,
-            minimumMajorOSVersion: capabilities.minimumMajorOSVersion,
+            platformName: "Native Lock Screen unavailable",
+            minimumMajorOSVersion: NativeLockScreenBridgeCapabilities
+                .minimumMajorOSVersion,
             supportsLockScreen: false,
             supportsLockScreenOnly: false,
             supportsSecureLockScreen: false,
             supportsAnimatedMedia: false,
-            usesPrivateWallpaperFramework: capabilities.usesPrivateWallpaperFramework,
-            availabilityMessage:
-                "Native Lock Screen bridge is unavailable in this AuraFlow build."
+            usesPrivateWallpaperFramework: true,
+            availabilityMessage: message
         )
     }
 
@@ -334,9 +378,29 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
         self.helperURL = helperResolution.url
         let resolvedNativeBridgeURL = nativeBridgeURL ?? Self.resolveNativeBridgeURL()
-        self.nativeBridgeURL = resolvedNativeBridgeURL
-        self.lockScreenPlatform =
-            lockScreenSaverInstaller ?? WallpaperPlatformAdapter()
+        let resolvedNativeBridgeCapabilities =
+            NativeLockScreenBridgeCapabilityChecker.check(
+                executableURL: resolvedNativeBridgeURL
+            )
+        let effectiveNativeBridgeURL = resolvedNativeBridgeCapabilities.isAvailable
+            ? resolvedNativeBridgeURL
+            : nil
+        // An explicitly injected URL is used by migration/runtime tests and
+        // by controlled integrations. The production resolver only returns
+        // a URL after the capability gate succeeds, so this exception cannot
+        // make an unverified bundled path part of the normal app flow.
+        let configuredNativeBridgeURL = nativeBridgeURL != nil
+            ? resolvedNativeBridgeURL
+            : effectiveNativeBridgeURL
+        self.nativeBridgeCapabilities = resolvedNativeBridgeCapabilities
+        self.nativeBridgeURL = effectiveNativeBridgeURL
+        if let lockScreenSaverInstaller {
+            self.lockScreenPlatform = lockScreenSaverInstaller
+        } else {
+            self.lockScreenPlatform = WallpaperPlatformAdapter(
+                nativeBridgeCapabilities: resolvedNativeBridgeCapabilities
+            )
+        }
         self.daemonProcessManager = DaemonProcessManager(
             store: store,
             expectedExecutableURL: helperResolution.url
@@ -344,7 +408,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         self.autostartManager = AutostartManager(
             store: store,
             helperURL: helperResolution.url,
-            nativeBridgeURL: resolvedNativeBridgeURL
+            nativeBridgeURL: configuredNativeBridgeURL
         )
         self.recoveryCoordinator = WallpaperRecoveryCoordinator(store: store)
         self.nextRuntimeOperationID =
@@ -381,15 +445,18 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 else {
             return nil
         }
-        let fileManager = FileManager.default
         var candidates: [URL] = []
+        #if DEBUG
         let environment = ProcessInfo.processInfo.environment
         if let override = environment["AURAFLOW_NATIVE_BRIDGE_PATH"] {
             let overrideURL = URL(fileURLWithPath: override)
-            if fileManager.isExecutableFile(atPath: overrideURL.path) {
+            if NativeLockScreenBridgeCapabilityChecker.check(
+                executableURL: overrideURL
+            ).isAvailable {
                 return overrideURL
             }
         }
+        #endif
         candidates.append(
             Bundle.main.bundleURL
                 .appendingPathComponent("Contents/MacOS/AuraWallpaperNativeBridge")
@@ -403,7 +470,9 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             )
         }
         if let bundledURL = candidates.first(where: {
-            fileManager.isExecutableFile(atPath: $0.path)
+            NativeLockScreenBridgeCapabilityChecker.check(
+                executableURL: $0
+            ).isAvailable
         }) {
             return try? installRuntimeBinary(
                 from: bundledURL,
@@ -413,7 +482,9 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
 
         let runtimeURL = WallpaperRuntimeStore.defaultAppSupportURL()
             .appendingPathComponent("Runtime/AuraWallpaperNativeBridge")
-        return fileManager.isExecutableFile(atPath: runtimeURL.path)
+        return NativeLockScreenBridgeCapabilityChecker.check(
+            executableURL: runtimeURL
+        ).isAvailable
             ? runtimeURL
             : nil
     }
@@ -1017,7 +1088,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 }
                 let lockScreenOnlySource = store.loadLockScreenOnlySource()
                 let useLockScreenOnly = lockScreenOnlySource != nil
-                    && lockScreenPlatform.capabilities.supportsLockScreenOnly
+                    && lockScreenCapabilities.supportsLockScreenOnly
                 if let lockScreenOnlySource,
                    !useLockScreenOnly,
                    lockScreenOnlySource.standardizedFileURL == sourceURL {
@@ -1069,7 +1140,9 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         let config = store.loadConfig()
         var lockScreenOnlySource = store.loadLockScreenOnlySource()
         let supportsLockScreenOnly =
-            lockScreenPlatform.capabilities.supportsLockScreenOnly
+            lockScreenCapabilities.supportsLockScreenOnly
+        let nativeBridgeUnavailable = nativeBridgeRequired
+            && !nativeBridgeIsUsable
         let hasUsableLockScreenOnlySource = lockScreenOnlySource.map {
             FileManager.default.fileExists(atPath: $0.path)
         } == true
@@ -1118,11 +1191,11 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         else {
             return
         }
-        try requireNativeBridgeIfNeeded()
         let useLockScreenOnly = lockScreenOnlySource != nil
             && supportsLockScreenOnly
             && lockScreenOnlyProviderAvailable
-        if lockScreenOnlySource != nil, !useLockScreenOnly {
+        if nativeBridgeUnavailable
+            || (lockScreenOnlySource != nil && !useLockScreenOnly) {
             // A lock-only marker can survive a downgrade or removal of the
             // modern provider. Migrate it through the explicit legacy route
             // so the modern adapter cannot accidentally install a shared
@@ -1150,6 +1223,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             store.clearLockScreenOnlySource()
             return
         }
+        try requireNativeBridgeIfNeeded()
         try await installLockScreenSaver(
             videoURL: sourceURL,
             ensureStillFrame: true,
@@ -1402,6 +1476,15 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         ensureStillFrame: Bool,
         lockScreenOnly: Bool
     ) async throws {
+        if shouldUseLegacyNativeFallback {
+            try await lockScreenPlatform.installLegacyLockScreenFallback(
+                videoURL: videoURL,
+                restoringLockScreenOnlyVideoURL: lockScreenOnly
+                    ? videoURL
+                    : nil
+            )
+            return
+        }
         try requireNativeBridgeIfNeeded()
         // Keep a cached frame for the app's desktop recovery path, but do not
         // replace macOS's live Lock Screen descriptor with an image wallpaper.
@@ -1422,12 +1505,33 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
     }
 
+    private var shouldUseLegacyNativeFallback: Bool {
+        guard lockScreenPlatform is WallpaperPlatformAdapter else {
+            return false
+        }
+        if !nativeBridgeCapabilities.isAvailable {
+            return true
+        }
+        lifecycleLock.lock()
+        let hasRuntimeFailure = nativeBridgeRuntimeFailureReason != nil
+        lifecycleLock.unlock()
+        return hasRuntimeFailure
+    }
+
     private func requireNativeBridgeIfNeeded() throws {
-        guard !nativeBridgeRequired || nativeBridgeURL != nil else {
+        guard nativeBridgeIsUsable else {
             throw NativeWallpaperControllerError.unavailable(
-                "Native Lock Screen bridge is unavailable in this AuraFlow build."
+                nativeBridgeCapabilities.message
             )
         }
+    }
+
+    private var nativeBridgeIsUsable: Bool {
+        guard nativeBridgeRequired else { return true }
+        lifecycleLock.lock()
+        let hasRuntimeFailure = nativeBridgeRuntimeFailureReason != nil
+        lifecycleLock.unlock()
+        return nativeBridgeCapabilities.isAvailable && !hasRuntimeFailure
     }
 }
 
@@ -2012,6 +2116,7 @@ final class AppViewModel: ObservableObject {
     ) async {
         if let reason, !reason.isEmpty {
             pendingLockScreenProviderFallbackReason = reason
+            controller?.markNativeLockScreenBridgeUnavailable(reason: reason)
         }
         guard !isShuttingDown else { return }
         guard controller != nil else {
@@ -2273,6 +2378,13 @@ final class AppViewModel: ObservableObject {
                     self.controller = controller
                     self.controllerAvailable = true
                     self.lockScreenCapabilities = controller.lockScreenCapabilities
+                    if let pendingReason = self.pendingLockScreenProviderFallbackReason,
+                       !pendingReason.isEmpty {
+                        controller.markNativeLockScreenBridgeUnavailable(
+                            reason: pendingReason
+                        )
+                        self.lockScreenCapabilities = controller.lockScreenCapabilities
+                    }
                     self.isControllerBootstrapInProgress = false
                     self.controllerBootstrapTask = nil
                     self.scheduleLockScreenMediaPreparationForCurrentPreview()

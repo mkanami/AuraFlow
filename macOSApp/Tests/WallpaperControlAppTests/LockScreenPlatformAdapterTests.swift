@@ -133,6 +133,143 @@ private enum PlatformRecordingError: Error {
     )
 }
 
+@Test func nativeBridgeCapabilityCheckerFailsClosedForUnsupportedMacOS() {
+    let capabilities = NativeLockScreenBridgeCapabilityChecker.check(
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 25,
+            minorVersion: 0,
+            patchVersion: 0
+        ),
+        executableURL: URL(fileURLWithPath: "/tmp/bridge")
+    )
+
+    #expect(
+        capabilities.availability
+            == .unsupportedOperatingSystem(currentMajorVersion: 25)
+    )
+    #expect(!capabilities.isAvailable)
+    #expect(capabilities.message.contains("legacy screen saver"))
+}
+
+@Test func nativeBridgeCapabilityCheckerRejectsMissingPrivateFramework() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlowBridgeCapabilities-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let executableURL = root.appendingPathComponent("AuraWallpaperNativeBridge")
+    FileManager.default.createFile(atPath: executableURL.path, contents: Data())
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o755],
+        ofItemAtPath: executableURL.path
+    )
+    let missingFramework = root.appendingPathComponent("Wallpaper.framework")
+
+    let capabilities = NativeLockScreenBridgeCapabilityChecker.check(
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 26,
+            minorVersion: 0,
+            patchVersion: 0
+        ),
+        executableURL: executableURL,
+        privateFrameworkPaths: [missingFramework.path]
+    )
+
+    #expect(
+        capabilities.availability
+            == .privateFrameworkMissing(path: missingFramework.path)
+    )
+    #expect(!capabilities.isAvailable)
+}
+
+@Test func nativeBridgeCapabilityCheckerAcceptsCompleteRuntime() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlowBridgeCapabilities-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let executableURL = root.appendingPathComponent("AuraWallpaperNativeBridge")
+    FileManager.default.createFile(atPath: executableURL.path, contents: Data())
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o755],
+        ofItemAtPath: executableURL.path
+    )
+    let frameworkPaths = [
+        root.appendingPathComponent("Wallpaper.framework").path,
+        root.appendingPathComponent("WallpaperTypes.framework").path
+    ]
+    for path in frameworkPaths {
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: path),
+            withIntermediateDirectories: true
+        )
+    }
+
+    let capabilities = NativeLockScreenBridgeCapabilityChecker.check(
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 26,
+            minorVersion: 0,
+            patchVersion: 0
+        ),
+        executableURL: executableURL,
+        privateFrameworkPaths: frameworkPaths
+    )
+
+    #expect(capabilities.availability == .available)
+    #expect(capabilities.isAvailable)
+}
+
+@Test func agentPlatformDisablesNativeRuntimeWhenBridgeIsMissing() {
+    let platform = LockScreenPlatformFactory.makeAgentPlatform(
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 27,
+            minorVersion: 0,
+            patchVersion: 0
+        ),
+        modernInstaller: RecordingModernInstaller(isAvailable: true),
+        nativeBridgeURL: nil
+    )
+
+    #expect(platform.capabilities.supportsLockScreenOnly == false)
+    #expect(platform.capabilities.supportsSecureLockScreen == false)
+    #expect(platform.capabilities.availabilityMessage?.contains("not bundled") == true)
+}
+
+@Test func wallpaperPlatformAdapterUsesLegacyWhenNativeBridgeIsUnavailable() async throws {
+    let modernInstaller = RecordingModernInstaller(
+        isAvailable: true,
+        isInstalled: true
+    )
+    let modern = ModernMacOS26Adapter(
+        installer: modernInstaller,
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 27,
+            minorVersion: 0,
+            patchVersion: 0
+        )
+    )
+    let legacyInstaller = PlatformRecordingInstaller()
+    let legacy = LegacyMacOSAdapter(installer: legacyInstaller)
+    let adapter = WallpaperPlatformAdapter(
+        modern: modern,
+        legacy: legacy,
+        nativeBridgeCapabilities: NativeLockScreenBridgeCapabilities(
+            availability: .privateFrameworkMissing(
+                path: "/System/Library/PrivateFrameworks/Wallpaper.framework"
+            )
+        )
+    )
+    let mediaURL = URL(fileURLWithPath: "/tmp/legacy-native-bridge-wallpaper.mov")
+
+    #expect(adapter.capabilities.supportsLockScreen)
+    #expect(adapter.capabilities.supportsLockScreenOnly == false)
+    #expect(adapter.capabilities.availabilityMessage?.contains("unavailable") == true)
+    try await adapter.install(mediaURL)
+    #expect(legacyInstaller.installedURL == mediaURL)
+    #expect(modernInstaller.isInstalled == false)
+    #expect(modernInstaller.installCallCount == 0)
+}
+
 @Test func unsupportedAdapterReportsActionableStatus() async throws {
     let message = "Lock Screen доступен только на macOS 26+."
     let adapter = UnsupportedAdapter(message: message)

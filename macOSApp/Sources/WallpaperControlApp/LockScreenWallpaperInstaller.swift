@@ -123,19 +123,46 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     private let modern: ModernMacOS26Adapter
     private let legacy: LegacyMacOSAdapter
     private let unsupported: UnsupportedAdapter
+    private let nativeBridgeCapabilities: NativeLockScreenBridgeCapabilities
+    private var nativeBridgeRuntimeFailureMessage: String?
 
     init(
         modern: ModernMacOS26Adapter = ModernMacOS26Adapter(),
         legacy: LegacyMacOSAdapter = LegacyMacOSAdapter(),
-        unsupported: UnsupportedAdapter = UnsupportedAdapter()
+        unsupported: UnsupportedAdapter = UnsupportedAdapter(),
+        nativeBridgeCapabilities: NativeLockScreenBridgeCapabilities =
+            NativeLockScreenBridgeCapabilities(
+                availability: .available
+            )
     ) {
         self.modern = modern
         self.legacy = legacy
         self.unsupported = unsupported
+        self.nativeBridgeCapabilities = nativeBridgeCapabilities
     }
 
     var capabilities: PlatformCapabilities {
-        selectedPlatform.capabilities
+        let selected = selectedPlatform
+        guard selected === legacy,
+              let unavailableMessage = nativeBridgeRuntimeFailureMessage
+                ?? (!nativeBridgeCapabilities.isAvailable
+                    ? nativeBridgeCapabilities.message
+                    : nil)
+        else {
+            return selected.capabilities
+        }
+
+        let legacyCapabilities = selected.capabilities
+        return PlatformCapabilities(
+            platformName: legacyCapabilities.platformName,
+            minimumMajorOSVersion: legacyCapabilities.minimumMajorOSVersion,
+            supportsLockScreen: legacyCapabilities.supportsLockScreen,
+            supportsLockScreenOnly: legacyCapabilities.supportsLockScreenOnly,
+            supportsSecureLockScreen: legacyCapabilities.supportsSecureLockScreen,
+            supportsAnimatedMedia: legacyCapabilities.supportsAnimatedMedia,
+            usesPrivateWallpaperFramework: false,
+            availabilityMessage: unavailableMessage
+        )
     }
 
     var isInstalled: Bool {
@@ -143,10 +170,19 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     var installationConfirmed: Bool {
-        if modern.capabilities.isAvailable {
+        if modernIsUsable, modern.isInstalled {
             return modern.installationConfirmed && legacy.installationConfirmed
         }
+        if legacy.isInstalled {
+            return legacy.installationConfirmed
+        }
         return selectedPlatform.installationConfirmed
+    }
+
+    func markNativeBridgeUnavailable(reason: String) {
+        nativeBridgeRuntimeFailureMessage = NativeLockScreenBridgeAvailability
+            .runtimeFailure(reason: reason)
+            .message
     }
 
     func install(_ media: URL) async throws {
@@ -154,17 +190,24 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     func install(videoURL: URL) async throws {
-        if modern.capabilities.isAvailable {
+        if modernIsUsable {
             try await installModernAndLegacy(videoURL: videoURL, lockScreenOnly: false)
         } else if legacy.capabilities.isAvailable {
-            try await legacy.install(videoURL: videoURL)
+            if modern.isInstalled {
+                try await installLegacyLockScreenFallback(
+                    videoURL: videoURL,
+                    restoringLockScreenOnlyVideoURL: nil
+                )
+            } else {
+                try await legacy.install(videoURL: videoURL)
+            }
         } else {
             try await unsupported.install(videoURL: videoURL)
         }
     }
 
     func installLockScreenOnly(videoURL: URL) async throws {
-        if modern.capabilities.isAvailable {
+        if modernIsUsable {
             try await installModernAndLegacy(videoURL: videoURL, lockScreenOnly: true)
         } else if legacy.capabilities.isAvailable {
             try await legacy.installLockScreenOnly(videoURL: videoURL)
@@ -264,7 +307,7 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     var requiresLockScreenSessionPromotion: Bool {
-        guard modern.capabilities.isAvailable else { return false }
+        guard modernIsUsable else { return false }
         return modern.requiresLockScreenSessionPromotion
     }
 
@@ -309,13 +352,19 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     private var selectedPlatform: LockScreenPlatformOperating {
-        if modern.capabilities.isAvailable {
+        if modernIsUsable {
             return modern
         }
         if legacy.capabilities.isAvailable {
             return legacy
         }
         return unsupported
+    }
+
+    private var modernIsUsable: Bool {
+        modern.capabilities.isAvailable
+            && nativeBridgeCapabilities.isAvailable
+            && nativeBridgeRuntimeFailureMessage == nil
     }
 
     private func installModernAndLegacy(
