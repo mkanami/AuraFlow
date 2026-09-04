@@ -56,24 +56,25 @@ jobs:
         working-directory: macOSApp
         shell: bash
         run: |
-          for binary in WallpaperControlApp AuraWallpaperAgent; do
-            binary_path="$AURAFLOW_RELEASE_BIN/$binary"
-            test -x "$binary_path"
-            if otool -L "$binary_path" | grep -Eq 'Wallpaper(Types)?\.framework'; then
-              echo "$binary must not link private Wallpaper frameworks: $binary_path" >&2
-              exit 1
-            fi
-          done
+          python3 ../.github/scripts/verify_macos_targets.py \
+            --package-directory . \
+            --source-root Sources/AuraWallpaperCore \
+            --source-root Sources/WallpaperControlApp \
+            --source-root Sources/AuraWallpaperAgent \
+            --binary "WallpaperControlApp=$AURAFLOW_RELEASE_BIN/WallpaperControlApp" \
+            --binary "AuraWallpaperAgent=$AURAFLOW_RELEASE_BIN/AuraWallpaperAgent"
 
       - name: Build native bridge when private framework is available
         working-directory: macOSApp
         shell: bash
         run: |
-          if [[ -d /System/Library/PrivateFrameworks/Wallpaper.framework ]]; then
+          if [[ "$(sw_vers -productVersion)" == 26.* \
+                && -d /System/Library/PrivateFrameworks/Wallpaper.framework \
+                && -d /System/Library/PrivateFrameworks/WallpaperTypes.framework ]]; then
             swift build -c release --product AuraWallpaperNativeBridge
             test -x "$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge"
           else
-            echo "Skipping native bridge build: Wallpaper.framework is unavailable on this runner."
+            echo "Skipping native bridge build: macOS 26 and both private frameworks are required."
           fi
 
       - name: Stage and ad-hoc sign release app bundle
@@ -113,6 +114,68 @@ jobs:
           codesign --verify --deep --strict "$bundle_path"
 
 
+  deployment-target-macos13:
+    name: Portable targets with macOS 13 deployment target
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          selected_app="$(ls -td /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+          if [[ -n "$selected_app" && -d "$selected_app/Contents/Developer" ]]; then
+            echo "DEVELOPER_DIR=$selected_app/Contents/Developer" >> "${GITHUB_ENV}"
+          fi
+          sw_vers -productVersion
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+
+      - name: Verify package minimum platform
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          package = json.loads(subprocess.check_output(["swift", "package", "dump-package"], text=True))
+          platforms = {
+              entry["platformName"]: entry["version"]
+              for entry in package.get("platforms", [])
+          }
+          assert platforms.get("macos") == "13.0", platforms
+          print(f"SwiftPM macOS platform: {platforms['macos']}")
+          PY
+
+      - name: Build portable production targets for macOS 13
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          swift build -c release --target AuraWallpaperCore
+          swift build -c release --product WallpaperControlApp
+          swift build -c release --product AuraWallpaperAgent
+
+      - name: Verify deployment target and private framework isolation
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          bin_path="$(swift build -c release --show-bin-path)"
+          test -x "$bin_path/WallpaperControlApp"
+          test -x "$bin_path/AuraWallpaperAgent"
+          python3 ../.github/scripts/verify_macos_targets.py \
+            --package-directory . \
+            --source-root Sources/AuraWallpaperCore \
+            --source-root Sources/WallpaperControlApp \
+            --source-root Sources/AuraWallpaperAgent \
+            --binary "WallpaperControlApp=$bin_path/WallpaperControlApp" \
+            --binary "AuraWallpaperAgent=$bin_path/AuraWallpaperAgent" \
+            --deployment-major 13
+
+
   swift6-strict-concurrency:
     runs-on: macos-26
     steps:
@@ -140,7 +203,13 @@ jobs:
           swift build --target AuraWallpaperCore "${strict_flags[@]}"
           swift build --target WallpaperControlApp "${strict_flags[@]}"
           swift build --target AuraWallpaperAgent "${strict_flags[@]}"
-          swift build --target AuraWallpaperNativeBridge "${strict_flags[@]}"
+          if [[ "$(sw_vers -productVersion)" == 26.* \
+                && -d /System/Library/PrivateFrameworks/Wallpaper.framework \
+                && -d /System/Library/PrivateFrameworks/WallpaperTypes.framework ]]; then
+            swift build --target AuraWallpaperNativeBridge "${strict_flags[@]}"
+          else
+            echo "Skipping strict native bridge build: macOS 26 and both private frameworks are required."
+          fi
 
 
   native-bridge-smoke:
@@ -160,15 +229,36 @@ jobs:
 
       - name: Build native bridge
         working-directory: macOSApp
-        run: swift build -c release --product AuraWallpaperNativeBridge
+        shell: bash
+        run: |
+          if [[ "$(sw_vers -productVersion)" != 26.* \
+                || ! -d /System/Library/PrivateFrameworks/Wallpaper.framework \
+                || ! -d /System/Library/PrivateFrameworks/WallpaperTypes.framework ]]; then
+            echo "Skipping native bridge smoke: macOS 26 and both private frameworks are required."
+            exit 0
+          fi
+          swift build -c release --product AuraWallpaperNativeBridge
 
       - name: Run native bridge JSON protocol smoke test
         working-directory: macOSApp
         shell: bash
         run: |
+          if [[ "$(sw_vers -productVersion)" != 26.* \
+                || ! -d /System/Library/PrivateFrameworks/Wallpaper.framework \
+                || ! -d /System/Library/PrivateFrameworks/WallpaperTypes.framework ]]; then
+            echo "Skipping native bridge smoke: macOS 26 and both private frameworks are required."
+            exit 0
+          fi
           bridge_path="$(find .build -type f -path '*/release/AuraWallpaperNativeBridge' -perm -111 -print -quit)"
           test -n "$bridge_path"
-          test -d /System/Library/PrivateFrameworks/Wallpaper.framework
+          if ! otool -L "$bridge_path" | grep -Eq '/Wallpaper\.framework'; then
+            echo "AuraWallpaperNativeBridge is missing Wallpaper.framework linkage: $bridge_path" >&2
+            exit 1
+          fi
+          if ! otool -L "$bridge_path" | grep -Eq '/WallpaperTypes\.framework'; then
+            echo "AuraWallpaperNativeBridge is missing WallpaperTypes.framework linkage: $bridge_path" >&2
+            exit 1
+          fi
           python3 ../scripts/native_bridge_smoke.py "$bridge_path"
 
   live-catalog-smoke:
