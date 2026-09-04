@@ -13,18 +13,23 @@ public final class LaunchAgentManager {
     private let launchAgentURL: URL
     private let launchctlRunner: LaunchctlRunner
     private let launchAgentFileRemover: (URL) throws -> Void
+    private let launchAgentFileWriter: (Data, URL) throws -> Void
 
     public init(
         store: WallpaperRuntimeStore,
         launchAgentURL: URL? = nil,
         launchctlRunner: LaunchctlRunner? = nil,
-        launchAgentFileRemover: ((URL) throws -> Void)? = nil
+        launchAgentFileRemover: ((URL) throws -> Void)? = nil,
+        launchAgentFileWriter: ((Data, URL) throws -> Void)? = nil
     ) {
         self.store = store
         self.launchAgentURL = launchAgentURL ?? store.launchAgentURL
         self.launchctlRunner = launchctlRunner ?? Self.executeLaunchctl
         self.launchAgentFileRemover = launchAgentFileRemover ?? {
             try FileManager.default.removeItem(at: $0)
+        }
+        self.launchAgentFileWriter = launchAgentFileWriter ?? { data, url in
+            try data.write(to: url, options: .atomic)
         }
     }
 
@@ -78,11 +83,13 @@ public final class LaunchAgentManager {
         let expectedPlist = try launchAgentPlistData(
             programArguments: expectedArguments
         )
+        let previousPlistExists = launchAgentPlistExists()
         let previousPlistData = try? Data(contentsOf: launchAgentURL)
         let currentPlistMatches = launchAgentPlistMatches(
             expectedProgramArguments: expectedArguments
         )
         let currentLaunchAgent = launchAgentStatus()
+        let previousServiceLoaded = currentLaunchAgent.serviceLoaded
 
         // An unchanged plist and a loaded service need no migration. This is
         // the common path during every normal GUI launch and avoids restarting
@@ -100,69 +107,45 @@ public final class LaunchAgentManager {
                     "Could not stop the existing AuraFlow LaunchAgent: \(bootout.output)"
                 )
             }
-            if let previousPID,
-               !DaemonProcessManager.waitForExit(pid: previousPID, timeout: 2.0) {
-                // launchctl normally waits for the job, but older agents can
-                // delay their termination handler. Never bootstrap a new job
-                // while the old process can still mutate shared runtime files.
-                guard DaemonProcessManager(
-                    store: store,
-                    expectedExecutableURL: URL(fileURLWithPath: helperPath)
-                ).terminate(timeout: 1.0).succeeded,
-                DaemonProcessManager.waitForExit(pid: previousPID, timeout: 1.0)
-                else {
-                    throw WallpaperRuntimeError.unavailable(
-                        "The existing AuraFlow wallpaper agent did not stop during migration."
-                    )
-                }
-            }
-        }
-
-        try expectedPlist.write(to: launchAgentURL, options: .atomic)
-        let bootstrap = launchctlRunner([
-            "bootstrap",
-            "gui/\(getuid())",
-            launchAgentURL.path
-        ])
-        guard bootstrap.succeeded else {
-            var rollbackFailures: [String] = []
-            if let previousPlistData {
-                do {
-                    try previousPlistData.write(to: launchAgentURL, options: .atomic)
-                } catch {
-                    rollbackFailures.append(
-                        "restore plist: \(error.localizedDescription)"
-                    )
-                }
-                if rollbackFailures.isEmpty {
-                    let restoreBootstrap = launchctlRunner([
-                        "bootstrap",
-                        "gui/\(getuid())",
-                        launchAgentURL.path
-                    ])
-                    if !restoreBootstrap.succeeded {
-                        rollbackFailures.append(
-                            "restore LaunchAgent: \(restoreBootstrap.output)"
+            do {
+                if let previousPID,
+                   !DaemonProcessManager.waitForExit(pid: previousPID, timeout: 2.0) {
+                    // launchctl normally waits for the job, but older agents can
+                    // delay their termination handler. Never bootstrap a new job
+                    // while the old process can still mutate shared runtime files.
+                    guard DaemonProcessManager(
+                        store: store,
+                        expectedExecutableURL: URL(fileURLWithPath: helperPath)
+                    ).terminate(timeout: 1.0).succeeded,
+                    DaemonProcessManager.waitForExit(pid: previousPID, timeout: 1.0)
+                    else {
+                        throw WallpaperRuntimeError.unavailable(
+                            "The existing AuraFlow wallpaper agent did not stop during migration."
                         )
                     }
                 }
-            } else {
-                do {
-                    try FileManager.default.removeItem(at: launchAgentURL)
-                } catch CocoaError.fileNoSuchFile {
-                    // The failed bootstrap did not leave a plist behind.
-                } catch {
-                    rollbackFailures.append(
-                        "remove failed plist: \(error.localizedDescription)"
-                    )
-                }
+                try launchAgentFileWriter(expectedPlist, launchAgentURL)
+                try bootstrapExpectedLaunchAgent()
+            } catch let primaryError {
+                throw rollbackEnableFailure(
+                    primaryError: primaryError,
+                    previousPlistData: previousPlistData,
+                    previousPlistExists: previousPlistExists,
+                    previousServiceLoaded: previousServiceLoaded
+                )
             }
-            let rollbackDescription = rollbackFailures.isEmpty
-                ? ""
-                : "; rollback failed: " + rollbackFailures.joined(separator: "; ")
-            throw WallpaperRuntimeError.unavailable(
-                "Could not start the AuraFlow LaunchAgent: \(bootstrap.output)"
-                    + rollbackDescription
+            return
+        }
+
+        do {
+            try launchAgentFileWriter(expectedPlist, launchAgentURL)
+            try bootstrapExpectedLaunchAgent()
+        } catch let primaryError {
+            throw rollbackEnableFailure(
+                primaryError: primaryError,
+                previousPlistData: previousPlistData,
+                previousPlistExists: previousPlistExists,
+                previousServiceLoaded: previousServiceLoaded
             )
         }
     }
@@ -183,7 +166,7 @@ public final class LaunchAgentManager {
             var rollbackFailures: [String] = []
             if let previousPlistData {
                 do {
-                    try previousPlistData.write(to: launchAgentURL, options: .atomic)
+                    try launchAgentFileWriter(previousPlistData, launchAgentURL)
                 } catch {
                     rollbackFailures.append(
                         "restore plist: \(error.localizedDescription)"
@@ -215,6 +198,92 @@ public final class LaunchAgentManager {
                 rollbackFailures: rollbackFailures
             )
         }
+    }
+
+    private func bootstrapExpectedLaunchAgent() throws {
+        let bootstrap = launchctlRunner([
+            "bootstrap",
+            "gui/\(getuid())",
+            launchAgentURL.path
+        ])
+        guard bootstrap.succeeded else {
+            throw LaunchAgentManagerError.bootstrapFailed(output: bootstrap.output)
+        }
+    }
+
+    private func rollbackEnableFailure(
+        primaryError: Error,
+        previousPlistData: Data?,
+        previousPlistExists: Bool,
+        previousServiceLoaded: Bool
+    ) -> WallpaperRuntimeError {
+        let rollbackFailures = restorePreviousLaunchAgent(
+            previousPlistData: previousPlistData,
+            previousPlistExists: previousPlistExists,
+            previousServiceLoaded: previousServiceLoaded
+        )
+        let rollbackDescription = rollbackFailures.isEmpty
+            ? ""
+            : "; rollback failed: " + rollbackFailures.joined(separator: "; ")
+
+        return .unavailable(
+            "Could not start the AuraFlow LaunchAgent: "
+                + primaryError.localizedDescription
+                + rollbackDescription
+        )
+    }
+
+    private func restorePreviousLaunchAgent(
+        previousPlistData: Data?,
+        previousPlistExists: Bool,
+        previousServiceLoaded: Bool
+    ) -> [String] {
+        var rollbackFailures: [String] = []
+        var plistRestored = false
+
+        if let previousPlistData {
+            do {
+                try launchAgentFileWriter(previousPlistData, launchAgentURL)
+                plistRestored = true
+            } catch {
+                rollbackFailures.append(
+                    "restore plist: \(error.localizedDescription)"
+                )
+            }
+        } else if previousPlistExists {
+            rollbackFailures.append("restore plist: previous plist could not be read")
+        } else {
+            do {
+                try launchAgentFileRemover(launchAgentURL)
+            } catch CocoaError.fileNoSuchFile {
+                // The failed write did not leave a plist behind.
+            } catch {
+                rollbackFailures.append(
+                    "remove failed plist: \(error.localizedDescription)"
+                )
+            }
+        }
+
+        guard previousServiceLoaded else {
+            return rollbackFailures
+        }
+
+        guard plistRestored else {
+            rollbackFailures.append("restore LaunchAgent: plist could not be restored")
+            return rollbackFailures
+        }
+
+        let restoreBootstrap = launchctlRunner([
+            "bootstrap",
+            "gui/\(getuid())",
+            launchAgentURL.path
+        ])
+        if !restoreBootstrap.succeeded {
+            rollbackFailures.append(
+                "restore LaunchAgent: \(restoreBootstrap.output)"
+            )
+        }
+        return rollbackFailures
     }
 
     private var serviceName: String {
@@ -293,6 +362,17 @@ public final class LaunchAgentManager {
                 output: error.localizedDescription,
                 terminationStatus: -1
             )
+        }
+    }
+}
+
+private enum LaunchAgentManagerError: LocalizedError {
+    case bootstrapFailed(output: String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .bootstrapFailed(output):
+            output.isEmpty ? "launchctl bootstrap failed." : output
         }
     }
 }

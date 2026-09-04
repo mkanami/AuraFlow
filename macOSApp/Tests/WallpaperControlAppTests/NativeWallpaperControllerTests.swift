@@ -1134,6 +1134,68 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(try Data(contentsOf: store.launchAgentURL) == previousPlist)
 }
 
+@Test func launchAgentWriteFailureRestoresAndReloadsPreviousService() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlowLaunchAgentWriteRollback-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let launchAgentURL = root.appendingPathComponent("LaunchAgents/agent.plist")
+    var launchctlCalls: [[String]] = []
+    let runner: LaunchctlRunner = { arguments in
+        launchctlCalls.append(arguments)
+        if arguments.first == "print" {
+            return LaunchctlResult(succeeded: true, output: "state = running")
+        }
+        return LaunchctlResult(succeeded: true, output: "restored")
+    }
+    let writeError = NSError(
+        domain: "AuraFlowTests",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "read-only file system"]
+    )
+    var writeCount = 0
+    let store = WallpaperRuntimeStore(
+        appSupportURL: root.appendingPathComponent("Support"),
+        launchAgentURL: launchAgentURL,
+        launchctlRunner: runner
+    )
+    try store.ensureDirectories()
+    let previousPlist = Data("previous launch agent".utf8)
+    try previousPlist.write(to: launchAgentURL, options: .atomic)
+
+    let manager = LaunchAgentManager(
+        store: store,
+        launchAgentURL: launchAgentURL,
+        launchctlRunner: runner,
+        launchAgentFileWriter: { data, url in
+            writeCount += 1
+            if writeCount == 1 {
+                throw writeError
+            }
+            try data.write(to: url, options: .atomic)
+        }
+    )
+
+    do {
+        try manager.enableLaunchAgent(helperPath: "/tmp/AuraWallpaperAgent")
+        Issue.record("Expected LaunchAgent plist write to fail")
+    } catch {
+        #expect(error.localizedDescription.contains("read-only file system"))
+        #expect(!error.localizedDescription.contains("rollback failed"))
+    }
+
+    #expect(writeCount == 2)
+    #expect(try Data(contentsOf: launchAgentURL) == previousPlist)
+    #expect(
+        launchctlCalls == [
+            ["print", "gui/\(getuid())/com.andrijvergeles.auraflow"],
+            ["bootout", "gui/\(getuid())/com.andrijvergeles.auraflow"],
+            ["bootstrap", "gui/\(getuid())", launchAgentURL.path]
+        ]
+    )
+}
+
 @Test func launchAgentRollbackFailureIsIncludedInTheReportedError() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("AuraFlowLaunchAgentRollbackFailure-\(UUID().uuidString)")
