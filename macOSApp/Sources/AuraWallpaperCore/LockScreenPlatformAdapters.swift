@@ -85,8 +85,17 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
         try installer.uninstall()
     }
 
+    public func uninstallAsync() async throws {
+        try await installer.uninstallAsync()
+    }
+
     public func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
         try installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    }
+
+    public func uninstallLockScreenOnlyPreservingCurrentDesktopAsync() async throws {
+        try await installer
+            .uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
     }
 
     public func status() -> LockScreenStatus {
@@ -124,6 +133,12 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
     public func restoreDesktopAfterLockScreenSession() throws -> Bool {
         try requireAvailability()
         return try installer.restoreDesktopAfterLockScreenSession()
+    }
+
+    @discardableResult
+    public func restoreDesktopAfterLockScreenSessionAsync() async throws -> Bool {
+        try requireAvailability()
+        return try await installer.restoreDesktopAfterLockScreenSessionAsync()
     }
 
     @discardableResult

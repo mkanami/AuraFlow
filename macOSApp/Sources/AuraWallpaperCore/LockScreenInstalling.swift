@@ -170,12 +170,19 @@ public protocol LockScreenPlatformOperating: LockScreenPlatform {
         shouldProceed: @escaping () -> Bool
     ) async throws -> Bool
     func uninstallLockScreenOnlyPreservingCurrentDesktop() throws
+    /// Async mutation variants used by application and agent orchestration.
+    /// Implementations must serialize these with async installs and the
+    /// synchronous compatibility methods on the same mutation coordinator.
+    func uninstallAsync() async throws
+    func uninstallLockScreenOnlyPreservingCurrentDesktopAsync() async throws
 
     var requiresLockScreenSessionPromotion: Bool { get }
     @discardableResult
     func activateLockScreenForCurrentSession() throws -> Bool
     @discardableResult
     func restoreDesktopAfterLockScreenSession() throws -> Bool
+    @discardableResult
+    func restoreDesktopAfterLockScreenSessionAsync() async throws -> Bool
     @discardableResult
     func applyCurrentDesktopFallback() -> Bool
     @discardableResult
@@ -335,11 +342,23 @@ public extension LockScreenSaverInstalling {
         try uninstall()
     }
 
+    func uninstallAsync() async throws {
+        try uninstall()
+    }
+
+    func uninstallLockScreenOnlyPreservingCurrentDesktopAsync() async throws {
+        try uninstallLockScreenOnlyPreservingCurrentDesktop()
+    }
+
     var requiresLockScreenSessionPromotion: Bool { false }
 
     func activateLockScreenForCurrentSession() throws -> Bool { false }
 
     func restoreDesktopAfterLockScreenSession() throws -> Bool { false }
+
+    func restoreDesktopAfterLockScreenSessionAsync() async throws -> Bool {
+        try restoreDesktopAfterLockScreenSession()
+    }
 
     func applyCurrentDesktopFallback() -> Bool { false }
 

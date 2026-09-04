@@ -1266,7 +1266,7 @@ private struct AerialLockScreenFixture {
         contentsOf: fixture.stateURL
             .appendingPathComponent("Index.before-auraflow.plist")
     )
-    try fixture.installer.uninstall()
+    try await fixture.installer.uninstallAsync()
 
     #expect(!fixture.installer.isInstalled)
     #expect(try Data(contentsOf: fixture.storeURL) == exactStoreBackup)

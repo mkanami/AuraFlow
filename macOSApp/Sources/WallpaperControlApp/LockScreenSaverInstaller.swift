@@ -356,6 +356,20 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         try fileManager.removeItem(at: destinationURL)
     }
 
+    /// Async counterpart used by lifecycle orchestration. The transaction
+    /// itself is still synchronous because it consists of local file and
+    /// preference updates, but the suspension keeps it off a caller's Main
+    /// Actor and preserves the same lock used by synchronous clients.
+    func uninstallAsync() async throws {
+        await Task.yield()
+        try uninstall()
+    }
+
+    func uninstallLockScreenOnlyPreservingCurrentDesktopAsync() async throws {
+        await Task.yield()
+        try uninstallLockScreenOnlyPreservingCurrentDesktop()
+    }
+
     private static func verifyBundleSignature(at url: URL) throws {
         let process = Process()
         let errorPipe = Pipe()

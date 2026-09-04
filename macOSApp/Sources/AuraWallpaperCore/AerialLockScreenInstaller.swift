@@ -1120,6 +1120,21 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         }
     }
 
+    /// Non-blocking orchestration entry point for Remove. The compatibility
+    /// `uninstall()` method remains for synchronous protocol clients, while
+    /// this path acquires the same coordinator and process lock as install.
+    public func uninstallAsync() async throws {
+        try await withMutationCoordinator {
+            try await withCrossProcessLockAsync {
+                // Keep the large, carefully-tested transaction in one place.
+                // After the suspension above this nonisolated async path runs
+                // away from a caller's Main Actor instead of blocking it.
+                await Task.yield()
+                try uninstallLocked()
+            }
+        }
+    }
+
     public func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
         try withMutationCoordinator {
             try withCrossProcessLock {
@@ -1128,6 +1143,38 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                         // A corrupt lock-only marker must never route Remove into
                         // the old full-store recovery path: that could overwrite
                         // the live Desktop with the startup snapshot.
+                        throw AerialLockScreenInstallerError
+                            .malformedWallpaperStore
+                    }
+                    removeIncompleteBackupsIfSafe()
+                    return
+                }
+                guard marker.completed == true else {
+                    throw AerialLockScreenInstallerError
+                        .malformedWallpaperStore
+                }
+                guard marker.lockScreenOnly == true
+                        || marker.desktopIncluded == false
+                else {
+                    try uninstallLocked()
+                    return
+                }
+                try uninstallLockScreenOnlyPreservingCurrentDesktopLocked(
+                    marker: marker
+                )
+            }
+        }
+    }
+
+    /// Async counterpart used by downgrade/remove workflows. It deliberately
+    /// shares the coordinator with install and the synchronous compatibility
+    /// method, so no two store transactions can overlap.
+    public func uninstallLockScreenOnlyPreservingCurrentDesktopAsync() async throws {
+        try await withMutationCoordinator {
+            try await withCrossProcessLockAsync {
+                await Task.yield()
+                guard let marker = loadMarker() else {
+                    if fileManager.fileExists(atPath: markerURL.path) {
                         throw AerialLockScreenInstallerError
                             .malformedWallpaperStore
                     }
@@ -1741,6 +1788,91 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 return storeChanged
             }
         }
+    }
+
+    /// Async counterpart for agent recovery. It uses the same mutation and
+    /// cross-process locks as install/remove; the sync implementation remains
+    /// available for signal-time compatibility paths.
+    @discardableResult
+    public func restoreDesktopAfterLockScreenSessionAsync() async throws -> Bool {
+        try await withMutationCoordinator {
+            try await withCrossProcessLockAsync {
+                await Task.yield()
+                return try restoreDesktopAfterLockScreenSessionLocked()
+            }
+        }
+    }
+
+    private func restoreDesktopAfterLockScreenSessionLocked() throws -> Bool {
+        guard requiresLockScreenSessionPromotion,
+              let marker = loadMarker(),
+              marker.completed == true
+        else {
+            return false
+        }
+        let currentStoreData = try Data(contentsOf: wallpaperStoreURL)
+        let hasSessionBackup = fileManager.fileExists(
+            atPath: lockSessionStoreBackupURL.path
+        )
+        let hasManagedDesktop = wallpaperStoreTransaction
+            .wallpaperStoreHasManagedDesktop(
+                currentStoreData,
+                managedAssetID: marker.assetID
+            )
+        let hasManagedSystemURL = systemWallpaperURLMatches(
+            assetID: marker.assetID
+        )
+        guard hasManagedDesktop || hasManagedSystemURL else {
+            if hasSessionBackup {
+                try? fileManager.removeItem(at: lockSessionStoreBackupURL)
+            }
+            return false
+        }
+        let originalStoreData = try Data(
+            contentsOf: wallpaperStoreBackupURL
+        )
+        let desktopStoreData = try wallpaperStoreTransaction
+            .captureLatestUserWallpaperStoreData(
+                from: currentStoreData,
+                fallbackData: originalStoreData,
+                managedAssetID: marker.assetID
+            )
+        let lockOnlyStoreData = try wallpaperStoreTransaction
+            .aerialWallpaperStoreData(
+                from: desktopStoreData,
+                assetID: marker.assetID,
+                scope: .lockScreenOnly
+            )
+        let storeChanged =
+            (try? Data(contentsOf: wallpaperStoreURL)) != lockOnlyStoreData
+        if storeChanged {
+            try lockOnlyStoreData.write(
+                to: wallpaperStoreURL,
+                options: .atomic
+            )
+        }
+        if marker.systemWallpaperURLWasCaptured == true {
+            let restoredSystemWallpaperURL =
+                wallpaperStoreTransaction.latestUserSystemWallpaperURL(
+                    from: desktopStoreData,
+                    managedAssetID: marker.assetID
+                ) ?? marker.originalSystemWallpaperURL
+            guard setSystemWallpaperURL(restoredSystemWallpaperURL) else {
+                throw AerialLockScreenInstallerError.wallpaperStoreUpdateFailed
+            }
+        }
+        if storeChanged, usesCanonicalWallpaperStore {
+            try desktopRestoreSystem { true }
+        }
+        if markerStoreIncludesDesktop(marker) {
+            var migratedMarker = marker
+            migratedMarker.desktopIncluded = false
+            try saveMarker(migratedMarker)
+        }
+        if hasSessionBackup {
+            try? fileManager.removeItem(at: lockSessionStoreBackupURL)
+        }
+        return storeChanged
     }
 
     private func currentSystemWallpaperURL() -> String? {

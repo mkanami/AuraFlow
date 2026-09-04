@@ -243,7 +243,8 @@ private actor LockScreenPlatformExecutor {
     ) async throws -> Bool {
         try await withExclusivePlatformOperation {
             guard shouldProceed() else { return false }
-            return try platformBox.platform.restoreDesktopAfterLockScreenSession()
+            return try await platformBox.platform
+                .restoreDesktopAfterLockScreenSessionAsync()
         }
     }
 

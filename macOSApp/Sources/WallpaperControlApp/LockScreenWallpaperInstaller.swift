@@ -88,8 +88,17 @@ final class LegacyMacOSAdapter: LockScreenSaverInstalling {
         try installer.uninstall()
     }
 
+    func uninstallAsync() async throws {
+        try await installer.uninstallAsync()
+    }
+
     func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
         try installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    }
+
+    func uninstallLockScreenOnlyPreservingCurrentDesktopAsync() async throws {
+        try await installer
+            .uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
     }
 
     func status() -> LockScreenStatus {
@@ -227,7 +236,8 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
             // leave the existing legacy saver in place until its own atomic
             // install has succeeded.
             if removedModernRoute {
-                try modern.uninstallLockScreenOnlyPreservingCurrentDesktop()
+                try await modern
+                    .uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
             }
             try await legacy.install(videoURL: videoURL)
         } catch let installError {
@@ -282,11 +292,26 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
         try legacy.uninstall()
     }
 
+    func uninstallAsync() async throws {
+        if modern.isInstalled {
+            try await modern.uninstallAsync()
+        }
+        try await legacy.uninstallAsync()
+    }
+
     func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
         if modern.isInstalled {
             try modern.uninstallLockScreenOnlyPreservingCurrentDesktop()
         }
         try legacy.uninstall()
+    }
+
+    func uninstallLockScreenOnlyPreservingCurrentDesktopAsync() async throws {
+        if modern.isInstalled {
+            try await modern
+                .uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
+        }
+        try await legacy.uninstallAsync()
     }
 
     func status() -> LockScreenStatus {
@@ -321,6 +346,13 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     func restoreDesktopAfterLockScreenSession() throws -> Bool {
         guard selectedPlatform === modern else { return false }
         return try selectedPlatform.restoreDesktopAfterLockScreenSession()
+    }
+
+    @discardableResult
+    func restoreDesktopAfterLockScreenSessionAsync() async throws -> Bool {
+        guard selectedPlatform === modern else { return false }
+        return try await selectedPlatform
+            .restoreDesktopAfterLockScreenSessionAsync()
     }
 
     @discardableResult

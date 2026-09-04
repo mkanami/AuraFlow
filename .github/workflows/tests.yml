@@ -192,6 +192,168 @@ jobs:
             --deployment-major 13
 
 
+  fallback-release-pre26-sdk:
+    name: Fallback release with macOS SDK below 26
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      BUILD_UNIVERSAL: "0"
+      REQUIRE_UNIVERSAL: "0"
+      BUILD_NATIVE_BRIDGE: "0"
+      REQUIRE_NATIVE_BRIDGE: "0"
+      FFMPEG_RUNTIME_BUNDLING: "0"
+      REQUIRE_FFMPEG_RUNTIME: "0"
+      CODESIGN_IDENTITY: ""
+      REQUIRE_CODESIGN: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select and verify an installed pre-26 SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          selected_xcode=""
+          selected_sdk=""
+          selected_version=""
+          selected_major=""
+
+          echo "Installed Xcode SDK candidates:"
+          for xcode in /Applications/Xcode*.app; do
+            [[ -d "$xcode/Contents/Developer" ]] || continue
+            sdk="$xcode/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+            settings="$sdk/SDKSettings.plist"
+            if [[ ! -f "$settings" ]]; then
+              echo "- $xcode: missing $settings"
+              continue
+            fi
+
+            version="$(plutil -extract Version raw "$settings" 2>/dev/null || true)"
+            major="${version%%.*}"
+            if [[ ! "$major" =~ ^[0-9]+$ ]]; then
+              echo "- $xcode: invalid SDK version '$version'"
+              continue
+            fi
+            echo "- $xcode: macOS SDK $version (major $major)"
+
+            if [[ "$major" -lt 26 && -z "$selected_xcode" ]]; then
+              selected_xcode="$xcode"
+              selected_sdk="$sdk"
+              selected_version="$version"
+              selected_major="$major"
+            fi
+          done
+
+          if [[ -z "$selected_xcode" ]]; then
+            echo "::error::No installed Xcode with a macOS SDK major below 26 was found." >&2
+            echo "The fallback-release job must exercise a real pre-26 SDK; refusing to run with the default SDK." >&2
+            echo "Xcode bundles visible on this runner:" >&2
+            find /Applications -maxdepth 1 -type d -name 'Xcode*.app' -print | sort >&2 || true
+            exit 1
+          fi
+
+          export DEVELOPER_DIR="$selected_xcode/Contents/Developer"
+          export SDKROOT="$selected_sdk"
+          resolved_version="$(xcrun --sdk macosx --show-sdk-version)"
+          resolved_path="$(xcrun --sdk macosx --show-sdk-path)"
+          resolved_major="${resolved_version%%.*}"
+
+          echo "Selected Xcode: $selected_xcode"
+          echo "Selected SDK: $resolved_version ($resolved_path)"
+          xcodebuild -version
+          xcode-select -p
+
+          [[ "$resolved_path" == "$selected_sdk" ]] || {
+            echo "::error::xcrun resolved an unexpected SDK path: $resolved_path" >&2
+            exit 1
+          }
+          [[ "$resolved_version" == "$selected_version" ]] || {
+            echo "::error::xcrun resolved SDK $resolved_version, expected $selected_version" >&2
+            exit 1
+          }
+          [[ "$resolved_major" =~ ^[0-9]+$ && "$resolved_major" -lt 26 ]] || {
+            echo "::error::Selected SDK is not pre-26: $resolved_version" >&2
+            exit 1
+          }
+
+          {
+            echo "DEVELOPER_DIR=$DEVELOPER_DIR"
+            echo "SDKROOT=$SDKROOT"
+            echo "AURAFLOW_FALLBACK_SDK_VERSION=$resolved_version"
+            echo "AURAFLOW_FALLBACK_SDK_MAJOR=$resolved_major"
+          } >> "$GITHUB_ENV"
+
+      - name: Build complete fallback-only release
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${AURAFLOW_FALLBACK_SDK_MAJOR:-}" =~ ^[0-9]+$ ]] || {
+            echo "::error::Fallback SDK selection did not export a numeric SDK major." >&2
+            exit 1
+          }
+          (( AURAFLOW_FALLBACK_SDK_MAJOR < 26 )) || {
+            echo "::error::Refusing fallback-only release on SDK ${AURAFLOW_FALLBACK_SDK_VERSION:-unknown}." >&2
+            exit 1
+          }
+
+          echo "Building fallback-only release with macOS SDK $AURAFLOW_FALLBACK_SDK_VERSION"
+          ./scripts/build_release.sh
+
+      - name: Verify fallback release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="dist/AuraFlow.app"
+          app_binary="$bundle/Contents/MacOS/WallpaperControlApp"
+          agent_binary="$bundle/Contents/MacOS/AuraWallpaperAgent"
+          saver_binary="$bundle/Contents/PlugIns/AuraFlowLockScreen.saver/Contents/MacOS/AuraFlowLockScreen"
+          bridge_binary="$bundle/Contents/MacOS/AuraWallpaperNativeBridge"
+
+          test -d "$bundle"
+          test -x "$app_binary"
+          test -x "$agent_binary"
+          test -x "$saver_binary"
+          test -s "dist/AuraFlow.zip"
+          test -s "dist/AuraFlow.dmg"
+
+          if [[ -e "$bridge_binary" ]]; then
+            echo "::error::Fallback-only release unexpectedly contains AuraWallpaperNativeBridge." >&2
+            exit 1
+          fi
+
+          app_minimum="$(plutil -extract LSMinimumSystemVersion raw "$bundle/Contents/Info.plist")"
+          saver_minimum="$(plutil -extract LSMinimumSystemVersion raw "$bundle/Contents/PlugIns/AuraFlowLockScreen.saver/Contents/Info.plist")"
+          [[ "$app_minimum" == "13.0" ]] || {
+            echo "::error::App bundle minimum version is $app_minimum, expected 13.0." >&2
+            exit 1
+          }
+          [[ "$saver_minimum" == "13.0" ]] || {
+            echo "::error::Screen Saver minimum version is $saver_minimum, expected 13.0." >&2
+            exit 1
+          }
+
+          python3 .github/scripts/verify_macos_targets.py \
+            --package-directory macOSApp \
+            --source-root Sources/AuraWallpaperCore \
+            --source-root Sources/WallpaperControlApp \
+            --source-root Sources/AuraWallpaperAgent \
+            --binary "WallpaperControlApp=$app_binary" \
+            --binary "AuraWallpaperAgent=$agent_binary" \
+            --binary "AuraFlowLockScreen=$saver_binary" \
+            --deployment-major 13
+
+      - name: Upload fallback release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: auraflow-fallback-release-pre26-sdk
+          path: |
+            dist/AuraFlow.zip
+            dist/AuraFlow.dmg
+          if-no-files-found: error
+
+
   swift6-strict-concurrency:
     runs-on: macos-26
     steps:

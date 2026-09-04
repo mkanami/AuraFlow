@@ -1101,7 +1101,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 )
             }
         } else {
-            try lockScreenPlatform.uninstall()
+            try await lockScreenPlatform.uninstallAsync()
             if store.isLockScreenOnlyAgent() {
                 if daemonProcessManager.isRunning {
                     guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
