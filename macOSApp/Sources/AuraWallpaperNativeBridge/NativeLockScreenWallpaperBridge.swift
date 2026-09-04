@@ -3,7 +3,7 @@ import CoreGraphics
 import Darwin
 import OSLog
 import QuartzCore
-import Wallpaper
+@preconcurrency import Wallpaper
 import AuraWallpaperCore
 
 @MainActor

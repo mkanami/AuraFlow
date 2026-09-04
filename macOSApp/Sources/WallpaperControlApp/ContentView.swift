@@ -2634,6 +2634,7 @@ private struct AuraNotificationBanner: View {
     }
 }
 
+@MainActor
 struct WindowAccessor: NSViewRepresentable {
     @Binding var window: NSWindow?
     var onInteractionStart: () -> Void = {}
@@ -2684,13 +2685,14 @@ struct WindowAccessor: NSViewRepresentable {
         }
     }
 
-    final class Coordinator {
+    final class Coordinator: @unchecked Sendable {
         private weak var configuredWindow: NSWindow?
         private var observers: [NSObjectProtocol] = []
         private var interactionEndWorkItem: DispatchWorkItem?
         private var onInteractionStart: () -> Void = {}
         private var onInteractionEnd: () -> Void = {}
 
+        @MainActor
         func attachIfNeeded(
             _ window: NSWindow,
             onInteractionStart: @escaping () -> Void,
@@ -2710,27 +2712,37 @@ struct WindowAccessor: NSViewRepresentable {
                 ]
                 observers = names.map { name in
                     center.addObserver(forName: name, object: window, queue: .main) { _ in
-                        applyStandardWindowButtonAppearance(for: window)
+                        Task { @MainActor in
+                            applyStandardWindowButtonAppearance(for: window)
+                        }
                     }
                 }
                 observers.append(
                     center.addObserver(forName: NSWindow.willMoveNotification, object: window, queue: .main) { [weak self] _ in
-                        self?.beginWindowInteraction()
+                        Task { @MainActor [weak self] in
+                            self?.beginWindowInteraction()
+                        }
                     }
                 )
                 observers.append(
                     center.addObserver(forName: NSWindow.didMoveNotification, object: window, queue: .main) { [weak self] _ in
-                        self?.scheduleWindowInteractionEnd()
+                        Task { @MainActor [weak self] in
+                            self?.scheduleWindowInteractionEnd()
+                        }
                     }
                 )
                 observers.append(
                     center.addObserver(forName: NSWindow.willStartLiveResizeNotification, object: window, queue: .main) { [weak self] _ in
-                        self?.beginWindowInteraction()
+                        Task { @MainActor [weak self] in
+                            self?.beginWindowInteraction()
+                        }
                     }
                 )
                 observers.append(
                     center.addObserver(forName: NSWindow.didEndLiveResizeNotification, object: window, queue: .main) { [weak self] _ in
-                        self?.scheduleWindowInteractionEnd()
+                        Task { @MainActor [weak self] in
+                            self?.scheduleWindowInteractionEnd()
+                        }
                     }
                 )
                 configureWindowForClientDecorations(window)
@@ -2749,16 +2761,20 @@ struct WindowAccessor: NSViewRepresentable {
             interactionEndWorkItem = nil
         }
 
+        @MainActor
         private func beginWindowInteraction() {
             interactionEndWorkItem?.cancel()
             interactionEndWorkItem = nil
             onInteractionStart()
         }
 
+        @MainActor
         private func scheduleWindowInteractionEnd() {
             interactionEndWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak self] in
-                self?.onInteractionEnd()
+                Task { @MainActor [weak self] in
+                    self?.onInteractionEnd()
+                }
             }
             interactionEndWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
@@ -2766,6 +2782,7 @@ struct WindowAccessor: NSViewRepresentable {
     }
 }
 
+@MainActor
 private final class WindowAccessorView: NSView {
     var onWindowChange: ((NSWindow?) -> Void)?
 

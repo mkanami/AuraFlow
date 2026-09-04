@@ -5,8 +5,8 @@ import Foundation
 /// Downloads catalog media, including provider-specific fallbacks, without
 /// coupling the catalog UI to URLSession, cache naming, or MoeWalls' browser
 /// flow.
-final class CatalogDownloadService {
-    typealias FileDownload = (
+final class CatalogDownloadService: @unchecked Sendable {
+    typealias FileDownload = @Sendable (
         URLRequest,
         URLSession
     ) async throws -> (temporaryURL: URL, response: URLResponse)
@@ -18,7 +18,9 @@ final class CatalogDownloadService {
     init(
         provider: WallpaperCatalogProviding,
         catalogDirectoryURL: URL,
-        fileDownloader: @escaping FileDownload = CatalogFileDownloader.download
+        fileDownloader: @escaping FileDownload = { request, session in
+            try await CatalogFileDownloader.download(request: request, session: session)
+        }
     ) {
         self.provider = provider
         self.catalogDirectoryURL = catalogDirectoryURL

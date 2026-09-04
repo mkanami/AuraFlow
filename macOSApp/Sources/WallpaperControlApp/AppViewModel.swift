@@ -2,6 +2,7 @@ import AppKit
 @_exported import AuraWallpaperCore
 import AVKit
 import Combine
+@preconcurrency import ObjectiveC
 import Foundation
 import OSLog
 import UniformTypeIdentifiers
@@ -20,7 +21,7 @@ enum AdaptiveTextTone: Equatable {
     case light
 }
 
-struct AdaptiveGlassAppearance: Equatable {
+struct AdaptiveGlassAppearance: Equatable, Sendable {
     var topGlassAlpha: CGFloat
     var bottomGlassAlpha: CGFloat
     var centerGlassAlpha: CGFloat
@@ -56,13 +57,13 @@ struct AdaptiveGlassAppearance: Equatable {
     static let `default` = safeFallback
 }
 
-struct CatalogVideoSource: Hashable, Codable {
+struct CatalogVideoSource: Hashable, Codable, Sendable {
     let url: URL
     let width: Int
     let height: Int
 }
 
-struct CatalogWallpaper: Identifiable, Hashable, Codable {
+struct CatalogWallpaper: Identifiable, Hashable, Codable, Sendable {
     let id: String
     let title: String
     let category: String
@@ -74,7 +75,7 @@ struct CatalogWallpaper: Identifiable, Hashable, Codable {
     static let defaultCatalog: [CatalogWallpaper] = []
 }
 
-enum CatalogWallpaperGroup: String, CaseIterable, Identifiable {
+enum CatalogWallpaperGroup: String, CaseIterable, Identifiable, Sendable {
     case anime
     case animeNature
     case scenic
@@ -120,7 +121,7 @@ extension CatalogWallpaper {
     }
 }
 
-struct DownloadedCatalogWallpaper: Identifiable, Hashable, Codable {
+struct DownloadedCatalogWallpaper: Identifiable, Hashable, Codable, Sendable {
     let id: String
     let wallpaperID: String
     let title: String
@@ -190,7 +191,7 @@ func catalogOriginHeaderValue(for url: URL) -> String? {
     return components.string
 }
 
-protocol WallpaperControlling {
+protocol WallpaperControlling: AnyObject, Sendable {
     var lockScreenCapabilities: PlatformCapabilities { get }
     func status() throws -> ControlStatus
     func start(videoURL: URL?, speed: Double?) async throws -> ControlStatus
@@ -242,6 +243,18 @@ enum NativeWallpaperControllerError: LocalizedError {
     }
 }
 
+/// Foundation notification tokens are not annotated Sendable in the current
+/// SDK, although NotificationCenter explicitly permits removing them from a
+/// teardown path. Keep the SDK token behind a tiny immutable ownership box so
+/// the MainActor view model can clean it up from its nonisolated deinit.
+private final class ObserverToken: @unchecked Sendable {
+    let value: NSObjectProtocol
+
+    init(_ value: NSObjectProtocol) {
+        self.value = value
+    }
+}
+
 private actor NativeLifecycleOperationGate {
     private var isHeld = false
 
@@ -259,7 +272,11 @@ private actor NativeLifecycleOperationGate {
     }
 }
 
-final class NativeWallpaperController: WallpaperControlling {
+/// The controller owns all mutable runtime state behind its lifecycle and
+/// recursive locks. It is passed to background bridge calls as one stable
+/// service object, so explicitly document that synchronization boundary for
+/// Swift's strict concurrency checker.
+final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable {
     private struct RuntimeHelperResolution {
         let url: URL
         let didUpdateInstalledCopy: Bool
@@ -1562,13 +1579,13 @@ final class AppViewModel: ObservableObject {
     private var featureViewModelCancellables = Set<AnyCancellable>()
     private let optimizer = VideoOptimizer()
     private let optimizationStore: VideoOptimizationStore
-    private var previewEndObserver: NSObjectProtocol?
-    private var previewStalledObserver: NSObjectProtocol?
+    private var previewEndObserver: ObserverToken?
+    private var previewStalledObserver: ObserverToken?
     private var previewItemStatusObservation: NSKeyValueObservation?
     private var didAttemptAutostartOnLaunch = false
     private var healthMonitorTask: Task<Void, Never>?
     private var isHealthCheckInProgress = false
-    private var lockScreenProviderUnavailableObserver: NSObjectProtocol?
+    private var lockScreenProviderUnavailableObserver: ObserverToken?
     private var pendingLockScreenProviderFallback = false
     private var pendingLockScreenProviderFallbackReason: String?
     private var lockScreenProviderFallbackRetryTask: Task<Void, Never>?
@@ -1577,7 +1594,7 @@ final class AppViewModel: ObservableObject {
     private var lowPowerAutoPauseActive = false
     private var fullscreenAutoPauseActive = false
     private var monitoringTask: Task<Void, Never>?
-    private var terminationObserver: NSObjectProtocol?
+    private var terminationObserver: ObserverToken?
     private var isShuttingDown = false
     private var catalogRefreshTask: Task<Void, Never>?
     private var catalogDownloadTask: Task<Void, Never>?
@@ -1807,7 +1824,7 @@ final class AppViewModel: ObservableObject {
         lifecycleViewModel.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &featureViewModelCancellables)
-        terminationObserver = NotificationCenter.default.addObserver(
+        terminationObserver = ObserverToken(NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
@@ -1815,8 +1832,8 @@ final class AppViewModel: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.beginShutdown()
             }
-        }
-        lockScreenProviderUnavailableObserver =
+        })
+        lockScreenProviderUnavailableObserver = ObserverToken(
             DistributedNotificationCenter.default().addObserver(
                 forName: WallpaperRuntimeNotifications
                     .lockScreenProviderBecameUnavailable,
@@ -1832,6 +1849,7 @@ final class AppViewModel: ObservableObject {
                     )
                 }
             }
+        )
         Task { [weak self] in
             await self?.loadCatalogFromCache()
             await MainActor.run {
@@ -1914,18 +1932,18 @@ final class AppViewModel: ObservableObject {
         lockScreenPreparationTask?.cancel()
         lockScreenProviderFallbackRetryTask?.cancel()
         if let terminationObserver {
-            NotificationCenter.default.removeObserver(terminationObserver)
+            NotificationCenter.default.removeObserver(terminationObserver.value)
         }
         if let lockScreenProviderUnavailableObserver {
             DistributedNotificationCenter.default().removeObserver(
-                lockScreenProviderUnavailableObserver
+                lockScreenProviderUnavailableObserver.value
             )
         }
         if let previewEndObserver {
-            NotificationCenter.default.removeObserver(previewEndObserver)
+            NotificationCenter.default.removeObserver(previewEndObserver.value)
         }
         if let previewStalledObserver {
-            NotificationCenter.default.removeObserver(previewStalledObserver)
+            NotificationCenter.default.removeObserver(previewStalledObserver.value)
         }
         previewItemStatusObservation?.invalidate()
         successBannerTask?.cancel()
@@ -3639,11 +3657,11 @@ final class AppViewModel: ObservableObject {
         glassAnalysisTask = nil
 
         if let previewEndObserver {
-            NotificationCenter.default.removeObserver(previewEndObserver)
+            NotificationCenter.default.removeObserver(previewEndObserver.value)
             self.previewEndObserver = nil
         }
         if let previewStalledObserver {
-            NotificationCenter.default.removeObserver(previewStalledObserver)
+            NotificationCenter.default.removeObserver(previewStalledObserver.value)
             self.previewStalledObserver = nil
         }
         previewItemStatusObservation?.invalidate()
@@ -3688,7 +3706,7 @@ final class AppViewModel: ObservableObject {
             }
         }
 
-        previewEndObserver = NotificationCenter.default.addObserver(
+        previewEndObserver = ObserverToken(NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
             queue: .main
@@ -3697,9 +3715,9 @@ final class AppViewModel: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.applyPreviewPlaybackRate(to: player)
             }
-        }
+        })
 
-        previewStalledObserver = NotificationCenter.default.addObserver(
+        previewStalledObserver = ObserverToken(NotificationCenter.default.addObserver(
             forName: .AVPlayerItemPlaybackStalled,
             object: item,
             queue: .main
@@ -3709,7 +3727,7 @@ final class AppViewModel: ObservableObject {
                 guard player.currentItem === item else { return }
                 self.applyPreviewPlaybackRate(to: player)
             }
-        }
+        })
 
         applyPreviewPlaybackRate(to: player)
         scheduleAdaptiveGlassRefresh(for: url)
@@ -3976,7 +3994,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func runAsync<T>(_ work: @escaping () throws -> T) async throws -> T {
+    private func runAsync<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
@@ -3989,7 +4007,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func runAsync<T>(_ work: @escaping () async throws -> T) async throws -> T {
+    private func runAsync<T: Sendable>(_ work: @escaping @Sendable () async throws -> T) async throws -> T {
         try await work()
     }
 }

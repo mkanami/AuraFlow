@@ -1,6 +1,6 @@
 import Foundation
 
-struct MoeWallsResolution: Codable, Hashable {
+struct MoeWallsResolution: Codable, Hashable, Sendable {
     let width: Int
     let height: Int
 
@@ -30,7 +30,7 @@ struct MoeWallsResolution: Codable, Hashable {
     }
 }
 
-struct MoeWallsWallpaper: Codable, Hashable {
+struct MoeWallsWallpaper: Codable, Hashable, Sendable {
     let id: String
     let slug: String
     let title: String
@@ -106,7 +106,7 @@ struct MoeWallsWallpaper: Codable, Hashable {
     }
 }
 
-struct MoeWallsArchivePage {
+struct MoeWallsArchivePage: Sendable {
     let wallpapers: [MoeWallsWallpaper]
     let hasNextPage: Bool
 }

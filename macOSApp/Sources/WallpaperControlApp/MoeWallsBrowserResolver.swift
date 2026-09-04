@@ -354,15 +354,23 @@ extension MoeWallsBrowserResolver: WKUIDelegate {
 }
 
 extension MoeWallsBrowserResolver: WKDownloadDelegate {
-    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+    private func downloadDestinationURL() -> URL? {
         guard let destinationURL = pendingDownloadDestinationURL else {
-            completionHandler(nil)
             finishDownload(with: .failure(MoeWallsBrowserResolverError.downloadDestinationMissing))
-            return
+            return nil
         }
 
         try? FileManager.default.removeItem(at: destinationURL)
-        completionHandler(destinationURL)
+        return destinationURL
+    }
+
+    @available(macOS 11.3, *)
+    func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String
+    ) async -> URL? {
+        downloadDestinationURL()
     }
 
     func downloadDidFinish(_ download: WKDownload) {

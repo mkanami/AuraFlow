@@ -8,7 +8,7 @@ private func makeLifecycleViewModel(
     preparationDelay: UInt64 = 0
 ) -> LifecycleViewModel {
     let viewModel = LifecycleViewModel()
-    let prepare: (URL) async throws -> PreparedLifecycleVideo = { url in
+    let prepare: @MainActor @Sendable (URL) async throws -> PreparedLifecycleVideo = { url in
         if preparationDelay > 0 {
             try await Task.sleep(nanoseconds: preparationDelay)
         }

@@ -1,7 +1,7 @@
 import AVFoundation
 import Foundation
 
-public struct ControlConfig: Codable, Equatable {
+public struct ControlConfig: Codable, Equatable, Sendable {
     public var video_path: String
     public var playback_speed: Double
     public var volume: Double?
@@ -46,7 +46,7 @@ public enum WallpaperRestoreStatus: String, Codable, Equatable, Sendable {
 
 /// Media classification retained for the catalog's static-image playback path.
 /// Lock Screen still follows the v1.3.1 video/screen-saver contract.
-public enum WallpaperMediaKind: String, Codable, Equatable {
+public enum WallpaperMediaKind: String, Codable, Equatable, Sendable {
     case motion
     case image
 
@@ -62,7 +62,7 @@ public enum WallpaperMediaKind: String, Codable, Equatable {
     public var isStaticImage: Bool { self == .image }
 }
 
-public struct ControlStatus: Codable, Equatable {
+public struct ControlStatus: Codable, Equatable, Sendable {
     public var contract_version: Int?
     public var running: Bool
     public var config: ControlConfig
@@ -111,7 +111,7 @@ public struct ControlStatus: Codable, Equatable {
     }
 }
 
-public struct DaemonHealth: Codable, Equatable {
+public struct DaemonHealth: Codable, Equatable, Sendable {
     public var contract_version: Int?
     public var available: Bool?
     public var fresh: Bool?
@@ -222,7 +222,7 @@ public struct DaemonHealth: Codable, Equatable {
     }
 }
 
-public enum WallpaperScaleMode: String, Codable, CaseIterable, Identifiable {
+public enum WallpaperScaleMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case fill
     case fit
     case stretch
@@ -254,7 +254,7 @@ public enum WallpaperScaleMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-public struct DaemonMetrics: Codable, Equatable {
+public struct DaemonMetrics: Codable, Equatable, Sendable {
     public var contract_version: Int?
     public var updated_at: Double?
     public var running: Bool

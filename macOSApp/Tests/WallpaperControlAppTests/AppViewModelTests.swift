@@ -1602,7 +1602,7 @@ private func pngData(for image: CGImage) -> Data {
     #expect(viewModel.canStop)
 }
 
-final class MockNativeWallpaperController: WallpaperControlling {
+final class MockNativeWallpaperController: WallpaperControlling, @unchecked Sendable {
     var lockScreenCapabilities: PlatformCapabilities =
         .modernMacOS26(isAvailable: true)
     var configuredVideoURL: URL?

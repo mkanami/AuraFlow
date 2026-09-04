@@ -113,6 +113,35 @@ jobs:
           codesign --verify --deep --strict "$bundle_path"
 
 
+  swift6-strict-concurrency:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          selected_app="$(ls -td /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+          if [[ -n "$selected_app" && -d "$selected_app/Contents/Developer" ]]; then
+            echo "DEVELOPER_DIR=$selected_app/Contents/Developer" >> "${GITHUB_ENV}"
+          fi
+          xcodebuild -version
+
+      - name: Build production targets with Swift 6 strict concurrency
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          strict_flags=(
+            -Xswiftc -swift-version -Xswiftc 6
+            -Xswiftc -strict-concurrency=complete
+            -Xswiftc -warnings-as-errors
+          )
+          swift build --target AuraWallpaperCore "${strict_flags[@]}"
+          swift build --target WallpaperControlApp "${strict_flags[@]}"
+          swift build --target AuraWallpaperNativeBridge "${strict_flags[@]}"
+
+
   native-bridge-smoke:
     runs-on: macos-26
     steps:

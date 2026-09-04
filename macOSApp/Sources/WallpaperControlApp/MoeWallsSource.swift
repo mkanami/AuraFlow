@@ -1,27 +1,27 @@
 import Foundation
 
-struct MoeWallsRESTPost: Decodable {
-    struct RenderedText: Decodable {
+struct MoeWallsRESTPost: Decodable, Sendable {
+    struct RenderedText: Decodable, Sendable {
         let rendered: String
     }
 
-    struct OpenGraphImage: Decodable {
+    struct OpenGraphImage: Decodable, Sendable {
         let url: String
         let width: Int?
         let height: Int?
     }
 
-    struct SchemaNode: Decodable {
+    struct SchemaNode: Decodable, Sendable {
         let articleSection: [String]?
         let keywords: [String]?
         let thumbnailUrl: String?
     }
 
-    struct YoastSchema: Decodable {
+    struct YoastSchema: Decodable, Sendable {
         let graph: [SchemaNode]?
     }
 
-    struct YoastHeadJSON: Decodable {
+    struct YoastHeadJSON: Decodable, Sendable {
         let ogImage: [OpenGraphImage]?
         let schema: YoastSchema?
 
@@ -31,7 +31,7 @@ struct MoeWallsRESTPost: Decodable {
         }
     }
 
-    struct ClassList: Decodable {
+    struct ClassList: Decodable, Sendable {
         let values: [String]
 
         init(from decoder: Decoder) throws {
@@ -72,7 +72,7 @@ struct MoeWallsRESTPost: Decodable {
     }
 }
 
-struct MoeWallsTaxonomyTerm: Decodable {
+struct MoeWallsTaxonomyTerm: Decodable, Sendable {
     let id: Int
     let name: String
     let slug: String
@@ -631,7 +631,7 @@ actor MoeWallsSource: WallpaperCatalogProviding {
     }
 }
 
-private struct MoeWallsCatalogCacheEnvelope: Codable {
+private struct MoeWallsCatalogCacheEnvelope: Codable, Sendable {
     let updatedAt: Date
     let wallpapers: [MoeWallsWallpaper]
 }

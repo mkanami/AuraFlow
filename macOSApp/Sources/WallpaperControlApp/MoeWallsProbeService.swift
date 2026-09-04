@@ -1,6 +1,6 @@
 import Foundation
 
-enum MoeWallsSourceError: LocalizedError {
+enum MoeWallsSourceError: LocalizedError, Sendable {
     case unavailable(String)
     case challengeBlocked
     case invalidResponse
@@ -20,20 +20,20 @@ enum MoeWallsSourceError: LocalizedError {
     }
 }
 
-enum MoeWallsCatalogStrategy: String, Codable {
+enum MoeWallsCatalogStrategy: String, Codable, Sendable {
     case rest
     case sitemap
     case archive
     case unavailable
 }
 
-struct MoeWallsProbeResult {
+struct MoeWallsProbeResult: Sendable {
     let strategy: MoeWallsCatalogStrategy
     let available: Bool
     let reason: String?
 }
 
-struct MoeWallsHTTPResponse {
+struct MoeWallsHTTPResponse: Sendable {
     let data: Data
     let response: HTTPURLResponse
 
@@ -42,7 +42,7 @@ struct MoeWallsHTTPResponse {
     }
 }
 
-final class MoeWallsHTTPClient {
+final class MoeWallsHTTPClient: @unchecked Sendable {
     private let session: URLSession
     private let timeout: TimeInterval
     private let userAgent: String
@@ -147,7 +147,7 @@ final class MoeWallsHTTPClient {
     }
 }
 
-final class MoeWallsProbeService {
+final class MoeWallsProbeService: @unchecked Sendable {
     private let client: MoeWallsHTTPClient
     private let baseURL: URL
 

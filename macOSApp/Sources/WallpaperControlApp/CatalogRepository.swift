@@ -8,8 +8,8 @@ import Foundation
 /// repository owns catalog cache access, the downloaded manifest, disk
 /// inference/merge rules, preview image files, and importing user-selected
 /// wallpapers into the managed catalog directory.
-final class CatalogRepository {
-    struct PreviewGenerationRequest {
+final class CatalogRepository: @unchecked Sendable {
+    struct PreviewGenerationRequest: Sendable {
         let videoURL: URL
         let legacyWallpaperID: String?
         let wallpaperID: String

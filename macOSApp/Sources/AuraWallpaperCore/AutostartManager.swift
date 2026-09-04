@@ -1,7 +1,7 @@
 import Foundation
 
 public enum AutostartManagerError: LocalizedError {
-    public enum Operation: String {
+    public enum Operation: String, Sendable {
         case enable
         case disable
     }

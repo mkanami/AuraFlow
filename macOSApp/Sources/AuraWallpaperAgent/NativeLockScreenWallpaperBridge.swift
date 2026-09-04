@@ -408,7 +408,8 @@ final class NativeLockScreenWallpaperBridge {
             UInt32(buffer.count)
         )
         guard length > 0 else { return nil }
-        return String(cString: buffer)
+        let pathBytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: pathBytes, as: UTF8.self)
     }
 
     private static func completeOnMain(

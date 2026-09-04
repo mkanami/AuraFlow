@@ -218,7 +218,8 @@ internal final class AerialProviderController {
             guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else {
                 continue
             }
-            guard URL(fileURLWithPath: String(cString: path))
+            let pathBytes = path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+            guard URL(fileURLWithPath: String(decoding: pathBytes, as: UTF8.self))
                 .lastPathComponent == name
             else {
                 continue

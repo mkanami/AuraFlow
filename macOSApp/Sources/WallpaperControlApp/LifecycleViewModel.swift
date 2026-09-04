@@ -27,17 +27,17 @@ enum WallpaperLifecycleIntent: Equatable {
     }
 }
 
-struct PreparedLifecycleVideo {
+struct PreparedLifecycleVideo: Sendable {
     let url: URL
     let summary: String?
 }
 
-struct LifecycleRequest: Equatable {
+struct LifecycleRequest: Equatable, Sendable {
     let id: UInt64
     let intent: WallpaperLifecycleIntent
 }
 
-struct LifecycleResult {
+struct LifecycleResult: Sendable {
     let status: ControlStatus
     let state: WallpaperLifecycleState
     let statusMessage: String
@@ -48,11 +48,11 @@ struct LifecycleResult {
 }
 
 struct LifecycleViewModelDependencies {
-    let controller: () -> WallpaperControlling?
-    let prepareVideo: (URL) async throws -> PreparedLifecycleVideo
-    let prepareCatalogVideo: (URL) async throws -> PreparedLifecycleVideo
-    let prepareLockScreenVideo: (URL) async throws -> PreparedLifecycleVideo
-    let isManagedCacheURL: (URL) -> Bool
+    let controller: @MainActor @Sendable () -> WallpaperControlling?
+    let prepareVideo: @MainActor @Sendable (URL) async throws -> PreparedLifecycleVideo
+    let prepareCatalogVideo: @MainActor @Sendable (URL) async throws -> PreparedLifecycleVideo
+    let prepareLockScreenVideo: @MainActor @Sendable (URL) async throws -> PreparedLifecycleVideo
+    let isManagedCacheURL: @MainActor @Sendable (URL) -> Bool
 }
 
 struct LifecycleViewModelCallbacks {
@@ -416,7 +416,7 @@ final class LifecycleViewModel: ObservableObject {
         }
     }
 
-    private func runAsync<T>(_ work: @escaping () throws -> T) async throws -> T {
+    private func runAsync<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
@@ -429,7 +429,7 @@ final class LifecycleViewModel: ObservableObject {
         }
     }
 
-    private func runAsync<T>(_ work: @escaping () async throws -> T) async throws -> T {
+    private func runAsync<T: Sendable>(_ work: @escaping @Sendable () async throws -> T) async throws -> T {
         try await work()
     }
 }

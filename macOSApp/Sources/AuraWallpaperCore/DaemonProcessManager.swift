@@ -317,8 +317,9 @@ public final class DaemonProcessManager {
 
         let startTimeMicros = Int64(processInfo.pbi_start_tvsec) * 1_000_000
             + Int64(processInfo.pbi_start_tvusec)
+        let pathBytes = path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
         return DaemonProcessIdentity(
-            executablePath: String(cString: path),
+            executablePath: String(decoding: pathBytes, as: UTF8.self),
             startTimeMicros: startTimeMicros
         )
     }

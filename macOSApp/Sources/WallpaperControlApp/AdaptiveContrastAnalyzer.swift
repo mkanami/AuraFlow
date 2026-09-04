@@ -17,7 +17,30 @@ struct AdaptiveContrastAnalysis {
 enum AdaptiveContrastAnalyzer {
     static let version = "adaptive-contrast-v3"
 
-    private static let cache = NSCache<NSString, AppearanceCacheEntry>()
+    private final class AppearanceCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private let storage = NSCache<NSString, AppearanceCacheEntry>()
+
+        func object(forKey key: NSString) -> AppearanceCacheEntry? {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage.object(forKey: key)
+        }
+
+        func setObject(_ object: AppearanceCacheEntry, forKey key: NSString) {
+            lock.lock()
+            storage.setObject(object, forKey: key)
+            lock.unlock()
+        }
+
+        func removeAllObjects() {
+            lock.lock()
+            storage.removeAllObjects()
+            lock.unlock()
+        }
+    }
+
+    private static let cache = AppearanceCache()
     private static let fullHashLimit: UInt64 = 64 * 1024 * 1024
     private static let sampledHashChunkSize = 1024 * 1024
     private static let pixelWidth = 144

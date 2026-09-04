@@ -1,5 +1,5 @@
 import Darwin
-import CoreFoundation
+@preconcurrency import CoreFoundation
 import Foundation
 import OSLog
 
