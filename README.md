@@ -133,11 +133,19 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 
 `scripts/build_release.sh` builds the Swift targets, stages the app bundle, signs nested Mach-O binaries, signs the app bundle, and packages ZIP and DMG artifacts.
 
+The control app, wallpaper agent, and bundled legacy Screen Saver are built with
+macOS 13.0 as their deployment target. The native `AuraWallpaperNativeBridge` is
+optional: it is built and included only when a macOS 26 SDK and both private
+Wallpaper frameworks are available. On older SDKs the release continues without
+the bridge and uses the legacy Lock Screen fallback at runtime. Set
+`REQUIRE_NATIVE_BRIDGE=1` when a build must fail instead of producing a fallback-only
+artifact.
+
 When `CODESIGN_IDENTITY` is set to a Developer ID Application certificate, the
 release workflow signs and notarizes the app and DMG. The packaging script also
-fails if private framework linkage leaks into the control app, wallpaper agent,
-or screen saver; only `AuraWallpaperNativeBridge` may contain those links. The
-GitHub release workflow refuses to publish an ad-hoc artifact.
+fails if private framework linkage leaks into the control app, wallpaper agent, or
+screen saver; only an included `AuraWallpaperNativeBridge` may contain those links.
+The GitHub release workflow refuses to publish an ad-hoc artifact.
 
 ## Project Layout
 

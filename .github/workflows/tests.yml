@@ -68,9 +68,10 @@ jobs:
         working-directory: macOSApp
         shell: bash
         run: |
-          if [[ "$(sw_vers -productVersion)" == 26.* \
-                && -d /System/Library/PrivateFrameworks/Wallpaper.framework \
-                && -d /System/Library/PrivateFrameworks/WallpaperTypes.framework ]]; then
+          macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+          if [[ "$macos_major" =~ ^[0-9]+$ && "$macos_major" -ge 26 \
+                && -e /System/Library/PrivateFrameworks/Wallpaper.framework/Wallpaper \
+                && -e /System/Library/PrivateFrameworks/WallpaperTypes.framework/WallpaperTypes ]]; then
             swift build -c release --product AuraWallpaperNativeBridge
             test -x "$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge"
           else
@@ -175,6 +176,21 @@ jobs:
             --binary "AuraWallpaperAgent=$bin_path/AuraWallpaperAgent" \
             --deployment-major 13
 
+      - name: Build and verify legacy Screen Saver for macOS 13
+        shell: bash
+        run: |
+          legacy_output="$RUNNER_TEMP/AuraFlow-legacy-screen-saver"
+          MACOSX_DEPLOYMENT_TARGET=13.0 \
+            BUILD_UNIVERSAL=0 \
+            REQUIRE_UNIVERSAL=0 \
+            ./scripts/build_screensaver.sh "$legacy_output"
+          legacy_binary="$legacy_output/AuraFlowLockScreen.saver/Contents/MacOS/AuraFlowLockScreen"
+          test -x "$legacy_binary"
+          python3 .github/scripts/verify_macos_targets.py \
+            --package-directory macOSApp \
+            --binary "AuraFlowLockScreen=$legacy_binary" \
+            --deployment-major 13
+
 
   swift6-strict-concurrency:
     runs-on: macos-26
@@ -203,9 +219,10 @@ jobs:
           swift build --target AuraWallpaperCore "${strict_flags[@]}"
           swift build --target WallpaperControlApp "${strict_flags[@]}"
           swift build --target AuraWallpaperAgent "${strict_flags[@]}"
-          if [[ "$(sw_vers -productVersion)" == 26.* \
-                && -d /System/Library/PrivateFrameworks/Wallpaper.framework \
-                && -d /System/Library/PrivateFrameworks/WallpaperTypes.framework ]]; then
+          macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+          if [[ "$macos_major" =~ ^[0-9]+$ && "$macos_major" -ge 26 \
+                && -e /System/Library/PrivateFrameworks/Wallpaper.framework/Wallpaper \
+                && -e /System/Library/PrivateFrameworks/WallpaperTypes.framework/WallpaperTypes ]]; then
             swift build --target AuraWallpaperNativeBridge "${strict_flags[@]}"
           else
             echo "Skipping strict native bridge build: macOS 26 and both private frameworks are required."
@@ -231,9 +248,10 @@ jobs:
         working-directory: macOSApp
         shell: bash
         run: |
-          if [[ "$(sw_vers -productVersion)" != 26.* \
-                || ! -d /System/Library/PrivateFrameworks/Wallpaper.framework \
-                || ! -d /System/Library/PrivateFrameworks/WallpaperTypes.framework ]]; then
+          macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+          if [[ ! "$macos_major" =~ ^[0-9]+$ || "$macos_major" -lt 26 \
+                || ! -e /System/Library/PrivateFrameworks/Wallpaper.framework/Wallpaper \
+                || ! -e /System/Library/PrivateFrameworks/WallpaperTypes.framework/WallpaperTypes ]]; then
             echo "Skipping native bridge smoke: macOS 26 and both private frameworks are required."
             exit 0
           fi
@@ -243,9 +261,10 @@ jobs:
         working-directory: macOSApp
         shell: bash
         run: |
-          if [[ "$(sw_vers -productVersion)" != 26.* \
-                || ! -d /System/Library/PrivateFrameworks/Wallpaper.framework \
-                || ! -d /System/Library/PrivateFrameworks/WallpaperTypes.framework ]]; then
+          macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+          if [[ ! "$macos_major" =~ ^[0-9]+$ || "$macos_major" -lt 26 \
+                || ! -e /System/Library/PrivateFrameworks/Wallpaper.framework/Wallpaper \
+                || ! -e /System/Library/PrivateFrameworks/WallpaperTypes.framework/WallpaperTypes ]]; then
             echo "Skipping native bridge smoke: macOS 26 and both private frameworks are required."
             exit 0
           fi
