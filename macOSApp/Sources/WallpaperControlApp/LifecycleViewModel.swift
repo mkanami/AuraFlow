@@ -312,6 +312,12 @@ final class LifecycleViewModel: ObservableObject {
         switch request.intent {
         case .start(let sourceURL, let resume):
             if resume {
+                // Start always owns both surfaces, including the paused
+                // resume path. Re-enable and synchronize Lock Screen before
+                // asking the Desktop agent to resume.
+                _ = try await runAsync {
+                    try await controller.setShowOnLockScreen(true)
+                }
                 let status = try await runAsync { try controller.resume() }
                 return LifecycleResult(
                     status: status,

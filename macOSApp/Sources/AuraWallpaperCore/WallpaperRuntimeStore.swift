@@ -365,7 +365,7 @@ public final class WallpaperRuntimeStore {
         let processStatus = daemonProcessStatus
         let owned = processStatus.isOwned
         let paused = isPaused()
-        let lockScreenOnly = isLockScreenOnlyAgent()
+        let lockScreenOnly = isLockScreenOnlyMode()
         let health = healthForStatus(processStatus: processStatus, paused: paused)
         let launchAgent = launchAgentStatus()
         return ControlStatus(
@@ -390,7 +390,7 @@ public final class WallpaperRuntimeStore {
         let processStatus = daemonProcessStatus
         let owned = processStatus.isOwned
         let paused = isPaused()
-        let lockScreenOnly = isLockScreenOnlyAgent()
+        let lockScreenOnly = isLockScreenOnlyMode()
         return DaemonMetrics(
             updated_at: Date().timeIntervalSince1970,
             running: owned && !paused && !lockScreenOnly,
@@ -404,6 +404,13 @@ public final class WallpaperRuntimeStore {
             thread_count: nil,
             health: healthForStatus(processStatus: processStatus, paused: paused)
         )
+    }
+
+    /// True when the current runtime owns a dedicated Lock Screen route.
+    /// Legacy screen-saver installs do not need a separate agent, so the
+    /// source marker is also part of the persisted mode state.
+    public func isLockScreenOnlyMode() -> Bool {
+        isLockScreenOnlyAgent() || loadLockScreenOnlySource() != nil
     }
 
     public func healthForStatus(alive: Bool, paused: Bool) -> DaemonHealth {

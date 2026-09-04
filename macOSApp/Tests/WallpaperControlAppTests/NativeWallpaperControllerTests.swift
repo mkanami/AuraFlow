@@ -454,7 +454,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
 
     #expect(config.video_path == fixture.videoURL.path)
     #expect(config.playback_speed == 1.75)
-    #expect(config.show_on_lock_screen == false)
+    #expect(config.show_on_lock_screen == true)
     #expect(status.pid != nil)
     #expect(fixture.store.processIsAlive(pid: status.pid))
     #expect(command?.action == .reload)
@@ -564,7 +564,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(installer.isInstalled)
 }
 
-@Test func legacyScreenSaverDoesNotLaunchLockScreenOnlyAgent() async throws {
+@Test func legacyScreenSaverAppliesLockScreenOnlyWithoutAgent() async throws {
     let fixture = try NativeRuntimeFixture("legacy-lock-screen-only")
     defer { fixture.cleanup() }
 
@@ -579,11 +579,14 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         lockScreenSaverInstaller: legacyPlatform
     )
 
-    #expect(legacyPlatform.capabilities.supportsLockScreenOnly == false)
-    await expectAsyncThrowing(NativeWallpaperControllerError.self) {
-        _ = try await controller.installLockScreenOnly(videoURL: fixture.videoURL)
-    }
+    #expect(legacyPlatform.capabilities.supportsLockScreenOnly)
+    let status = try await controller.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    #expect(status.running == false)
+    #expect(status.lock_screen_only == true)
     #expect(fixture.store.loadPID() == nil)
+    #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
+    #expect(installer.installedVideoURL == fixture.videoURL)
     #expect(installer.installedLockScreenOnlyVideoURL == nil)
 }
 
@@ -788,7 +791,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.isLockScreenAgentReady() == false)
 }
 
-@Test func enablingLockScreenOnLegacyPlatformMigratesLockOnlySource() async throws {
+@Test func enablingLockScreenOnLegacyPlatformKeepsLockOnlySource() async throws {
     let fixture = try NativeRuntimeFixture("legacy-enable-lock-only-migration")
     defer { fixture.cleanup() }
 
@@ -819,8 +822,12 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     _ = try await controller.setShowOnLockScreen(true)
 
     #expect(installer.installedVideoURL == fixture.videoURL)
-    #expect(fixture.store.loadConfig().video_path == fixture.videoURL.path)
-    #expect(fixture.store.loadLockScreenOnlySource() == nil)
+    #expect(fixture.store.loadConfig().video_path == desktopURL.path)
+    #expect(fixture.store.loadConfig().show_on_lock_screen == true)
+    #expect(
+        fixture.store.loadLockScreenOnlySource()
+            == fixture.videoURL.standardizedFileURL
+    )
 }
 
 @Test func nativeLockScreenOnlyReplacesRunningDesktopAgent() async throws {
@@ -893,7 +900,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadCommand() == nil)
     #expect(fixture.store.loadConfig().video_path.isEmpty)
     #expect(
-        fixture.store.loadConfig().show_on_lock_screen == false
+        fixture.store.loadConfig().show_on_lock_screen == true
     )
 }
 

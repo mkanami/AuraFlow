@@ -401,7 +401,7 @@ private func makeRuntimeBridgeFixture(
     let mediaURL = URL(fileURLWithPath: "/tmp/legacy-native-bridge-wallpaper.mov")
 
     #expect(adapter.capabilities.supportsLockScreen)
-    #expect(adapter.capabilities.supportsLockScreenOnly == false)
+    #expect(adapter.capabilities.supportsLockScreenOnly)
     #expect(adapter.capabilities.availabilityMessage?.contains("unavailable") == true)
     try await adapter.install(mediaURL)
     #expect(legacyInstaller.installedURL == mediaURL)

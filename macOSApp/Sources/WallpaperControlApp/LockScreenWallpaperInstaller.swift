@@ -41,14 +41,11 @@ final class LegacyMacOSAdapter: LockScreenSaverInstalling {
     }
 
     func installLockScreenOnly(videoURL: URL) async throws {
-        guard capabilities.supportsLockScreenOnly else {
-            throw LockScreenPlatformError.unsupported(
-                capabilities.availabilityMessage
-                    ?? "Lock Screen-only wallpaper is unavailable."
-            )
-        }
         try requireAvailability()
-        try await installer.installLockScreenOnly(videoURL: videoURL)
+        // The legacy screen saver is a separate Lock Screen/idle route and
+        // does not modify the Desktop wallpaper. Its default protocol
+        // implementation intentionally reuses the normal bundle install.
+        try await installer.install(videoURL: videoURL)
     }
 
     func installLegacyLockScreenFallback(
@@ -403,8 +400,8 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
         videoURL: URL,
         lockScreenOnly: Bool
     ) async throws {
-        // The legacy saver is only the compatibility companion here. Its
-        // standalone Lock Screen-only mode is intentionally unavailable.
+        // The legacy saver is the compatibility companion for the native
+        // shared and Lock Screen-only routes.
         try await legacy.install(videoURL: videoURL)
 
         do {

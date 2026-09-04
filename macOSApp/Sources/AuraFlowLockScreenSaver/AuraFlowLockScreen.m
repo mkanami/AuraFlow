@@ -148,12 +148,12 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     // resource uses video_file. A lock-only agent has a separate source
     // contract; never let a stale Desktop config win over the wallpaper the
     // user selected for this Lock Screen generation.
-    NSString *lockOnlyAgentMarkerPath =
+    NSString *lockOnlySourceMarkerPath =
         [applicationSupportURL.path stringByAppendingPathComponent:
-            @"lock_screen_only_agent"];
+            @"lock_screen_only_source.json"];
     NSURL *runtimeVideoURL = nil;
     if ([[NSFileManager defaultManager]
-            fileExistsAtPath:lockOnlyAgentMarkerPath]) {
+            fileExistsAtPath:lockOnlySourceMarkerPath]) {
         NSURL *lockOnlySourceURL =
             [applicationSupportURL URLByAppendingPathComponent:
                 @"lock_screen_only_source.json"];

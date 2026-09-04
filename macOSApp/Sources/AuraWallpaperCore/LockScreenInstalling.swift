@@ -38,12 +38,12 @@ public struct PlatformCapabilities: Equatable, Sendable {
         platformName: "Legacy macOS screen saver",
         minimumMajorOSVersion: 13,
         supportsLockScreen: true,
-        supportsLockScreenOnly: false,
+        supportsLockScreenOnly: true,
         supportsSecureLockScreen: false,
         supportsAnimatedMedia: true,
         usesPrivateWallpaperFramework: false,
         availabilityMessage:
-            "The legacy screen saver can provide Lock Screen wallpaper. Lock Screen-only mode requires macOS 26 or later."
+            "The legacy screen saver provides both shared and Lock Screen-only wallpaper on macOS 13 and later."
     )
 
     public static func modernMacOS26(isAvailable: Bool) -> PlatformCapabilities {

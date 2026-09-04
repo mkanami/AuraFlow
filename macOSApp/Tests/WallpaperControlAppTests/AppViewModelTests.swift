@@ -1640,6 +1640,7 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
         statusRunning = true
         statusPaused = false
         statusLockScreenOnly = false
+        statusShowOnLockScreen = true
         statusHealth = nil
         return statusPayload(running: true, paused: false, health: nil)
     }
@@ -1718,7 +1719,8 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
     }
 
     func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus {
-        try status()
+        statusShowOnLockScreen = enabled
+        return try status()
     }
 
     func syncLockScreenSaver() throws {

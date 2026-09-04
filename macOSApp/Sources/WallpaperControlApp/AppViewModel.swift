@@ -729,6 +729,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         let previousPaused = store.isPaused()
         let previousLockScreenOnlySource = store.loadLockScreenOnlySource()
         let previousLockScreenOnlyAgent = store.isLockScreenOnlyAgent()
+        let previousLockScreenOnlyMode =
+            previousLockScreenOnlyAgent || previousLockScreenOnlySource != nil
         let previousPID = store.loadPID()
         let previousAgentWasAlive = daemonProcessManager.isRunning(pid: previousPID)
         let previousCommand = store.loadCommand()
@@ -744,6 +746,10 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         if let speed {
             nextConfig.playback_speed = speed
         }
+        // Start is the shared Desktop + Lock Screen action. The setting can
+        // remain disabled before the first start, but a successful Start must
+        // persist the Lock Screen side before the agent is launched.
+        nextConfig.show_on_lock_screen = true
         nextConfig = store.normalized(nextConfig)
         guard !nextConfig.video_path.isEmpty else {
             throw NativeWallpaperControllerError.unavailable(
@@ -815,6 +821,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 previousConfig: previousConfig,
                 previousLockScreenOnlySource: previousLockScreenOnlySource,
                 previousLockScreenOnlyAgent: previousLockScreenOnlyAgent,
+                previousLockScreenOnlyMode: previousLockScreenOnlyMode,
                 previousAgentWasAlive: previousAgentWasAlive,
                 previousAgentWasStopped: previousAgentWasStopped,
                 previousPaused: previousPaused,
@@ -975,6 +982,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 "Video file not found: \(normalizedURL.path)"
             )
         }
+        let requiresDedicatedLockScreenAgent =
+            lockScreenPlatform.capabilities.supportsSecureLockScreen
 
         // Keep the selected source dedicated to Lock Screen. The runtime
         // temporarily promotes its Aerial route only during the lock handoff
@@ -1001,11 +1010,12 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             config.show_on_lock_screen = true
         }
         if daemonProcessManager.isRunning,
-           !store.isLockScreenOnlyAgent() {
+           (!store.isLockScreenOnlyAgent() || !requiresDedicatedLockScreenAgent) {
             // A normal desktop agent cannot be repurposed by a reload: it
-            // would continue presenting AuraFlow windows on the Desktop.
-            // Replace it with the dedicated lock-only agent so this button
-            // never changes the user's Desktop wallpaper.
+            // would continue presenting AuraFlow windows on the Desktop. The
+            // legacy saver also owns the Lock Screen route without an agent,
+            // so any existing agent must be stopped before entering either
+            // Lock Screen-only mode.
             guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
                 throw NativeWallpaperControllerError.unavailable(
                     "The desktop wallpaper agent did not stop before enabling Lock Screen only mode."
@@ -1015,18 +1025,30 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             store.removeHealth()
             store.markLockScreenOnlyAgent(false)
         }
-        if daemonProcessManager.isRunning,
-           store.isLockScreenOnlyAgent() {
-            // The lock-only agent reads its source from the dedicated marker;
-            // reload it when the user replaces that source so the next lock
-            // cannot keep an old player item alive.
-            store.markLockScreenAgentReady(false)
-            try send(.reload, config: config)
+        if requiresDedicatedLockScreenAgent {
+            if daemonProcessManager.isRunning,
+               store.isLockScreenOnlyAgent() {
+                // The lock-only agent reads its source from the dedicated
+                // marker; reload it when the user replaces that source so
+                // the next lock cannot keep an old player item alive.
+                store.markLockScreenAgentReady(false)
+                try send(.reload, config: config)
+            } else {
+                try launchAgentIfNeeded(lockScreenOnly: true)
+            }
         } else {
-            try launchAgentIfNeeded(lockScreenOnly: true)
+            // On macOS 13–25 the selected screen saver is the complete
+            // Lock Screen-only runtime. There is no native provider to
+            // promote and no agent should be launched with an unsupported
+            // lock-screen platform.
+            store.removeCommand()
+            store.removeHealth()
+            store.markLockScreenOnlyAgent(false)
         }
-        try waitForLockScreenAgentReady()
-        try waitForLockScreenGenerationReady(videoURL: normalizedURL)
+        if requiresDedicatedLockScreenAgent {
+            try waitForLockScreenAgentReady()
+            try waitForLockScreenGenerationReady(videoURL: normalizedURL)
+        }
         return store.status()
     }
 
@@ -1330,6 +1352,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         previousConfig: ControlConfig,
         previousLockScreenOnlySource: URL?,
         previousLockScreenOnlyAgent: Bool,
+        previousLockScreenOnlyMode: Bool,
         previousAgentWasAlive: Bool,
         previousAgentWasStopped: Bool,
         previousPaused: Bool,
@@ -1374,7 +1397,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             }
         }
 
-        if previousLockScreenOnlyAgent {
+        if previousLockScreenOnlyMode {
             guard let sourceURL = previousLockScreenOnlySource
                 ?? (previousConfig.video_path.isEmpty
                     ? nil
@@ -1423,10 +1446,32 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                         previousHealth: previousHealth
                     )
                 }
-            } else {
+            } else if previousLockScreenOnlyAgent {
                 // Preserve the pre-existing configured/stale state. A failed
                 // Start must not silently remove a Lock Screen-only selection.
                 store.markLockScreenOnlyAgent(true)
+            } else {
+                // Legacy Lock Screen-only mode is owned by the screen saver,
+                // not by a dedicated agent. Reinstall the previous source and
+                // leave the Desktop agent stopped exactly as before Start.
+                do {
+                    try await installLockScreenSaver(
+                        videoURL: sourceURL,
+                        ensureStillFrame: true,
+                        lockScreenOnly: true
+                    )
+                    guard lockScreenPlatform.installationConfirmed else {
+                        throw NativeWallpaperControllerError.unavailable(
+                            "macOS did not confirm the previous Lock Screen configuration."
+                        )
+                    }
+                    try store.saveLockScreenOnlySource(sourceURL)
+                    store.markLockScreenOnlyAgent(false)
+                } catch {
+                    rollbackFailures.append(
+                        "previous Lock Screen route: \(error.localizedDescription)"
+                    )
+                }
             }
         } else {
             store.clearLockScreenOnlySource()
