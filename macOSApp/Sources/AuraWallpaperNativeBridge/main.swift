@@ -2,65 +2,41 @@ import AppKit
 import AuraWallpaperCore
 import Foundation
 
+@MainActor
 private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegate {
-    private static let maxInputBufferSize = 64 * 1024
     private let bridge = NativeLockScreenWallpaperBridge()
-    private let inputQueue = DispatchQueue(
-        label: "com.auraflow.native-lock-screen-bridge-input"
-    )
-    private let outputLock = NSLock()
-    private var inputBuffer = Data()
+    private let transport = NativeBridgeTransport()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        FileHandle.standardInput.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty
-            else {
-                DispatchQueue.main.async {
-                    NSApp.terminate(nil)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.transport.start(
+                onRequest: { [weak self] request in
+                    // Transport decoding happens off the Main Actor. Keep the
+                    // actor hop explicit before touching the bridge or AppKit.
+                    let server = self
+                    Task {
+                        await MainActor.run {
+                            server?.handle(request)
+                        }
+                    }
+                },
+                onClosed: {
+                    Task {
+                        await MainActor.run {
+                            NSApp.terminate(nil)
+                        }
+                    }
                 }
-                return
-            }
-            self?.inputQueue.async { [weak self] in
-                self?.consume(data)
-            }
+            )
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        FileHandle.standardInput.readabilityHandler = nil
         bridge.shutdown()
-    }
-
-    private func consume(_ data: Data) {
-        guard data.count <= Self.maxInputBufferSize,
-              inputBuffer.count <= Self.maxInputBufferSize - data.count
-        else {
-            // A command must be newline-delimited. Drop the process rather
-            // than allowing malformed input without a newline to grow the
-            // long-lived bridge buffer indefinitely.
-            inputBuffer.removeAll(keepingCapacity: false)
-            DispatchQueue.main.async {
-                NSApp.terminate(nil)
-            }
-            return
-        }
-        inputBuffer.append(data)
-        while let newline = inputBuffer.firstIndex(of: 0x0A) {
-            let line = inputBuffer.prefix(upTo: newline)
-            inputBuffer.removeSubrange(...newline)
-            guard !line.isEmpty,
-                  let request = try? JSONDecoder().decode(
-                      NativeLockScreenBridgeRequest.self,
-                      from: line
-                  )
-            else {
-                continue
-            }
-            DispatchQueue.main.async { [weak self] in
-                self?.handle(request)
-            }
+        Task {
+            await transport.stop()
         }
     }
 
@@ -93,15 +69,15 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
             respond(to: request, succeeded: true)
         case .shutdown:
             bridge.shutdown()
-            respond(to: request, succeeded: true)
-            NSApp.terminate(nil)
+            respond(to: request, succeeded: true, terminateAfterWrite: true)
         }
     }
 
     private func respond(
         to request: NativeLockScreenBridgeRequest,
         succeeded: Bool,
-        errorDescription: String? = nil
+        errorDescription: String? = nil,
+        terminateAfterWrite: Bool = false
     ) {
         let response = NativeLockScreenBridgeResponse(
             id: request.id,
@@ -109,11 +85,14 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
             succeeded: succeeded,
             errorDescription: errorDescription
         )
-        guard var data = try? JSONEncoder().encode(response) else { return }
-        data.append(0x0A)
-        outputLock.lock()
-        defer { outputLock.unlock() }
-        try? FileHandle.standardOutput.write(contentsOf: data)
+        Task { [weak self] in
+            guard let self else { return }
+            await transport.send(response)
+            guard terminateAfterWrite else { return }
+            await MainActor.run {
+                NSApp.terminate(nil)
+            }
+        }
     }
 }
 
@@ -122,6 +101,8 @@ guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 else {
 }
 
 let application = NSApplication.shared
-private let delegate = NativeLockScreenBridgeServer()
-application.delegate = delegate
-application.run()
+MainActor.assumeIsolated {
+    let delegate = NativeLockScreenBridgeServer()
+    application.delegate = delegate
+    application.run()
+}

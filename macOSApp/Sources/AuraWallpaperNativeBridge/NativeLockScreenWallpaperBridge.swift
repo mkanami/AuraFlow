@@ -6,6 +6,7 @@ import QuartzCore
 import Wallpaper
 import AuraWallpaperCore
 
+@MainActor
 final class NativeLockScreenWallpaperBridge {
     private typealias StartScreenSaverFunction = @convention(c) () -> Int32
 
