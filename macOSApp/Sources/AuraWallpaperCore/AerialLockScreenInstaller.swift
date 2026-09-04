@@ -305,11 +305,22 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         let assetValid = fileManager.fileExists(atPath: assetURL.path)
             && assetSignatureMatches
         let providerAvailable = assetStore.providerSupportsAsset(marker.assetID)
-        let providerRunning = usesCanonicalWallpaperStore
-            && !AerialProviderController.processIdentifiers(
+        let providerRunning: Bool
+        if usesCanonicalWallpaperStore {
+            let extensionRunning = !AerialProviderController.processIdentifiers(
                 named: WallpaperPlatformConstants.aerialExtensionProcessName
-            )
-                .isEmpty
+            ).isEmpty
+            let ownerRunning = !AerialProviderController.processIdentifiers(
+                named: WallpaperPlatformConstants.wallpaperAgentProcessName
+            ).isEmpty
+            // WallpaperAgent owns the ExtensionKit provider and can be alive
+            // while the extension is still lazy. Treat the owner as a valid
+            // warm provider runtime; requiring the extension process itself
+            // makes a freshly installed generation fail its readiness window.
+            providerRunning = extensionRunning || ownerRunning
+        } else {
+            providerRunning = false
+        }
         let storeData = try? Data(contentsOf: wallpaperStoreURL)
         let storeHash = storeData.map(signature(of:))
         let storeValid = storeData.map { data in

@@ -273,7 +273,10 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let controller = try NativeWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
-        lockScreenSaverInstaller: installer
+        lockScreenSaverInstaller: installer,
+        nativeBridgeURL: fixture.root.appendingPathComponent(
+            "missing-native-bridge"
+        )
     )
 
     #expect(controller.lockScreenCapabilities.supportsLockScreen == false)

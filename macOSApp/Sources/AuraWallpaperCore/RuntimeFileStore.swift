@@ -43,6 +43,9 @@ public final class RuntimeFileStore {
     public var lockScreenAgentReadyURL: URL {
         appSupportURL.appendingPathComponent("lock_screen_agent_ready")
     }
+    public var lockScreenAgentStartedURL: URL {
+        appSupportURL.appendingPathComponent("lock_screen_agent_started")
+    }
 
     public func ensureDirectories() throws {
         try FileManager.default.createDirectory(

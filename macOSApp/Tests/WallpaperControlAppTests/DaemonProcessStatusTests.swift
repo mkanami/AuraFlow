@@ -105,3 +105,23 @@ private func stopStatusFixtureProcess(_ process: Process) {
     #expect(manager.processStatus == .noPID)
     #expect(manager.isRunning == false)
 }
+
+@Test func lockScreenAgentStartedMarkerIsIndependentFromGenerationReadyMarker() throws {
+    let fixture = try makeDaemonStatusStore()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    #expect(fixture.store.isLockScreenAgentStarted() == false)
+    #expect(fixture.store.isLockScreenAgentReady() == false)
+
+    fixture.store.markLockScreenAgentStarted(true)
+    #expect(fixture.store.isLockScreenAgentStarted())
+    #expect(fixture.store.isLockScreenAgentReady() == false)
+
+    fixture.store.markLockScreenAgentReady(true)
+    fixture.store.markLockScreenAgentStarted(false)
+    #expect(fixture.store.isLockScreenAgentStarted() == false)
+    #expect(fixture.store.isLockScreenAgentReady())
+
+    fixture.store.markLockScreenOnlyAgent(false)
+    #expect(fixture.store.isLockScreenAgentReady() == false)
+}

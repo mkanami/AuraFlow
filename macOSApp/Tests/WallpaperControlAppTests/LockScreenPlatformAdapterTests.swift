@@ -512,6 +512,22 @@ private func makeRuntimeBridgeFixture(
     #expect(modernInstaller.restoredLockScreenOnlyVideoURL == nil)
 }
 
+@Test func lockScreenGenerationIsReadyBeforeProviderExtensionIsObserved() {
+    let status = LockScreenOnlyGenerationStatus(
+        installed: true,
+        sourceMatches: true,
+        assetValid: true,
+        providerAvailable: true,
+        providerRunning: false,
+        wallpaperStoreValid: true,
+        screenSaverSelected: true
+    )
+
+    // The provider process is lazy on macOS. A committed route is a valid
+    // generation even when ExtensionKit has not materialized the extension.
+    #expect(status.isReady)
+}
+
 @Test func explicitLegacyFallbackRestoresModernInstallationWhenLegacyFails() async throws {
     let modernInstaller = RecordingModernInstaller(
         isAvailable: true,

@@ -412,12 +412,18 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             rebuildPlayback(from: config, keepPaused: false)
         } else {
             store.markLockScreenAgentReady(false)
-            // Recover the user's Desktop first, then pre-arm WallpaperAgent's
-            // next assertion without leaving the Aerial route in Index.plist.
-            restoreDesktopStoreAfterSessionSynchronously()
         }
         startTimers()
         if lockScreenOnlyMode {
+            // This marker only means that the agent process is initialized
+            // and can accept lifecycle work. The separate ready marker is
+            // reserved for the validated generation and native bridge.
+            store.markLockScreenAgentStarted(true)
+            // Recover the user's Desktop first, then pre-arm WallpaperAgent's
+            // next assertion without leaving the Aerial route in Index.plist.
+            // This can touch the system store, so it deliberately happens
+            // after the startup marker and never delays process discovery.
+            restoreDesktopStoreAfterSessionSynchronously()
             // Do this before advertising the agent as ready. The Apply button
             // waits for this handshake so an immediate direct-lock cannot
             // arrive while the first provider rearm is still in flight.
@@ -491,6 +497,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         lockShieldNotificationTokens.removeAll()
         if lockScreenOnlyMode, ownsRuntimePID {
             store.markLockScreenAgentReady(false)
+            store.markLockScreenAgentStarted(false)
         }
         lockScreenLifecycleCoordinator.invalidate()
         tearDownPlayback()

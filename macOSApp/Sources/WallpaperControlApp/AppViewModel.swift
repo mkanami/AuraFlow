@@ -626,6 +626,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         store.removeHealth()
         if lockScreenOnly {
             store.markLockScreenAgentReady(false)
+            store.markLockScreenAgentStarted(false)
         }
         let task = Process()
         task.executableURL = helperURL
@@ -670,7 +671,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                     "The Lock Screen agent stopped during initialization."
                 )
             }
-            if store.isLockScreenAgentReady() {
+            if store.isLockScreenAgentStarted() {
                 return
             }
             Thread.sleep(forTimeInterval: 0.05)
@@ -1053,10 +1054,11 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
     }
 
     func prepareLockScreenMedia(videoURL: URL) async throws {
-        try await asyncLifecycleGate.acquire()
-        defer {
-            Task { await asyncLifecycleGate.release() }
-        }
+        // This is a cache warm-up, not a runtime mutation. Holding the
+        // lifecycle gate here lets a background conversion block an explicit
+        // Lock action. The installer has its own mutation/cross-process
+        // coordinator, so preparation remains serialized with store writes
+        // without delaying unrelated lifecycle requests.
         try requireNativeBridgeIfNeeded()
         try await lockScreenPlatform.prepareLockScreenMedia(videoURL: videoURL)
     }
@@ -2706,6 +2708,12 @@ final class AppViewModel: ObservableObject {
     }
 
     func applyLockScreenOnly() {
+        // A preview-triggered HEVC conversion is best effort. Never make the
+        // user wait behind it when the explicit Lock action is requested;
+        // cancellation also terminates an in-flight avconvert process.
+        lockScreenPreparationGeneration &+= 1
+        lockScreenPreparationTask?.cancel()
+        lockScreenPreparationTask = nil
         lifecycleViewModel.applyLockScreenOnly(selectedVideoURL: selectedVideoURL)
     }
 

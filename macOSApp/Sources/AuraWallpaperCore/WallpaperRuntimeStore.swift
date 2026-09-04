@@ -154,6 +154,7 @@ public final class WallpaperRuntimeStore {
     public var lockScreenOnlySourceURL: URL { fileStore.lockScreenOnlySourceURL }
     public var lockScreenOnlyAgentURL: URL { fileStore.lockScreenOnlyAgentURL }
     public var lockScreenAgentReadyURL: URL { fileStore.lockScreenAgentReadyURL }
+    public var lockScreenAgentStartedURL: URL { fileStore.lockScreenAgentStartedURL }
     public var launchAgentURL: URL { fileStore.launchAgentURL }
 
     public func ensureDirectories() throws {
@@ -224,6 +225,7 @@ public final class WallpaperRuntimeStore {
         } else {
             try? FileManager.default.removeItem(at: lockScreenOnlyAgentURL)
             markLockScreenAgentReady(false)
+            markLockScreenAgentStarted(false)
         }
     }
 
@@ -246,6 +248,28 @@ public final class WallpaperRuntimeStore {
 
     public func isLockScreenAgentReady() -> Bool {
         FileManager.default.fileExists(atPath: lockScreenAgentReadyURL.path)
+    }
+
+    /// Indicates that the dedicated agent has installed its run-loop,
+    /// signal, and notification plumbing. It is intentionally separate from
+    /// `isLockScreenAgentReady()`: provider generation and native bridge
+    /// validation may complete later and must not make process startup look
+    /// like a launch failure.
+    public func markLockScreenAgentStarted(_ started: Bool) {
+        if started {
+            try? ensureDirectories()
+            FileManager.default.createFile(
+                atPath: lockScreenAgentStartedURL.path,
+                contents: Data(),
+                attributes: nil
+            )
+        } else {
+            try? FileManager.default.removeItem(at: lockScreenAgentStartedURL)
+        }
+    }
+
+    public func isLockScreenAgentStarted() -> Bool {
+        FileManager.default.fileExists(atPath: lockScreenAgentStartedURL.path)
     }
 
     public func markWallpaperRestorePending(_ pending: Bool) {
