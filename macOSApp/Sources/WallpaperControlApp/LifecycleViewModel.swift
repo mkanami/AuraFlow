@@ -377,9 +377,7 @@ final class LifecycleViewModel: ObservableObject {
 
         case .remove:
             try ensureLifecycleMayCommit(request)
-            let status = try await runAsync {
-                try controller.clearWallpaper()
-            }
+            let status = try await controller.clearWallpaper()
             let removalStatusMessage: String
             let removalSuccessMessage: String?
             switch status.wallpaper_restore_status {

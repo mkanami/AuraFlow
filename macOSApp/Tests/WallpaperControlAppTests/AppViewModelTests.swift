@@ -1660,7 +1660,7 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
         return statusPayload(running: false, paused: true, health: nil)
     }
 
-    func clearWallpaper() throws -> ControlStatus {
+    func clearWallpaper() async throws -> ControlStatus {
         clearCallCount += 1
         statusRunning = false
         statusPaused = false

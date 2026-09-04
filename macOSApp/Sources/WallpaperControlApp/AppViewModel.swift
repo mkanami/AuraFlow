@@ -198,7 +198,7 @@ protocol WallpaperControlling: AnyObject, Sendable {
     func start(videoURL: URL?, speed: Double?) async throws -> ControlStatus
     func resume() throws -> ControlStatus
     func stop() throws -> ControlStatus
-    func clearWallpaper() throws -> ControlStatus
+    func clearWallpaper() async throws -> ControlStatus
     func setVideo(_ url: URL) throws -> ControlStatus
     func installLockScreenOnly(videoURL: URL) async throws -> ControlStatus
     func prepareLockScreenMedia(videoURL: URL) async throws
@@ -858,9 +858,15 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         return store.status()
     }
 
-    func clearWallpaper() throws -> ControlStatus {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+    func clearWallpaper() async throws -> ControlStatus {
+        // Lifecycle callers are frequently Main Actor isolated. Yield before
+        // synchronous termination and local cleanup so they never begin on
+        // that actor.
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
+        await Task.yield()
         let currentConfig = store.loadConfig()
         let removingLockScreenOnly =
             store.isLockScreenOnlyAgent()
@@ -883,10 +889,10 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         if currentConfig.show_on_lock_screen == true
             || lockScreenPlatform.isInstalled {
             if removingLockScreenOnly {
-                try lockScreenPlatform
-                    .uninstallLockScreenOnlyPreservingCurrentDesktop()
+                try await lockScreenPlatform
+                    .uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
             } else {
-                try lockScreenPlatform.uninstall()
+                try await lockScreenPlatform.uninstallAsync()
             }
         }
         store.clearLockScreenOnlySource()
@@ -3037,7 +3043,7 @@ final class AppViewModel: ObservableObject {
                             "Cannot clear the active downloaded wallpaper while the wallpaper runtime is unavailable."
                         )
                     }
-                    let status = try await runAsync { try controller.clearWallpaper() }
+                    let status = try await controller.clearWallpaper()
                     apply(status: status)
                     recordBridgeSuccess()
                 } else if pendingPreviewIsManaged {

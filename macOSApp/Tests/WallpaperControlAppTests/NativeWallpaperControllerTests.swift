@@ -886,7 +886,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(stopped.paused == true)
     #expect(fixture.store.loadCommand()?.action == .pause)
 
-    let cleared = try controller.clearWallpaper()
+    let cleared = try await controller.clearWallpaper()
     #expect(cleared.running == false)
     #expect(cleared.wallpaper_restored != nil)
     #expect(fixture.store.processIsAlive(pid: started.pid) == false)
@@ -975,7 +975,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         lockScreenSaverInstaller: installer
     )
 
-    let removed = try controller.clearWallpaper()
+    let removed = try await controller.clearWallpaper()
 
     #expect(removed.wallpaper_restored == false)
     #expect(installer.uninstallCallCount == 1)
@@ -1609,7 +1609,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     _ = try controller.endLockScreenPreview()
     #expect(fixture.store.loadCommand()?.action == .previewUnlock)
 
-    _ = try controller.clearWallpaper()
+    _ = try await controller.clearWallpaper()
     #expect(fixture.store.loadConfig().show_on_lock_screen == true)
     #expect(fixture.store.loadConfig().video_path.isEmpty)
     #expect(installer.uninstallCallCount == 1)

@@ -265,8 +265,10 @@ jobs:
           xcodebuild -version
           xcode-select -p
 
-          [[ "$resolved_path" == "$selected_sdk" ]] || {
-            echo "::error::xcrun resolved an unexpected SDK path: $resolved_path" >&2
+          selected_sdk_canonical="$(cd "$selected_sdk" && pwd -P)"
+          resolved_path_canonical="$(cd "$resolved_path" && pwd -P)"
+          [[ "$resolved_path_canonical" == "$selected_sdk_canonical" ]] || {
+            echo "::error::xcrun resolved an unexpected SDK path: $resolved_path (canonical: $resolved_path_canonical; expected: $selected_sdk (canonical: $selected_sdk_canonical))" >&2
             exit 1
           }
           [[ "$resolved_version" == "$selected_version" ]] || {
