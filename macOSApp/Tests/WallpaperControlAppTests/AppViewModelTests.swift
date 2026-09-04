@@ -739,7 +739,7 @@ private func pngData(for image: CGImage) -> Data {
     }
 }
 
-@Test func adaptiveContrastAnalyzerCachesAndInvalidatesByContentSignature() throws {
+@Test func adaptiveContrastAnalyzerCachesAndInvalidatesByContentSignature() async throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("adaptive-contrast-cache-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -755,28 +755,28 @@ private func pngData(for image: CGImage) -> Data {
     )).write(to: imageURL, options: .atomic)
 
     AdaptiveContrastAnalyzer.clearCache()
-    let first = AdaptiveContrastAnalyzer.analyze(url: imageURL, scaleMode: .fill)
-    let second = AdaptiveContrastAnalyzer.analyze(url: imageURL, scaleMode: .fill)
+    let first = await AdaptiveContrastAnalyzer.analyze(url: imageURL, scaleMode: .fill)
+    let second = await AdaptiveContrastAnalyzer.analyze(url: imageURL, scaleMode: .fill)
     #expect(first?.cacheHit == false)
     #expect(second?.cacheHit == true)
     #expect(first?.sourceSignature == second?.sourceSignature)
 
     try pngData(for: solidImage(width: 144, height: 90, value: 28))
         .write(to: imageURL, options: .atomic)
-    let third = AdaptiveContrastAnalyzer.analyze(url: imageURL, scaleMode: .fill)
+    let third = await AdaptiveContrastAnalyzer.analyze(url: imageURL, scaleMode: .fill)
 
     #expect(third?.cacheHit == false)
     #expect(third?.sourceSignature != first?.sourceSignature)
     #expect(third?.appearance.textTone == .light)
 }
 
-@Test func adaptiveContrastAnalyzerUsesSafeFallbackForUnreadableSource() throws {
+@Test func adaptiveContrastAnalyzerUsesSafeFallbackForUnreadableSource() async throws {
     let url = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("adaptive-contrast-invalid-\(UUID().uuidString).mp4")
     try Data("not a video".utf8).write(to: url, options: .atomic)
     defer { try? FileManager.default.removeItem(at: url) }
 
-    #expect(AdaptiveContrastAnalyzer.analyze(url: url, scaleMode: .fill) == nil)
+    #expect(await AdaptiveContrastAnalyzer.analyze(url: url, scaleMode: .fill) == nil)
     let fallback = AppViewModel.adaptiveGlassAppearance(for: url, scaleMode: .fill)
     #expect(fallback.textTone == .dark)
     #expect(fallback.bottomProtectionOverlayOpacity > 0.5)

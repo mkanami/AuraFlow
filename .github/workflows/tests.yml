@@ -3,6 +3,13 @@ name: Tests
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_live_catalog_smoke:
+        description: Run live catalog and browser download smoke tests
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -133,3 +140,34 @@ jobs:
           test -n "$bridge_path"
           test -d /System/Library/PrivateFrameworks/Wallpaper.framework
           python3 ../scripts/native_bridge_smoke.py "$bridge_path"
+
+  live-catalog-smoke:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live_catalog_smoke == true
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          selected_app="$(ls -td /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+          if [[ -n "$selected_app" && -d "$selected_app/Contents/Developer" ]]; then
+            echo "DEVELOPER_DIR=$selected_app/Contents/Developer" >> "${GITHUB_ENV}"
+          fi
+          xcodebuild -version
+
+      - name: Run opt-in live catalog smoke tests
+        working-directory: macOSApp
+        env:
+          AURAFLOW_LIVE_CATALOG_SMOKE: "1"
+          AURAFLOW_LIVE_CATALOG_SAMPLE: "3"
+          AURAFLOW_LIVE_BROWSER_DOWNLOAD_SMOKE: "1"
+        run: swift test --filter liveCatalogDownloadSmoke
+
+      - name: Run opt-in browser download smoke test
+        working-directory: macOSApp
+        env:
+          AURAFLOW_LIVE_BROWSER_DOWNLOAD_SMOKE: "1"
+        run: swift test --filter liveMoeWallsBrowserDownloadSmoke

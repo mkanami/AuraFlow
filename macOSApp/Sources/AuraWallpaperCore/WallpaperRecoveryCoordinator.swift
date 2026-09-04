@@ -62,7 +62,7 @@ public final class WallpaperRecoveryCoordinator {
             return .restoredAfterInterruptedRemoval
         }
 
-        _ = WallpaperDesktopPlatform.repairCurrentDesktopWallpaperIfNeeded()
+        _ = store.repairCurrentDesktopWallpaperIfNeeded()
         return .repairDeferred
     }
 }

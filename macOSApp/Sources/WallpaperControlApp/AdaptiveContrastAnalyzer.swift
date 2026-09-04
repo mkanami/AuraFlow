@@ -95,7 +95,10 @@ enum AdaptiveContrastAnalyzer {
         )
     }
 
-    static func analyze(url: URL, scaleMode: WallpaperScaleMode) -> AdaptiveContrastAnalysis? {
+    static func analyze(
+        url: URL,
+        scaleMode: WallpaperScaleMode
+    ) async -> AdaptiveContrastAnalysis? {
         guard let sourceSignature = sourceSignature(for: url) else {
             return nil
         }
@@ -112,7 +115,55 @@ enum AdaptiveContrastAnalyzer {
             )
         }
 
-        let frames = sampleFrames(for: url)
+        let frames = await sampleFrames(for: url)
+        guard !frames.isEmpty else {
+            return nil
+        }
+
+        let result = makeAppearance(for: frames)
+        cache.setObject(
+            AppearanceCacheEntry(
+                appearance: result.appearance,
+                selectedToneScore: result.selectedToneScore,
+                alternateToneScore: result.alternateToneScore
+            ),
+            forKey: cacheKey
+        )
+
+        return AdaptiveContrastAnalysis(
+            appearance: result.appearance,
+            sourceSignature: sourceSignature,
+            sampleCount: frames.count,
+            cacheHit: false,
+            selectedToneScore: result.selectedToneScore,
+            alternateToneScore: result.alternateToneScore
+        )
+    }
+
+    /// Synchronous compatibility entry point for callers that cannot suspend
+    /// (for example, AppKit palette helpers). The live preview path uses the
+    /// async method above so AVFoundation metadata loading never blocks it.
+    static func analyzeSynchronously(
+        url: URL,
+        scaleMode: WallpaperScaleMode
+    ) -> AdaptiveContrastAnalysis? {
+        guard let sourceSignature = sourceSignature(for: url) else {
+            return nil
+        }
+
+        let cacheKey = "\(sourceSignature)|\(scaleMode.rawValue)|\(version)" as NSString
+        if let cached = cache.object(forKey: cacheKey) {
+            return AdaptiveContrastAnalysis(
+                appearance: cached.appearance,
+                sourceSignature: sourceSignature,
+                sampleCount: 0,
+                cacheHit: true,
+                selectedToneScore: cached.selectedToneScore,
+                alternateToneScore: cached.alternateToneScore
+            )
+        }
+
+        let frames = sampleFramesSynchronously(for: url)
         guard !frames.isEmpty else {
             return nil
         }
@@ -204,7 +255,7 @@ enum AdaptiveContrastAnalyzer {
         return hexString(hasher.finalize())
     }
 
-    private static func sampleFrames(for url: URL) -> [CGImage] {
+    private static func sampleFrames(for url: URL) async -> [CGImage] {
         if let image = NSImage(contentsOf: url),
            let cgImage = image.cgImage(
                forProposedRect: nil,
@@ -215,13 +266,41 @@ enum AdaptiveContrastAnalyzer {
         }
 
         let asset = AVURLAsset(url: url)
+        let duration: Double
+        if let loadedDuration = try? await asset.load(.duration) {
+            duration = loadedDuration.seconds
+        } else {
+            duration = 0
+        }
+        return sampleVideoFrames(for: asset, duration: duration)
+    }
+
+    private static func sampleFramesSynchronously(for url: URL) -> [CGImage] {
+        if let image = NSImage(contentsOf: url),
+           let cgImage = image.cgImage(
+               forProposedRect: nil,
+               context: nil,
+               hints: nil
+           ) {
+            return [cgImage]
+        }
+
+        return sampleVideoFrames(
+            for: AVURLAsset(url: url),
+            duration: 0
+        )
+    }
+
+    private static func sampleVideoFrames(
+        for asset: AVAsset,
+        duration: Double
+    ) -> [CGImage] {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = NSSize(width: 512, height: 512)
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
 
-        let duration = asset.duration.seconds
         let fractions: [Double] = [0.0, 0.08, 0.25, 0.50, 0.75, 0.96]
         let seconds: [Double]
         if duration.isFinite, duration > 0.001 {

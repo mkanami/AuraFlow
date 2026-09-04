@@ -1,5 +1,27 @@
 import Foundation
 
+public enum AutostartManagerError: LocalizedError {
+    public enum Operation: String {
+        case enable
+        case disable
+    }
+
+    case configurationRollbackFailed(
+        operation: Operation,
+        primaryError: Error,
+        rollbackError: Error
+    )
+
+    public var errorDescription: String? {
+        switch self {
+        case let .configurationRollbackFailed(operation, primaryError, rollbackError):
+            return "Could not \(operation.rawValue) AuraFlow launch at login: "
+                + "\(primaryError.localizedDescription); "
+                + "rollback failed: \(rollbackError.localizedDescription)."
+        }
+    }
+}
+
 /// Coordinates persisted autostart configuration with the user's LaunchAgent.
 ///
 /// The config is written only after validation and is restored when launchctl
@@ -56,9 +78,17 @@ public final class AutostartManager {
                     helperPath: helperURL.path,
                     nativeBridgePath: nativeBridgeURL?.path
                 )
-            } catch {
-                try? store.saveConfig(previousConfig)
-                throw error
+            } catch let primaryError {
+                do {
+                    try store.saveConfig(previousConfig)
+                } catch let rollbackError {
+                    throw AutostartManagerError.configurationRollbackFailed(
+                        operation: .enable,
+                        primaryError: primaryError,
+                        rollbackError: rollbackError
+                    )
+                }
+                throw primaryError
             }
         } else {
             config.autostart = false
@@ -66,9 +96,17 @@ public final class AutostartManager {
             try store.saveConfig(config)
             do {
                 try store.disableLaunchAgent()
-            } catch {
-                try? store.saveConfig(previousConfig)
-                throw error
+            } catch let primaryError {
+                do {
+                    try store.saveConfig(previousConfig)
+                } catch let rollbackError {
+                    throw AutostartManagerError.configurationRollbackFailed(
+                        operation: .disable,
+                        primaryError: primaryError,
+                        rollbackError: rollbackError
+                    )
+                }
+                throw primaryError
             }
         }
 

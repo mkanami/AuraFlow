@@ -282,7 +282,7 @@ final class VideoOptimizer {
                 return VideoOptimizationResult(outputURL: outputURL, decision: decision, fromCache: true)
             }
 
-            let preset = exportPreset(for: asset, settings: settings)
+            let preset = await exportPreset(for: asset, settings: settings)
             guard let exportSession = AVAssetExportSession(asset: asset, presetName: preset) else {
                 if isCompatibilityFFmpegCandidate(inputURL) {
                     return try await transcodeToCompatibilityUsingFFmpeg(
@@ -422,8 +422,10 @@ final class VideoOptimizer {
         return settings.forceSoftwareAV1Encode && supportsHardwareAV1Decode()
     }
 
-    private func exportPreset(for asset: AVAsset, settings: VideoOptimizationSettings) -> String {
-        let available = AVAssetExportSession.exportPresets(compatibleWith: asset)
+    private func exportPreset(
+        for asset: AVAsset,
+        settings: VideoOptimizationSettings
+    ) async -> String {
         let preferred: [String]
         switch settings.profile {
         case .quality:
@@ -435,8 +437,14 @@ final class VideoOptimizer {
                 AVAssetExportPresetHighestQuality,
             ]
         }
-        for candidate in preferred where available.contains(candidate) {
-            return candidate
+        for candidate in preferred {
+            if await AVAssetExportSession.compatibility(
+                ofExportPreset: candidate,
+                with: asset,
+                outputFileType: .mp4
+            ) {
+                return candidate
+            }
         }
         return AVAssetExportPresetHighestQuality
     }

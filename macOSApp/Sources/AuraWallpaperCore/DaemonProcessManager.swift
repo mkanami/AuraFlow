@@ -6,12 +6,35 @@ struct DaemonProcessIdentity: Codable, Equatable {
     var startTimeMicros: Int64
 }
 
+/// Result of verifying the process represented by the persisted daemon PID.
+///
+/// A PID is not sufficient evidence of ownership: the operating system can
+/// reuse it after AuraFlow exits. Callers that expose daemon state should
+/// treat only `.owned` as a running AuraFlow process.
+public enum DaemonProcessStatus: Equatable, Sendable {
+    case noPID
+    case owned
+    case stalePID
+    case identityMismatch
+    case unknown
+
+    public var isOwned: Bool {
+        self == .owned
+    }
+}
+
 /// Owns PID persistence, process identity validation, and daemon termination.
 ///
 /// `WallpaperRuntimeStore` exposes the durable URLs and config state, while
 /// this component owns all decisions that can signal an operating-system
 /// process. An identity mismatch is never treated as a successful stop.
 public final class DaemonProcessManager {
+    private enum ProcessPresence: Equatable {
+        case alive
+        case exited
+        case unknown
+    }
+
     private enum IdentityStatus {
         case matched
         case alreadyExited
@@ -34,12 +57,48 @@ public final class DaemonProcessManager {
         store.loadPID()
     }
 
+    /// Verifies both liveness and the identity recorded when the PID was
+    /// persisted. A live but unrelated process is never reported as owned.
+    public var processStatus: DaemonProcessStatus {
+        processStatus(for: store.loadPID())
+    }
+
     public var isRunning: Bool {
-        Self.isProcessAlive(pid: store.loadPID())
+        processStatus.isOwned
     }
 
     public func isRunning(pid: Int?) -> Bool {
-        Self.isProcessAlive(pid: pid)
+        processStatus(for: pid).isOwned
+    }
+
+    public func processStatus(for pid: Int?) -> DaemonProcessStatus {
+        guard let pid, pid > 0 else {
+            return .noPID
+        }
+
+        guard store.loadPID() == pid else {
+            return Self.processPresence(pid: pid) == .exited
+                ? .stalePID
+                : .identityMismatch
+        }
+
+        switch Self.processPresence(pid: pid) {
+        case .exited:
+            return .stalePID
+        case .unknown:
+            return .unknown
+        case .alive:
+            break
+        }
+
+        guard let actual = processIdentity(for: pid),
+              let expected = loadIdentity()
+        else {
+            // An identity that cannot be read is not proof that the process
+            // is foreign; it is simply not safe to call it AuraFlow-owned.
+            return .unknown
+        }
+        return expected == actual ? .owned : .identityMismatch
     }
 
     public func recordPID(_ pid: Int32 = getpid()) throws {
@@ -159,8 +218,24 @@ public final class DaemonProcessManager {
     }
 
     public static func isProcessAlive(pid: Int?) -> Bool {
-        guard let pid, pid > 0, kill(pid_t(pid), 0) == 0 else {
+        switch processPresence(pid: pid) {
+        case .alive:
+            return true
+        case .exited, .unknown:
             return false
+        }
+    }
+
+    private static func processPresence(pid: Int?) -> ProcessPresence {
+        guard let pid, pid > 0 else {
+            return .exited
+        }
+
+        let result = kill(pid_t(pid), 0)
+        if result == -1 {
+            // EPERM means the process exists but cannot be inspected by this
+            // caller. Do not collapse that into a stale PID.
+            return errno == ESRCH ? .exited : .unknown
         }
 
         var processInfo = proc_bsdinfo()
@@ -171,15 +246,16 @@ public final class DaemonProcessManager {
             &processInfo,
             Int32(MemoryLayout<proc_bsdinfo>.size)
         )
-        guard infoSize == Int32(MemoryLayout<proc_bsdinfo>.size) else {
-            var executablePath = [Int8](repeating: 0, count: 4_096)
-            return proc_pidpath(
-                pid_t(pid),
-                &executablePath,
-                UInt32(executablePath.count)
-            ) > 0
+        if infoSize == Int32(MemoryLayout<proc_bsdinfo>.size) {
+            return processInfo.pbi_status == UInt32(SZOMB) ? .exited : .alive
         }
-        return processInfo.pbi_status != UInt32(SZOMB)
+
+        var executablePath = [Int8](repeating: 0, count: 4_096)
+        return proc_pidpath(
+            pid_t(pid),
+            &executablePath,
+            UInt32(executablePath.count)
+        ) > 0 ? .alive : .unknown
     }
 
     private func clearRuntimeMetadata() {

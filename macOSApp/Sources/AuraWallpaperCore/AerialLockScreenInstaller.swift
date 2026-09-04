@@ -3348,21 +3348,34 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
 
     private func aerialAssetIsCompatible(at url: URL) -> Bool {
         let asset = AVURLAsset(url: url)
-        guard let track = asset.tracks(withMediaType: .video).first,
-              let formatDescriptionObject = track.formatDescriptions.first
-        else {
+        let completion = DispatchSemaphore(value: 0)
+        final class CompatibilityResult: @unchecked Sendable {
+            var value = false
+        }
+        let result = CompatibilityResult()
+
+        asset.loadTracks(withMediaType: .video) { tracks, _ in
+            guard let track = tracks?.first else {
+                completion.signal()
+                return
+            }
+            Task.detached {
+                defer { completion.signal() }
+                guard let formatDescription = try? await track.load(.formatDescriptions),
+                      let firstDescription = formatDescription.first
+                else {
+                    return
+                }
+                result.value = CMFormatDescriptionGetMediaSubType(firstDescription)
+                    == kCMVideoCodecType_HEVC
+            }
+        }
+
+        guard completion.wait(timeout: .now() + 10) == .success else {
+            asset.cancelLoading()
             return false
         }
-        let formatDescription: CMFormatDescription
-        if case let candidate as CMFormatDescription = formatDescriptionObject {
-            formatDescription = candidate
-        } else {
-            return false
-        }
-        return CMFormatDescriptionGetMediaSubType(
-            formatDescription
-        )
-            == kCMVideoCodecType_HEVC
+        return result.value
     }
 
     private func wallpaperStoreFullySelectsAerial(

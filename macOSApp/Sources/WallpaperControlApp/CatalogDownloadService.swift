@@ -6,18 +6,27 @@ import Foundation
 /// coupling the catalog UI to URLSession, cache naming, or MoeWalls' browser
 /// flow.
 final class CatalogDownloadService {
+    typealias FileDownload = (
+        URLRequest,
+        URLSession
+    ) async throws -> (temporaryURL: URL, response: URLResponse)
+
     private let provider: WallpaperCatalogProviding
     private let catalogDirectoryURL: URL
+    private let fileDownloader: FileDownload
 
     init(
         provider: WallpaperCatalogProviding,
-        catalogDirectoryURL: URL
+        catalogDirectoryURL: URL,
+        fileDownloader: @escaping FileDownload = CatalogFileDownloader.download
     ) {
         self.provider = provider
         self.catalogDirectoryURL = catalogDirectoryURL
+        self.fileDownloader = fileDownloader
     }
 
     func download(_ wallpaper: CatalogWallpaper) async throws -> URL {
+        try Task.checkCancellation()
         try FileManager.default.createDirectory(
             at: catalogDirectoryURL,
             withIntermediateDirectories: true
@@ -27,26 +36,39 @@ final class CatalogDownloadService {
 
         if isMoeWallsWallpaper(wallpaper) {
             do {
+                try Task.checkCancellation()
                 if let detailSource = try await moeWallsDetailDownloadSource(for: wallpaper) {
+                    try Task.checkCancellation()
                     return try await downloadSource(detailSource, for: wallpaper)
                 }
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
+                try Task.checkCancellation()
                 lastError = error
             }
         }
 
         do {
+            try Task.checkCancellation()
             let sources = try await sources(for: wallpaper)
             for source in sources {
                 do {
+                    try Task.checkCancellation()
                     // Direct CDN requests are faster than the browser flow and
                     // still receive browser-style headers when required.
                     return try await downloadSource(source, for: wallpaper)
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch {
+                    try Task.checkCancellation()
                     lastError = error
                 }
             }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
+            try Task.checkCancellation()
             lastError = error
         }
 
@@ -55,11 +77,15 @@ final class CatalogDownloadService {
         if isMoeWallsWallpaper(wallpaper),
            let pageURL = wallpaper.sourcePageURL {
             do {
+                try Task.checkCancellation()
                 return try await downloadMoeWallsVideo(
                     for: wallpaper,
                     pageURL: pageURL
                 )
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
+                try Task.checkCancellation()
                 lastError = error
             }
         }
@@ -76,7 +102,9 @@ final class CatalogDownloadService {
             return nil
         }
 
+        try Task.checkCancellation()
         let details = try await moeWallsSource.fetchDetails(pageURL: pageURL)
+        try Task.checkCancellation()
         guard details.hasExplicitPlayableSource == true,
               let downloadURL = details.downloadURL
         else {
@@ -94,6 +122,7 @@ final class CatalogDownloadService {
         _ source: CatalogVideoSource,
         for wallpaper: CatalogWallpaper
     ) async throws -> URL {
+        try Task.checkCancellation()
         let widthLabel = source.width > 0 ? String(source.width) : "auto"
         let heightLabel = source.height > 0 ? String(source.height) : "auto"
         let fileStem = "\(wallpaper.id)-\(widthLabel)x\(heightLabel)"
@@ -147,11 +176,13 @@ final class CatalogDownloadService {
             configuration.httpShouldSetCookies = true
         }
 
-        let (temporaryURL, response) = try await CatalogFileDownloader.download(
-            request: request,
-            session: URLSession(configuration: configuration)
+        try Task.checkCancellation()
+        let (temporaryURL, response) = try await fileDownloader(
+            request,
+            URLSession(configuration: configuration)
         )
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        try Task.checkCancellation()
 
         if let httpResponse = response as? HTTPURLResponse,
            !(200...299).contains(httpResponse.statusCode) {
@@ -182,15 +213,18 @@ final class CatalogDownloadService {
         for wallpaper: CatalogWallpaper,
         pageURL: URL
     ) async throws -> URL {
+        try Task.checkCancellation()
         let resolver = await MainActor.run { MoeWallsBrowserResolver() }
         let destination = catalogDirectoryURL.appendingPathComponent(
             "\(wallpaper.id).mp4"
         )
         try? FileManager.default.removeItem(at: destination)
+        try Task.checkCancellation()
         let downloadedURL = try await resolver.downloadWallpaper(
             from: pageURL,
             to: destination
         )
+        try Task.checkCancellation()
         guard await isPreviewPlayableVideo(at: downloadedURL) else {
             try? FileManager.default.removeItem(at: downloadedURL)
             throw URLError(.cannotDecodeContentData)
@@ -210,7 +244,9 @@ final class CatalogDownloadService {
             return ordered
         }
 
+        try Task.checkCancellation()
         let resolvedURL = try await provider.resolveDownloadURL(for: wallpaper)
+        try Task.checkCancellation()
         return [CatalogVideoSource(url: resolvedURL, width: 0, height: 0)]
     }
 

@@ -111,20 +111,15 @@ public struct WallpaperRuntimeCommand: Codable, Equatable {
 }
 
 public final class WallpaperRuntimeStore {
-    private struct LastFrameSourceRevision: Codable, Equatable {
-        var path: String
-        var size: UInt64?
-        var modifiedAt: Double?
-    }
-
     private struct LockScreenOnlySource: Codable, Equatable {
         var path: String
     }
 
-    public let appSupportURL: URL
-    private let launchAgentFileURL: URL
+    private let fileStore: RuntimeFileStore
     private let launchctlRunner: LaunchctlRunner
     private let launchAgentFileRemover: (URL) throws -> Void
+
+    public var appSupportURL: URL { fileStore.appSupportURL }
 
     public init(
         appSupportURL: URL = WallpaperRuntimeStore.defaultAppSupportURL(),
@@ -132,10 +127,11 @@ public final class WallpaperRuntimeStore {
         launchctlRunner: LaunchctlRunner? = nil,
         launchAgentFileRemover: ((URL) throws -> Void)? = nil
     ) {
-        self.appSupportURL = appSupportURL
-        self.launchAgentFileURL = launchAgentURL ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/com.andrijvergeles.auraflow.plist")
-        self.launchctlRunner = launchctlRunner ?? WallpaperRuntimeStore.executeLaunchctl
+        self.fileStore = RuntimeFileStore(
+            appSupportURL: appSupportURL,
+            launchAgentURL: launchAgentURL
+        )
+        self.launchctlRunner = launchctlRunner ?? LaunchAgentManager.executeLaunchctl
         self.launchAgentFileRemover = launchAgentFileRemover ?? {
             try FileManager.default.removeItem(at: $0)
         }
@@ -146,42 +142,26 @@ public final class WallpaperRuntimeStore {
             .appendingPathComponent("Library/Application Support/AuraFlow", isDirectory: true)
     }
 
-    public var configURL: URL { appSupportURL.appendingPathComponent("config.json") }
-    public var commandURL: URL { appSupportURL.appendingPathComponent("daemon_command.json") }
-    public var healthURL: URL { appSupportURL.appendingPathComponent("daemon_health.json") }
-    public var pidURL: URL { appSupportURL.appendingPathComponent("wallpaper_daemon.pid") }
-    public var pausedURL: URL { appSupportURL.appendingPathComponent("wallpaper_daemon.paused") }
-    public var daemonIdentityURL: URL {
-        appSupportURL.appendingPathComponent("wallpaper_daemon_identity.json")
-    }
-    public var wallpaperRestorePendingURL: URL {
-        appSupportURL.appendingPathComponent("wallpaper_restore_pending")
-    }
-    public var lastFrameURL: URL { appSupportURL.appendingPathComponent("last_frame.png") }
-    public var lastFrameSourceURL: URL {
-        appSupportURL.appendingPathComponent("last_frame_source.json")
-    }
-    public var lockScreenOnlySourceURL: URL {
-        appSupportURL.appendingPathComponent("lock_screen_only_source.json")
-    }
-    public var lockScreenOnlyAgentURL: URL {
-        appSupportURL.appendingPathComponent("lock_screen_only_agent")
-    }
-    public var lockScreenAgentReadyURL: URL {
-        appSupportURL.appendingPathComponent("lock_screen_agent_ready")
-    }
-    public var launchAgentURL: URL { launchAgentFileURL }
+    public var configURL: URL { fileStore.configURL }
+    public var commandURL: URL { fileStore.commandURL }
+    public var healthURL: URL { fileStore.healthURL }
+    public var pidURL: URL { fileStore.pidURL }
+    public var pausedURL: URL { fileStore.pausedURL }
+    public var daemonIdentityURL: URL { fileStore.daemonIdentityURL }
+    public var wallpaperRestorePendingURL: URL { fileStore.wallpaperRestorePendingURL }
+    public var lastFrameURL: URL { fileStore.lastFrameURL }
+    public var lastFrameSourceURL: URL { fileStore.lastFrameSourceURL }
+    public var lockScreenOnlySourceURL: URL { fileStore.lockScreenOnlySourceURL }
+    public var lockScreenOnlyAgentURL: URL { fileStore.lockScreenOnlyAgentURL }
+    public var lockScreenAgentReadyURL: URL { fileStore.lockScreenAgentReadyURL }
+    public var launchAgentURL: URL { fileStore.launchAgentURL }
 
     public func ensureDirectories() throws {
-        try FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(
-            at: launchAgentURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        try fileStore.ensureDirectories()
     }
 
     public func loadConfig() -> ControlConfig {
-        guard let data = try? Data(contentsOf: configURL),
+        guard let data = try? fileStore.readData(from: configURL),
               var config = try? JSONDecoder().decode(ControlConfig.self, from: data)
         else {
             return .defaultConfig
@@ -198,11 +178,11 @@ public final class WallpaperRuntimeStore {
     }
 
     public func saveConfig(_ config: ControlConfig) throws {
-        try writeJSON(normalized(config), to: configURL)
+        try fileStore.writeJSON(normalized(config), to: configURL)
     }
 
     public func loadLockScreenOnlySource() -> URL? {
-        guard let source = try? readJSON(
+        guard let source = try? fileStore.readJSON(
             LockScreenOnlySource.self,
             from: lockScreenOnlySourceURL
         ) else {
@@ -215,7 +195,7 @@ public final class WallpaperRuntimeStore {
 
     public func saveLockScreenOnlySource(_ url: URL) throws {
         try ensureDirectories()
-        try writeJSON(
+        try fileStore.writeJSON(
             LockScreenOnlySource(path: url.standardizedFileURL.path),
             to: lockScreenOnlySourceURL
         )
@@ -296,11 +276,11 @@ public final class WallpaperRuntimeStore {
     }
 
     public func loadHealth() -> DaemonHealth? {
-        try? readJSON(DaemonHealth.self, from: healthURL)
+        try? fileStore.readJSON(DaemonHealth.self, from: healthURL)
     }
 
     public func saveHealth(_ health: DaemonHealth) throws {
-        try writeJSON(health, to: healthURL)
+        try fileStore.writeJSON(health, to: healthURL)
     }
 
     public func removeHealth() {
@@ -308,11 +288,11 @@ public final class WallpaperRuntimeStore {
     }
 
     public func loadCommand() -> WallpaperRuntimeCommand? {
-        try? readJSON(WallpaperRuntimeCommand.self, from: commandURL)
+        try? fileStore.readJSON(WallpaperRuntimeCommand.self, from: commandURL)
     }
 
     public func saveCommand(_ command: WallpaperRuntimeCommand) throws {
-        try writeJSON(command, to: commandURL)
+        try fileStore.writeJSON(command, to: commandURL)
     }
 
     public func removeCommand() {
@@ -354,6 +334,13 @@ public final class WallpaperRuntimeStore {
         DaemonProcessManager.isProcessAlive(pid: pid)
     }
 
+    /// Returns the verified ownership state of the persisted daemon PID.
+    /// `status()` and `metrics()` deliberately use this instead of raw PID
+    /// liveness so a reused PID cannot make a foreign process look like AuraFlow.
+    public var daemonProcessStatus: DaemonProcessStatus {
+        DaemonProcessManager(store: self).processStatus
+    }
+
     public func normalized(_ config: ControlConfig) -> ControlConfig {
         var normalized = config
         normalized.playback_speed = max(0.1, min(config.playback_speed, 4.0))
@@ -375,15 +362,16 @@ public final class WallpaperRuntimeStore {
     ) -> ControlStatus {
         let config = loadConfig()
         let pid = loadPID()
-        let alive = processIsAlive(pid: pid)
+        let processStatus = daemonProcessStatus
+        let owned = processStatus.isOwned
         let paused = isPaused()
         let lockScreenOnly = isLockScreenOnlyAgent()
-        let health = healthForStatus(alive: alive, paused: paused)
+        let health = healthForStatus(processStatus: processStatus, paused: paused)
         let launchAgent = launchAgentStatus()
         return ControlStatus(
-            running: alive && !paused && !lockScreenOnly,
+            running: owned && !paused && !lockScreenOnly,
             config: config,
-            pid: alive && !lockScreenOnly ? pid : nil,
+            pid: owned && !lockScreenOnly ? pid : nil,
             autostart: launchAgent.enabled,
             paused: paused,
             wallpaper_restored: wallpaperRestored,
@@ -399,35 +387,61 @@ public final class WallpaperRuntimeStore {
 
     public func metrics() -> DaemonMetrics {
         let pid = loadPID()
-        let alive = processIsAlive(pid: pid)
+        let processStatus = daemonProcessStatus
+        let owned = processStatus.isOwned
         let paused = isPaused()
         let lockScreenOnly = isLockScreenOnlyAgent()
         return DaemonMetrics(
             updated_at: Date().timeIntervalSince1970,
-            running: alive && !paused && !lockScreenOnly,
+            running: owned && !paused && !lockScreenOnly,
             paused: paused,
-            pid: alive ? pid : nil,
-            daemon_pids: alive ? pid.map { [$0] } : [],
-            process_count: alive ? 1 : 0,
+            pid: owned ? pid : nil,
+            daemon_pids: owned ? pid.map { [$0] } : [],
+            process_count: owned ? 1 : 0,
             cpu_percent: nil,
             memory_mb: nil,
             virtual_memory_mb: nil,
             thread_count: nil,
-            health: healthForStatus(alive: alive, paused: paused)
+            health: healthForStatus(processStatus: processStatus, paused: paused)
         )
     }
 
     public func healthForStatus(alive: Bool, paused: Bool) -> DaemonHealth {
+        healthForStatus(
+            processStatus: alive ? .owned : .noPID,
+            paused: paused
+        )
+    }
+
+    public func healthForStatus(
+        processStatus: DaemonProcessStatus,
+        paused: Bool
+    ) -> DaemonHealth {
         let now = Date().timeIntervalSince1970
         let config = loadConfig()
         let saved = loadHealth()
         let lag = saved?.updated_at.map { max(now - $0, 0) }
-        let fresh = alive && (lag ?? 0) < 6.0
+        let owned = processStatus.isOwned
+        let fresh = owned && (lag ?? 0) < 6.0
+        let reason: String
+        switch processStatus {
+        case .noPID:
+            reason = "not-running"
+        case .owned:
+            reason = fresh ? "ok" : "stale-health"
+        case .stalePID:
+            reason = "stale-pid"
+        case .identityMismatch:
+            reason = "identity-mismatch"
+        case .unknown:
+            reason = "unknown-process"
+        }
+        let suspicious = (!owned && processStatus != .noPID) || (owned && !fresh)
         return DaemonHealth(
-            available: alive,
+            available: owned,
             fresh: fresh,
-            suspicious: alive && !fresh,
-            reason: alive ? (fresh ? "ok" : "stale-health") : "not-running",
+            suspicious: suspicious,
+            reason: reason,
             updated_at: saved?.updated_at ?? now,
             lag_seconds: lag,
             screens: saved?.screens,
@@ -461,198 +475,29 @@ public final class WallpaperRuntimeStore {
     }
 
     public func launchAgentPlistExists() -> Bool {
-        FileManager.default.fileExists(atPath: launchAgentURL.path)
+        launchAgentManager().launchAgentPlistExists()
     }
 
     public func launchAgentStatus() -> LaunchAgentStatus {
-        let plistExists = launchAgentPlistExists()
-        let service = "gui/\(getuid())/com.andrijvergeles.auraflow"
-        let result = launchctlRunner(["print", service])
-        let serviceLoaded = result.succeeded
-        let serviceRunning = serviceLoaded
-            && result.output
-                .split(whereSeparator: \.isNewline)
-                .contains { line in
-                    let trimmed = line.trimmingCharacters(in: .whitespaces)
-                    if trimmed == "state = running" {
-                        return true
-                    }
-                    guard trimmed.hasPrefix("pid = "),
-                          let pid = Int(
-                              trimmed.dropFirst("pid = ".count)
-                                  .trimmingCharacters(in: .whitespaces)
-                          )
-                    else {
-                        return false
-                    }
-                    return pid > 0
-                }
-        return LaunchAgentStatus(
-            plistExists: plistExists,
-            serviceLoaded: serviceLoaded,
-            serviceRunning: serviceRunning
-        )
+        launchAgentManager().launchAgentStatus()
     }
 
     public func launchAgentEnabled() -> Bool {
-        launchAgentStatus().enabled
+        launchAgentManager().launchAgentEnabled()
     }
 
     public func enableLaunchAgent(
         helperPath: String,
         nativeBridgePath: String? = nil
     ) throws {
-        try ensureDirectories()
-        let configPath = configURL.path
-        let expectedArguments = launchAgentProgramArguments(
+        try launchAgentManager().enableLaunchAgent(
             helperPath: helperPath,
-            configPath: configPath,
             nativeBridgePath: nativeBridgePath
         )
-        let expectedPlist = try launchAgentPlistData(
-            programArguments: expectedArguments
-        )
-        let service = "gui/\(getuid())/com.andrijvergeles.auraflow"
-        let previousPlistData = try? Data(contentsOf: launchAgentURL)
-        let currentPlistMatches = launchAgentPlistMatches(
-            expectedProgramArguments: expectedArguments
-        )
-        let currentLaunchAgent = launchAgentStatus()
-
-        // An unchanged plist and a loaded service need no migration. This is
-        // the common path during every normal GUI launch and avoids restarting
-        // playback merely because the controller was reconstructed.
-        if currentPlistMatches,
-           currentLaunchAgent.enabled {
-            return
-        }
-
-        if !currentPlistMatches || currentLaunchAgent.serviceLoaded {
-            let previousPID = loadPID()
-            let bootout = launchctlRunner(["bootout", service])
-            guard bootout.succeeded || bootout.isServiceNotLoaded else {
-                throw WallpaperRuntimeError.unavailable(
-                    "Could not stop the existing AuraFlow LaunchAgent: \(bootout.output)"
-                )
-            }
-            if let previousPID,
-               !DaemonProcessManager.waitForExit(pid: previousPID, timeout: 2.0) {
-                // launchctl normally waits for the job, but older agents can
-                // delay their termination handler. Never bootstrap a new job
-                // while the old process can still mutate shared runtime files.
-                guard DaemonProcessManager(
-                    store: self,
-                    expectedExecutableURL: URL(fileURLWithPath: helperPath)
-                ).terminate(timeout: 1.0).succeeded,
-                DaemonProcessManager.waitForExit(pid: previousPID, timeout: 1.0)
-                else {
-                    throw WallpaperRuntimeError.unavailable(
-                        "The existing AuraFlow wallpaper agent did not stop during migration."
-                    )
-                }
-            }
-        }
-
-        try expectedPlist.write(to: launchAgentURL, options: .atomic)
-        let bootstrap = launchctlRunner([
-            "bootstrap",
-            "gui/\(getuid())",
-            launchAgentURL.path
-        ])
-        guard bootstrap.succeeded else {
-            var rollbackFailures: [String] = []
-            if let previousPlistData {
-                do {
-                    try previousPlistData.write(to: launchAgentURL, options: .atomic)
-                } catch {
-                    rollbackFailures.append(
-                        "restore plist: \(error.localizedDescription)"
-                    )
-                }
-                if rollbackFailures.isEmpty {
-                    let restoreBootstrap = launchctlRunner([
-                        "bootstrap",
-                        "gui/\(getuid())",
-                        launchAgentURL.path
-                    ])
-                    if !restoreBootstrap.succeeded {
-                        rollbackFailures.append(
-                            "restore LaunchAgent: \(restoreBootstrap.output)"
-                        )
-                    }
-                }
-            } else {
-                do {
-                    try FileManager.default.removeItem(at: launchAgentURL)
-                } catch CocoaError.fileNoSuchFile {
-                    // The failed bootstrap did not leave a plist behind.
-                } catch {
-                    rollbackFailures.append(
-                        "remove failed plist: \(error.localizedDescription)"
-                    )
-                }
-            }
-            let rollbackDescription = rollbackFailures.isEmpty
-                ? ""
-                : "; rollback failed: " + rollbackFailures.joined(separator: "; ")
-            throw WallpaperRuntimeError.unavailable(
-                "Could not start the AuraFlow LaunchAgent: \(bootstrap.output)"
-                    + rollbackDescription
-            )
-        }
     }
 
     public func disableLaunchAgent() throws {
-        let previousPlistData = try? Data(contentsOf: launchAgentURL)
-        let bootout = launchctlRunner([
-            "bootout",
-            "gui/\(getuid())/com.andrijvergeles.auraflow"
-        ])
-        guard bootout.succeeded || bootout.isServiceNotLoaded else {
-            throw WallpaperRuntimeError.unavailable(
-                "Could not unload the AuraFlow LaunchAgent: \(bootout.output)"
-            )
-        }
-        do {
-            try launchAgentFileRemover(launchAgentURL)
-        } catch CocoaError.fileNoSuchFile {
-            return
-        } catch {
-            var rollbackFailures: [String] = []
-            if let previousPlistData {
-                do {
-                    try previousPlistData.write(to: launchAgentURL, options: .atomic)
-                } catch {
-                    rollbackFailures.append(
-                        "restore plist: \(error.localizedDescription)"
-                    )
-                }
-            } else {
-                rollbackFailures.append(
-                    "restore plist: previous plist could not be read"
-                )
-            }
-
-            if FileManager.default.fileExists(atPath: launchAgentURL.path) {
-                let restoreBootstrap = launchctlRunner([
-                    "bootstrap",
-                    "gui/\(getuid())",
-                    launchAgentURL.path
-                ])
-                if !restoreBootstrap.succeeded {
-                    rollbackFailures.append(
-                        "restore LaunchAgent: \(restoreBootstrap.output)"
-                    )
-                }
-            } else {
-                rollbackFailures.append("restore LaunchAgent: plist is missing")
-            }
-
-            throw WallpaperRuntimeError.launchAgentDisableFailed(
-                removalError: error.localizedDescription,
-                rollbackFailures: rollbackFailures
-            )
-        }
+        try launchAgentManager().disableLaunchAgent()
     }
 
     @discardableResult
@@ -666,183 +511,55 @@ public final class WallpaperRuntimeStore {
         ).terminate(timeout: timeout)
     }
 
-    public func captureStillFrame(from videoURL: URL, time: CMTime = CMTime(seconds: 0.2, preferredTimescale: 600)) throws -> URL {
+    public func captureStillFrame(
+        from videoURL: URL,
+        time: CMTime = CMTime(seconds: 0.2, preferredTimescale: 600)
+    ) throws -> URL {
         try ensureDirectories()
-        let image: CGImage
-        if WallpaperMediaKind.forURL(videoURL).isStaticImage {
-            guard let sourceImage = NSImage(contentsOf: videoURL),
-                  let decodedImage = sourceImage.cgImage(
-                    forProposedRect: nil,
-                    context: nil,
-                    hints: nil
-                  )
-            else {
-                throw WallpaperRuntimeError.unavailable(
-                    "Could not decode wallpaper image."
-                )
-            }
-            image = decodedImage
-        } else {
-            let asset = AVURLAsset(url: videoURL)
-            let generator = AVAssetImageGenerator(asset: asset)
-            generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 3840, height: 2160)
-            image = try generator.copyCGImage(at: time, actualTime: nil)
-        }
-        let bitmap = NSBitmapImageRep(cgImage: image)
-        guard let data = bitmap.representation(using: .png, properties: [:]) else {
-            throw WallpaperRuntimeError.unavailable("Could not encode wallpaper frame.")
-        }
-        try data.write(to: lastFrameURL, options: .atomic)
-        try writeJSON(
-            sourceRevision(for: videoURL),
-            to: lastFrameSourceURL
-        )
-        return lastFrameURL
+        return try stillFrameService().captureStillFrame(from: videoURL, time: time)
     }
 
     public func ensureCurrentStillFrame(from videoURL: URL) throws -> URL {
-        let expectedRevision = sourceRevision(for: videoURL)
-        let savedRevision: LastFrameSourceRevision? =
-            try? readJSON(
-                LastFrameSourceRevision.self,
-                from: lastFrameSourceURL
-            )
-        if FileManager.default.fileExists(atPath: lastFrameURL.path),
-           savedRevision == expectedRevision {
-            return lastFrameURL
-        }
-        return try captureStillFrame(from: videoURL)
+        try stillFrameService().ensureCurrentStillFrame(from: videoURL)
     }
 
     public func removeManagedFallback() {
-        try? FileManager.default.removeItem(at: lastFrameURL)
-        try? FileManager.default.removeItem(at: lastFrameSourceURL)
+        stillFrameService().removeManagedFallback()
     }
 
     @discardableResult
     public func applyStillWallpaper(from videoPath: String) -> String? {
-        guard !videoPath.isEmpty else { return nil }
-        let videoURL = URL(fileURLWithPath: videoPath)
-        guard FileManager.default.fileExists(atPath: videoURL.path) else { return nil }
-        guard let frameURL = try? captureStillFrame(from: videoURL) else { return nil }
-        WallpaperDesktopPlatform.applyToAllDesktops(imagePath: frameURL.path)
-        return frameURL.path
+        desktopWallpaperRecovery().applyStillWallpaper(from: videoPath)
     }
 
     @discardableResult
     public func restoreWallpaperBackup() -> WallpaperRestoreStatus {
-        WallpaperDesktopPlatform.restoreFromBackupFilesResult(
-            appSupportPath: appSupportURL.path
+        desktopWallpaperRecovery().restoreWallpaperBackup()
+    }
+
+    @discardableResult
+    public func repairCurrentDesktopWallpaperIfNeeded() -> Bool {
+        desktopWallpaperRecovery().repairCurrentDesktopWallpaperIfNeeded()
+    }
+
+    private func stillFrameService() -> StillFrameService {
+        StillFrameService(appSupportURL: appSupportURL)
+    }
+
+    private func desktopWallpaperRecovery() -> DesktopWallpaperRecovery {
+        DesktopWallpaperRecovery(
+            appSupportURL: appSupportURL,
+            stillFrameService: stillFrameService()
         )
     }
 
-    private func readJSON<T: Decodable>(_ type: T.Type, from url: URL) throws -> T {
-        let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode(type, from: data)
-    }
-
-    private func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {
-        try ensureDirectories()
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(value)
-        let tempURL = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
-        try data.write(to: tempURL, options: .atomic)
-        if FileManager.default.fileExists(atPath: url.path) {
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: tempURL)
-        } else {
-            try FileManager.default.moveItem(at: tempURL, to: url)
-        }
-    }
-
-    private func sourceRevision(for videoURL: URL) -> LastFrameSourceRevision {
-        let standardizedURL = videoURL.standardizedFileURL
-        let attributes = try? FileManager.default.attributesOfItem(
-            atPath: standardizedURL.path
+    private func launchAgentManager() -> LaunchAgentManager {
+        LaunchAgentManager(
+            store: self,
+            launchAgentURL: fileStore.launchAgentURL,
+            launchctlRunner: launchctlRunner,
+            launchAgentFileRemover: launchAgentFileRemover
         )
-        return LastFrameSourceRevision(
-            path: standardizedURL.path,
-            size: (attributes?[.size] as? NSNumber)?.uint64Value,
-            modifiedAt: (attributes?[.modificationDate] as? Date)?
-                .timeIntervalSince1970
-        )
-    }
-
-    private func launchAgentProgramArguments(
-        helperPath: String,
-        configPath: String,
-        nativeBridgePath: String?
-    ) -> [String] {
-        var arguments = [helperPath, "--config", configPath]
-        if let nativeBridgePath {
-            arguments.append(contentsOf: ["--native-bridge-path", nativeBridgePath])
-        }
-        return arguments
-    }
-
-    private func launchAgentPlistData(programArguments: [String]) throws -> Data {
-        let plist: [String: Any] = [
-            "Label": "com.andrijvergeles.auraflow",
-            "ProgramArguments": programArguments,
-            "RunAtLoad": true,
-            "KeepAlive": false,
-        ]
-        return try PropertyListSerialization.data(
-            fromPropertyList: plist,
-            format: .xml,
-            options: 0
-        )
-    }
-
-    private func launchAgentPlistMatches(
-        expectedProgramArguments: [String]
-    ) -> Bool {
-        guard let data = try? Data(contentsOf: launchAgentURL),
-              let plist = try? PropertyListSerialization.propertyList(
-                  from: data,
-                  options: [],
-                  format: nil
-              ) as? [String: Any],
-              plist["Label"] as? String == "com.andrijvergeles.auraflow",
-              plist["ProgramArguments"] as? [String] == expectedProgramArguments,
-              plist["RunAtLoad"] as? Bool == true,
-              plist["KeepAlive"] as? Bool == false
-        else {
-            return false
-        }
-        return true
-    }
-
-    private static func executeLaunchctl(_ arguments: [String]) -> LaunchctlResult {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        task.arguments = arguments
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        task.standardOutput = outputPipe
-        task.standardError = errorPipe
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let output = String(
-                data: outputPipe.fileHandleForReading.readDataToEndOfFile()
-                    + errorPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
-            return LaunchctlResult(
-                succeeded: task.terminationStatus == 0,
-                output: output.trimmingCharacters(in: .whitespacesAndNewlines),
-                terminationStatus: task.terminationStatus
-            )
-        } catch {
-            return LaunchctlResult(
-                succeeded: false,
-                output: error.localizedDescription,
-                terminationStatus: -1
-            )
-        }
     }
 }
 

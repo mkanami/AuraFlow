@@ -15,31 +15,6 @@ private let adaptiveContrastLogger = Logger(
     category: "AdaptiveContrast"
 )
 
-enum WallpaperLifecycleState: String, Equatable {
-    case idle
-    case preparing
-    case ready
-    case paused
-    case removing
-    case failed
-}
-
-private enum WallpaperLifecycleIntent: Equatable {
-    case start(URL, resume: Bool)
-    case lock(URL)
-    case stop(lockScreenOnly: Bool, staticImage: Bool)
-    case remove(lockScreenOnly: Bool)
-
-    var name: String {
-        switch self {
-        case .start: return "start"
-        case .lock: return "lock"
-        case .stop: return "stop"
-        case .remove: return "remove"
-        }
-    }
-}
-
 enum AdaptiveTextTone: Equatable {
     case dark
     case light
@@ -1413,21 +1388,6 @@ final class NativeWallpaperController: WallpaperControlling {
 
 @MainActor
 final class AppViewModel: ObservableObject {
-    private struct LifecycleRequest: Equatable {
-        let id: UInt64
-        let intent: WallpaperLifecycleIntent
-    }
-
-    private struct LifecycleResult {
-        let status: ControlStatus
-        let state: WallpaperLifecycleState
-        let statusMessage: String
-        let successMessage: String?
-        let previewURL: URL?
-        let clearPendingPreview: Bool
-        let refreshPreview: Bool
-    }
-
     let catalogViewModel: CatalogViewModel
     let previewViewModel: PreviewViewModel
     let lifecycleViewModel: LifecycleViewModel
@@ -1569,7 +1529,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private var controller: WallpaperControlling?
-    private let catalogProvider: WallpaperCatalogProviding
+    private let catalogRepository: CatalogRepository
     private let catalogDownloadService: CatalogDownloadService
     private var featureViewModelCancellables = Set<AnyCancellable>()
     private let optimizer = VideoOptimizer()
@@ -1611,11 +1571,6 @@ final class AppViewModel: ObservableObject {
     private var previewPreparationGeneration = 0
     private var lockScreenPreparationTask: Task<Void, Never>?
     private var lockScreenPreparationGeneration = 0
-    private var lifecycleTask: Task<Void, Never>?
-    private var activeLifecycleIntent: WallpaperLifecycleIntent?
-    private var pendingLifecycleRequest: LifecycleRequest?
-    private var latestLifecycleOperationID: UInt64 = 0
-
     private let expectedStatusContractVersion = 3
     private let bridgeFailureThreshold = 3
     private let daemonSuspiciousThreshold = 2
@@ -1666,14 +1621,14 @@ final class AppViewModel: ObservableObject {
 
     private var isLockScreenOnlyModeActiveForControls: Bool {
         isLockScreenOnlyActive
-            || activeLifecycleIntent?.name == "lock"
-            || pendingLifecycleRequest?.intent.name == "lock"
+            || lifecycleViewModel.activeIntentName == "lock"
+            || lifecycleViewModel.pendingIntentName == "lock"
     }
 
     private var isDesktopAndLockModeActiveForControls: Bool {
         isPlaybackRunningForControls
-            || activeLifecycleIntent?.name == "start"
-            || pendingLifecycleRequest?.intent.name == "start"
+            || lifecycleViewModel.activeIntentName == "start"
+            || lifecycleViewModel.pendingIntentName == "start"
     }
 
     var isStartButtonHighlighted: Bool {
@@ -1706,8 +1661,8 @@ final class AppViewModel: ObservableObject {
         isControllerAvailable
             && (isPlaybackRunningForControls
                 || isLockScreenOnlyActive
-                || activeLifecycleIntent?.name == "lock"
-                || pendingLifecycleRequest?.intent.name == "lock")
+                || lifecycleViewModel.activeIntentName == "lock"
+                || lifecycleViewModel.pendingIntentName == "lock")
     }
 
     var canClearWallpaper: Bool {
@@ -1791,11 +1746,15 @@ final class AppViewModel: ObservableObject {
         )
         self.lifecycleViewModel = LifecycleViewModel()
         self.optimizationStore = optimizationStore
-        self.catalogProvider = catalogProvider
+        let catalogDirectoryURL = resolvedAppSupportURL
+            .appendingPathComponent("Catalog", isDirectory: true)
+        self.catalogRepository = CatalogRepository(
+            provider: catalogProvider,
+            catalogDirectoryURL: catalogDirectoryURL
+        )
         self.catalogDownloadService = CatalogDownloadService(
             provider: catalogProvider,
-            catalogDirectoryURL: resolvedAppSupportURL
-                .appendingPathComponent("Catalog", isDirectory: true)
+            catalogDirectoryURL: catalogDirectoryURL
         )
         self.appSupportDirectoryURL = resolvedAppSupportURL
         if let controller {
@@ -1807,6 +1766,7 @@ final class AppViewModel: ObservableObject {
             self.controllerAvailable = false
             self.isControllerBootstrapInProgress = true
         }
+        configureLifecycleViewModel()
         optimizationHardwareAV1DecodeAvailable = optimizer.supportsHardwareAV1Decode()
         applyOptimizationSettings(optimizationStore.load())
         restoreInitialPreviewFromSavedConfig()
@@ -1854,8 +1814,67 @@ final class AppViewModel: ObservableObject {
         startHealthMonitor()
     }
 
+    private func configureLifecycleViewModel() {
+        lifecycleViewModel.configure(
+            dependencies: LifecycleViewModelDependencies(
+                controller: { [weak self] in
+                    self?.controller
+                },
+                prepareVideo: { [weak self] sourceURL in
+                    guard let self else { throw CancellationError() }
+                    let prepared = try await self.prepareVideoURLForPlayback(sourceURL)
+                    return PreparedLifecycleVideo(
+                        url: prepared.url,
+                        summary: prepared.summary
+                    )
+                },
+                prepareCatalogVideo: { [weak self] sourceURL in
+                    guard let self else { throw CancellationError() }
+                    let prepared = try await self.prepareCatalogVideoURLForPlayback(sourceURL)
+                    return PreparedLifecycleVideo(
+                        url: prepared.url,
+                        summary: prepared.summary
+                    )
+                },
+                prepareLockScreenVideo: { [weak self] sourceURL in
+                    guard let self else { throw CancellationError() }
+                    let prepared = try await self.prepareLockScreenVideoURLForPlayback(sourceURL)
+                    return PreparedLifecycleVideo(
+                        url: prepared.url,
+                        summary: prepared.summary
+                    )
+                },
+                isManagedCacheURL: { [weak self] sourceURL in
+                    self?.isManagedCacheURL(sourceURL) == true
+                }
+            ),
+            callbacks: LifecycleViewModelCallbacks(
+                applyResult: { [weak self] result in
+                    self?.applyLifecycleResult(result)
+                },
+                setStatusMessage: { [weak self] message in
+                    self?.statusMessage = message
+                },
+                setAlertMessage: { [weak self] message in
+                    self?.alertMessage = message
+                },
+                recordBridgeSuccess: { [weak self] in
+                    self?.recordBridgeSuccess()
+                },
+                recordBridgeFailure: { [weak self] error, context in
+                    self?.recordBridgeFailure(error, context: context)
+                },
+                showSuccessBanner: { [weak self] message in
+                    self?.showSuccessBanner(message)
+                },
+                scheduleFallbackRetry: { [weak self] in
+                    self?.scheduleLockScreenProviderFallbackRetry()
+                }
+            )
+        )
+    }
+
     deinit {
-        lifecycleTask?.cancel()
         healthMonitorTask?.cancel()
         monitoringTask?.cancel()
         catalogRefreshTask?.cancel()
@@ -2457,286 +2476,22 @@ final class AppViewModel: ObservableObject {
     }
 
     func start() {
-        guard !isPlaybackRunningForControls
-            || pendingPreviewVideoURL != nil
-        else { return }
-        guard let selectedVideoURL else {
-            alertMessage = "Choose a video before starting."
-            return
-        }
-
-        submitLifecycle(
-            .start(
-                selectedVideoURL,
-                resume: isPlaybackPaused && pendingPreviewVideoURL == nil
-            )
+        lifecycleViewModel.start(
+            selectedVideoURL: selectedVideoURL,
+            hasPendingPreview: pendingPreviewVideoURL != nil
         )
     }
 
     func applyLockScreenOnly() {
-        guard let selectedVideoURL else {
-            alertMessage = "Choose a video before applying it to the Lock Screen."
-            return
-        }
-        guard controller != nil else {
-            alertMessage = "Native wallpaper runtime unavailable."
-            return
-        }
-        submitLifecycle(.lock(selectedVideoURL))
+        lifecycleViewModel.applyLockScreenOnly(selectedVideoURL: selectedVideoURL)
     }
 
     func stop() {
-        guard controller != nil else { return }
-        guard isPlaybackRunningForControls
-                || isLockScreenOnlyActive
-                || activeLifecycleIntent?.name == "lock"
-                || pendingLifecycleRequest?.intent.name == "lock"
-        else {
-            return
-        }
-        let stoppingLockScreenOnly = isLockScreenOnlyActive
-            || activeLifecycleIntent?.name == "lock"
-            || pendingLifecycleRequest?.intent.name == "lock"
-        let staticImage = stoppingLockScreenOnly
-            && selectedVideoURL.map {
-                WallpaperMediaKind.forURL($0).isStaticImage
-            } == true
-        submitLifecycle(
-            .stop(
-                lockScreenOnly: stoppingLockScreenOnly,
-                staticImage: staticImage
-            )
-        )
+        lifecycleViewModel.stop(selectedVideoURL: selectedVideoURL)
     }
 
     func clearWallpaper() {
-        guard controller != nil else { return }
-        submitLifecycle(.remove(lockScreenOnly: isLockScreenOnlyActive))
-    }
-
-    private func submitLifecycle(_ intent: WallpaperLifecycleIntent) {
-        if activeLifecycleIntent == intent,
-           pendingLifecycleRequest == nil {
-            return
-        }
-        if pendingLifecycleRequest?.intent == intent {
-            return
-        }
-
-        latestLifecycleOperationID &+= 1
-        let request = LifecycleRequest(
-            id: latestLifecycleOperationID,
-            intent: intent
-        )
-        pendingLifecycleRequest = request
-        lockScreenLifecycleLogger.notice(
-            "Queued operation=\(request.id, privacy: .public) intent=\(intent.name, privacy: .public)"
-        )
-        switch intent {
-        case .remove:
-            lifecycleState = .removing
-            statusMessage = "Removing wallpaper…"
-        case .stop:
-            statusMessage = "Pausing wallpaper…"
-        case .start:
-            lifecycleState = .preparing
-            statusMessage = "Starting wallpaper…"
-        case .lock:
-            lifecycleState = .preparing
-            statusMessage = "Preparing Lock Screen wallpaper…"
-        }
-        alertMessage = nil
-
-        guard lifecycleTask == nil else { return }
-        lifecycleTask = Task { [weak self] in
-            await self?.drainLifecycleQueue()
-        }
-    }
-
-    private func drainLifecycleQueue() async {
-        isLifecycleBusy = true
-        defer {
-            activeLifecycleIntent = nil
-            lifecycleTask = nil
-            isLifecycleBusy = false
-            if pendingLockScreenProviderFallback {
-                scheduleLockScreenProviderFallbackRetry()
-            }
-        }
-
-        while !Task.isCancelled,
-              let request = pendingLifecycleRequest {
-            pendingLifecycleRequest = nil
-            activeLifecycleIntent = request.intent
-            let startedAt = ContinuousClock.now
-            lockScreenLifecycleLogger.notice(
-                "Started operation=\(request.id, privacy: .public) intent=\(request.intent.name, privacy: .public)"
-            )
-            do {
-                let result = try await executeLifecycle(request)
-                guard request.id == latestLifecycleOperationID,
-                      pendingLifecycleRequest == nil
-                else {
-                    lockScreenLifecycleLogger.notice(
-                        "Superseded operation=\(request.id, privacy: .public) intent=\(request.intent.name, privacy: .public)"
-                    )
-                    activeLifecycleIntent = nil
-                    continue
-                }
-                applyLifecycleResult(result)
-                recordBridgeSuccess()
-                lifecycleState = result.state
-                alertMessage = nil
-                if let successMessage = result.successMessage {
-                    showSuccessBanner(successMessage)
-                }
-                let elapsed = startedAt.duration(to: .now)
-                lockScreenLifecycleLogger.notice(
-                    "Completed operation=\(request.id, privacy: .public) intent=\(request.intent.name, privacy: .public) elapsed=\(String(describing: elapsed), privacy: .public)"
-                )
-            } catch is CancellationError {
-                lockScreenLifecycleLogger.notice(
-                    "Cancelled operation=\(request.id, privacy: .public) intent=\(request.intent.name, privacy: .public)"
-                )
-            } catch {
-                guard request.id == latestLifecycleOperationID,
-                      pendingLifecycleRequest == nil
-                else {
-                    activeLifecycleIntent = nil
-                    continue
-                }
-                lifecycleState = .failed
-                let context: String
-                switch request.intent {
-                case .start: context = "start"
-                case .lock: context = "lock-screen-only"
-                case .stop: context = "pause"
-                case .remove: context = "clear-wallpaper"
-                }
-                recordBridgeFailure(error, context: context)
-                alertMessage = "Failed to \(request.intent.name): \(error.localizedDescription)"
-                lockScreenLifecycleLogger.error(
-                    "Failed operation=\(request.id, privacy: .public) intent=\(request.intent.name, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-                )
-            }
-            activeLifecycleIntent = nil
-        }
-    }
-
-    private func executeLifecycle(
-        _ request: LifecycleRequest
-    ) async throws -> LifecycleResult {
-        guard let controller else {
-            throw NativeWallpaperControllerError.unavailable(
-                "Native wallpaper runtime unavailable."
-            )
-        }
-
-        switch request.intent {
-        case .start(let sourceURL, let resume):
-            if resume {
-                let status = try await runAsync { try controller.resume() }
-                return LifecycleResult(
-                    status: status,
-                    state: .ready,
-                    statusMessage: "Wallpaper resumed.",
-                    successMessage: "Wallpaper started.",
-                    previewURL: nil,
-                    clearPendingPreview: false,
-                    refreshPreview: true
-                )
-            }
-            let prepared = isManagedCacheURL(sourceURL)
-                ? try await prepareCatalogVideoURLForPlayback(sourceURL)
-                : try await prepareVideoURLForPlayback(sourceURL)
-            try ensureLifecycleMayCommit(request)
-            let status = try await runAsync {
-                try controller.start(videoURL: prepared.url, speed: nil)
-            }
-            return LifecycleResult(
-                status: status,
-                state: .ready,
-                statusMessage: prepared.summary ?? "Wallpaper started.",
-                successMessage: "Wallpaper started.",
-                previewURL: prepared.url,
-                clearPendingPreview: true,
-                refreshPreview: false
-            )
-
-        case .lock(let sourceURL):
-            let prepared = try await prepareLockScreenVideoURLForPlayback(sourceURL)
-            try ensureLifecycleMayCommit(request)
-            let status = try await runAsync {
-                try controller.installLockScreenOnly(videoURL: prepared.url)
-            }
-            return LifecycleResult(
-                status: status,
-                state: .ready,
-                statusMessage: prepared.summary.map {
-                    "Lock Screen wallpaper confirmed. \($0)"
-                } ?? "Lock Screen wallpaper confirmed by macOS.",
-                successMessage: "Wallpaper started on Lock Screen.",
-                previewURL: nil,
-                clearPendingPreview: false,
-                refreshPreview: false
-            )
-
-        case .stop(let lockScreenOnly, let staticImage):
-            try ensureLifecycleMayCommit(request)
-            let status = try await runAsync { try controller.stop() }
-            return LifecycleResult(
-                status: status,
-                state: staticImage ? .ready : .paused,
-                statusMessage: staticImage
-                    ? "Static Lock Screen wallpaper is already still."
-                    : lockScreenOnly
-                        ? "Lock Screen wallpaper paused."
-                        : "Paused on current frame.",
-                successMessage: "Wallpaper stopped.",
-                previewURL: nil,
-                clearPendingPreview: false,
-                refreshPreview: true
-            )
-
-        case .remove:
-            try ensureLifecycleMayCommit(request)
-            let status = try await runAsync {
-                try controller.clearWallpaper()
-            }
-            let removalStatusMessage: String
-            let removalSuccessMessage: String?
-            switch status.wallpaper_restore_status {
-            case .restored:
-                removalStatusMessage = "Original wallpaper restored."
-                removalSuccessMessage = "Wallpaper removed."
-            case .failed:
-                removalStatusMessage = "Wallpaper removed, but the original wallpaper could not be restored. AuraFlow will retry on the next launch."
-                removalSuccessMessage = nil
-            case .notNeeded, .none:
-                removalStatusMessage = "Wallpaper removed."
-                removalSuccessMessage = "Wallpaper removed."
-            }
-            return LifecycleResult(
-                status: status,
-                state: .idle,
-                statusMessage: removalStatusMessage,
-                successMessage: removalSuccessMessage,
-                previewURL: nil,
-                clearPendingPreview: false,
-                refreshPreview: true
-            )
-        }
-    }
-
-    private func ensureLifecycleMayCommit(
-        _ request: LifecycleRequest
-    ) throws {
-        guard request.id == latestLifecycleOperationID,
-              pendingLifecycleRequest == nil,
-              !Task.isCancelled
-        else {
-            throw CancellationError()
-        }
+        lifecycleViewModel.clearWallpaper()
     }
 
     private func applyLifecycleResult(_ result: LifecycleResult) {
@@ -3129,16 +2884,12 @@ final class AppViewModel: ObservableObject {
                     configurePreview(for: selectedVideoURL)
                 }
 
-                try clearCatalogCache()
+                try await catalogRepository.clearCache()
                 try clearOptimizedVideoCache()
                 try clearRuntimePreviewCache()
                 AdaptiveContrastAnalyzer.clearCache()
                 URLCache.shared.removeAllCachedResponses()
                 CatalogPreviewImageLoader.clearCache()
-
-                if let cacheClearingProvider = catalogProvider as? CatalogCacheClearing {
-                    await cacheClearingProvider.clearCache()
-                }
 
                 downloadedCatalogWallpapers = []
 
@@ -3500,86 +3251,15 @@ final class AppViewModel: ObservableObject {
     }
 
     private func loadCatalogFromCache() async {
-        if let cached = await catalogProvider.loadCachedCatalog(), !cached.isEmpty {
+        if let cached = await catalogRepository.loadCatalogCache(), !cached.isEmpty {
             catalogWallpapers = cached
         }
     }
 
     private func loadDownloadedCatalogWallpapers() {
-        let inMemory = downloadedCatalogWallpapers
-        let loaded: [DownloadedCatalogWallpaper]
-        do {
-            let manifestURL = try downloadedCatalogManifestURL()
-            guard let data = try? Data(contentsOf: manifestURL) else {
-                let inferred = inferredDownloadedCatalogWallpapersFromDisk()
-                let merged = mergeDownloadedCatalogWallpapers(
-                    inferred,
-                    preserving: inMemory
-                )
-                downloadedCatalogWallpapers = merged
-                if !merged.isEmpty {
-                    try? persistDownloadedCatalogWallpapers(merged)
-                }
-                return
-            }
-            loaded = try JSONDecoder().decode([DownloadedCatalogWallpaper].self, from: data)
-        } catch {
-            downloadedCatalogWallpapers = mergeDownloadedCatalogWallpapers(
-                inferredDownloadedCatalogWallpapersFromDisk(),
-                preserving: inMemory
-            )
-            return
-        }
-
-        let existing = loaded.compactMap { item -> DownloadedCatalogWallpaper? in
-            guard FileManager.default.fileExists(atPath: item.localURL.path) else {
-                return nil
-            }
-
-            let repairedPreviewPath = item.localPreviewPath.flatMap { localPreviewPath in
-                FileManager.default.fileExists(atPath: localPreviewPath) ? localPreviewPath : nil
-            }
-
-            return DownloadedCatalogWallpaper(
-                id: item.id,
-                wallpaperID: item.wallpaperID,
-                title: item.title,
-                category: item.category,
-                attribution: item.attribution,
-                previewImageURL: item.previewImageURL,
-                localPreviewPath: repairedPreviewPath,
-                sourcePageURL: item.sourcePageURL,
-                localPath: item.localPath,
-                downloadedAt: item.downloadedAt
-            )
-        }
-        var sorted = existing.sorted(by: { lhs, rhs in
-            lhs.downloadedAt > rhs.downloadedAt
-        })
-        if sorted.isEmpty {
-            sorted = inferredDownloadedCatalogWallpapersFromDisk()
-        }
-        sorted = mergeDownloadedCatalogWallpapers(sorted, preserving: inMemory)
-        downloadedCatalogWallpapers = sorted
-
-        if existing.count != loaded.count {
-            try? persistDownloadedCatalogWallpapers(sorted)
-        }
-    }
-
-    private func mergeDownloadedCatalogWallpapers(
-        _ loaded: [DownloadedCatalogWallpaper],
-        preserving inMemory: [DownloadedCatalogWallpaper]
-    ) -> [DownloadedCatalogWallpaper] {
-        var merged = loaded
-        let loadedIDs = Set(loaded.map(\.id))
-        merged.append(contentsOf: inMemory.filter { item in
-            !loadedIDs.contains(item.id)
-                && FileManager.default.fileExists(atPath: item.localURL.path)
-        })
-        return merged.sorted(by: { lhs, rhs in
-            lhs.downloadedAt > rhs.downloadedAt
-        })
+        downloadedCatalogWallpapers = catalogRepository.loadDownloadedWallpapers(
+            preserving: downloadedCatalogWallpapers
+        )
     }
 
     private func refreshCatalogIfNeeded(force: Bool = false) {
@@ -3601,7 +3281,7 @@ final class AppViewModel: ObservableObject {
             }
 
             do {
-                let fetched = try await catalogProvider.fetchCatalog { [weak self] partial in
+                let fetched = try await catalogRepository.refreshCatalog { [weak self] partial in
                     guard let self else { return }
                     guard !Task.isCancelled else { return }
                     await MainActor.run {
@@ -3636,19 +3316,17 @@ final class AppViewModel: ObservableObject {
     }
 
     private func downloadCatalogVideo(for wallpaper: CatalogWallpaper) async throws -> URL {
-        if let existing = downloadedCatalogWallpapers.first(where: { $0.wallpaperID == wallpaper.id }),
-           hasUsableCatalogFile(at: existing.localURL) {
-            return existing.localURL.standardizedFileURL
-        } else if let existing = downloadedCatalogWallpapers.first(where: { $0.wallpaperID == wallpaper.id }) {
-            try? FileManager.default.removeItem(at: existing.localURL)
+        if let existingURL = catalogRepository.reusableDownloadedWallpaperURL(
+            for: wallpaper.id,
+            in: downloadedCatalogWallpapers
+        ) {
+            return existingURL
         }
         return try await catalogDownloadService.download(wallpaper)
     }
 
     private func hasUsableCatalogFile(at url: URL) -> Bool {
-        guard FileManager.default.fileExists(atPath: url.path) else { return false }
-        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0 > 0
+        catalogRepository.hasUsableCatalogFile(at: url)
     }
 
 
@@ -3661,13 +3339,6 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func catalogDirectoryURL() throws -> URL {
-        let directory = appSupportDirectoryURL
-            .appendingPathComponent("Catalog", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }
-
     private func optimizedVideosDirectoryURL() throws -> URL {
         let directory = appSupportDirectoryURL
             .appendingPathComponent("OptimizedVideos", isDirectory: true)
@@ -3675,237 +3346,62 @@ final class AppViewModel: ObservableObject {
         return directory
     }
 
-    private func downloadedCatalogManifestURL() throws -> URL {
-        try catalogDirectoryURL().appendingPathComponent("downloaded-catalog.json")
-    }
-
-    private func catalogPreviewImagesDirectoryURL() throws -> URL {
-        let directory = try catalogDirectoryURL().appendingPathComponent("PreviewImages", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }
-
-    private func localPreviewImageURL(for previewKey: String) throws -> URL {
-        try catalogPreviewImagesDirectoryURL().appendingPathComponent("\(previewKey).jpg")
-    }
-
-    private func previewImageKey(for videoURL: URL) -> String {
-        videoURL.standardizedFileURL.deletingPathExtension().lastPathComponent
-    }
-
-    private func existingLocalPreviewImageURL(for previewKey: String) -> URL? {
-        guard let url = try? localPreviewImageURL(for: previewKey) else {
-            return nil
-        }
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
-    }
-
     private func scheduleLocalPreviewImageGeneration(
         for videoURL: URL,
         legacyWallpaperID: String?,
         wallpaperID: String
     ) {
-        let previewKey = previewImageKey(for: videoURL)
-
-        guard existingLocalPreviewImageURL(for: previewKey) == nil else { return }
-        guard let destinationURL = try? localPreviewImageURL(for: previewKey) else { return }
-        let legacyURL = legacyWallpaperID.flatMap { existingLocalPreviewImageURL(for: $0) }
+        let request = CatalogRepository.PreviewGenerationRequest(
+            videoURL: videoURL,
+            legacyWallpaperID: legacyWallpaperID,
+            wallpaperID: wallpaperID
+        )
         let requestedCacheGeneration = cacheGeneration
 
-        Task.detached(priority: .utility) { [weak self] in
-            guard let generatedURL = Self.generateLocalPreviewImage(
-                for: videoURL,
-                destinationURL: destinationURL,
-                legacyURL: legacyURL
-            ) else {
-                return
-            }
-
-            await MainActor.run { [weak self] in
-                guard let self else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                guard let generatedURL = try await self.catalogRepository
+                    .generatePreviewIfNeeded(for: request)
+                else {
+                    return
+                }
                 guard self.cacheGeneration == requestedCacheGeneration else {
-                    if generatedURL.standardizedFileURL == destinationURL.standardizedFileURL {
-                        try? FileManager.default.removeItem(at: generatedURL)
-                    }
+                    self.catalogRepository.removeFile(at: generatedURL)
                     return
                 }
                 self.storeGeneratedPreview(generatedURL, wallpaperID: wallpaperID)
-            }
-        }
-    }
-
-    nonisolated private static func generateLocalPreviewImage(
-        for videoURL: URL,
-        destinationURL: URL,
-        legacyURL: URL?
-    ) -> URL? {
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
-            return destinationURL
-        }
-        if let legacyURL {
-            do {
-                try FileManager.default.copyItem(at: legacyURL, to: destinationURL)
-                return destinationURL
+            } catch is CancellationError {
+                return
             } catch {
-                return legacyURL
+                // Preview generation is optional; the video remains usable
+                // without a generated thumbnail.
             }
-        }
-        let asset = AVURLAsset(url: videoURL)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = NSSize(width: 960, height: 540)
-
-        let time = CMTime(seconds: 0.0, preferredTimescale: 600)
-        guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else {
-            return nil
-        }
-
-        let bitmap = NSBitmapImageRep(cgImage: cgImage)
-        guard let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.82]) else {
-            return nil
-        }
-
-        do {
-            try jpegData.write(to: destinationURL, options: .atomic)
-            return destinationURL
-        } catch {
-            return nil
         }
     }
 
     private func storeGeneratedPreview(_ previewURL: URL, wallpaperID: String) {
-        var updated = downloadedCatalogWallpapers
-        guard let index = updated.firstIndex(where: { $0.wallpaperID == wallpaperID }) else {
-            return
-        }
-        let current = updated[index]
-        guard current.localPreviewPath != previewURL.path else { return }
-
-        updated[index] = DownloadedCatalogWallpaper(
-            id: current.id,
-            wallpaperID: current.wallpaperID,
-            title: current.title,
-            category: current.category,
-            attribution: current.attribution,
-            previewImageURL: current.previewImageURL,
-            localPreviewPath: previewURL.path,
-            sourcePageURL: current.sourcePageURL,
-            localPath: current.localPath,
-            downloadedAt: current.downloadedAt
+        downloadedCatalogWallpapers = catalogRepository.updateGeneratedPreview(
+            previewURL,
+            wallpaperID: wallpaperID,
+            in: downloadedCatalogWallpapers
         )
-        downloadedCatalogWallpapers = updated
-        try? persistDownloadedCatalogWallpapers(updated)
     }
 
     private func registerDownloadedCatalogWallpaper(for wallpaper: CatalogWallpaper, localURL: URL) {
-        let normalizedPath = localURL.standardizedFileURL.path
-        let previewKey = previewImageKey(for: localURL)
-        let localPreviewPath = existingLocalPreviewImageURL(for: previewKey)?.path
-        var updated = downloadedCatalogWallpapers
-
-        let entry = DownloadedCatalogWallpaper(
-            id: wallpaper.id,
-            wallpaperID: wallpaper.id,
-            title: wallpaper.title,
-            category: wallpaper.category,
-            attribution: wallpaper.attribution,
-            previewImageURL: wallpaper.previewImageURL,
-            localPreviewPath: localPreviewPath,
-            sourcePageURL: wallpaper.sourcePageURL,
-            localPath: normalizedPath,
-            downloadedAt: Date()
+        let result = catalogRepository.registerDownloadedWallpaper(
+            wallpaper,
+            localURL: localURL,
+            existing: downloadedCatalogWallpapers
         )
-
-        if let existingIndex = updated.firstIndex(where: { $0.id == entry.id || $0.localPath == entry.localPath }) {
-            updated[existingIndex] = entry
-        } else {
-            updated.append(entry)
-        }
-
-        updated.sort(by: { lhs, rhs in
-            lhs.downloadedAt > rhs.downloadedAt
-        })
-        downloadedCatalogWallpapers = updated
-        try? persistDownloadedCatalogWallpapers(updated)
-        if localPreviewPath == nil {
+        downloadedCatalogWallpapers = result.wallpapers
+        if let request = result.previewRequest {
             scheduleLocalPreviewImageGeneration(
-                for: localURL,
-                legacyWallpaperID: wallpaper.id,
-                wallpaperID: wallpaper.id
+                for: request.videoURL,
+                legacyWallpaperID: request.legacyWallpaperID,
+                wallpaperID: request.wallpaperID
             )
         }
-    }
-
-    private func persistDownloadedCatalogWallpapers(_ wallpapers: [DownloadedCatalogWallpaper]) throws {
-        let data = try JSONEncoder().encode(wallpapers)
-        try data.write(to: try downloadedCatalogManifestURL(), options: .atomic)
-    }
-
-    private func inferredDownloadedCatalogWallpapersFromDisk() -> [DownloadedCatalogWallpaper] {
-        guard let directory = try? catalogDirectoryURL() else {
-            return []
-        }
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-
-        let validExtensions = Set([
-            "mp4", "mov", "m4v", "webm", "mkv", "avi", "flv", "ts", "m2ts", "gif",
-            "png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "bmp", "webp"
-        ])
-        let ignoredNames: Set<String> = [
-            "waifu-anime-cache.json",
-            "waifu-download-links.json",
-            "downloaded-catalog.json",
-        ]
-
-        let mapped: [DownloadedCatalogWallpaper] = files.compactMap { fileURL in
-            let name = fileURL.lastPathComponent
-            guard !ignoredNames.contains(name) else { return nil }
-            let ext = fileURL.pathExtension.lowercased()
-            guard validExtensions.contains(ext) else { return nil }
-
-            let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey])
-            let downloadedAt = values?.contentModificationDate ?? Date()
-            let fileName = fileURL.deletingPathExtension().lastPathComponent
-
-            return DownloadedCatalogWallpaper(
-                id: "local-\(fileName)",
-                wallpaperID: "local-\(fileName)",
-                title: inferredTitleFromDownloadedFileName(fileName),
-                category: "Downloaded",
-                attribution: "Catalog Cache",
-                previewImageURL: nil,
-                localPreviewPath: existingLocalPreviewImageURL(
-                    for: previewImageKey(for: fileURL)
-                )?.path,
-                sourcePageURL: nil,
-                localPath: fileURL.standardizedFileURL.path,
-                downloadedAt: downloadedAt
-            )
-        }
-
-        return mapped.sorted(by: { lhs, rhs in
-            lhs.downloadedAt > rhs.downloadedAt
-        })
-    }
-
-    private func inferredTitleFromDownloadedFileName(_ fileName: String) -> String {
-        fileName
-            .replacingOccurrences(of: "-", with: " ")
-            .replacingOccurrences(of: "_", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(separator: " ")
-            .map { part in
-                let word = String(part)
-                guard let first = word.first else { return word }
-                return first.uppercased() + word.dropFirst()
-            }
-            .joined(separator: " ")
     }
 
     private func showSuccessBanner(_ message: String) {
@@ -3922,29 +3418,14 @@ final class AppViewModel: ObservableObject {
 
     private func isManagedCacheURL(_ url: URL) -> Bool {
         let path = url.standardizedFileURL.path
-        let managedDirectories = [
-            try? catalogDirectoryURL(),
-            try? optimizedVideosDirectoryURL(),
-        ].compactMap { $0?.standardizedFileURL.path }
-
-        return managedDirectories.contains { directoryPath in
-            path == directoryPath || path.hasPrefix(directoryPath + "/")
+        if catalogRepository.isManagedCacheURL(url) {
+            return true
         }
-    }
-
-    private func clearCatalogCache() throws {
-        let directory = try catalogDirectoryURL()
-        let entries = try FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: nil,
-            options: []
-        )
-
-        for entry in entries {
-            try FileManager.default.removeItem(at: entry)
+        guard let optimizedDirectory = try? optimizedVideosDirectoryURL() else {
+            return false
         }
-
-        downloadedCatalogWallpapers = []
+        let optimizedPath = optimizedDirectory.standardizedFileURL.path
+        return path == optimizedPath || path.hasPrefix(optimizedPath + "/")
     }
 
     private func clearOptimizedVideoCache() throws {
@@ -4013,14 +3494,17 @@ final class AppViewModel: ObservableObject {
         let requestedGeneration = localWallpaperImportGeneration
         localWallpaperImportTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            var copiedResult: (url: URL, created: Bool)?
+            var copiedResult: CatalogRepository.LocalImportResult?
 
             do {
-                copiedResult = try await copyLocalWallpaperToCatalog(from: sourceURL)
+                copiedResult = try await catalogRepository.copyLocalWallpaper(
+                    from: sourceURL,
+                    existing: downloadedCatalogWallpapers
+                )
                 try Task.checkCancellation()
                 guard requestedGeneration == localWallpaperImportGeneration else {
                     if copiedResult?.created == true {
-                        try? FileManager.default.removeItem(at: copiedResult!.url)
+                        catalogRepository.removeFile(at: copiedResult!.url)
                     }
                     return
                 }
@@ -4032,11 +3516,11 @@ final class AppViewModel: ObservableObject {
                 }
             } catch is CancellationError {
                 if copiedResult?.created == true {
-                    try? FileManager.default.removeItem(at: copiedResult!.url)
+                    catalogRepository.removeFile(at: copiedResult!.url)
                 }
             } catch {
                 if copiedResult?.created == true {
-                    try? FileManager.default.removeItem(at: copiedResult!.url)
+                    catalogRepository.removeFile(at: copiedResult!.url)
                 }
                 guard requestedGeneration == localWallpaperImportGeneration else { return }
                 statusMessage = "Wallpaper selected, but its copy could not be saved."
@@ -4048,93 +3532,18 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func copyLocalWallpaperToCatalog(from sourceURL: URL) async throws -> (url: URL, created: Bool) {
-        guard !isManagedCacheURL(sourceURL) else {
-            return (sourceURL, false)
-        }
-
-        if let existing = downloadedCatalogWallpapers.first(where: {
-            isImportedLocalWallpaper($0, from: sourceURL)
-                && FileManager.default.fileExists(atPath: $0.localURL.path)
-        }) {
-            return (existing.localURL.standardizedFileURL, false)
-        }
-
-        let directory = try catalogDirectoryURL()
-        let extensionName = sourceURL.pathExtension.isEmpty
-            ? "mp4"
-            : sourceURL.pathExtension.lowercased()
-        let destination = directory.appendingPathComponent(
-            "local-\(UUID().uuidString.lowercased()).\(extensionName)"
-        )
-
-        do {
-            try Task.checkCancellation()
-            try await Task.detached(priority: .utility) {
-                try FileManager.default.copyItem(at: sourceURL, to: destination)
-            }.value
-            try Task.checkCancellation()
-            return (destination.standardizedFileURL, true)
-        } catch {
-            try? FileManager.default.removeItem(at: destination)
-            throw error
-        }
-    }
-
-    private func isImportedLocalWallpaper(
-        _ wallpaper: DownloadedCatalogWallpaper,
-        from sourceURL: URL
-    ) -> Bool {
-        guard wallpaper.attribution == "This Mac",
-              let originalURL = wallpaper.sourcePageURL,
-              originalURL.isFileURL else {
-            return false
-        }
-        return originalURL.standardizedFileURL.path == sourceURL.standardizedFileURL.path
-    }
-
     private func registerLocalWallpaperCopy(originalURL: URL, copiedURL: URL) {
-        let normalizedOriginalURL = originalURL.standardizedFileURL
-        let normalizedCopiedURL = copiedURL.standardizedFileURL
-        let previewKey = previewImageKey(for: normalizedCopiedURL)
-        let localPreviewPath = existingLocalPreviewImageURL(for: previewKey)?.path
-        var updated = downloadedCatalogWallpapers
-        let existingIndex = updated.firstIndex {
-            isImportedLocalWallpaper($0, from: normalizedOriginalURL)
-        }
-        let existing = existingIndex.map { updated[$0] }
-        let localID = existing?.id ?? "local-\(UUID().uuidString.lowercased())"
-        let entry = DownloadedCatalogWallpaper(
-            id: localID,
-            wallpaperID: existing?.wallpaperID ?? localID,
-            title: inferredTitleFromDownloadedFileName(
-                normalizedOriginalURL.deletingPathExtension().lastPathComponent
-            ),
-            category: "Local",
-            attribution: "This Mac",
-            previewImageURL: nil,
-            localPreviewPath: localPreviewPath,
-            sourcePageURL: normalizedOriginalURL,
-            localPath: normalizedCopiedURL.path,
-            downloadedAt: existing?.downloadedAt ?? Date()
+        let result = catalogRepository.registerLocalWallpaperCopy(
+            originalURL: originalURL,
+            copiedURL: copiedURL,
+            existing: downloadedCatalogWallpapers
         )
-
-        if let existingIndex {
-            updated[existingIndex] = entry
-        } else {
-            updated.append(entry)
-        }
-        updated.sort(by: { lhs, rhs in
-            lhs.downloadedAt > rhs.downloadedAt
-        })
-        downloadedCatalogWallpapers = updated
-        try? persistDownloadedCatalogWallpapers(updated)
-
-        if localPreviewPath == nil {
+        downloadedCatalogWallpapers = result.wallpapers
+        if let request = result.previewRequest {
             scheduleLocalPreviewImageGeneration(
-                for: normalizedCopiedURL,
-                legacyWallpaperID: nil,
-                wallpaperID: entry.wallpaperID
+                for: request.videoURL,
+                legacyWallpaperID: request.legacyWallpaperID,
+                wallpaperID: request.wallpaperID
             )
         }
     }
@@ -4175,11 +3584,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func resolveDownloadedCatalogWallpaperURL(_ wallpaper: DownloadedCatalogWallpaper) async throws -> URL {
-        // The file was already downloaded and is managed by the catalog.
-        // Compatibility conversion, when needed, belongs to the catalog
-        // application path; never re-download a cached WebM/GIF/image just
-        // because AVFoundation cannot inspect it directly.
-        return wallpaper.localURL.standardizedFileURL
+        try catalogRepository.resolveDownloadedWallpaperURL(wallpaper)
     }
 
     private func isPreviewPlayableVideo(at url: URL) async -> Bool {
@@ -4288,7 +3693,7 @@ final class AppViewModel: ObservableObject {
         let requestedScaleMode = scaleMode
 
         glassAnalysisTask = Task.detached(priority: .utility) { [requestedURL, requestedScaleMode, requestedGeneration] in
-            let analysis = AdaptiveContrastAnalyzer.analyze(
+            let analysis = await AdaptiveContrastAnalyzer.analyze(
                 url: requestedURL,
                 scaleMode: requestedScaleMode
             )
@@ -4341,7 +3746,7 @@ final class AppViewModel: ObservableObject {
     }
 
     nonisolated static func adaptiveGlassAppearance(for url: URL, scaleMode: WallpaperScaleMode) -> AdaptiveGlassAppearance {
-        AdaptiveContrastAnalyzer.analyze(url: url, scaleMode: scaleMode)?.appearance
+        AdaptiveContrastAnalyzer.analyzeSynchronously(url: url, scaleMode: scaleMode)?.appearance
             ?? AdaptiveGlassAppearance.safeFallback
     }
 
