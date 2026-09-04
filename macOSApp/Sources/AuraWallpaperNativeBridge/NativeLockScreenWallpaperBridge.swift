@@ -24,6 +24,89 @@ final class NativeLockScreenWallpaperBridge {
     private var pendingCompletions: [(Bool, String?) -> Void] = []
     private var presentationRequestID: UInt64 = 0
 
+    /// Performs a non-mutating startup probe. The bridge only reports itself
+    /// as usable after dyld can load every framework it relies on and the
+    /// symbols used by the imported Swift API and dynamic login entry point
+    /// are present. The probe deliberately does not create an assertion or
+    /// touch the user's wallpaper state.
+    static func runtimeCapabilities()
+        -> NativeLockScreenBridgeRuntimeCapabilities
+    {
+        let frameworkHandles = nativeBridgePrivateFrameworkPaths
+            .compactMap { path in
+                openFramework(at: path)
+            }
+        let privateFrameworksLoaded = frameworkHandles.count
+            == nativeBridgePrivateFrameworkPaths.count
+
+        let requiredSymbolsResolved = privateFrameworksLoaded
+            && requiredWallpaperSymbols.allSatisfy { symbol in
+                hasSymbol(named: symbol, in: frameworkHandles[0])
+            }
+            && hasSymbol(
+                named: WallpaperPlatformConstants.startScreenSaverSymbol,
+                in: frameworkHandles.last
+            )
+
+        return NativeLockScreenBridgeRuntimeCapabilities(
+            protocolVersion: NativeLockScreenBridgeRuntimeCapabilities
+                .currentProtocolVersion,
+            architecture: processArchitecture,
+            privateFrameworksLoaded: privateFrameworksLoaded,
+            requiredSymbolsResolved: requiredSymbolsResolved,
+            supportedActions: NativeLockScreenBridgeRuntimeCapabilities
+                .requiredActions
+        )
+    }
+
+    private static let nativeBridgePrivateFrameworkPaths = [
+        "/System/Library/PrivateFrameworks/Wallpaper.framework",
+        "/System/Library/PrivateFrameworks/WallpaperTypes.framework",
+        "/System/Library/PrivateFrameworks/login.framework",
+    ]
+
+    private static let requiredWallpaperSymbols = [
+        "$s9Wallpaper0A16DisplayAssertionCMa",
+        "$s9Wallpaper0A17DisplayAttributesV11screenSaverACvgZ",
+        "$s9Wallpaper0A16DisplayAssertionC9displayID10attributesACs6UInt32V_AA0aB10AttributesVtYaKcfC",
+        "$s9Wallpaper0A25PresentationModeAssertionC08takeIdleD007displayD0ACXDAA0a7DisplayD0C_tYaKFZ",
+        "$s9Wallpaper0A25PresentationModeAssertionC010takeLockedD007displayD0ACXDAA0a7DisplayD0C_tYaKFZ",
+    ]
+
+    private static var processArchitecture: String {
+        #if arch(arm64)
+        return "arm64"
+        #elseif arch(x86_64)
+        return "x86_64"
+        #else
+        return "unknown"
+        #endif
+    }
+
+    private static func openFramework(at path: String) -> UnsafeMutableRawPointer? {
+        let frameworkURL = URL(fileURLWithPath: path)
+        let frameworkBinaryURL = frameworkURL.appendingPathComponent(
+            frameworkURL.deletingPathExtension().lastPathComponent
+        )
+        for candidate in [path, frameworkBinaryURL.path] {
+            if let handle = dlopen(candidate, RTLD_NOW | RTLD_LOCAL) {
+                return handle
+            }
+        }
+        return nil
+    }
+
+    private static func hasSymbol(
+        named name: String,
+        in handle: UnsafeMutableRawPointer?
+    ) -> Bool {
+        guard let handle else { return false }
+        // Mach-O tools display a leading underscore, while dlsym normally
+        // accepts the source-level name. Accept both forms for SDK changes.
+        return dlsym(handle, name) != nil
+            || dlsym(handle, "_" + name) != nil
+    }
+
     var isReady: Bool {
         displayAssertion != nil && window != nil
     }

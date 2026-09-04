@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import AuraWallpaperCore
 @testable import AuraWallpaperAgent
 
 private enum NativeBridgeFixtureMode {
@@ -10,6 +11,10 @@ private enum NativeBridgeFixtureMode {
     case rejectsPrepare
     case crashesOnce
     case sendsUnknownResponseBeforeValidResponse
+    case incompatibleProtocolVersion
+    case incompatibleArchitecture
+    case incompatibleSymbols
+    case missingCapabilities
 }
 
 private final class NativeBridgeFixture {
@@ -75,20 +80,54 @@ private final class NativeBridgeFixture {
             while IFS= read -r line; do
               id=$(printf '%s' "$line" | sed -n 's/.*"id":"\\([^"]*\\)".*/\\1/p')
               action=$(printf '%s' "$line" | sed -n 's/.*"action":"\\([^"]*\\)".*/\\1/p')
-              printf '{"id":"stale-response","action":"%s","succeeded":true}\\n' "$action"
-              printf '{"id":"%s","action":"%s","succeeded":true}\\n' "$id" "$action"
+              if [ "$action" = "capabilities" ]; then
+                printf '{"id":"stale-response","action":"capabilities","succeeded":true}\\n'
+                printf '{"id":"%s","action":"capabilities","succeeded":true,"capabilities":{"protocolVersion":1,"architecture":"\(NativeLockScreenBridgeRuntimeCapabilities.currentArchitecture)","privateFrameworksLoaded":true,"requiredSymbolsResolved":true,"supportedActions":["capabilities","prepare","show","hide","pause","resume","shutdown"]}}\\n' "$id"
+              else
+                printf '{"id":"stale-response","action":"%s","succeeded":true}\\n' "$action"
+                printf '{"id":"%s","action":"%s","succeeded":true}\\n' "$id" "$action"
+              fi
               if [ "$action" = "shutdown" ]; then exit 0; fi
             done
             """
+        case .incompatibleProtocolVersion:
+            return responseLoop(capabilityProtocolVersion: 999, exitOnShutdown: true)
+        case .incompatibleArchitecture:
+            return responseLoop(
+                capabilityArchitecture: "incompatible-architecture",
+                exitOnShutdown: true
+            )
+        case .incompatibleSymbols:
+            return responseLoop(
+                privateFrameworksLoaded: false,
+                requiredSymbolsResolved: false,
+                exitOnShutdown: true
+            )
+        case .missingCapabilities:
+            return responseLoop(includeCapabilities: false, exitOnShutdown: true)
         }
     }
 
     private static func responseLoop(
         prepareSucceeded: Bool = true,
         prepareError: String? = nil,
+        capabilityProtocolVersion: Int = 1,
+        capabilityArchitecture: String = NativeLockScreenBridgeRuntimeCapabilities
+            .currentArchitecture,
+        privateFrameworksLoaded: Bool = true,
+        requiredSymbolsResolved: Bool = true,
+        includeCapabilities: Bool = true,
         exitOnShutdown: Bool
     ) -> String {
         let escapedError = prepareError.map(shellQuote) ?? "''"
+        let capabilitiesResponse: String
+        if includeCapabilities {
+            let frameworksLoaded = privateFrameworksLoaded ? "true" : "false"
+            let symbolsResolved = requiredSymbolsResolved ? "true" : "false"
+            capabilitiesResponse = "printf '{\"id\":\"%s\",\"action\":\"capabilities\",\"succeeded\":true,\"capabilities\":{\"protocolVersion\":\(capabilityProtocolVersion),\"architecture\":\"\(capabilityArchitecture)\",\"privateFrameworksLoaded\":\(frameworksLoaded),\"requiredSymbolsResolved\":\(symbolsResolved),\"supportedActions\":[\"capabilities\",\"prepare\",\"show\",\"hide\",\"pause\",\"resume\",\"shutdown\"]}}\\n' \"$id\""
+        } else {
+            capabilitiesResponse = "printf '{\"id\":\"%s\",\"action\":\"capabilities\",\"succeeded\":true}\\n' \"$id\""
+        }
         var prepareResponse = ""
         if prepareSucceeded {
             prepareResponse = "printf '{\"id\":\"%s\",\"action\":\"%s\",\"succeeded\":true}\\n' \"$id\" \"$action\""
@@ -103,7 +142,9 @@ private final class NativeBridgeFixture {
         while IFS= read -r line; do
           id=$(printf '%s' "$line" | sed -n 's/.*"id":"\\([^"]*\\)".*/\\1/p')
           action=$(printf '%s' "$line" | sed -n 's/.*"action":"\\([^"]*\\)".*/\\1/p')
-          if [ "$action" = "prepare" ]; then
+          if [ "$action" = "capabilities" ]; then
+            \(capabilitiesResponse)
+          elif [ "$action" = "prepare" ]; then
             \(prepareResponse)
           else
             printf '{"id":"%s","action":"%s","succeeded":true}\\n' "$id" "$action"
@@ -150,6 +191,58 @@ private func stopBridge(
     #expect(await awaitBridgeResult { bridge.prepare(completion: $0) })
     #expect(await awaitBridgeResult { bridge.showForLockTransition(completion: $0) })
     #expect(bridge.isReady)
+    stopBridge(bridge, fixture: fixture)
+}
+
+@Test func nativeBridgeRejectsIncompatibleProtocolVersion() async throws {
+    let fixture = try NativeBridgeFixture(.incompatibleProtocolVersion)
+    defer { fixture.cleanup() }
+    let bridge = NativeLockScreenWallpaperBridge(
+        executableURL: fixture.executableURL,
+        requestTimeout: 0.5
+    )
+
+    #expect(await awaitBridgeResult { bridge.prepare(completion: $0) } == false)
+    #expect(bridge.isReady == false)
+    stopBridge(bridge, fixture: fixture)
+}
+
+@Test func nativeBridgeRejectsIncompatibleArchitecture() async throws {
+    let fixture = try NativeBridgeFixture(.incompatibleArchitecture)
+    defer { fixture.cleanup() }
+    let bridge = NativeLockScreenWallpaperBridge(
+        executableURL: fixture.executableURL,
+        requestTimeout: 0.5
+    )
+
+    #expect(await awaitBridgeResult { bridge.prepare(completion: $0) } == false)
+    #expect(bridge.isReady == false)
+    stopBridge(bridge, fixture: fixture)
+}
+
+@Test func nativeBridgeRejectsIncompatiblePrivateFrameworkSymbols() async throws {
+    let fixture = try NativeBridgeFixture(.incompatibleSymbols)
+    defer { fixture.cleanup() }
+    let bridge = NativeLockScreenWallpaperBridge(
+        executableURL: fixture.executableURL,
+        requestTimeout: 0.5
+    )
+
+    #expect(await awaitBridgeResult { bridge.prepare(completion: $0) } == false)
+    #expect(bridge.isReady == false)
+    stopBridge(bridge, fixture: fixture)
+}
+
+@Test func nativeBridgeDoesNotBecomeReadyWithoutCapabilities() async throws {
+    let fixture = try NativeBridgeFixture(.missingCapabilities)
+    defer { fixture.cleanup() }
+    let bridge = NativeLockScreenWallpaperBridge(
+        executableURL: fixture.executableURL,
+        requestTimeout: 0.5
+    )
+
+    #expect(await awaitBridgeResult { bridge.prepare(completion: $0) } == false)
+    #expect(bridge.isReady == false)
     stopBridge(bridge, fixture: fixture)
 }
 

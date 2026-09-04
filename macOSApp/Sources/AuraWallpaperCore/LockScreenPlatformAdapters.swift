@@ -203,9 +203,10 @@ public enum LockScreenPlatformFactory {
             )
         }
 
-        let nativeBridgeCapabilities = NativeLockScreenBridgeCapabilityChecker.check(
+        let nativeBridgeCapabilities = NativeLockScreenBridgeCapabilityChecker.checkRuntime(
             operatingSystemVersion: operatingSystemVersion,
-            executableURL: nativeBridgeURL
+            executableURL: nativeBridgeURL,
+            requireValidCodeSignature: true
         )
         guard nativeBridgeCapabilities.isAvailable else {
             return UnsupportedAdapter(message: nativeBridgeCapabilities.message)

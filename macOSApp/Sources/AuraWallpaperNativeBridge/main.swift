@@ -43,6 +43,17 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
 
     private func handle(_ request: NativeLockScreenBridgeRequest) {
         switch request.action {
+        case .capabilities:
+            let capabilities = NativeLockScreenWallpaperBridge
+                .runtimeCapabilities()
+            respond(
+                to: request,
+                succeeded: capabilities.isCompatible,
+                errorDescription: capabilities.isCompatible
+                    ? nil
+                    : "Native bridge capability handshake failed.",
+                capabilities: capabilities
+            )
         case .prepare:
             bridge.prepare { [weak self] succeeded, errorDescription in
                 self?.respond(
@@ -78,13 +89,15 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
         to request: NativeLockScreenBridgeRequest,
         succeeded: Bool,
         errorDescription: String? = nil,
+        capabilities: NativeLockScreenBridgeRuntimeCapabilities? = nil,
         terminateAfterWrite: Bool = false
     ) {
         let response = NativeLockScreenBridgeResponse(
             id: request.id,
             action: request.action,
             succeeded: succeeded,
-            errorDescription: errorDescription
+            errorDescription: errorDescription,
+            capabilities: capabilities
         )
         Task { [weak self] in
             guard let self else { return }

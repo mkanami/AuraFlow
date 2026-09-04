@@ -70,11 +70,12 @@ legacy Screen Saver module.
 
 The native Aerial route is an optional capability, not a requirement for starting
 AuraFlow. It is enabled only when the OS is macOS 26 or newer, the bundled
-`AuraWallpaperNativeBridge` is executable, and both required system providers are
-present. The control app and the portable wallpaper agent never link Apple's
-private `Wallpaper` frameworks. If a preflight or runtime check fails, AuraFlow
-disables the native route and uses the legacy Screen Saver path without claiming
-that the native installation succeeded.
+`AuraWallpaperNativeBridge` is executable, its code signature is valid, and its
+startup capability handshake confirms the expected protocol, architecture,
+private frameworks, and symbols. The control app and the portable wallpaper
+agent never link Apple's private `Wallpaper` frameworks. If any preflight or
+runtime check fails, AuraFlow disables the native route and uses the legacy
+Screen Saver path without claiming that the native installation succeeded.
 
 `Wallpaper.framework` and `WallpaperTypes.framework` are private Apple frameworks.
 The native bridge is therefore distributed as a separate optional executable and

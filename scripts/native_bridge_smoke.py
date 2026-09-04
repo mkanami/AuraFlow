@@ -3,6 +3,7 @@
 
 import json
 import os
+import platform
 import select
 import subprocess
 import sys
@@ -57,6 +58,33 @@ def main() -> int:
     )
     try:
         try:
+            capabilities = request(bridge, "capabilities")
+            payload = capabilities.get("capabilities")
+            if not capabilities["succeeded"] or not isinstance(payload, dict):
+                raise RuntimeError(
+                    "native bridge capability handshake failed: "
+                    + json.dumps(capabilities, sort_keys=True)
+                )
+            if payload.get("protocolVersion") != 1:
+                raise RuntimeError("native bridge reported an unsupported protocol version")
+            expected_architecture = {
+                "arm64": "arm64",
+                "arm64e": "arm64",
+                "x86_64": "x86_64",
+                "AMD64": "x86_64",
+            }.get(platform.machine())
+            if expected_architecture and payload.get("architecture") != expected_architecture:
+                raise RuntimeError("native bridge reported the wrong architecture")
+            if payload.get("privateFrameworksLoaded") is not True:
+                raise RuntimeError("native bridge did not load required private frameworks")
+            if payload.get("requiredSymbolsResolved") is not True:
+                raise RuntimeError("native bridge did not resolve required symbols")
+            required_actions = {
+                "capabilities", "prepare", "show", "hide", "pause", "resume", "shutdown"
+            }
+            if not required_actions.issubset(set(payload.get("supportedActions", []))):
+                raise RuntimeError("native bridge reported incomplete supported actions")
+
             prepare = request(bridge, "prepare")
             show = request(bridge, "show")
             hide = request(bridge, "hide")

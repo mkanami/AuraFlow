@@ -15,6 +15,7 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
     private enum State {
         case stopped
         case starting
+        case capabilityChecking
         case preparing
         case ready
         case failed
@@ -132,7 +133,7 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
         switch state {
         case .ready:
             continuation(true)
-        case .starting, .preparing:
+        case .starting, .capabilityChecking, .preparing:
             preparationWaiters.append(continuation)
         case .stopped, .failed:
             guard startIfNeeded() else {
@@ -140,9 +141,9 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
                 return
             }
             preparationWaiters.append(continuation)
-            state = .preparing
-            guard send(.prepare, completion: nil) else {
-                failTransport(reason: "Could not send the bridge prepare request.")
+            state = .capabilityChecking
+            guard send(.capabilities, completion: nil) else {
+                failTransport(reason: "Could not send the bridge capability request.")
                 return
             }
         }
@@ -305,7 +306,29 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
                     "Native bridge request failed action=\(request.action.rawValue, privacy: .public) reason=\(response.errorDescription ?? "unknown", privacy: .public)"
                 )
             }
-            if response.action == .prepare {
+            if response.action == .capabilities {
+                guard response.succeeded,
+                      let capabilities = response.capabilities,
+                      capabilities.isCompatible,
+                      capabilities.architecture
+                          == NativeLockScreenBridgeRuntimeCapabilities
+                              .currentArchitecture
+                else {
+                    failTransport(
+                        reason: response.errorDescription
+                            ?? "Native Lock Screen bridge capability handshake failed."
+                    )
+                    return
+                }
+
+                state = .preparing
+                guard send(.prepare, completion: nil) else {
+                    failTransport(
+                        reason: "Could not send the bridge prepare request."
+                    )
+                    return
+                }
+            } else if response.action == .prepare {
                 state = response.succeeded ? .ready : .failed
                 let waiters = preparationWaiters
                 preparationWaiters.removeAll()

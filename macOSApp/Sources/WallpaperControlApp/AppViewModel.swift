@@ -378,10 +378,22 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
         self.helperURL = helperResolution.url
         let resolvedNativeBridgeURL = nativeBridgeURL ?? Self.resolveNativeBridgeURL()
-        let resolvedNativeBridgeCapabilities =
-            NativeLockScreenBridgeCapabilityChecker.check(
-                executableURL: resolvedNativeBridgeURL
-            )
+        // An injected bridge path is used by tests and controlled migrations;
+        // production resolution performs the bounded startup handshake before
+        // the native route is advertised as available.
+        let resolvedNativeBridgeCapabilities: NativeLockScreenBridgeCapabilities
+        if nativeBridgeURL == nil {
+            resolvedNativeBridgeCapabilities =
+                NativeLockScreenBridgeCapabilityChecker.checkRuntime(
+                    executableURL: resolvedNativeBridgeURL,
+                    requireValidCodeSignature: true
+                )
+        } else {
+            resolvedNativeBridgeCapabilities =
+                NativeLockScreenBridgeCapabilityChecker.check(
+                    executableURL: resolvedNativeBridgeURL
+                )
+        }
         let effectiveNativeBridgeURL = resolvedNativeBridgeCapabilities.isAvailable
             ? resolvedNativeBridgeURL
             : nil

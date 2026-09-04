@@ -58,6 +58,61 @@ public struct NativeLockScreenBridgeCapabilities: Equatable, Sendable {
     public var message: String { availability.message }
 }
 
+/// The capability payload returned by a running native bridge. Unlike the
+/// portable preflight above, this is evidence from the process that its
+/// private frameworks were loaded and the symbols used by the bridge resolved.
+public struct NativeLockScreenBridgeRuntimeCapabilities: Codable, Equatable, Sendable {
+    public static let currentProtocolVersion = 1
+
+    public static var currentArchitecture: String {
+        #if arch(arm64)
+        return "arm64"
+        #elseif arch(x86_64)
+        return "x86_64"
+        #else
+        return "unknown"
+        #endif
+    }
+
+    public let protocolVersion: Int
+    public let architecture: String
+    public let privateFrameworksLoaded: Bool
+    public let requiredSymbolsResolved: Bool
+    public let supportedActions: [NativeLockScreenBridgeAction]
+
+    public init(
+        protocolVersion: Int,
+        architecture: String,
+        privateFrameworksLoaded: Bool,
+        requiredSymbolsResolved: Bool,
+        supportedActions: [NativeLockScreenBridgeAction]
+    ) {
+        self.protocolVersion = protocolVersion
+        self.architecture = architecture
+        self.privateFrameworksLoaded = privateFrameworksLoaded
+        self.requiredSymbolsResolved = requiredSymbolsResolved
+        self.supportedActions = supportedActions
+    }
+
+    public var isCompatible: Bool {
+        protocolVersion == Self.currentProtocolVersion
+            && architecture == Self.currentArchitecture
+            && privateFrameworksLoaded
+            && requiredSymbolsResolved
+            && Set(Self.requiredActions).isSubset(of: supportedActions)
+    }
+
+    public static let requiredActions: [NativeLockScreenBridgeAction] = [
+        .capabilities,
+        .prepare,
+        .show,
+        .hide,
+        .pause,
+        .resume,
+        .shutdown,
+    ]
+}
+
 public enum NativeLockScreenBridgeCapabilityChecker {
     public static func check(
         operatingSystemVersion: OperatingSystemVersion = ProcessInfo.processInfo
@@ -103,12 +158,66 @@ public enum NativeLockScreenBridgeCapabilityChecker {
 
         return NativeLockScreenBridgeCapabilities(availability: .available)
     }
+
+    /// Runs the cheap file-system preflight and then asks the executable to
+    /// start and return its runtime capabilities. Keep `check` above cheap so
+    /// callers that are merely resolving optional bundle paths do not launch a
+    /// second process; use this method at a real runtime boundary.
+    public static func checkRuntime(
+        operatingSystemVersion: OperatingSystemVersion = ProcessInfo.processInfo
+            .operatingSystemVersion,
+        executableURL: URL?,
+        fileManager: FileManager = .default,
+        privateFrameworkPaths: [String] = NativeLockScreenBridgeCapabilities
+            .requiredPrivateFrameworkPaths,
+        timeout: TimeInterval = NativeLockScreenBridgeRuntimeProbe.defaultTimeout,
+        requireValidCodeSignature: Bool = false
+    ) -> NativeLockScreenBridgeCapabilities {
+        let staticCapabilities = check(
+            operatingSystemVersion: operatingSystemVersion,
+            executableURL: executableURL,
+            fileManager: fileManager,
+            privateFrameworkPaths: privateFrameworkPaths
+        )
+        guard staticCapabilities.isAvailable,
+              let executableURL
+        else {
+            return staticCapabilities
+        }
+
+        if requireValidCodeSignature,
+           !NativeLockScreenBridgeCodeSignatureVerifier.isValid(
+               at: executableURL
+           )
+        {
+            return NativeLockScreenBridgeCapabilities(
+                availability: .runtimeFailure(
+                    reason: "native bridge code signature is invalid"
+                )
+            )
+        }
+
+        do {
+            _ = try NativeLockScreenBridgeRuntimeProbe.verify(
+                executableURL: executableURL,
+                timeout: timeout
+            )
+            return staticCapabilities
+        } catch {
+            return NativeLockScreenBridgeCapabilities(
+                availability: .runtimeFailure(
+                    reason: error.localizedDescription
+                )
+            )
+        }
+    }
 }
 
 /// Commands exchanged between the portable wallpaper agent and the optional
 /// macOS 26 native Lock Screen bridge process. Keeping this wire contract in
 /// the platform-neutral core prevents the agent from importing private APIs.
-public enum NativeLockScreenBridgeAction: String, Codable, Sendable {
+public enum NativeLockScreenBridgeAction: String, Codable, Hashable, Sendable {
+    case capabilities
     case prepare
     case show
     case hide
@@ -135,16 +244,19 @@ public struct NativeLockScreenBridgeResponse: Codable, Sendable {
     public let action: NativeLockScreenBridgeAction
     public let succeeded: Bool
     public let errorDescription: String?
+    public let capabilities: NativeLockScreenBridgeRuntimeCapabilities?
 
     public init(
         id: String,
         action: NativeLockScreenBridgeAction,
         succeeded: Bool,
-        errorDescription: String? = nil
+        errorDescription: String? = nil,
+        capabilities: NativeLockScreenBridgeRuntimeCapabilities? = nil
     ) {
         self.id = id
         self.action = action
         self.succeeded = succeeded
         self.errorDescription = errorDescription
+        self.capabilities = capabilities
     }
 }

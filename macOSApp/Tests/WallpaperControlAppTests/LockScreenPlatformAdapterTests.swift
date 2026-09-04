@@ -95,6 +95,47 @@ private enum PlatformRecordingError: Error {
     case restoreFailed
 }
 
+private func makeRuntimeBridgeFixture(
+    protocolVersion: Int = NativeLockScreenBridgeRuntimeCapabilities.currentProtocolVersion,
+    architecture: String = NativeLockScreenBridgeRuntimeCapabilities.currentArchitecture,
+    privateFrameworksLoaded: Bool = true,
+    requiredSymbolsResolved: Bool = true,
+    includeCapabilities: Bool = true
+) throws -> (root: URL, executableURL: URL) {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(
+            "AuraFlowRuntimeBridgeProbe-\(UUID().uuidString)",
+            isDirectory: true
+        )
+    try FileManager.default.createDirectory(
+        at: root,
+        withIntermediateDirectories: true
+    )
+    let executableURL = root.appendingPathComponent("bridge.sh")
+    let frameworkValue = privateFrameworksLoaded ? "true" : "false"
+    let symbolValue = requiredSymbolsResolved ? "true" : "false"
+    let capabilityField = includeCapabilities
+        ? ",\"capabilities\":{\"protocolVersion\":\(protocolVersion),\"architecture\":\"\(architecture)\",\"privateFrameworksLoaded\":\(frameworkValue),\"requiredSymbolsResolved\":\(symbolValue),\"supportedActions\":[\"capabilities\",\"prepare\",\"show\",\"hide\",\"pause\",\"resume\",\"shutdown\"]}"
+        : ""
+    let script = """
+    #!/bin/sh
+    while IFS= read -r line; do
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":"\\([^"]*\\)".*/\\1/p')
+      printf '{"id":"%s","action":"capabilities","succeeded":true\(capabilityField)}\\n' "$id"
+    done
+    """
+    try script.write(
+        to: executableURL,
+        atomically: true,
+        encoding: .utf8
+    )
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o755],
+        ofItemAtPath: executableURL.path
+    )
+    return (root, executableURL)
+}
+
 @Test func modernAdapterUsesInjectedInstallerOnSupportedRuntime() async throws {
     let installer = RecordingModernInstaller(isAvailable: true)
     let adapter = ModernMacOS26Adapter(
@@ -217,6 +258,104 @@ private enum PlatformRecordingError: Error {
 
     #expect(capabilities.availability == .available)
     #expect(capabilities.isAvailable)
+}
+
+@Test func runtimeCapabilityProbeAcceptsACompatibleBridge() throws {
+    let fixture = try makeRuntimeBridgeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let frameworkPaths = [
+        fixture.root.appendingPathComponent("Wallpaper.framework").path,
+        fixture.root.appendingPathComponent("WallpaperTypes.framework").path,
+    ]
+    for path in frameworkPaths {
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: path),
+            withIntermediateDirectories: true
+        )
+    }
+
+    let capabilities = NativeLockScreenBridgeCapabilityChecker.checkRuntime(
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 26,
+            minorVersion: 0,
+            patchVersion: 0
+        ),
+        executableURL: fixture.executableURL,
+        privateFrameworkPaths: frameworkPaths,
+        timeout: 1.0
+    )
+
+    #expect(capabilities.availability == .available)
+}
+
+@Test func runtimeCapabilityProbeFailsClosedForIncompatibleBridge() throws {
+    let fixture = try makeRuntimeBridgeFixture(
+        privateFrameworksLoaded: false,
+        requiredSymbolsResolved: false
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let frameworkPaths = [
+        fixture.root.appendingPathComponent("Wallpaper.framework").path,
+        fixture.root.appendingPathComponent("WallpaperTypes.framework").path,
+    ]
+    for path in frameworkPaths {
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: path),
+            withIntermediateDirectories: true
+        )
+    }
+
+    let capabilities = NativeLockScreenBridgeCapabilityChecker.checkRuntime(
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 26,
+            minorVersion: 0,
+            patchVersion: 0
+        ),
+        executableURL: fixture.executableURL,
+        privateFrameworkPaths: frameworkPaths,
+        timeout: 1.0
+    )
+
+    #expect(capabilities.isAvailable == false)
+    #expect(
+        capabilities.availability
+            == .runtimeFailure(
+                reason: "Native bridge rejected its capability handshake: reported capabilities are incompatible with this client."
+            )
+    )
+}
+
+@Test func runtimeCapabilityProbeRejectsUnsignedBridgeWhenRequired() throws {
+    let fixture = try makeRuntimeBridgeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let frameworkPaths = [
+        fixture.root.appendingPathComponent("Wallpaper.framework").path,
+        fixture.root.appendingPathComponent("WallpaperTypes.framework").path,
+    ]
+    for path in frameworkPaths {
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: path),
+            withIntermediateDirectories: true
+        )
+    }
+
+    let capabilities = NativeLockScreenBridgeCapabilityChecker.checkRuntime(
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 26,
+            minorVersion: 0,
+            patchVersion: 0
+        ),
+        executableURL: fixture.executableURL,
+        privateFrameworkPaths: frameworkPaths,
+        timeout: 1.0,
+        requireValidCodeSignature: true
+    )
+
+    #expect(capabilities.isAvailable == false)
+    #expect(
+        capabilities.availability
+            == .runtimeFailure(reason: "native bridge code signature is invalid")
+    )
 }
 
 @Test func agentPlatformDisablesNativeRuntimeWhenBridgeIsMissing() {
