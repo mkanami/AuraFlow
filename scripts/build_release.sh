@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SWIFT_DIR="$ROOT_DIR/macOSApp"
-DIST_DIR="$ROOT_DIR/dist"
+DIST_DIR="${AURAFLOW_OUTPUT_DIR:-$ROOT_DIR/dist}"
 APP_TARGET="WallpaperControlApp"
 HELPER_TARGET="AuraWallpaperAgent"
 NATIVE_BRIDGE_TARGET="AuraWallpaperNativeBridge"
@@ -13,7 +13,8 @@ APP_VERSION="${AURAFLOW_VERSION:-1.3.1}"
 APP_BUILD="${AURAFLOW_BUILD:-10}"
 MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 export MACOSX_DEPLOYMENT_TARGET
-APP_BUNDLE="$DIST_DIR/${APP_DISPLAY_NAME}.app"
+STAGING_DIR=""
+APP_BUNDLE=""
 APP_ZIP="$DIST_DIR/${APP_DISPLAY_NAME}.zip"
 APP_DMG="$DIST_DIR/${APP_DISPLAY_NAME}.dmg"
 SWIFT_BIN="${AURAFLOW_SWIFT_BIN:-swift}"
@@ -38,7 +39,7 @@ CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 CODESIGN_KEYCHAIN_PATH="${CODESIGN_KEYCHAIN_PATH:-}"
 REQUIRE_CODESIGN="${REQUIRE_CODESIGN:-0}"
 LOCK_DIR="$ROOT_DIR/.build-lock"
-BUNDLED_TOOLS_DIR="$APP_BUNDLE/Contents/Resources/BundledTools"
+BUNDLED_TOOLS_DIR=""
 
 log() {
   printf '[build] %s\n' "$1"
@@ -169,6 +170,9 @@ configure_native_bridge() {
 
 cleanup_lock() {
   rm -rf "$LOCK_DIR"
+  if [[ -n "$STAGING_DIR" ]]; then
+    rm -rf "$STAGING_DIR"
+  fi
 }
 
 acquire_lock() {
@@ -223,6 +227,9 @@ ensure_icon() {
 prepare_environment() {
   rm -rf "$DIST_DIR"
   mkdir -p "$DIST_DIR"
+  STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/auraflow-release.XXXXXX")"
+  APP_BUNDLE="$STAGING_DIR/${APP_DISPLAY_NAME}.app"
+  BUNDLED_TOOLS_DIR="$APP_BUNDLE/Contents/Resources/BundledTools"
 }
 
 resolve_tool_path() {
@@ -586,6 +593,22 @@ codesign_args() {
   printf '%s\n' "${args[@]}"
 }
 
+strip_code_signing_blockers() {
+  local bundle_path="$1"
+  if ! command -v xattr >/dev/null 2>&1; then
+    return
+  fi
+
+  # File-provider-backed workspaces can reintroduce Finder metadata on bundle
+  # directories even when xattr -cr succeeds for most descendants. codesign
+  # rejects those resource-fork/FinderInfo attributes on nested bundles.
+  xattr -cr "$bundle_path" >/dev/null 2>&1 || true
+  while IFS= read -r -d '' candidate; do
+    xattr -d com.apple.FinderInfo "$candidate" >/dev/null 2>&1 || true
+    xattr -d com.apple.ResourceFork "$candidate" >/dev/null 2>&1 || true
+  done < <(find "$bundle_path" -print0)
+}
+
 prepare_bundle_for_codesign() {
   if [[ -z "$CODESIGN_IDENTITY" && "$REQUIRE_CODESIGN" == "1" ]]; then
     log "REQUIRE_CODESIGN=1 but CODESIGN_IDENTITY is not set."
@@ -593,9 +616,7 @@ prepare_bundle_for_codesign() {
   fi
 
   require_command codesign
-  if command -v xattr >/dev/null 2>&1; then
-    xattr -cr "$APP_BUNDLE" >/dev/null 2>&1 || true
-  fi
+  strip_code_signing_blockers "$APP_BUNDLE"
   find "$APP_BUNDLE" -type d -name "_CodeSignature" -prune -exec rm -rf {} +
 }
 
@@ -617,6 +638,10 @@ codesign_target() {
   if [[ "$#" -gt 0 ]]; then
     args+=("$@")
   fi
+  # File Provider may restore FinderInfo between signing nested Mach-O files;
+  # clear it immediately before every codesign invocation as well as during
+  # initial bundle preparation.
+  strip_code_signing_blockers "$APP_BUNDLE"
   codesign "${args[@]}" "$target"
 }
 
@@ -652,6 +677,7 @@ sign_app_bundle() {
   else
     codesign_target "$APP_BUNDLE"
   fi
+  strip_code_signing_blockers "$APP_BUNDLE"
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 }
 
@@ -665,23 +691,26 @@ sign_disk_image() {
 }
 
 package_distribution() {
-  if command -v xattr >/dev/null 2>&1; then
-    xattr -cr "$APP_BUNDLE" >/dev/null 2>&1 || true
-  fi
+  strip_code_signing_blockers "$APP_BUNDLE"
+
+  local final_app_bundle="$DIST_DIR/${APP_DISPLAY_NAME}.app"
+  rm -rf "$final_app_bundle"
+  ditto --norsrc "$APP_BUNDLE" "$final_app_bundle"
 
   log "Creating ZIP archive"
-  pushd "$DIST_DIR" >/dev/null
-  COPYFILE_DISABLE=1 ditto -c -k --norsrc --keepParent "${APP_DISPLAY_NAME}.app" "$(basename "$APP_ZIP")"
-  popd >/dev/null
+  COPYFILE_DISABLE=1 ditto -c -k --norsrc --keepParent \
+    "$APP_BUNDLE" "$APP_ZIP"
 
   log "Creating DMG"
   local dmg_stage="$DIST_DIR/.dmg-stage"
   rm -rf "$dmg_stage"
   mkdir -p "$dmg_stage"
-  COPYFILE_DISABLE=1 cp -R "$APP_BUNDLE" "$dmg_stage/${APP_DISPLAY_NAME}.app"
+  COPYFILE_DISABLE=1 ditto --norsrc \
+    "$APP_BUNDLE" "$dmg_stage/${APP_DISPLAY_NAME}.app"
   if command -v xattr >/dev/null 2>&1; then
     xattr -cr "$dmg_stage/${APP_DISPLAY_NAME}.app" >/dev/null 2>&1 || true
   fi
+  strip_code_signing_blockers "$dmg_stage/${APP_DISPLAY_NAME}.app"
   ln -s /Applications "$dmg_stage/Applications"
 
   hdiutil create \
@@ -709,7 +738,7 @@ main() {
   verify_private_framework_isolation
   sign_app_bundle
   package_distribution
-  log "Done: $APP_BUNDLE"
+  log "Done: $DIST_DIR/${APP_DISPLAY_NAME}.app"
   log "Artifacts: $APP_ZIP and $APP_DMG"
 }
 
