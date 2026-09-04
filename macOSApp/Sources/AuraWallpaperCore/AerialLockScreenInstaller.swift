@@ -18,6 +18,23 @@ private let lockScreenLifecycleLogger = Logger(
     category: "LockScreenLifecycle"
 )
 
+private actor AerialOperationGate {
+    private var isHeld = false
+
+    func acquire() async throws {
+        while isHeld {
+            try Task.checkCancellation()
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        try Task.checkCancellation()
+        isHeld = true
+    }
+
+    func release() {
+        isHeld = false
+    }
+}
+
 public enum AerialLockScreenInstallerError: LocalizedError {
     case wallpaperStoreUnavailable
     case aerialAssetUnavailable
@@ -71,6 +88,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     private let mediaPreparer: AerialMediaPreparer
     private let wallpaperStoreTransaction: WallpaperStoreTransaction
     private let operationLock = NSLock()
+    private let asyncOperationGate = AerialOperationGate()
     var lockOnlyRemovalCommitHook: (() -> Void)?
     var lockOnlyRepairCommitHook: (() -> Void)?
     private var usesCanonicalWallpaperStore: Bool {
@@ -298,14 +316,12 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         // The asset was decoded and checked before it was committed. During a
         // provider hand-off AVURLAsset can temporarily expose no format
         // descriptions even though the atomically installed file is intact.
-        // The marker signature is the stable content check; legacy markers
-        // without one still receive the full compatibility check below.
+        // The marker signature is the stable content check. Legacy markers
+        // without one are treated as needing an async repair.
         let assetSignatureMatches = marker.assetSignature != nil
             && marker.assetSignature == currentAssetSignature
         let assetValid = fileManager.fileExists(atPath: assetURL.path)
-            && (assetSignatureMatches
-                || (marker.assetSignature == nil
-                    && mediaPreparer.isCompatible(at: assetURL)))
+            && assetSignatureMatches
         let providerAvailable = assetStore.providerSupportsAsset(marker.assetID)
         let providerRunning = usesCanonicalWallpaperStore
             && !AerialProviderController.processIdentifiers(
@@ -354,14 +370,14 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     public func repairLockScreenOnlyGeneration(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool = { true }
-    ) throws -> Bool {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        return try withCrossProcessLock {
-            try repairLockScreenOnlyGenerationLocked(
-                videoURL: videoURL,
-                shouldProceed: shouldProceed
-            )
+    ) async throws -> Bool {
+        try await withAsyncOperationGate {
+            try await withCrossProcessLockAsync {
+                try await repairLockScreenOnlyGenerationLocked(
+                    videoURL: videoURL,
+                    shouldProceed: shouldProceed
+                )
+            }
         }
     }
 
@@ -387,57 +403,57 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         )
     }
 
-    public func install(videoURL: URL) throws {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        try withCrossProcessLock {
-            _ = try installLocked(
-                videoURL: videoURL,
-                forceRefresh: false,
-                // Start owns both surfaces. The wallpaper store and asset can
-                // be correct while the already-running provider still holds
-                // the previous Lock Screen configuration. Refresh it once so
-                // Desktop and Lock Screen commit the same generation before
-                // Start reports success.
-                refreshAction: rearmSystem,
-                scope: .sharedWallpaper,
-                rollbackAction: refreshSystem,
-                shouldProceed: { true }
-            )
+    public func install(videoURL: URL) async throws {
+        try await withAsyncOperationGate {
+            try await withCrossProcessLockAsync {
+                _ = try await installLocked(
+                    videoURL: videoURL,
+                    forceRefresh: false,
+                    // Start owns both surfaces. The wallpaper store and asset can
+                    // be correct while the already-running provider still holds
+                    // the previous Lock Screen configuration. Refresh it once so
+                    // Desktop and Lock Screen commit the same generation before
+                    // Start reports success.
+                    refreshAction: rearmSystem,
+                    scope: .sharedWallpaper,
+                    rollbackAction: refreshSystem,
+                    shouldProceed: { true }
+                )
+            }
         }
     }
 
-    public func installLockScreenOnly(videoURL: URL) throws {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        try withCrossProcessLock {
-            _ = try installLocked(
-                videoURL: videoURL,
-                forceRefresh: false,
-                refreshAction: rearmSystem,
-                // Keep the user's Desktop route intact while unlocked. The
-                // agent promotes this installation to the shared route from
-                // the early shield callback immediately before loginwindow
-                // resolves the real Lock Screen.
-                scope: .lockScreenOnly,
-                lockScreenOnlyRoute: true,
-                // Replacing an existing lock-only source must not restart
-                // WallpaperAgent: it can replay the stale Desktop preference
-                // captured when the lock session originally started.
-                avoidProviderRestartOnExistingLockOnlySourceChange: true,
-                // A failed Lock-only attempt must not restart Dock. Doing so
-                // can bring existing Finder and Wallpaper Settings windows
-                // forward even though AuraFlow never asked to open them.
-                rollbackAction: AerialProviderController.prewarmLockScreenProvider,
-                shouldProceed: { true }
-            )
+    public func installLockScreenOnly(videoURL: URL) async throws {
+        try await withAsyncOperationGate {
+            try await withCrossProcessLockAsync {
+                _ = try await installLocked(
+                    videoURL: videoURL,
+                    forceRefresh: false,
+                    refreshAction: rearmSystem,
+                    // Keep the user's Desktop route intact while unlocked. The
+                    // agent promotes this installation to the shared route from
+                    // the early shield callback immediately before loginwindow
+                    // resolves the real Lock Screen.
+                    scope: .lockScreenOnly,
+                    lockScreenOnlyRoute: true,
+                    // Replacing an existing lock-only source must not restart
+                    // WallpaperAgent: it can replay the stale Desktop preference
+                    // captured when the lock session originally started.
+                    avoidProviderRestartOnExistingLockOnlySourceChange: true,
+                    // A failed Lock-only attempt must not restart Dock. Doing so
+                    // can bring existing Finder and Wallpaper Settings windows
+                    // forward even though AuraFlow never asked to open them.
+                    rollbackAction: AerialProviderController.prewarmLockScreenProvider,
+                    shouldProceed: { true }
+                )
+            }
         }
     }
 
     public func installLegacyLockScreenFallback(
         videoURL: URL,
         restoringLockScreenOnlyVideoURL: URL?
-    ) throws {
+    ) async throws {
         throw LockScreenPlatformError.unsupported(
             "The legacy Lock Screen fallback is owned by the application adapter."
         )
@@ -447,25 +463,25 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     /// store or provider. Installation still performs its normal validation
     /// and atomic commit checks; this only moves HEVC conversion off the
     /// button action.
-    public func prepareLockScreenMedia(videoURL: URL) throws {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        try withCrossProcessLock {
-            guard fileManager.fileExists(atPath: wallpaperStoreURL.path) else {
-                throw AerialLockScreenInstallerError.wallpaperStoreUnavailable
+    public func prepareLockScreenMedia(videoURL: URL) async throws {
+        try await withAsyncOperationGate {
+            try await withCrossProcessLockAsync {
+                guard fileManager.fileExists(atPath: wallpaperStoreURL.path) else {
+                    throw AerialLockScreenInstallerError.wallpaperStoreUnavailable
+                }
+                guard fileManager.fileExists(atPath: videoURL.path) else {
+                    throw AerialLockScreenInstallerError.videoMissing(videoURL.path)
+                }
+                _ = try await mediaPreparer.prepare(from: videoURL)
+                lockScreenLifecycleLogger.notice("Prepared Lock Screen media cache")
             }
-            guard fileManager.fileExists(atPath: videoURL.path) else {
-                throw AerialLockScreenInstallerError.videoMissing(videoURL.path)
-            }
-            _ = try mediaPreparer.prepare(from: videoURL)
-            lockScreenLifecycleLogger.notice("Prepared Lock Screen media cache")
         }
     }
 
     private func repairLockScreenOnlyGenerationLocked(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool {
+    ) async throws -> Bool {
         guard fileManager.fileExists(atPath: wallpaperStoreURL.path) else {
             throw AerialLockScreenInstallerError.wallpaperStoreUnavailable
         }
@@ -532,10 +548,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         let assetBefore = try? Data(contentsOf: assetURL)
         let currentAssetSignature = try? mediaPreparer.fileSignature(at: assetURL)
         let assetWasValid = fileManager.fileExists(atPath: assetURL.path)
-            && ((marker.assetSignature != nil
-                    && marker.assetSignature == currentAssetSignature)
-                || (marker.assetSignature == nil
-                    && mediaPreparer.isCompatible(at: assetURL)))
+            && marker.assetSignature != nil
+            && marker.assetSignature == currentAssetSignature
         let storeChanged = updatedStoreData != currentStoreData
         let usesCanonicalStore = usesCanonicalWallpaperStore
         let saverWasSelected = usesCanonicalStore
@@ -552,7 +566,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
 
         do {
             if !assetWasValid {
-                let preparedVideoURL = try mediaPreparer.prepare(from: videoURL)
+                let preparedVideoURL = try await mediaPreparer.prepare(from: videoURL)
                 guard shouldProceed() else {
                     throw AerialLockScreenOperationAbort.sessionChanged
                 }
@@ -676,21 +690,21 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     public func repair(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        return try withCrossProcessLock {
-            try installLocked(
-                videoURL: videoURL,
-                forceRefresh: false,
-                refreshAction: rearmSystem,
-                scope: isLockScreenOnlyInstallation
-                    ? .lockScreenOnly
-                    : currentWallpaperStoreScope(),
-                lockScreenOnlyRoute: isLockScreenOnlyInstallation,
-                rollbackAction: refreshSystem,
-                shouldProceed: shouldProceed
-            )
+    ) async throws -> Bool {
+        try await withAsyncOperationGate {
+            try await withCrossProcessLockAsync {
+                try await installLocked(
+                    videoURL: videoURL,
+                    forceRefresh: false,
+                    refreshAction: rearmSystem,
+                    scope: isLockScreenOnlyInstallation
+                        ? .lockScreenOnly
+                        : currentWallpaperStoreScope(),
+                    lockScreenOnlyRoute: isLockScreenOnlyInstallation,
+                    rollbackAction: refreshSystem,
+                    shouldProceed: shouldProceed
+                )
+            }
         }
     }
 
@@ -698,24 +712,24 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     public func rearmForNextLock(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool = { true }
-    ) throws -> Bool {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        return try withCrossProcessLock {
-            try installLocked(
-                videoURL: videoURL,
-                forceRefresh: true,
-                refreshAction: rearmSystem,
-                scope: isLockScreenOnlyInstallation
-                    ? .lockScreenOnly
-                    : currentWallpaperStoreScope(),
-                currentInstallationRefreshAction: usesCanonicalWallpaperStore
-                    ? AerialProviderController.prewarmLockScreenProvider
-                    : rearmSystem,
-                lockScreenOnlyRoute: isLockScreenOnlyInstallation,
-                rollbackAction: refreshSystem,
-                shouldProceed: shouldProceed
-            )
+    ) async throws -> Bool {
+        try await withAsyncOperationGate {
+            try await withCrossProcessLockAsync {
+                try await installLocked(
+                    videoURL: videoURL,
+                    forceRefresh: true,
+                    refreshAction: rearmSystem,
+                    scope: isLockScreenOnlyInstallation
+                        ? .lockScreenOnly
+                        : currentWallpaperStoreScope(),
+                    currentInstallationRefreshAction: usesCanonicalWallpaperStore
+                        ? AerialProviderController.prewarmLockScreenProvider
+                        : rearmSystem,
+                    lockScreenOnlyRoute: isLockScreenOnlyInstallation,
+                    rollbackAction: refreshSystem,
+                    shouldProceed: shouldProceed
+                )
+            }
         }
     }
 
@@ -729,7 +743,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         avoidProviderRestartOnExistingLockOnlySourceChange: Bool = false,
         rollbackAction: ConditionalSystemAction,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool {
+    ) async throws -> Bool {
         guard fileManager.fileExists(atPath: wallpaperStoreURL.path) else {
             throw AerialLockScreenInstallerError.wallpaperStoreUnavailable
         }
@@ -789,7 +803,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             return true
         }
 
-        let preparedVideoURL = try mediaPreparer.prepare(from: videoURL)
+        let preparedVideoURL = try await mediaPreparer.prepare(from: videoURL)
+        try Task.checkCancellation()
 
         guard shouldProceed() else {
             return false
@@ -1026,7 +1041,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     }
                 }
                 if attempt < 2 {
-                    Thread.sleep(forTimeInterval: 0.2)
+                    try await Task.sleep(nanoseconds: 200_000_000)
                 }
             }
             guard configurationConfirmed
@@ -1443,6 +1458,64 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 .wallpaperStoreUnavailable
         }
         return try operation()
+    }
+
+    private func withCrossProcessLockAsync<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        let lockDirectoryURL =
+            stateDirectoryURL.deletingLastPathComponent()
+        try fileManager.createDirectory(
+            at: lockDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        let lockURL = lockDirectoryURL
+            .appendingPathComponent(".modern-lockscreen.lock")
+        let descriptor = Darwin.open(
+            lockURL.path,
+            O_CREAT | O_RDWR,
+            S_IRUSR | S_IWUSR
+        )
+        guard descriptor >= 0 else {
+            throw AerialLockScreenInstallerError
+                .wallpaperStoreUnavailable
+        }
+
+        var acquired = false
+        defer {
+            if acquired {
+                _ = flock(descriptor, LOCK_UN)
+            }
+            _ = Darwin.close(descriptor)
+        }
+
+        while !acquired {
+            if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
+                acquired = true
+                break
+            }
+            guard errno == EWOULDBLOCK || errno == EAGAIN else {
+                throw AerialLockScreenInstallerError
+                    .wallpaperStoreUnavailable
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        return try await operation()
+    }
+
+    private func withAsyncOperationGate<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        try await asyncOperationGate.acquire()
+        do {
+            let result = try await operation()
+            await asyncOperationGate.release()
+            return result
+        } catch {
+            await asyncOperationGate.release()
+            throw error
+        }
     }
 
     private func resolveAssetID() -> String? {
@@ -1940,7 +2013,6 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
               let assetSignature = try? mediaPreparer.fileSignature(at: assetURL),
               usesCanonicalWallpaperStore
                 ? marker.assetSignature == assetSignature
-                    && mediaPreparer.isCompatible(at: assetURL)
                 : sourceSignature == assetSignature
         else {
             return false

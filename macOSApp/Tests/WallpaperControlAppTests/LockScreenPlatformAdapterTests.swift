@@ -3,6 +3,18 @@ import Testing
 @testable import AuraWallpaperCore
 @testable import WallpaperControlApp
 
+func expectAsyncThrowing<E: Error>(
+    _ expected: E.Type,
+    operation: () async throws -> Void
+) async {
+    do {
+        try await operation()
+        Issue.record("Expected \(E.self) to be thrown")
+    } catch {
+        #expect(error is E)
+    }
+}
+
 private final class PlatformRecordingInstaller: LockScreenSaverInstalling {
     var installedURL: URL?
     var installError: Error?
@@ -83,7 +95,7 @@ private enum PlatformRecordingError: Error {
     case restoreFailed
 }
 
-@Test func modernAdapterUsesInjectedInstallerOnSupportedRuntime() throws {
+@Test func modernAdapterUsesInjectedInstallerOnSupportedRuntime() async throws {
     let installer = RecordingModernInstaller(isAvailable: true)
     let adapter = ModernMacOS26Adapter(
         installer: installer,
@@ -97,7 +109,7 @@ private enum PlatformRecordingError: Error {
 
     #expect(adapter.capabilities.supportsLockScreenOnly)
     #expect(adapter.capabilities.supportsSecureLockScreen)
-    try adapter.install(mediaURL)
+    try await adapter.install(mediaURL)
     #expect(installer.installCallCount == 1)
     #expect(adapter.status().isReady)
 }
@@ -121,18 +133,18 @@ private enum PlatformRecordingError: Error {
     )
 }
 
-@Test func unsupportedAdapterReportsActionableStatus() throws {
+@Test func unsupportedAdapterReportsActionableStatus() async throws {
     let message = "Lock Screen доступен только на macOS 26+."
     let adapter = UnsupportedAdapter(message: message)
 
     #expect(adapter.capabilities.supportsLockScreen == false)
     #expect(adapter.status() == .unavailable(message))
-    #expect(throws: LockScreenPlatformError.self) {
-        try adapter.install(URL(fileURLWithPath: "/tmp/wallpaper.mov"))
+    await expectAsyncThrowing(LockScreenPlatformError.self) {
+        try await adapter.install(URL(fileURLWithPath: "/tmp/wallpaper.mov"))
     }
 }
 
-@Test func wallpaperPlatformAdapterUsesLegacyWhenModernProviderIsUnavailable() throws {
+@Test func wallpaperPlatformAdapterUsesLegacyWhenModernProviderIsUnavailable() async throws {
     let recordingInstaller = PlatformRecordingInstaller()
     let legacy = LegacyMacOSAdapter(installer: recordingInstaller)
     let modern = ModernMacOS26Adapter(
@@ -151,11 +163,11 @@ private enum PlatformRecordingError: Error {
     let mediaURL = URL(fileURLWithPath: "/tmp/legacy-wallpaper.mov")
 
     #expect(adapter.capabilities == .legacyMacOS)
-    try adapter.install(mediaURL)
+    try await adapter.install(mediaURL)
     #expect(recordingInstaller.installedURL == mediaURL)
 }
 
-@Test func staleModernMarkerFallsBackToLegacyRuntime() throws {
+@Test func staleModernMarkerFallsBackToLegacyRuntime() async throws {
     let modernInstaller = RecordingModernInstaller(
         isAvailable: false,
         isInstalled: true
@@ -174,18 +186,18 @@ private enum PlatformRecordingError: Error {
     let mediaURL = URL(fileURLWithPath: "/tmp/stale-modern-wallpaper.mov")
 
     #expect(adapter.capabilities == .legacyMacOS)
-    try adapter.install(mediaURL)
+    try await adapter.install(mediaURL)
     #expect(legacyInstaller.installedURL == mediaURL)
     #expect(modernInstaller.installCallCount == 0)
 
-    _ = try adapter.repair(
+    _ = try await adapter.repair(
         videoURL: mediaURL,
         shouldProceed: { true }
     )
     #expect(modernInstaller.repairCallCount == 0)
 }
 
-@Test func wallpaperPlatformAdapterUsesExplicitLegacyFallbackWhenModernAssetIsUnavailable() throws {
+@Test func wallpaperPlatformAdapterUsesExplicitLegacyFallbackWhenModernAssetIsUnavailable() async throws {
     let modernInstaller = RecordingModernInstaller(
         isAvailable: true,
         isInstalled: true
@@ -213,7 +225,7 @@ private enum PlatformRecordingError: Error {
     let previousURL = URL(fileURLWithPath: "/tmp/old-lock-screen.mov")
     let fallbackURL = URL(fileURLWithPath: "/tmp/legacy-fallback.mov")
 
-    try adapter.installLegacyLockScreenFallback(
+    try await adapter.installLegacyLockScreenFallback(
         videoURL: fallbackURL,
         restoringLockScreenOnlyVideoURL: previousURL
     )
@@ -224,7 +236,7 @@ private enum PlatformRecordingError: Error {
     #expect(modernInstaller.restoredLockScreenOnlyVideoURL == nil)
 }
 
-@Test func explicitLegacyFallbackRestoresModernInstallationWhenLegacyFails() throws {
+@Test func explicitLegacyFallbackRestoresModernInstallationWhenLegacyFails() async throws {
     let modernInstaller = RecordingModernInstaller(
         isAvailable: true,
         isInstalled: true
@@ -245,8 +257,8 @@ private enum PlatformRecordingError: Error {
     let adapter = WallpaperPlatformAdapter(modern: modern, legacy: legacy)
     let previousURL = URL(fileURLWithPath: "/tmp/old-lock-screen.mov")
 
-    #expect(throws: PlatformRecordingError.self) {
-        try adapter.installLegacyLockScreenFallback(
+    await expectAsyncThrowing(PlatformRecordingError.self) {
+        try await adapter.installLegacyLockScreenFallback(
             videoURL: URL(fileURLWithPath: "/tmp/legacy-fallback.mov"),
             restoringLockScreenOnlyVideoURL: previousURL
         )
@@ -256,7 +268,7 @@ private enum PlatformRecordingError: Error {
     #expect(legacyInstaller.installedURL == previousLegacyURL)
 }
 
-@Test func explicitLegacyFallbackReportsRollbackFailure() throws {
+@Test func explicitLegacyFallbackReportsRollbackFailure() async throws {
     let modernInstaller = RecordingModernInstaller(
         isAvailable: true,
         isInstalled: true
@@ -276,7 +288,7 @@ private enum PlatformRecordingError: Error {
     let adapter = WallpaperPlatformAdapter(modern: modern, legacy: legacy)
 
     do {
-        try adapter.installLegacyLockScreenFallback(
+        try await adapter.installLegacyLockScreenFallback(
             videoURL: URL(fileURLWithPath: "/tmp/legacy-fallback.mov"),
             restoringLockScreenOnlyVideoURL: URL(
                 fileURLWithPath: "/tmp/old-lock-screen.mov"

@@ -1717,7 +1717,7 @@ final class MockNativeWallpaperController: WallpaperControlling {
         try status()
     }
 
-    func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus {
+    func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus {
         try status()
     }
 

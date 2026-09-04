@@ -328,7 +328,7 @@ final class LifecycleViewModel: ObservableObject {
                 : try await dependencies.prepareVideo(sourceURL)
             try ensureLifecycleMayCommit(request)
             let status = try await runAsync {
-                try controller.start(videoURL: prepared.url, speed: nil)
+                try await controller.start(videoURL: prepared.url, speed: nil)
             }
             return LifecycleResult(
                 status: status,
@@ -344,7 +344,7 @@ final class LifecycleViewModel: ObservableObject {
             let prepared = try await dependencies.prepareLockScreenVideo(sourceURL)
             try ensureLifecycleMayCommit(request)
             let status = try await runAsync {
-                try controller.installLockScreenOnly(videoURL: prepared.url)
+                try await controller.installLockScreenOnly(videoURL: prepared.url)
             }
             return LifecycleResult(
                 status: status,
@@ -427,5 +427,9 @@ final class LifecycleViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func runAsync<T>(_ work: @escaping () async throws -> T) async throws -> T {
+        try await work()
     }
 }

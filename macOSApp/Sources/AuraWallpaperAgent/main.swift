@@ -19,6 +19,23 @@ private final class WallpaperLayerView: NSView {
     }
 }
 
+private actor LockScreenRepairGate {
+    private var isHeld = false
+
+    func acquire() async throws {
+        while isHeld {
+            try Task.checkCancellation()
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        try Task.checkCancellation()
+        isHeld = true
+    }
+
+    func release() {
+        isHeld = false
+    }
+}
+
 private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private struct LockScreenRearmToken: Equatable {
         let sessionGeneration: UInt64
@@ -44,6 +61,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         label: "com.auraflow.lock-screen-repair",
         qos: .utility
     )
+    private let lockScreenRepairGate = LockScreenRepairGate()
     private var config: ControlConfig
     private var windows: [NSWindow] = []
     private var playerLayers: [AVPlayerLayer] = []
@@ -906,22 +924,32 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         lockScreenOnlyRepairInProgress = true
         let startedAt = CACurrentMediaTime()
         lockScreenRepairQueue.async { [weak self] in
-            guard let self else { return }
-            var repairError: Error?
-            do {
-                _ = try self.lockScreenPlatform
-                    .repairLockScreenOnlyGeneration(
-                        videoURL: videoURL,
-                        shouldProceed: { [weak self] in
-                            self?.isCurrentLockScreenLifecycleOperation(
-                                operation.operationID
-                            ) ?? false
-                        }
-                    )
-            } catch {
-                repairError = error
-            }
-            DispatchQueue.main.async { [weak self] in
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await self.lockScreenRepairGate.acquire()
+                } catch {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.lockScreenOnlyRepairInProgress = false
+                    }
+                    return
+                }
+                var repairError: Error?
+                do {
+                    _ = try await self.lockScreenPlatform
+                        .repairLockScreenOnlyGeneration(
+                            videoURL: videoURL,
+                            shouldProceed: { [weak self] in
+                                self?.isCurrentLockScreenLifecycleOperation(
+                                    operation.operationID
+                                ) ?? false
+                            }
+                        )
+                } catch {
+                    repairError = error
+                }
+                await self.lockScreenRepairGate.release()
+                DispatchQueue.main.async { [weak self] in
                 guard let self else {
                     return
                 }
@@ -982,6 +1010,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     status: repairedStatus,
                     reason: reason
                 )
+                }
             }
         }
     }
@@ -1723,25 +1752,35 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let token = currentRearmToken()
         lockScreenRepairInProgress = true
         lockScreenRepairQueue.async { [weak self] in
-            guard let self else { return }
-            let repairError: Error?
-            do {
-                _ = try self.lockScreenPlatform.repair(
-                    videoURL: videoURL,
-                    shouldProceed: { [weak self] in
-                        guard let self else { return false }
-                        return self.backgroundRepairCanProceed(
-                            token: token,
-                            videoURL: videoURL,
-                            allowRecentTransition: force
-                        )
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await self.lockScreenRepairGate.acquire()
+                } catch {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.lockScreenRepairInProgress = false
                     }
-                )
-                repairError = nil
-            } catch {
-                repairError = error
-            }
-            DispatchQueue.main.async { [weak self] in
+                    return
+                }
+                let repairError: Error?
+                do {
+                    _ = try await self.lockScreenPlatform.repair(
+                        videoURL: videoURL,
+                        shouldProceed: { [weak self] in
+                            guard let self else { return false }
+                            return self.backgroundRepairCanProceed(
+                                token: token,
+                                videoURL: videoURL,
+                                allowRecentTransition: force
+                            )
+                        }
+                    )
+                    repairError = nil
+                } catch {
+                    repairError = error
+                }
+                await self.lockScreenRepairGate.release()
+                DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.lockScreenRepairInProgress = false
                 if let repairError {
@@ -1755,6 +1794,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                    pendingToken == self.currentRearmToken() {
                     self.pendingRearmToken = nil
                     self.rearmModernLockScreenForNextSession()
+                }
                 }
             }
         }
@@ -1785,26 +1825,40 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         pendingRearmToken = token
         lockScreenRepairInProgress = true
         lockScreenRepairQueue.async { [weak self] in
-            guard let self else { return }
-            let didRearm: Bool
-            let rearmError: Error?
-            do {
-                didRearm = try self.lockScreenPlatform.rearmForNextLock(
-                    videoURL: videoURL,
-                    shouldProceed: { [weak self] in
-                        guard let self else { return false }
-                        return self.backgroundRearmCanProceed(
-                            token: token,
-                            videoURL: videoURL
-                        )
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await self.lockScreenRepairGate.acquire()
+                } catch {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.lockScreenRepairInProgress = false
+                        if self?.pendingRearmToken == token {
+                            self?.pendingRearmToken = nil
+                        }
                     }
-                )
-                rearmError = nil
-            } catch {
-                didRearm = false
-                rearmError = error
-            }
-            DispatchQueue.main.async { [weak self] in
+                    return
+                }
+                let didRearm: Bool
+                let rearmError: Error?
+                do {
+                    didRearm = try await self.lockScreenPlatform
+                        .rearmForNextLock(
+                            videoURL: videoURL,
+                            shouldProceed: { [weak self] in
+                                guard let self else { return false }
+                                return self.backgroundRearmCanProceed(
+                                    token: token,
+                                    videoURL: videoURL
+                                )
+                            }
+                        )
+                    rearmError = nil
+                } catch {
+                    didRearm = false
+                    rearmError = error
+                }
+                await self.lockScreenRepairGate.release()
+                DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.lockScreenRepairInProgress = false
                 if self.pendingRearmToken == token {
@@ -1840,6 +1894,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                    pendingToken == self.currentRearmToken() {
                     self.pendingRearmToken = nil
                     self.rearmModernLockScreenForNextSession()
+                }
                 }
             }
         }

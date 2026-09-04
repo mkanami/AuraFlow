@@ -267,10 +267,18 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         isInstalled && selectionCoordinator.isSelected
     }
 
-    func install(videoURL: URL) throws {
+    func install(videoURL: URL) async throws {
+        try withOperationLock {
+            try installLocked(videoURL: videoURL)
+        }
+    }
+
+    private func withOperationLock<T>(
+        _ operation: () throws -> T
+    ) rethrows -> T {
         operationLock.lock()
         defer { operationLock.unlock() }
-        try installLocked(videoURL: videoURL)
+        return try operation()
     }
 
     private func installLocked(videoURL: URL) throws {

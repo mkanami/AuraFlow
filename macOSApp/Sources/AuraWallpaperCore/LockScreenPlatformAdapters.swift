@@ -29,32 +29,32 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
         return installer.installationConfirmed
     }
 
-    public func install(_ media: URL) throws {
+    public func install(_ media: URL) async throws {
         try requireAvailability()
-        try installer.install(videoURL: media)
+        try await installer.install(videoURL: media)
     }
 
-    public func install(videoURL: URL) throws {
-        try install(videoURL)
+    public func install(videoURL: URL) async throws {
+        try await install(videoURL)
     }
 
-    public func installLockScreenOnly(videoURL: URL) throws {
+    public func installLockScreenOnly(videoURL: URL) async throws {
         try requireAvailability()
-        try installer.installLockScreenOnly(videoURL: videoURL)
+        try await installer.installLockScreenOnly(videoURL: videoURL)
     }
 
     public func installLegacyLockScreenFallback(
         videoURL: URL,
         restoringLockScreenOnlyVideoURL: URL?
-    ) throws {
+    ) async throws {
         throw LockScreenPlatformError.unsupported(
             "The legacy Lock Screen fallback is not owned by the modern adapter."
         )
     }
 
-    public func prepareLockScreenMedia(videoURL: URL) throws {
+    public func prepareLockScreenMedia(videoURL: URL) async throws {
         try requireAvailability()
-        try installer.prepareLockScreenMedia(videoURL: videoURL)
+        try await installer.prepareLockScreenMedia(videoURL: videoURL)
     }
 
     public func lockScreenOnlyStatus(
@@ -70,9 +70,9 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
     public func repairLockScreenOnlyGeneration(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool {
+    ) async throws -> Bool {
         try requireAvailability()
-        return try installer.repairLockScreenOnlyGeneration(
+        return try await installer.repairLockScreenOnlyGeneration(
             videoURL: videoURL,
             shouldProceed: shouldProceed
         )
@@ -136,9 +136,9 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
     public func repair(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool {
+    ) async throws -> Bool {
         try requireAvailability()
-        return try installer.repair(
+        return try await installer.repair(
             videoURL: videoURL,
             shouldProceed: shouldProceed
         )
@@ -148,9 +148,9 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
     public func rearmForNextLock(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool {
+    ) async throws -> Bool {
         try requireAvailability()
-        return try installer.rearmForNextLock(
+        return try await installer.rearmForNextLock(
             videoURL: videoURL,
             shouldProceed: shouldProceed
         )
@@ -224,26 +224,26 @@ public final class UnsupportedAdapter: LockScreenSaverInstalling {
     public var isInstalled: Bool { false }
     public var installationConfirmed: Bool { false }
 
-    public func install(_ media: URL) throws {
+    public func install(_ media: URL) async throws {
         try fail()
     }
 
-    public func install(videoURL: URL) throws {
+    public func install(videoURL: URL) async throws {
         try fail()
     }
 
-    public func installLockScreenOnly(videoURL: URL) throws {
+    public func installLockScreenOnly(videoURL: URL) async throws {
         try fail()
     }
 
     public func installLegacyLockScreenFallback(
         videoURL: URL,
         restoringLockScreenOnlyVideoURL: URL?
-    ) throws {
+    ) async throws {
         try fail()
     }
 
-    public func prepareLockScreenMedia(videoURL: URL) throws {
+    public func prepareLockScreenMedia(videoURL: URL) async throws {
         try fail()
     }
 
@@ -257,7 +257,7 @@ public final class UnsupportedAdapter: LockScreenSaverInstalling {
     public func repairLockScreenOnlyGeneration(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool {
+    ) async throws -> Bool {
         throw LockScreenPlatformError.unsupported(
             capabilities.availabilityMessage
                 ?? "Lock Screen is unavailable on this macOS version."

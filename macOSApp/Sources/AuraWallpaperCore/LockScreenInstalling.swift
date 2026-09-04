@@ -140,7 +140,7 @@ public enum LockScreenPlatformError: LocalizedError, Equatable {
 public protocol LockScreenPlatform: AnyObject {
     var capabilities: PlatformCapabilities { get }
 
-    func install(_ media: URL) throws
+    func install(_ media: URL) async throws
     func uninstall() throws
     func status() -> LockScreenStatus
 }
@@ -153,22 +153,22 @@ public protocol LockScreenPlatformOperating: LockScreenPlatform {
     var isInstalled: Bool { get }
     var installationConfirmed: Bool { get }
 
-    func install(videoURL: URL) throws
-    func installLockScreenOnly(videoURL: URL) throws
+    func install(videoURL: URL) async throws
+    func installLockScreenOnly(videoURL: URL) async throws
     /// Installs the compatibility screen saver without routing through a
     /// modern provider. Platform adapters may use the optional previous
     /// source to restore native Lock Screen state if the fallback fails.
     func installLegacyLockScreenFallback(
         videoURL: URL,
         restoringLockScreenOnlyVideoURL: URL?
-    ) throws
-    func prepareLockScreenMedia(videoURL: URL) throws
+    ) async throws
+    func prepareLockScreenMedia(videoURL: URL) async throws
     func lockScreenOnlyStatus(videoURL: URL?) -> LockScreenOnlyGenerationStatus
     @discardableResult
     func repairLockScreenOnlyGeneration(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool
+    ) async throws -> Bool
     func uninstallLockScreenOnlyPreservingCurrentDesktop() throws
 
     var requiresLockScreenSessionPromotion: Bool { get }
@@ -182,12 +182,12 @@ public protocol LockScreenPlatformOperating: LockScreenPlatform {
     func repair(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool
+    ) async throws -> Bool
     @discardableResult
     func rearmForNextLock(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool
+    ) async throws -> Bool
 }
 
 /// A read-only snapshot of the lock-only installation.  The runtime uses this
@@ -243,17 +243,17 @@ public struct LockScreenOnlyGenerationStatus: Equatable, Sendable {
 }
 
 public protocol LockScreenSaverInstalling: LockScreenPlatformOperating {
-    func install(videoURL: URL) throws
-    func installLockScreenOnly(videoURL: URL) throws
+    func install(videoURL: URL) async throws
+    func installLockScreenOnly(videoURL: URL) async throws
     /// Prepares native Lock Screen media without changing the active
     /// wallpaper store, provider, or installation.
-    func prepareLockScreenMedia(videoURL: URL) throws
+    func prepareLockScreenMedia(videoURL: URL) async throws
     func lockScreenOnlyStatus(videoURL: URL?) -> LockScreenOnlyGenerationStatus
     @discardableResult
     func repairLockScreenOnlyGeneration(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool
+    ) async throws -> Bool
     func uninstall() throws
     func uninstallLockScreenOnlyPreservingCurrentDesktop() throws
 }
@@ -275,15 +275,15 @@ public extension LockScreenSaverInstalling {
         isInstalled
     }
 
-    func install(_ media: URL) throws {
-        try install(videoURL: media)
+    func install(_ media: URL) async throws {
+        try await install(videoURL: media)
     }
 
     func installLegacyLockScreenFallback(
         videoURL: URL,
         restoringLockScreenOnlyVideoURL: URL?
-    ) throws {
-        try install(videoURL: videoURL)
+    ) async throws {
+        try await install(videoURL: videoURL)
     }
 
     func status() -> LockScreenStatus {
@@ -299,11 +299,11 @@ public extension LockScreenSaverInstalling {
         )
     }
 
-    func installLockScreenOnly(videoURL: URL) throws {
-        try install(videoURL: videoURL)
+    func installLockScreenOnly(videoURL: URL) async throws {
+        try await install(videoURL: videoURL)
     }
 
-    func prepareLockScreenMedia(videoURL: URL) throws {
+    func prepareLockScreenMedia(videoURL: URL) async throws {
         // Legacy screen-saver implementations have no separate media cache.
     }
 
@@ -326,7 +326,7 @@ public extension LockScreenSaverInstalling {
     func repairLockScreenOnlyGeneration(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool = { true }
-    ) throws -> Bool {
+    ) async throws -> Bool {
         guard shouldProceed() else { return false }
         return false
     }
@@ -347,8 +347,8 @@ public extension LockScreenSaverInstalling {
     func repair(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool {
-        try repairLockScreenOnlyGeneration(
+    ) async throws -> Bool {
+        try await repairLockScreenOnlyGeneration(
             videoURL: videoURL,
             shouldProceed: shouldProceed
         )
@@ -358,8 +358,8 @@ public extension LockScreenSaverInstalling {
     func rearmForNextLock(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
-    ) throws -> Bool {
-        try repairLockScreenOnlyGeneration(
+    ) async throws -> Bool {
+        try await repairLockScreenOnlyGeneration(
             videoURL: videoURL,
             shouldProceed: shouldProceed
         )

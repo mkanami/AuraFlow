@@ -193,18 +193,18 @@ func catalogOriginHeaderValue(for url: URL) -> String? {
 protocol WallpaperControlling {
     var lockScreenCapabilities: PlatformCapabilities { get }
     func status() throws -> ControlStatus
-    func start(videoURL: URL?, speed: Double?) throws -> ControlStatus
+    func start(videoURL: URL?, speed: Double?) async throws -> ControlStatus
     func resume() throws -> ControlStatus
     func stop() throws -> ControlStatus
     func clearWallpaper() throws -> ControlStatus
     func setVideo(_ url: URL) throws -> ControlStatus
-    func installLockScreenOnly(videoURL: URL) throws -> ControlStatus
-    func prepareLockScreenMedia(videoURL: URL) throws
+    func installLockScreenOnly(videoURL: URL) async throws -> ControlStatus
+    func prepareLockScreenMedia(videoURL: URL) async throws
     func setSpeed(_ speed: Double) throws -> ControlStatus
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus
-    func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus
-    func syncLockScreenSaver() throws
+    func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus
+    func syncLockScreenSaver() async throws
     func beginLockScreenPreview() throws -> ControlStatus
     func endLockScreenPreview() throws -> ControlStatus
     func setScaleMode(_ mode: WallpaperScaleMode) throws -> ControlStatus
@@ -219,13 +219,13 @@ extension WallpaperControlling {
 }
 
 extension WallpaperControlling {
-    func installLockScreenOnly(videoURL: URL) throws -> ControlStatus {
+    func installLockScreenOnly(videoURL: URL) async throws -> ControlStatus {
         throw NativeWallpaperControllerError.unavailable(
             "Lock Screen-only wallpaper is unavailable."
         )
     }
 
-    func prepareLockScreenMedia(videoURL: URL) throws {
+    func prepareLockScreenMedia(videoURL: URL) async throws {
         // Controllers without a native Aerial implementation do not need a
         // separate media cache.
     }
@@ -239,6 +239,23 @@ enum NativeWallpaperControllerError: LocalizedError {
         case .unavailable(let message):
             return message
         }
+    }
+}
+
+private actor NativeLifecycleOperationGate {
+    private var isHeld = false
+
+    func acquire() async throws {
+        while isHeld {
+            try Task.checkCancellation()
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        try Task.checkCancellation()
+        isHeld = true
+    }
+
+    func release() {
+        isHeld = false
     }
 }
 
@@ -261,6 +278,7 @@ final class NativeWallpaperController: WallpaperControlling {
     private let autostartManager: AutostartManager
     private let recoveryCoordinator: WallpaperRecoveryCoordinator
     private let lifecycleLock = NSRecursiveLock()
+    private let asyncLifecycleGate = NativeLifecycleOperationGate()
     private var nextRuntimeOperationID: UInt64 = 0
 
     var lockScreenCapabilities: PlatformCapabilities {
@@ -602,9 +620,11 @@ final class NativeWallpaperController: WallpaperControlling {
         store.status()
     }
 
-    func start(videoURL: URL?, speed: Double?) throws -> ControlStatus {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+    func start(videoURL: URL?, speed: Double?) async throws -> ControlStatus {
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
         let previousConfig = store.loadConfig()
         let previousPaused = store.isPaused()
         let previousLockScreenOnlySource = store.loadLockScreenOnlySource()
@@ -680,7 +700,7 @@ final class NativeWallpaperController: WallpaperControlling {
             // wallpaper is applied to the Desktop and Lock Screen together.
             // The separate Lock button uses installLockScreenOnly() and is the
             // only path that leaves the user's Desktop untouched.
-            try installLockScreenSaver(using: nextConfig)
+            try await installLockScreenSaver(using: nextConfig)
             guard lockScreenPlatform.installationConfirmed else {
                 throw NativeWallpaperControllerError.unavailable(
                     "macOS did not confirm the Desktop and Lock Screen wallpaper configuration."
@@ -691,7 +711,7 @@ final class NativeWallpaperController: WallpaperControlling {
             try send(.reload, config: nextConfig)
             return store.status()
         } catch {
-            let rollbackFailures = rollbackStart(
+            let rollbackFailures = await rollbackStart(
                 previousConfig: previousConfig,
                 previousLockScreenOnlySource: previousLockScreenOnlySource,
                 previousLockScreenOnlyAgent: previousLockScreenOnlyAgent,
@@ -832,9 +852,11 @@ final class NativeWallpaperController: WallpaperControlling {
         return store.status()
     }
 
-    func installLockScreenOnly(videoURL: URL) throws -> ControlStatus {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+    func installLockScreenOnly(videoURL: URL) async throws -> ControlStatus {
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
         guard lockScreenPlatform.capabilities.supportsLockScreenOnly else {
             throw NativeWallpaperControllerError.unavailable(
                 lockScreenPlatform.capabilities.availabilityMessage
@@ -854,7 +876,7 @@ final class NativeWallpaperController: WallpaperControlling {
 
         let previousSource = store.loadLockScreenOnlySource()
         do {
-            try installLockScreenSaver(
+            try await installLockScreenSaver(
                 videoURL: normalizedURL,
                 ensureStillFrame: true,
                 lockScreenOnly: true
@@ -902,11 +924,13 @@ final class NativeWallpaperController: WallpaperControlling {
         return store.status()
     }
 
-    func prepareLockScreenMedia(videoURL: URL) throws {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+    func prepareLockScreenMedia(videoURL: URL) async throws {
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
         try requireNativeBridgeIfNeeded()
-        try lockScreenPlatform.prepareLockScreenMedia(videoURL: videoURL)
+        try await lockScreenPlatform.prepareLockScreenMedia(videoURL: videoURL)
     }
 
     func setSpeed(_ speed: Double) throws -> ControlStatus {
@@ -945,9 +969,11 @@ final class NativeWallpaperController: WallpaperControlling {
         return store.status()
     }
 
-    func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+    func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus {
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
         let currentConfig = store.loadConfig()
         var migratedLockScreenOnlySource: URL?
         if enabled {
@@ -980,7 +1006,7 @@ final class NativeWallpaperController: WallpaperControlling {
                    lockScreenOnlySource.standardizedFileURL == sourceURL {
                     migratedLockScreenOnlySource = lockScreenOnlySource
                 }
-                try installLockScreenSaver(
+                try await installLockScreenSaver(
                     videoURL: sourceURL,
                     ensureStillFrame: true,
                     lockScreenOnly: useLockScreenOnly
@@ -1018,9 +1044,11 @@ final class NativeWallpaperController: WallpaperControlling {
         return store.status()
     }
 
-    func syncLockScreenSaver() throws {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+    func syncLockScreenSaver() async throws {
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
         let config = store.loadConfig()
         var lockScreenOnlySource = store.loadLockScreenOnlySource()
         let supportsLockScreenOnly =
@@ -1093,7 +1121,7 @@ final class NativeWallpaperController: WallpaperControlling {
                 store.markLockScreenOnlyAgent(false)
             }
             _ = try store.ensureCurrentStillFrame(from: sourceURL)
-            try lockScreenPlatform.installLegacyLockScreenFallback(
+            try await lockScreenPlatform.installLegacyLockScreenFallback(
                 videoURL: sourceURL,
                 restoringLockScreenOnlyVideoURL: lockScreenOnlySource
             )
@@ -1105,7 +1133,7 @@ final class NativeWallpaperController: WallpaperControlling {
             store.clearLockScreenOnlySource()
             return
         }
-        try installLockScreenSaver(
+        try await installLockScreenSaver(
             videoURL: sourceURL,
             ensureStillFrame: true,
             lockScreenOnly: useLockScreenOnly
@@ -1180,9 +1208,9 @@ final class NativeWallpaperController: WallpaperControlling {
         store.metrics()
     }
 
-    private func installLockScreenSaver(using config: ControlConfig) throws {
+    private func installLockScreenSaver(using config: ControlConfig) async throws {
         let videoURL = URL(fileURLWithPath: config.video_path)
-        try installLockScreenSaver(
+        try await installLockScreenSaver(
             videoURL: videoURL,
             ensureStillFrame: true,
             lockScreenOnly: false
@@ -1199,7 +1227,7 @@ final class NativeWallpaperController: WallpaperControlling {
         previousPID: Int?,
         previousCommand: WallpaperRuntimeCommand?,
         previousHealth: DaemonHealth?
-    ) -> [String] {
+    ) async -> [String] {
         var rollbackFailures: [String] = []
 
         do {
@@ -1255,7 +1283,7 @@ final class NativeWallpaperController: WallpaperControlling {
 
             if previousAgentWasAlive {
                 do {
-                    try installLockScreenSaver(
+                    try await installLockScreenSaver(
                         videoURL: sourceURL,
                         ensureStillFrame: true,
                         lockScreenOnly: true
@@ -1298,7 +1326,7 @@ final class NativeWallpaperController: WallpaperControlling {
                !previousConfig.video_path.isEmpty,
                FileManager.default.fileExists(atPath: previousConfig.video_path) {
                 do {
-                    try installLockScreenSaver(using: previousConfig)
+                    try await installLockScreenSaver(using: previousConfig)
                     guard lockScreenPlatform.installationConfirmed else {
                         throw NativeWallpaperControllerError.unavailable(
                             "macOS did not confirm the previous wallpaper configuration."
@@ -1356,7 +1384,7 @@ final class NativeWallpaperController: WallpaperControlling {
         videoURL: URL,
         ensureStillFrame: Bool,
         lockScreenOnly: Bool
-    ) throws {
+    ) async throws {
         try requireNativeBridgeIfNeeded()
         // Keep a cached frame for the app's desktop recovery path, but do not
         // replace macOS's live Lock Screen descriptor with an image wallpaper.
@@ -1371,9 +1399,9 @@ final class NativeWallpaperController: WallpaperControlling {
             }
         }
         if lockScreenOnly {
-            try lockScreenPlatform.installLockScreenOnly(videoURL: videoURL)
+            try await lockScreenPlatform.installLockScreenOnly(videoURL: videoURL)
         } else {
-            try lockScreenPlatform.install(videoURL: videoURL)
+            try await lockScreenPlatform.install(videoURL: videoURL)
         }
     }
 
@@ -1928,7 +1956,7 @@ final class AppViewModel: ObservableObject {
             await startFromAutostartIfNeeded(using: status)
             do {
                 try await runAsync {
-                    try controller.syncLockScreenSaver()
+                    try await controller.syncLockScreenSaver()
                 }
             } catch {
                 alertMessage =
@@ -2178,7 +2206,7 @@ final class AppViewModel: ObservableObject {
             guard let self, let controller else { return }
             do {
                 try await self.runAsync {
-                    try controller.prepareLockScreenMedia(
+                    try await controller.prepareLockScreenMedia(
                         videoURL: normalizedSourceURL
                     )
                 }
@@ -2652,7 +2680,7 @@ final class AppViewModel: ObservableObject {
             defer { isBusy = false }
             do {
                 let status = try await runAsync {
-                    try controller.setShowOnLockScreen(enabled)
+                    try await controller.setShowOnLockScreen(enabled)
                 }
                 apply(status: status)
                 recordBridgeSuccess()
@@ -2758,7 +2786,7 @@ final class AppViewModel: ObservableObject {
                 apply(status: status)
                 if showOnLockScreenEnabled {
                     try await runAsync {
-                        try controller.syncLockScreenSaver()
+                        try await controller.syncLockScreenSaver()
                     }
                 }
                 recordBridgeSuccess()
@@ -3195,7 +3223,7 @@ final class AppViewModel: ObservableObject {
 
             if shouldRecover || shouldRecoverSuspiciousDaemon {
                 let recoveredStatus = try await runAsync {
-                    try controller.start(videoURL: nil, speed: nil)
+                    try await controller.start(videoURL: nil, speed: nil)
                 }
                 apply(status: recoveredStatus, refreshPreview: false, backgroundUpdate: true)
                 recordBridgeSuccess()
@@ -3559,7 +3587,9 @@ final class AppViewModel: ObservableObject {
         let prepared = isManagedCacheURL(sourceURL)
             ? try await prepareCatalogVideoURLForPlayback(sourceURL)
             : try await prepareVideoURLForPlayback(sourceURL)
-        let finalStatus = try await runAsync { try controller.start(videoURL: prepared.url, speed: nil) }
+        let finalStatus = try await runAsync {
+            try await controller.start(videoURL: prepared.url, speed: nil)
+        }
 
         previewViewModel.clearPendingVideo()
         apply(status: finalStatus, refreshPreview: false)
@@ -3575,7 +3605,7 @@ final class AppViewModel: ObservableObject {
         if showOnLockScreenEnabled {
             do {
                 try await runAsync {
-                    try controller.syncLockScreenSaver()
+                    try await controller.syncLockScreenSaver()
                 }
             } catch {
                 alertMessage = "Wallpaper started, but Lock Screen sync failed: \(error.localizedDescription)"
@@ -3818,7 +3848,7 @@ final class AppViewModel: ObservableObject {
 
         do {
             let updatedStatus = try await runAsync {
-                try controller.start(videoURL: nil, speed: nil)
+                try await controller.start(videoURL: nil, speed: nil)
             }
             apply(status: updatedStatus)
             recordBridgeSuccess()
@@ -3957,5 +3987,9 @@ final class AppViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func runAsync<T>(_ work: @escaping () async throws -> T) async throws -> T {
+        try await work()
     }
 }

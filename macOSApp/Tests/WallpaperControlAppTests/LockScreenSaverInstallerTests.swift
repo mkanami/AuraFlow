@@ -75,7 +75,7 @@ private struct ScreenSaverSelectionFixture {
     }
 }
 
-@Test func screenSaverActivationSelectsAuraFlowAndEnablesTimeout() throws {
+@Test func screenSaverActivationSelectsAuraFlowAndEnablesTimeout() async throws {
     let fixture = try ScreenSaverSelectionFixture()
     defer { fixture.cleanup() }
 
@@ -87,7 +87,7 @@ private struct ScreenSaverSelectionFixture {
     #expect(FileManager.default.fileExists(atPath: fixture.backupURL.path))
 }
 
-@Test func screenSaverDeactivationRestoresPreviousSettings() throws {
+@Test func screenSaverDeactivationRestoresPreviousSettings() async throws {
     let fixture = try ScreenSaverSelectionFixture()
     defer { fixture.cleanup() }
 
@@ -99,7 +99,7 @@ private struct ScreenSaverSelectionFixture {
     #expect(!FileManager.default.fileExists(atPath: fixture.backupURL.path))
 }
 
-@Test func screenSaverActivationPreservesExistingPositiveTimeout() throws {
+@Test func screenSaverActivationPreservesExistingPositiveTimeout() async throws {
     let fixture = try ScreenSaverSelectionFixture(idleTime: 900)
     defer { fixture.cleanup() }
 
@@ -108,7 +108,7 @@ private struct ScreenSaverSelectionFixture {
     #expect(fixture.preferences.idleTime == 900)
 }
 
-@Test func screenSaverActivationReportsRejectedPreferences() throws {
+@Test func screenSaverActivationReportsRejectedPreferences() async throws {
     let fixture = try ScreenSaverSelectionFixture()
     defer { fixture.cleanup() }
     fixture.preferences.acceptsChanges = false
@@ -121,7 +121,7 @@ private struct ScreenSaverSelectionFixture {
     #expect(!FileManager.default.fileExists(atPath: fixture.backupURL.path))
 }
 
-@Test func screenSaverRestoreKeepsBackupWhenPreferencesIgnoreUpdate() throws {
+@Test func screenSaverRestoreKeepsBackupWhenPreferencesIgnoreUpdate() async throws {
     let fixture = try ScreenSaverSelectionFixture()
     defer { fixture.cleanup() }
 
@@ -139,7 +139,7 @@ private struct ScreenSaverSelectionFixture {
     #expect(FileManager.default.fileExists(atPath: fixture.backupURL.path))
 }
 
-@Test func failedActivationRestoresExistingScreenSaverBundle() throws {
+@Test func failedActivationRestoresExistingScreenSaverBundle() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent(
             "AuraFlowScreenSaverRollback-\(UUID().uuidString)",
@@ -206,8 +206,8 @@ private struct ScreenSaverSelectionFixture {
         signatureVerifier: { _ in }
     )
 
-    #expect(throws: LockScreenSaverInstallerError.self) {
-        try installer.install(videoURL: videoURL)
+    await expectAsyncThrowing(LockScreenSaverInstallerError.self) {
+        try await installer.install(videoURL: videoURL)
     }
     #expect(
         FileManager.default.fileExists(

@@ -24,12 +24,13 @@ internal final class AerialMediaPreparer {
         self.preparedCacheDirectoryURL = preparedCacheDirectoryURL
     }
 
-    internal func prepare(from sourceURL: URL) throws -> URL {
+    internal func prepare(from sourceURL: URL) async throws -> URL {
+        try Task.checkCancellation()
         guard usesCanonicalWallpaperStore else {
             return sourceURL
         }
 
-        guard !isCompatible(at: sourceURL) else {
+        guard !(try await isCompatible(at: sourceURL)) else {
             return sourceURL
         }
 
@@ -46,7 +47,7 @@ internal final class AerialMediaPreparer {
             "prepared-v2-\(sourceSignature).mov"
         )
         if fileManager.fileExists(atPath: cacheURL.path),
-           isCompatible(at: cacheURL) {
+           try await isCompatible(at: cacheURL) {
             return cacheURL
         }
 
@@ -56,8 +57,8 @@ internal final class AerialMediaPreparer {
         defer { try? fileManager.removeItem(at: outputURL) }
 
         if let image = NSImage(contentsOf: sourceURL) {
-            try writeStillImageAerialVideo(image, to: outputURL)
-            guard isCompatible(at: outputURL) else {
+            try await writeStillImageAerialVideo(image, to: outputURL)
+            guard try await isCompatible(at: outputURL) else {
                 throw AerialLockScreenInstallerError
                     .aerialVideoPreparationFailed(
                         "The prepared image video is not HEVC compatible."
@@ -89,7 +90,7 @@ internal final class AerialMediaPreparer {
 
         guard process.terminationStatus == 0,
               fileManager.fileExists(atPath: outputURL.path),
-              isCompatible(at: outputURL)
+              try await isCompatible(at: outputURL)
         else {
             let detail = String(
                 data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
@@ -108,9 +109,9 @@ internal final class AerialMediaPreparer {
     }
 
     /// Returns true only for a local QuickTime movie whose first video track
-    /// uses HEVC. The synchronous boundary is intentional because the
-    /// installer performs this check while it holds its operation lock.
-    internal func isCompatible(at url: URL) -> Bool {
+    /// uses HEVC.
+    internal func isCompatible(at url: URL) async throws -> Bool {
+        try Task.checkCancellation()
         guard url.isFileURL,
               let contentType = UTType(filenameExtension: url.pathExtension),
               contentType.conforms(to: .quickTimeMovie)
@@ -119,41 +120,27 @@ internal final class AerialMediaPreparer {
         }
 
         let asset = AVURLAsset(url: url)
-        let completion = DispatchSemaphore(value: 0)
-        final class CompatibilityResult: @unchecked Sendable {
-            var value = false
-        }
-        let result = CompatibilityResult()
-
-        let compatibilityTask = Task.detached(priority: .utility) {
-            defer { completion.signal() }
-            do {
-                let tracks = try await asset.load(.tracks)
-                guard let videoTrack = tracks.first(where: {
-                    $0.mediaType == .video
-                }) else {
-                    return
-                }
-                let formatDescriptions = try await videoTrack.load(
-                    .formatDescriptions
-                )
-                guard let firstDescription = formatDescriptions.first else {
-                    return
-                }
-                result.value = CMFormatDescriptionGetMediaSubType(
-                    firstDescription
-                ) == kCMVideoCodecType_HEVC
-            } catch {
-                // An unreadable or incomplete asset is not compatible.
+        do {
+            let tracks = try await asset.load(.tracks)
+            guard let videoTrack = tracks.first(where: {
+                $0.mediaType == .video
+            }) else {
+                return false
             }
-        }
-
-        guard completion.wait(timeout: .now() + 10) == .success else {
-            compatibilityTask.cancel()
-            asset.cancelLoading()
+            let formatDescriptions = try await videoTrack.load(
+                .formatDescriptions
+            )
+            guard let firstDescription = formatDescriptions.first else {
+                return false
+            }
+            return CMFormatDescriptionGetMediaSubType(firstDescription)
+                == kCMVideoCodecType_HEVC
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // An unreadable or incomplete asset is not compatible.
             return false
         }
-        return result.value
     }
 
     /// Returns the stable size + prefix + suffix FNV-like signature used for
@@ -200,7 +187,7 @@ internal final class AerialMediaPreparer {
     private func writeStillImageAerialVideo(
         _ image: NSImage,
         to outputURL: URL
-    ) throws {
+    ) async throws {
         guard let sourceImage = image.cgImage(
             forProposedRect: nil,
             context: nil,
@@ -324,7 +311,12 @@ internal final class AerialMediaPreparer {
         for frame in 0..<90 {
             while !input.isReadyForMoreMediaData,
                   writer.status == .writing {
-                Thread.sleep(forTimeInterval: 0.002)
+                do {
+                    try await Task.sleep(nanoseconds: 2_000_000)
+                } catch {
+                    writer.cancelWriting()
+                    throw error
+                }
             }
             guard writer.status == .writing,
                   adaptor.append(
@@ -344,10 +336,13 @@ internal final class AerialMediaPreparer {
             }
         }
         input.markAsFinished()
-        let finished = DispatchSemaphore(value: 0)
-        writer.finishWriting { finished.signal() }
-        guard finished.wait(timeout: .now() + 30) == .success,
-              writer.status == .completed
+        await withCheckedContinuation { continuation in
+            writer.finishWriting {
+                continuation.resume()
+            }
+        }
+        try Task.checkCancellation()
+        guard writer.status == .completed
         else {
             writer.cancelWriting()
             throw AerialLockScreenInstallerError
