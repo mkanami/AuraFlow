@@ -2486,11 +2486,13 @@ final class AppViewModel: ObservableObject {
                     try? FileManager.default.removeItem(at: localURL)
                     return
                 }
-                stageCatalogWallpaperForPreview(
+                let persistenceStatus = stageCatalogWallpaperForPreview(
                     wallpaper,
                     localURL: localURL
                 )
-                showSuccessBanner("Wallpaper downloaded to preview.")
+                if persistenceStatus.warningMessage == nil {
+                    showSuccessBanner("Wallpaper downloaded to preview.")
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -3297,15 +3299,24 @@ final class AppViewModel: ObservableObject {
     }
 
     private func loadCatalogFromCache() async {
-        if let cached = await catalogRepository.loadCatalogCache(), !cached.isEmpty {
+        let result = await catalogRepository.loadCatalogCache()
+        if let cached = result.wallpapers, !cached.isEmpty {
             catalogWallpapers = cached
+        }
+        if let warningMessage = result.persistenceStatus.warningMessage {
+            statusMessage = warningMessage
         }
     }
 
     private func loadDownloadedCatalogWallpapers() {
-        downloadedCatalogWallpapers = catalogRepository.loadDownloadedWallpapers(
+        let result = catalogRepository.loadDownloadedWallpapers(
             preserving: downloadedCatalogWallpapers
         )
+        downloadedCatalogWallpapers = result.wallpapers
+        if let warningMessage = result.persistenceStatus.warningMessage {
+            alertMessage = warningMessage
+            statusMessage = warningMessage
+        }
     }
 
     private func refreshCatalogIfNeeded(force: Bool = false) {
@@ -3327,7 +3338,7 @@ final class AppViewModel: ObservableObject {
             }
 
             do {
-                let fetched = try await catalogRepository.refreshCatalog { [weak self] partial in
+                let refreshResult = try await catalogRepository.refreshCatalog { [weak self] partial in
                     guard let self else { return }
                     guard !Task.isCancelled else { return }
                     await MainActor.run {
@@ -3338,6 +3349,7 @@ final class AppViewModel: ObservableObject {
                     }
                 }
                 guard !Task.isCancelled else { return }
+                let fetched = refreshResult.wallpapers
                 guard !fetched.isEmpty else {
                     catalogWallpapers = []
                     selectedCatalogWallpaper = nil
@@ -3349,7 +3361,8 @@ final class AppViewModel: ObservableObject {
                 if let selectedCatalogWallpaper {
                     self.selectedCatalogWallpaper = fetched.first(where: { $0.id == selectedCatalogWallpaper.id })
                 }
-                statusMessage = nil
+                statusMessage = refreshResult.persistenceStatus.warningMessage
+                alertMessage = refreshResult.persistenceStatus.warningMessage
                 lastCatalogRefreshAt = Date()
             } catch {
                 guard !Task.isCancelled else { return }
@@ -3427,14 +3440,22 @@ final class AppViewModel: ObservableObject {
     }
 
     private func storeGeneratedPreview(_ previewURL: URL, wallpaperID: String) {
-        downloadedCatalogWallpapers = catalogRepository.updateGeneratedPreview(
+        let result = catalogRepository.updateGeneratedPreview(
             previewURL,
             wallpaperID: wallpaperID,
             in: downloadedCatalogWallpapers
         )
+        downloadedCatalogWallpapers = result.wallpapers
+        if let warningMessage = result.persistenceStatus.warningMessage {
+            alertMessage = warningMessage
+            statusMessage = warningMessage
+        }
     }
 
-    private func registerDownloadedCatalogWallpaper(for wallpaper: CatalogWallpaper, localURL: URL) {
+    private func registerDownloadedCatalogWallpaper(
+        for wallpaper: CatalogWallpaper,
+        localURL: URL
+    ) -> CatalogPersistenceStatus {
         let result = catalogRepository.registerDownloadedWallpaper(
             wallpaper,
             localURL: localURL,
@@ -3448,6 +3469,7 @@ final class AppViewModel: ObservableObject {
                 wallpaperID: request.wallpaperID
             )
         }
+        return result.persistenceStatus
     }
 
     private func showSuccessBanner(_ message: String) {
@@ -3516,12 +3538,24 @@ final class AppViewModel: ObservableObject {
         alertMessage = nil
     }
 
-    func stageCatalogWallpaperForPreview(_ wallpaper: CatalogWallpaper, localURL: URL) {
-        registerDownloadedCatalogWallpaper(for: wallpaper, localURL: localURL)
+    @discardableResult
+    func stageCatalogWallpaperForPreview(
+        _ wallpaper: CatalogWallpaper,
+        localURL: URL
+    ) -> CatalogPersistenceStatus {
+        let persistenceStatus = registerDownloadedCatalogWallpaper(
+            for: wallpaper,
+            localURL: localURL
+        )
         selectVideoForPreview(
             localURL,
             summary: "Wallpaper downloaded to preview. Press Start or Lock to apply."
         )
+        if let warningMessage = persistenceStatus.warningMessage {
+            alertMessage = warningMessage
+            statusMessage = warningMessage
+        }
+        return persistenceStatus
     }
 
     func selectLocalVideoForPreview(_ url: URL) {
@@ -3555,10 +3589,14 @@ final class AppViewModel: ObservableObject {
                     return
                 }
                 if let copiedResult {
-                    registerLocalWallpaperCopy(
+                    let persistenceStatus = registerLocalWallpaperCopy(
                         originalURL: sourceURL,
                         copiedURL: copiedResult.url
                     )
+                    if let warningMessage = persistenceStatus.warningMessage {
+                        alertMessage = warningMessage
+                        statusMessage = warningMessage
+                    }
                 }
             } catch is CancellationError {
                 if copiedResult?.created == true {
@@ -3578,7 +3616,10 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func registerLocalWallpaperCopy(originalURL: URL, copiedURL: URL) {
+    private func registerLocalWallpaperCopy(
+        originalURL: URL,
+        copiedURL: URL
+    ) -> CatalogPersistenceStatus {
         let result = catalogRepository.registerLocalWallpaperCopy(
             originalURL: originalURL,
             copiedURL: copiedURL,
@@ -3592,6 +3633,7 @@ final class AppViewModel: ObservableObject {
                 wallpaperID: request.wallpaperID
             )
         }
+        return result.persistenceStatus
     }
 
     private func startWallpaper(

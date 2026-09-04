@@ -1,6 +1,49 @@
 import AVFoundation
 import AppKit
 import Foundation
+import OSLog
+
+private let catalogPersistenceLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "CatalogPersistence"
+)
+
+enum CatalogPersistenceStatus: Equatable, Sendable {
+    case notAttempted
+    case persisted
+    case recoveredAndPersisted
+    case failed(operation: String, reason: String)
+    case recoveredButNotPersisted(reason: String)
+
+    var warningMessage: String? {
+        switch self {
+        case .notAttempted, .persisted, .recoveredAndPersisted:
+            return nil
+        case .failed(let operation, let reason):
+            return "Catalog \(operation) failed: \(reason)"
+        case .recoveredButNotPersisted(let reason):
+            return "Catalog was recovered in memory, but could not be saved: \(reason)"
+        }
+    }
+
+    var didPersist: Bool {
+        switch self {
+        case .persisted, .recoveredAndPersisted:
+            return true
+        case .notAttempted, .failed, .recoveredButNotPersisted:
+            return false
+        }
+    }
+
+    var didRecover: Bool {
+        switch self {
+        case .recoveredAndPersisted, .recoveredButNotPersisted:
+            return true
+        case .notAttempted, .persisted, .failed:
+            return false
+        }
+    }
+}
 
 /// Owns the catalog's durable data and file-system policy.
 ///
@@ -9,72 +52,209 @@ import Foundation
 /// inference/merge rules, preview image files, and importing user-selected
 /// wallpapers into the managed catalog directory.
 final class CatalogRepository: @unchecked Sendable {
+    typealias AtomicDataWriter = @Sendable (Data, URL) throws -> Void
+
     struct PreviewGenerationRequest: Sendable {
         let videoURL: URL
         let legacyWallpaperID: String?
         let wallpaperID: String
     }
 
-    struct RegistrationResult {
-        let wallpapers: [DownloadedCatalogWallpaper]
-        let previewRequest: PreviewGenerationRequest?
+    struct CatalogCacheLoadResult: Sendable {
+        let wallpapers: [CatalogWallpaper]?
+        let persistenceStatus: CatalogPersistenceStatus
     }
 
-    struct LocalImportResult {
+    struct CatalogRefreshResult: Sendable {
+        let wallpapers: [CatalogWallpaper]
+        let persistenceStatus: CatalogPersistenceStatus
+    }
+
+    struct DownloadedWallpapersLoadResult: Sendable {
+        let wallpapers: [DownloadedCatalogWallpaper]
+        let persistenceStatus: CatalogPersistenceStatus
+    }
+
+    struct RegistrationResult: Sendable {
+        let wallpapers: [DownloadedCatalogWallpaper]
+        let previewRequest: PreviewGenerationRequest?
+        let persistenceStatus: CatalogPersistenceStatus
+    }
+
+    struct UpdatedWallpapersResult: Sendable {
+        let wallpapers: [DownloadedCatalogWallpaper]
+        let persistenceStatus: CatalogPersistenceStatus
+    }
+
+    struct LocalImportResult: Sendable {
         let url: URL
         let created: Bool
     }
 
     private let provider: WallpaperCatalogProviding
+    private let atomicDataWriter: AtomicDataWriter
     let catalogDirectoryURL: URL
 
     init(
         provider: WallpaperCatalogProviding,
-        catalogDirectoryURL: URL
+        catalogDirectoryURL: URL,
+        atomicDataWriter: @escaping AtomicDataWriter = { data, url in
+            try data.write(to: url, options: .atomic)
+        }
     ) {
         self.provider = provider
+        self.atomicDataWriter = atomicDataWriter
         self.catalogDirectoryURL = catalogDirectoryURL.standardizedFileURL
     }
 
     // MARK: Catalog cache
 
-    func loadCatalogCache() async -> [CatalogWallpaper]? {
-        if let cached = loadUnifiedCatalogCache(), !cached.isEmpty {
-            return cached
+    func loadCatalogCache() async -> CatalogCacheLoadResult {
+        var persistenceStatus = CatalogPersistenceStatus.notAttempted
+        var cacheReadReason: String?
+        if FileManager.default.fileExists(atPath: catalogCacheURL.path) {
+            do {
+                let cached = try loadUnifiedCatalogCache()
+                if !cached.isEmpty {
+                    return CatalogCacheLoadResult(
+                        wallpapers: cached,
+                        persistenceStatus: persistenceStatus
+                    )
+                }
+            } catch {
+                catalogPersistenceLogger.error(
+                    "Unable to read unified catalog cache: \(error.localizedDescription, privacy: .public)"
+                )
+                cacheReadReason = error.localizedDescription
+                persistenceStatus = .failed(
+                    operation: "unified catalog cache read",
+                    reason: error.localizedDescription
+                )
+            }
         }
-        return await provider.loadCachedCatalog()
+        let providerCatalog = await provider.loadCachedCatalog()
+        if let cacheReadReason, let providerCatalog, !providerCatalog.isEmpty {
+            return CatalogCacheLoadResult(
+                wallpapers: providerCatalog,
+                persistenceStatus: recoveryPersistenceStatus(
+                    persistUnifiedCatalogCache(providerCatalog),
+                    reason: "The unified catalog cache was unreadable: \(cacheReadReason)"
+                )
+            )
+        }
+        return CatalogCacheLoadResult(
+            wallpapers: providerCatalog,
+            persistenceStatus: persistenceStatus
+        )
     }
 
     func refreshCatalog(
         progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
-    ) async throws -> [CatalogWallpaper] {
+    ) async throws -> CatalogRefreshResult {
         let wallpapers = try await provider.fetchCatalog(progress: progress)
-        if !wallpapers.isEmpty {
-            persistUnifiedCatalogCache(wallpapers)
-        }
-        return wallpapers
+        let persistenceStatus = wallpapers.isEmpty
+            ? .notAttempted
+            : persistUnifiedCatalogCache(wallpapers)
+        return CatalogRefreshResult(
+            wallpapers: wallpapers,
+            persistenceStatus: persistenceStatus
+        )
     }
 
     // MARK: Downloaded manifest
 
     func loadDownloadedWallpapers(
         preserving inMemory: [DownloadedCatalogWallpaper]
-    ) -> [DownloadedCatalogWallpaper] {
+    ) -> DownloadedWallpapersLoadResult {
         let loaded: [DownloadedCatalogWallpaper]
-        do {
-            guard let data = try? Data(contentsOf: downloadedManifestURL) else {
-                let inferred = inferredDownloadedWallpapersFromDisk()
-                let merged = mergeDownloadedWallpapers(inferred, preserving: inMemory)
-                if !merged.isEmpty {
-                    persistDownloadedWallpapers(merged)
-                }
-                return merged
+        guard FileManager.default.fileExists(atPath: downloadedManifestURL.path) else {
+            let inferred: [DownloadedCatalogWallpaper]
+            do {
+                inferred = try inferredDownloadedWallpapersFromDisk()
+            } catch {
+                catalogPersistenceLogger.error(
+                    "Unable to inspect catalog directory: \(error.localizedDescription, privacy: .public)"
+                )
+                return DownloadedWallpapersLoadResult(
+                    wallpapers: inMemory,
+                    persistenceStatus: .failed(
+                        operation: "downloaded catalog directory read",
+                        reason: error.localizedDescription
+                    )
+                )
             }
-            loaded = try JSONDecoder().decode([DownloadedCatalogWallpaper].self, from: data)
+            let merged = mergeDownloadedWallpapers(inferred, preserving: inMemory)
+            let persistenceStatus = merged.isEmpty
+                ? .notAttempted
+                : persistDownloadedWallpapers(merged)
+            return DownloadedWallpapersLoadResult(
+                wallpapers: merged,
+                persistenceStatus: persistenceStatus
+            )
+        }
+
+        do {
+            let data = try Data(contentsOf: downloadedManifestURL)
+            do {
+                loaded = try JSONDecoder().decode([DownloadedCatalogWallpaper].self, from: data)
+            } catch {
+                catalogPersistenceLogger.error(
+                    "Downloaded catalog manifest is corrupt; rebuilding it: \(error.localizedDescription, privacy: .public)"
+                )
+                let recoveryReason = "The downloaded manifest was corrupt: \(error.localizedDescription)"
+                let repaired: [DownloadedCatalogWallpaper]
+                do {
+                    repaired = mergeDownloadedWallpapers(
+                        try inferredDownloadedWallpapersFromDisk(),
+                        preserving: inMemory
+                    )
+                } catch {
+                    catalogPersistenceLogger.error(
+                        "Unable to rebuild downloaded catalog from disk: \(error.localizedDescription, privacy: .public)"
+                    )
+                    return DownloadedWallpapersLoadResult(
+                        wallpapers: inMemory,
+                        persistenceStatus: .recoveredButNotPersisted(
+                            reason: "\(recoveryReason) Recovery scan failed: \(error.localizedDescription)"
+                        )
+                    )
+                }
+                return DownloadedWallpapersLoadResult(
+                    wallpapers: repaired,
+                    persistenceStatus: recoveryPersistenceStatus(
+                        persistDownloadedWallpapers(repaired),
+                        reason: recoveryReason
+                    )
+                )
+            }
         } catch {
-            return mergeDownloadedWallpapers(
-                inferredDownloadedWallpapersFromDisk(),
-                preserving: inMemory
+            catalogPersistenceLogger.error(
+                "Unable to read downloaded catalog manifest: \(error.localizedDescription, privacy: .public)"
+            )
+            let fallback: [DownloadedCatalogWallpaper]
+            do {
+                fallback = mergeDownloadedWallpapers(
+                    try inferredDownloadedWallpapersFromDisk(),
+                    preserving: inMemory
+                )
+            } catch {
+                catalogPersistenceLogger.error(
+                    "Unable to inspect catalog directory after manifest read failure: \(error.localizedDescription, privacy: .public)"
+                )
+                return DownloadedWallpapersLoadResult(
+                    wallpapers: inMemory,
+                    persistenceStatus: .failed(
+                        operation: "downloaded catalog recovery",
+                        reason: error.localizedDescription
+                    )
+                )
+            }
+            return DownloadedWallpapersLoadResult(
+                wallpapers: fallback,
+                persistenceStatus: .failed(
+                    operation: "downloaded wallpaper manifest read",
+                    reason: error.localizedDescription
+                )
             )
         }
 
@@ -103,24 +283,51 @@ final class CatalogRepository: @unchecked Sendable {
 
         var sorted = existing.sorted(by: newerFirst)
         if sorted.isEmpty {
-            sorted = inferredDownloadedWallpapersFromDisk()
+            do {
+                sorted = try inferredDownloadedWallpapersFromDisk()
+            } catch {
+                catalogPersistenceLogger.error(
+                    "Unable to inspect catalog directory while repairing manifest: \(error.localizedDescription, privacy: .public)"
+                )
+                return DownloadedWallpapersLoadResult(
+                    wallpapers: inMemory,
+                    persistenceStatus: .failed(
+                        operation: "downloaded catalog repair",
+                        reason: error.localizedDescription
+                    )
+                )
+            }
         }
         sorted = mergeDownloadedWallpapers(sorted, preserving: inMemory)
 
-        if existing.count != loaded.count {
-            persistDownloadedWallpapers(sorted)
+        let persistenceStatus: CatalogPersistenceStatus
+        if sorted != loaded {
+            persistenceStatus = persistDownloadedWallpapers(sorted)
+        } else {
+            persistenceStatus = .notAttempted
         }
-        return sorted
+        return DownloadedWallpapersLoadResult(
+            wallpapers: sorted,
+            persistenceStatus: persistenceStatus
+        )
     }
 
-    func persistDownloadedWallpapers(_ wallpapers: [DownloadedCatalogWallpaper]) {
+    func persistDownloadedWallpapers(
+        _ wallpapers: [DownloadedCatalogWallpaper]
+    ) -> CatalogPersistenceStatus {
         do {
             try ensureCatalogDirectory()
             let data = try JSONEncoder().encode(wallpapers)
-            try data.write(to: downloadedManifestURL, options: .atomic)
+            try atomicDataWriter(data, downloadedManifestURL)
+            return .persisted
         } catch {
-            // The old UI treated manifest persistence as best effort. Keep the
-            // in-memory catalog usable when a removable/read-only volume fails.
+            catalogPersistenceLogger.error(
+                "Unable to persist downloaded wallpaper manifest: \(error.localizedDescription, privacy: .public)"
+            )
+            return .failed(
+                operation: "downloaded wallpaper manifest",
+                reason: error.localizedDescription
+            )
         }
     }
 
@@ -155,7 +362,7 @@ final class CatalogRepository: @unchecked Sendable {
             updated.append(entry)
         }
         updated.sort(by: newerFirst)
-        persistDownloadedWallpapers(updated)
+        let persistenceStatus = persistDownloadedWallpapers(updated)
 
         let request = localPreviewPath == nil
             ? PreviewGenerationRequest(
@@ -164,20 +371,30 @@ final class CatalogRepository: @unchecked Sendable {
                 wallpaperID: wallpaper.id
             )
             : nil
-        return RegistrationResult(wallpapers: updated, previewRequest: request)
+        return RegistrationResult(
+            wallpapers: updated,
+            previewRequest: request,
+            persistenceStatus: persistenceStatus
+        )
     }
 
     func updateGeneratedPreview(
         _ previewURL: URL,
         wallpaperID: String,
         in wallpapers: [DownloadedCatalogWallpaper]
-    ) -> [DownloadedCatalogWallpaper] {
+    ) -> UpdatedWallpapersResult {
         guard let index = wallpapers.firstIndex(where: { $0.wallpaperID == wallpaperID }) else {
-            return wallpapers
+            return UpdatedWallpapersResult(
+                wallpapers: wallpapers,
+                persistenceStatus: .notAttempted
+            )
         }
         let current = wallpapers[index]
         guard current.localPreviewPath != previewURL.path else {
-            return wallpapers
+            return UpdatedWallpapersResult(
+                wallpapers: wallpapers,
+                persistenceStatus: .notAttempted
+            )
         }
 
         var updated = wallpapers
@@ -193,8 +410,10 @@ final class CatalogRepository: @unchecked Sendable {
             localPath: current.localPath,
             downloadedAt: current.downloadedAt
         )
-        persistDownloadedWallpapers(updated)
-        return updated
+        return UpdatedWallpapersResult(
+            wallpapers: updated,
+            persistenceStatus: persistDownloadedWallpapers(updated)
+        )
     }
 
     // MARK: Local import
@@ -302,7 +521,7 @@ final class CatalogRepository: @unchecked Sendable {
             updated.append(entry)
         }
         updated.sort(by: newerFirst)
-        persistDownloadedWallpapers(updated)
+        let persistenceStatus = persistDownloadedWallpapers(updated)
 
         let request = localPreviewPath == nil
             ? PreviewGenerationRequest(
@@ -311,7 +530,11 @@ final class CatalogRepository: @unchecked Sendable {
                 wallpaperID: entry.wallpaperID
             )
             : nil
-        return RegistrationResult(wallpapers: updated, previewRequest: request)
+        return RegistrationResult(
+            wallpapers: updated,
+            previewRequest: request,
+            persistenceStatus: persistenceStatus
+        )
     }
 
     // MARK: Managed files
@@ -421,19 +644,47 @@ final class CatalogRepository: @unchecked Sendable {
         )
     }
 
-    private func loadUnifiedCatalogCache() -> [CatalogWallpaper]? {
-        guard let data = try? Data(contentsOf: catalogCacheURL) else { return nil }
-        return try? JSONDecoder().decode([CatalogWallpaper].self, from: data)
+    private func loadUnifiedCatalogCache() throws -> [CatalogWallpaper] {
+        let data = try Data(contentsOf: catalogCacheURL)
+        return try JSONDecoder().decode([CatalogWallpaper].self, from: data)
     }
 
-    private func persistUnifiedCatalogCache(_ wallpapers: [CatalogWallpaper]) {
+    private func persistUnifiedCatalogCache(
+        _ wallpapers: [CatalogWallpaper]
+    ) -> CatalogPersistenceStatus {
         do {
             try ensureCatalogDirectory()
             let data = try JSONEncoder().encode(wallpapers)
-            try data.write(to: catalogCacheURL, options: .atomic)
+            try atomicDataWriter(data, catalogCacheURL)
+            return .persisted
         } catch {
-            // A provider-specific cache remains available when this optional
-            // merged cache cannot be written.
+            catalogPersistenceLogger.error(
+                "Unable to persist unified catalog cache: \(error.localizedDescription, privacy: .public)"
+            )
+            return .failed(
+                operation: "unified catalog cache",
+                reason: error.localizedDescription
+            )
+        }
+    }
+
+    private func recoveryPersistenceStatus(
+        _ status: CatalogPersistenceStatus,
+        reason recoveryReason: String
+    ) -> CatalogPersistenceStatus {
+        switch status {
+        case .persisted:
+            return .recoveredAndPersisted
+        case .failed(_, let writeReason):
+            return .recoveredButNotPersisted(
+                reason: "\(recoveryReason) Recovery write failed: \(writeReason)"
+            )
+        case .notAttempted:
+            return .recoveredButNotPersisted(
+                reason: "\(recoveryReason) No persistence attempt was made."
+            )
+        case .recoveredAndPersisted, .recoveredButNotPersisted:
+            return status
         }
     }
 
@@ -450,14 +701,15 @@ final class CatalogRepository: @unchecked Sendable {
         return merged.sorted(by: newerFirst)
     }
 
-    private func inferredDownloadedWallpapersFromDisk() -> [DownloadedCatalogWallpaper] {
-        guard let files = try? FileManager.default.contentsOfDirectory(
+    private func inferredDownloadedWallpapersFromDisk() throws -> [DownloadedCatalogWallpaper] {
+        guard FileManager.default.fileExists(atPath: catalogDirectoryURL.path) else {
+            return []
+        }
+        let files = try FileManager.default.contentsOfDirectory(
             at: catalogDirectoryURL,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
+        )
 
         let validExtensions = Set([
             "mp4", "mov", "m4v", "webm", "mkv", "avi", "flv", "ts", "m2ts", "gif",
