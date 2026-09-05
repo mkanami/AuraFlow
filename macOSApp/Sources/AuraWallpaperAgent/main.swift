@@ -1307,17 +1307,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let generationReady = isLockScreenGenerationReady(status)
-        if operation.expectedLocked {
-            // The legacy saver can render the verified still-frame while a
-            // store repair is in progress. This prevents loginwindow from
-            // exposing an unrelated Apple wallpaper during the repair.
-            if generationReady {
-                nativeLockScreenBridge.showForLockTransition()
-            }
-        } else {
+        if !operation.expectedLocked {
             nativeLockScreenBridge.hideAfterUnlock()
         }
 
+        // A locked transition is shown exactly once, from
+        // completeReadyLockScreenLifecycle(), after the bridge preparation
+        // callback has completed. Calling show here as well races the second
+        // async assertion and can publish the ready marker before the secure
+        // surface is actually ready, producing a gray/blank first frame.
         guard !generationReady else {
             completeReadyLockScreenLifecycle(
                 operation,

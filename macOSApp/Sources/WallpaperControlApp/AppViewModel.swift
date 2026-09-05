@@ -2348,6 +2348,12 @@ final class AppViewModel: ObservableObject {
                 if isNativePlaybackContainer(normalizedSourceURL),
                    normalizedSourceURL.pathExtension.lowercased() != "gif",
                    await isPreviewPlayableVideo(at: normalizedSourceURL) {
+                    guard !Task.isCancelled,
+                          requestedGeneration == previewPreparationGeneration,
+                          selectedVideoURL?.standardizedFileURL == normalizedSourceURL
+                    else {
+                        return
+                    }
                     scheduleLockScreenMediaPreparation(
                         for: normalizedSourceURL,
                         previewGeneration: requestedGeneration
@@ -2727,12 +2733,14 @@ final class AppViewModel: ObservableObject {
     }
 
     func applyLockScreenOnly() {
-        // A preview-triggered HEVC conversion is best effort. Never make the
-        // user wait behind it when the explicit Lock action is requested;
-        // cancellation also terminates an in-flight avconvert process.
-        lockScreenPreparationGeneration &+= 1
-        lockScreenPreparationTask?.cancel()
-        lockScreenPreparationTask = nil
+        // Keep an in-flight Lock Screen cache warm-up alive. The installer
+        // serializes behind the same Aerial mutation coordinator, so
+        // cancelling here only throws away work that was already paid for
+        // and makes the button start the conversion a second time.
+        // Preview preparation itself is still superseded by the lifecycle
+        // request; it must not cancel the separate Lock Screen warm-up.
+        previewPreparationTask?.cancel()
+        previewPreparationTask = nil
         lifecycleViewModel.applyLockScreenOnly(selectedVideoURL: selectedVideoURL)
     }
 
@@ -3301,10 +3309,13 @@ final class AppViewModel: ObservableObject {
             return try await prepareCatalogVideoURLForPlayback(sourceURL)
         }
 
-        // Preserve the existing user optimization behavior for external
-        // native MP4/MOV/M4V sources while still guaranteeing compatibility
-        // conversion for managed and unsupported sources above.
-        return try await prepareVideoURLForPlayback(sourceURL)
+        // Native MP4/MOV/M4V files are already valid inputs for AVPlayer and
+        // the Aerial installer. Do not run the user's optional desktop
+        // optimization pass on the Lock button: that pass can transcode a
+        // large file before Aerial even gets a chance to use its own cached
+        // HEVC preparation. The background Lock Screen warm-up handles the
+        // provider-specific conversion ahead of time.
+        return (sourceURL.standardizedFileURL, nil)
     }
 
     private func apply(

@@ -233,6 +233,49 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func lockScreenApplySkipsOptionalOptimizationForNativeVideo() async throws {
+    let controller = MockNativeWallpaperController()
+    let suiteName = "AppViewModelTests.lock-screen-skips-optimization"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    let optimizationStore = VideoOptimizationStore(defaults: defaults)
+    optimizationStore.save(
+        VideoOptimizationSettings(
+            enabled: true,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: true,
+            forceSoftwareAV1Encode: false,
+            profile: .quality
+        )
+    )
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let viewModel = AppViewModel(
+        controller: controller,
+        optimizationStore: optimizationStore
+    )
+    let sourceURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lock-screen-native-source-(UUID().uuidString).mp4")
+    FileManager.default.createFile(
+        atPath: sourceURL.path,
+        contents: Data(),
+        attributes: nil
+    )
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+    viewModel.applyLockScreenOnly()
+
+    for _ in 0..<40 {
+        if controller.lockCallCount == 1 { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.lockCallCount == 1)
+    #expect(viewModel.alertMessage == nil)
+}
+
+@MainActor
 @Test func lastWallpaperPreviewSurvivesRestartAndRemove() async throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("preview-state-\(UUID().uuidString)", isDirectory: true)
