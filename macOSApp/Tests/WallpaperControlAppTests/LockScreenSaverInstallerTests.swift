@@ -75,7 +75,7 @@ private struct ScreenSaverSelectionFixture {
     }
 }
 
-@Test func screenSaverActivationSelectsAuraFlowAndEnablesTimeout() async throws {
+@Test func screenSaverActivationSelectsAuraFlowAndPreservesDisabledTimeout() async throws {
     let fixture = try ScreenSaverSelectionFixture()
     defer { fixture.cleanup() }
 
@@ -83,7 +83,7 @@ private struct ScreenSaverSelectionFixture {
 
     #expect(fixture.preferences.selectedModule?.moduleName == "AuraFlowLockScreen")
     #expect(fixture.preferences.selectedModule?.pointsTo(fixture.destinationURL) == true)
-    #expect(fixture.preferences.idleTime == 300)
+    #expect(fixture.preferences.idleTime == 0)
     #expect(FileManager.default.fileExists(atPath: fixture.backupURL.path))
 }
 
@@ -97,6 +97,18 @@ private struct ScreenSaverSelectionFixture {
     #expect(fixture.preferences.selectedModule == fixture.previousModule)
     #expect(fixture.preferences.idleTime == 0)
     #expect(!FileManager.default.fileExists(atPath: fixture.backupURL.path))
+}
+
+@Test func screenSaverRestoreWithoutBackupPreservesCurrentTimeout() async throws {
+    let fixture = try ScreenSaverSelectionFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.coordinator.activate()
+    try FileManager.default.removeItem(at: fixture.backupURL)
+    try fixture.coordinator.restoreIfNeeded()
+
+    #expect(fixture.preferences.selectedModule == fixture.previousModule)
+    #expect(fixture.preferences.idleTime == 0)
 }
 
 @Test func screenSaverActivationPreservesExistingPositiveTimeout() async throws {

@@ -73,6 +73,22 @@ import Testing
     #expect(unlock.expectedLocked == false)
 }
 
+@Test func unconfirmedLockIntentCanBeResetBeforeASecondTransition() throws {
+    var coordinator = LockScreenLifecycleCoordinator()
+    let lockValue = coordinator.enqueue(.shieldRaised)
+    let lock = try #require(lockValue)
+
+    coordinator.markSessionUnlocked()
+
+    #expect(coordinator.desiredLocked == false)
+    #expect(coordinator.pendingEvent == .sessionUnlocked)
+
+    let unlockValue = coordinator.finish(operationID: lock.operationID)
+    let unlock = try #require(unlockValue)
+    #expect(unlock.event == .sessionUnlocked)
+    #expect(unlock.expectedLocked == false)
+}
+
 @Test func lockUnlockLifecycleRemainsMonotonicForManyCycles() throws {
     var coordinator = LockScreenLifecycleCoordinator()
     var lastOperationID: UInt64 = 0

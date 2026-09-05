@@ -698,10 +698,18 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func lockShieldDidRaise(_ notification: Notification) {
         guard !isTerminating else { return }
-        requestLockScreenLifecycle(
-            .shieldRaised,
-            reason: "shield-raised"
-        )
+        if isConfirmedLockScreenSession() {
+            requestLockScreenLifecycle(
+                .shieldRaised,
+                reason: "shield-raised"
+            )
+        } else {
+            // A shield notification can be delivered before CGSession is
+            // updated (or during a helper restart). Do not start the saver
+            // from that unconfirmed notification; the delayed session
+            // reconciliation will enqueue a lock operation if appropriate.
+            handleSessionNotification(expectedLocked: true)
+        }
     }
 
     private func registerLockShieldDarwinNotifications() {
@@ -717,10 +725,17 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     lockShieldQueue
                 ) { [weak self] _ in
                     Task { @MainActor [weak self] in
-                        self?.requestLockScreenLifecycle(
-                            .shieldRaised,
-                            reason: "darwin-shield-raised"
-                        )
+                        guard let self, !self.isTerminating else { return }
+                        if self.isConfirmedLockScreenSession() {
+                            self.requestLockScreenLifecycle(
+                                .shieldRaised,
+                                reason: "darwin-shield-raised"
+                            )
+                        } else {
+                            self.handleSessionNotification(
+                                expectedLocked: true
+                            )
+                        }
                     }
                 }
             }
@@ -929,12 +944,17 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // the first visible frame is already available when the display
             // wakes to the password surface.
             displaySleepRestorePending = true
-            displaySleepLockObserved = false
-            requestLockScreenLifecycle(
-                .shieldRaised,
-                reason: "display-sleep-before-lock"
-            )
-            writeHealth(reason: "display-sleep-before-lock")
+            let lockConfirmed = isConfirmedLockScreenSession()
+            displaySleepLockObserved = lockConfirmed
+            if lockConfirmed {
+                requestLockScreenLifecycle(
+                    .shieldRaised,
+                    reason: "display-sleep-before-lock"
+                )
+                writeHealth(reason: "display-sleep-before-lock")
+            } else {
+                writeHealth(reason: "display-sleep-without-lock")
+            }
             return
         }
         sleeping = true
@@ -945,12 +965,17 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     @objc private func screensWillSleep() {
         guard !isTerminating, lockScreenOnlyMode else { return }
         displaySleepRestorePending = true
-        displaySleepLockObserved = sessionInactive
-        requestLockScreenLifecycle(
-            .shieldRaised,
-            reason: "screens-sleep-before-lock"
-        )
-        writeHealth(reason: "screens-sleep-before-lock")
+        let lockConfirmed = isConfirmedLockScreenSession()
+        displaySleepLockObserved = lockConfirmed
+        if lockConfirmed {
+            requestLockScreenLifecycle(
+                .shieldRaised,
+                reason: "screens-sleep-before-lock"
+            )
+            writeHealth(reason: "screens-sleep-before-lock")
+        } else {
+            writeHealth(reason: "screens-sleep-without-lock")
+        }
     }
 
     @objc private func systemDidWake() {
@@ -1158,6 +1183,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         reason: String
     ) {
         guard lockScreenOnlyMode, !isTerminating else { return }
+        if event == .shieldRaised || event == .sessionLocked,
+           !isConfirmedLockScreenSession() {
+            return
+        }
         guard lockScreenPlatform.capabilities.supportsLockScreenOnly else {
             terminateLockScreenOnlyAgent(
                 reason: "lock-screen-provider-unavailable",
@@ -1174,6 +1203,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         reconcileLockScreenLifecycle(operation, reason: reason)
     }
 
+    private func isConfirmedLockScreenSession() -> Bool {
+        sessionInactive || systemSessionIsLocked() == true
+    }
+
     private func reconcileLockScreenLifecycle(
         _ operation: LockScreenLifecycleOperation,
         reason: String
@@ -1182,6 +1215,18 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
               !isTerminating,
               isCurrentLockScreenLifecycleOperation(operation.operationID)
         else {
+            return
+        }
+
+        // A queued shield/wake operation can outlive the session transition
+        // that created it. Never call into the native bridge unless the
+        // secure session is still confirmed locked.
+        guard !operation.expectedLocked || isConfirmedLockScreenSession()
+        else {
+            lockScreenLifecycleCoordinator.markSessionUnlocked()
+            nativeLockScreenBridge.hideAfterUnlock()
+            store.markLockScreenAgentReady(false)
+            finishLockScreenLifecycle(operation, reason: "unconfirmed-lock")
             return
         }
 
@@ -1339,6 +1384,17 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                         self.isLockScreenGenerationReady(status)
                     )
                     self.finishLockScreenLifecycle(operation, reason: reason)
+                    return
+                }
+
+                guard self.isConfirmedLockScreenSession() else {
+                    self.lockScreenLifecycleCoordinator.markSessionUnlocked()
+                    self.nativeLockScreenBridge.hideAfterUnlock()
+                    self.store.markLockScreenAgentReady(false)
+                    self.finishLockScreenLifecycle(
+                        operation,
+                        reason: "unconfirmed-lock"
+                    )
                     return
                 }
 

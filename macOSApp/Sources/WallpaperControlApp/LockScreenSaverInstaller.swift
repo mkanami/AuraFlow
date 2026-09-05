@@ -173,14 +173,17 @@ struct ScreenSaverSelectionCoordinator {
             path: destinationURL.standardizedFileURL.path,
             type: 0
         )
-        let desiredIdleTime = previousIdleTime > 0 ? nil : 300
+        // Selecting AuraFlow must never change the user's screen-saver
+        // timeout. In particular, an idleTime of zero means "Never" and
+        // silently replacing it with a positive timeout can lock the Mac
+        // without any AuraFlow action from the user.
         let accepted = preferences.apply(
             module: desiredModule,
-            idleTime: desiredIdleTime
+            idleTime: nil
         )
         let verified = accepted
             && preferences.selectedModule?.pointsTo(destinationURL) == true
-            && preferences.idleTime > 0
+            && preferences.idleTime == previousIdleTime
         guard verified else {
             _ = preferences.apply(
                 module: previousModule,
@@ -209,7 +212,9 @@ struct ScreenSaverSelectionCoordinator {
             type: 0
         )
         let previousModule = backup?.module ?? fallbackModule
-        let previousIdleTime = backup?.idleTime ?? 300
+        // If the backup is unavailable, preserve the setting currently held
+        // by macOS instead of inventing a five-minute timeout.
+        let previousIdleTime = backup?.idleTime ?? preferences.idleTime
         guard preferences.apply(
             module: previousModule,
             idleTime: previousIdleTime

@@ -109,6 +109,19 @@ public struct LockScreenLifecycleCoordinator: Equatable, Sendable {
         pendingEvent = nil
     }
 
+    /// Clears a lock intent when an out-of-band notification arrived while
+    /// the session is actually active. Without this reset, a later wake or
+    /// shield notification could inherit `desiredLocked == true` and repeat
+    /// a lock transition that was never confirmed by CGSession.
+    public mutating func markSessionUnlocked() {
+        desiredLocked = false
+        if inFlightExpectedLocked == true {
+            pendingEvent = .sessionUnlocked
+        } else {
+            pendingEvent = nil
+        }
+    }
+
     private mutating func makeOperation(
         for event: LockScreenLifecycleEvent
     ) -> LockScreenLifecycleOperation {
