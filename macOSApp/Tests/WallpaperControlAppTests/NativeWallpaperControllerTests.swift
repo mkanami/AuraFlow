@@ -436,12 +436,14 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     try FileManager.default.removeItem(at: fixture.store.daemonIdentityURL)
 
     let pid = Int(agent.processIdentifier)
-    #expect(
-        fixture.store.terminateDaemon(
-            timeout: 0.2,
-            expectedExecutableURL: shellURL
-        ) == .terminated
+    let termination = fixture.store.terminateDaemon(
+        timeout: 0.2,
+        expectedExecutableURL: shellURL
     )
+    // tail can exit between the verified identity check and the first
+    // post-SIGTERM poll. Both outcomes prove that the expected process was
+    // safely handled; the test must not depend on that tiny scheduling race.
+    #expect(termination.succeeded)
     #expect(fixture.store.loadPID() == nil)
     #expect(fixture.store.processIsAlive(pid: pid) == false)
 }

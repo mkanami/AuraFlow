@@ -1066,6 +1066,18 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         // without delaying unrelated lifecycle requests.
         try requireNativeBridgeIfNeeded()
         try await lockScreenPlatform.prepareLockScreenMedia(videoURL: videoURL)
+        // The legacy companion and the first secure transition both need the
+        // still frame. Warm it during the same preflight so install does not
+        // synchronously decode and encode the source after the user presses
+        // Lock. A transient decode failure remains best-effort here; the
+        // install path still has its existing fallback/error handling.
+        do {
+            _ = try store.ensureCurrentStillFrame(from: videoURL)
+        } catch {
+            lockScreenLifecycleLogger.debug(
+                "Lock Screen still-frame warm-up deferred: \(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 
     func setSpeed(_ speed: Double) throws -> ControlStatus {
@@ -2737,10 +2749,9 @@ final class AppViewModel: ObservableObject {
         // serializes behind the same Aerial mutation coordinator, so
         // cancelling here only throws away work that was already paid for
         // and makes the button start the conversion a second time.
-        // Preview preparation itself is still superseded by the lifecycle
-        // request; it must not cancel the separate Lock Screen warm-up.
-        previewPreparationTask?.cancel()
-        previewPreparationTask = nil
+        // Preview preparation may be the task that will produce the exact
+        // source URL used by the Lock action. Let it finish and reuse its
+        // result instead of cancelling a conversion and starting it again.
         lifecycleViewModel.applyLockScreenOnly(selectedVideoURL: selectedVideoURL)
     }
 

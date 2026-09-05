@@ -203,10 +203,14 @@ public enum LockScreenPlatformFactory {
             )
         }
 
-        let nativeBridgeCapabilities = NativeLockScreenBridgeCapabilityChecker.checkRuntime(
+        // The agent's native bridge client performs the real capabilities
+        // handshake when it prepares the bridge. Do not launch a second
+        // bridge process synchronously while the agent is still initializing:
+        // that duplicate probe is on the Lock button's readiness critical
+        // path and can make a healthy agent miss its startup window.
+        let nativeBridgeCapabilities = NativeLockScreenBridgeCapabilityChecker.check(
             operatingSystemVersion: operatingSystemVersion,
-            executableURL: nativeBridgeURL,
-            requireValidCodeSignature: true
+            executableURL: nativeBridgeURL
         )
         guard nativeBridgeCapabilities.isAvailable else {
             return UnsupportedAdapter(message: nativeBridgeCapabilities.message)
