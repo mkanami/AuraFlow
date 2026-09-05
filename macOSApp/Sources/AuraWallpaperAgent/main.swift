@@ -307,6 +307,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         qos: .userInitiated
     )
     private var lockShieldNotificationTokens: [Int32] = []
+    private var lockConfirmationTask: Task<Void, Never>?
     private var lastCommandID: String?
     private var lastCommandOperationID: UInt64?
     private var manualPaused = false
@@ -456,6 +457,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         // replacement agent's PID or lock-only marker.
         let ownsRuntimePID = store.ownsRuntimeProcess()
         isTerminating = true
+        lockConfirmationTask?.cancel()
+        lockConfirmationTask = nil
         lifecycleGuard.markTerminating()
         let preserveCurrentDesktop =
             store.loadCommand()?.action == .terminatePreservingDesktop
@@ -705,10 +708,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             )
         } else {
             // A shield notification can be delivered before CGSession is
-            // updated (or during a helper restart). Do not start the saver
-            // from that unconfirmed notification; the delayed session
-            // reconciliation will enqueue a lock operation if appropriate.
-            handleSessionNotification(expectedLocked: true)
+            // updated. Keep the intent alive and confirm the session instead
+            // of dropping the only hand-off event.
+            scheduleLockConfirmation(reason: "shield-raised")
         }
     }
 
@@ -732,8 +734,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                                 reason: "darwin-shield-raised"
                             )
                         } else {
-                            self.handleSessionNotification(
-                                expectedLocked: true
+                            self.scheduleLockConfirmation(
+                                reason: "darwin-shield-raised"
                             )
                         }
                     }
@@ -748,8 +750,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func handleSessionNotification(expectedLocked: Bool) {
         guard !isTerminating else { return }
         let actualLocked = systemSessionIsLocked()
-        if actualLocked == nil || actualLocked == expectedLocked {
-            applySystemSessionState(locked: expectedLocked)
+        if expectedLocked {
+            if actualLocked == true || actualLocked == nil {
+                applySystemSessionState(locked: true)
+            } else {
+                scheduleLockConfirmation(reason: "session-notification")
+            }
+        } else if actualLocked == nil || actualLocked == false {
+            applySystemSessionState(locked: false)
         }
 
         // CGSession can lag either notification center by a run-loop turn.
@@ -774,7 +782,55 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         applySystemSessionState(locked: locked)
     }
 
+    /// `shieldWindowRaised` can arrive one or more run-loop turns before
+    /// CoreGraphics publishes `CGSessionScreenIsLocked`. The old one-shot
+    /// check dropped that transition permanently, leaving the installed
+    /// Lock-only route invisible. Poll briefly on Main Actor so the session
+    /// confirmation and AppKit hand-off remain ordered, while keeping a
+    /// bounded timeout for stale or unrelated shield notifications.
+    private func scheduleLockConfirmation(reason: String) {
+        guard lockScreenOnlyMode, !isTerminating else { return }
+        guard lockConfirmationTask == nil else { return }
+
+        lockConfirmationTask = Task { @MainActor [weak self] in
+            for attempt in 0..<30 {
+                guard let self,
+                      !self.isTerminating,
+                      !Task.isCancelled
+                else {
+                    return
+                }
+
+                if self.systemSessionIsLocked() == true {
+                    self.lockConfirmationTask = nil
+                    self.applySystemSessionState(locked: true)
+                    self.requestLockScreenLifecycle(
+                        .shieldRaised,
+                        reason: "confirmed-" + reason
+                    )
+                    return
+                }
+
+                if attempt < 29 {
+                    do {
+                        try await Task.sleep(nanoseconds: 100_000_000)
+                    } catch {
+                        return
+                    }
+                }
+            }
+
+            guard let self, !self.isTerminating, !Task.isCancelled else {
+                return
+            }
+            self.lockConfirmationTask = nil
+            self.writeHealth(reason: "lock-shield-unconfirmed")
+        }
+    }
+
     private func applySystemSessionState(locked: Bool) {
+        lockConfirmationTask?.cancel()
+        lockConfirmationTask = nil
         if locked {
             guard !sessionInactive else { return }
             lockSessionGeneration &+= 1

@@ -51,10 +51,11 @@ private struct NativeRuntimeFixture {
     func cleanup() {
         let pid = store.loadPID()
         try? store.disableLaunchAgent()
-        _ = store.terminateDaemon(
-            timeout: 0.2,
-            expectedExecutableURL: helperURL
-        )
+        // Let the persisted process identity decide whether the PID belongs
+        // to this fixture. The script may have exec'd its interpreter, so
+        // comparing against the script path makes cleanup report a false
+        // identity mismatch and leaks the helper into later tests.
+        _ = store.terminateDaemon(timeout: 0.2)
         if let pid {
             reapTestChild(pid)
         }
@@ -180,6 +181,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     }
     private(set) var installedVideoURL: URL?
     private(set) var installedLockScreenOnlyVideoURL: URL?
+    private(set) var sourceAtInstall: URL?
+    var sourceProviderAtInstall: (() -> URL?)?
     private(set) var uninstallCallCount = 0
     private(set) var preservingUninstallCallCount = 0
     var installError: TestInstallerError?
@@ -193,6 +196,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     }
 
     func install(videoURL: URL) throws {
+        sourceAtInstall = sourceProviderAtInstall?()
         if failNextDesktopInstall {
             failNextDesktopInstall = false
             throw TestInstallerError.installFailed
@@ -204,6 +208,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     }
 
     func installLockScreenOnly(videoURL: URL) throws {
+        sourceAtInstall = sourceProviderAtInstall?()
         if let installError {
             throw installError
         }
@@ -572,6 +577,9 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     defer { fixture.cleanup() }
 
     let installer = RecordingLockScreenSaverInstaller()
+    installer.sourceProviderAtInstall = {
+        fixture.store.loadLockScreenOnlySource()
+    }
     let legacyPlatform = LegacyMacOSAdapter(
         installer: installer,
         isAvailable: true
@@ -591,6 +599,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
     #expect(installer.installedVideoURL == fixture.videoURL)
     #expect(installer.installedLockScreenOnlyVideoURL == nil)
+    #expect(installer.sourceAtInstall == fixture.videoURL.standardizedFileURL)
 }
 
 @Test func legacySyncMigratesLockOnlySourceIntoMainConfig() async throws {

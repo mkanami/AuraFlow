@@ -652,7 +652,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         store.markLockScreenOnlyAgent(lockScreenOnly)
     }
 
-    private func waitForLockScreenAgentReady() throws {
+    private func waitForLockScreenAgentReady() async throws {
         // Test fixtures use lightweight helper processes instead of the real
         // lock-only agent. The readiness handshake is required only for the
         // production runtime, where returning Applied before the agent has
@@ -674,14 +674,14 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             if store.isLockScreenAgentStarted() {
                 return
             }
-            Thread.sleep(forTimeInterval: 0.05)
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
         throw NativeWallpaperControllerError.unavailable(
             "The Lock Screen agent did not finish initializing."
         )
     }
 
-    private func waitForLockScreenGenerationReady(videoURL: URL) throws {
+    private func waitForLockScreenGenerationReady(videoURL: URL) async throws {
         // The agent-ready marker only says that its run loop is alive. The
         // selected generation must also be valid and owned by the provider;
         // otherwise the Apply button can report success while the next lock
@@ -709,7 +709,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                store.isLockScreenAgentReady() {
                 return
             }
-            Thread.sleep(forTimeInterval: 0.05)
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
 
         throw NativeWallpaperControllerError.unavailable(
@@ -992,6 +992,12 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
 
         let previousSource = store.loadLockScreenOnlySource()
         do {
+            // The legacy screen-saver host can be relaunched while the
+            // installer is selecting the bundle. Persist the new source
+            // before that happens; otherwise the host starts with an empty
+            // runtime configuration and keeps showing a blank frame until a
+            // later manual refresh.
+            try store.saveLockScreenOnlySource(normalizedURL)
             try await installLockScreenSaver(
                 videoURL: normalizedURL,
                 ensureStillFrame: true,
@@ -1002,7 +1008,6 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                     "macOS did not confirm the Lock Screen wallpaper configuration."
                 )
             }
-            try store.saveLockScreenOnlySource(normalizedURL)
         } catch {
             store.restoreLockScreenOnlySource(previousSource)
             throw error
@@ -1047,8 +1052,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             store.markLockScreenOnlyAgent(false)
         }
         if requiresDedicatedLockScreenAgent {
-            try waitForLockScreenAgentReady()
-            try waitForLockScreenGenerationReady(videoURL: normalizedURL)
+            try await waitForLockScreenAgentReady()
+            try await waitForLockScreenGenerationReady(videoURL: normalizedURL)
         }
         return store.status()
     }
@@ -1541,7 +1546,33 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         ensureStillFrame: Bool,
         lockScreenOnly: Bool
     ) async throws {
-        if shouldUseLegacyNativeFallback {
+        let useLegacyFallback = shouldUseLegacyNativeFallback
+        // Keep a cached frame for the app's desktop recovery path, but do not
+        // replace macOS's live Lock Screen descriptor with an image wallpaper.
+        if ensureStillFrame {
+            if lockScreenOnly {
+                // The legacy saver is also the compatibility companion on
+                // macOS 26+. A real cached frame prevents the host from
+                // exposing its black layer while AVPlayer decodes the first
+                // video frame. Keep an older frame as a last-resort visual
+                // fallback if AVFoundation has a transient decode failure.
+                do {
+                    _ = try store.ensureCurrentStillFrame(from: videoURL)
+                } catch {
+                    guard FileManager.default.fileExists(
+                        atPath: store.lastFrameURL.path
+                    ) else {
+                        throw error
+                    }
+                    lockScreenLifecycleLogger.warning(
+                        "Keeping the previous Lock Screen fallback frame after capture failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            } else {
+                _ = try store.ensureCurrentStillFrame(from: videoURL)
+            }
+        }
+        if useLegacyFallback {
             try await lockScreenPlatform.installLegacyLockScreenFallback(
                 videoURL: videoURL,
                 restoringLockScreenOnlyVideoURL: lockScreenOnly
@@ -1551,18 +1582,6 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             return
         }
         try requireNativeBridgeIfNeeded()
-        // Keep a cached frame for the app's desktop recovery path, but do not
-        // replace macOS's live Lock Screen descriptor with an image wallpaper.
-        if ensureStillFrame {
-            if lockScreenOnly {
-                // A valid video is enough for the live saver. Treat frame
-                // capture as a warm-up so a transient AVFoundation failure
-                // cannot make the Lock button appear to do nothing.
-                _ = try? store.ensureCurrentStillFrame(from: videoURL)
-            } else {
-                _ = try store.ensureCurrentStillFrame(from: videoURL)
-            }
-        }
         if lockScreenOnly {
             try await lockScreenPlatform.installLockScreenOnly(videoURL: videoURL)
         } else {

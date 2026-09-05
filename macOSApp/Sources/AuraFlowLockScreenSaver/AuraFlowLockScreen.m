@@ -378,7 +378,6 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 
 - (void)setFallbackImageAtPath:(NSString *)path {
     self.fallbackLayer.hidden = NO;
-    self.fallbackLayer.contents = nil;
     if (path.length == 0) {
         return;
     }

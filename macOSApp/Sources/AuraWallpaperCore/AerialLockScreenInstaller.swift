@@ -112,7 +112,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         stateDirectoryURL: URL? = nil,
         assetID: String? = nil,
         refreshSystem: (() -> Void)? = nil,
-        rearmSystem: (() -> Void)? = nil
+        rearmSystem: (() -> Void)? = nil,
+        lockSessionHandoffSystem: (() -> Void)? = nil
     ) {
         self.fileManager = fileManager
         let home = fileManager.homeDirectoryForCurrentUser
@@ -192,7 +193,13 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         if let rearmSystem {
             self.rearmSystem = { _ in rearmSystem() }
             self.desktopRestoreSystem = { _ in rearmSystem() }
-            self.lockSessionHandoffSystem = { _ in rearmSystem() }
+            self.lockSessionHandoffSystem = { _ in
+                if let lockSessionHandoffSystem {
+                    lockSessionHandoffSystem()
+                } else {
+                    rearmSystem()
+                }
+            }
         } else {
             self.rearmSystem = AerialProviderController
                 .refreshLockScreenProvider
@@ -206,8 +213,14 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             // shield is raised: that leaves loginwindow with a blank surface
             // while the replacement provider is still starting. If the
             // provider is missing, prewarmLockScreenProvider launches it.
-            self.lockSessionHandoffSystem = AerialProviderController
-                .prewarmLockScreenProvider
+            if let lockSessionHandoffSystem {
+                self.lockSessionHandoffSystem = { _ in
+                    lockSessionHandoffSystem()
+                }
+            } else {
+                self.lockSessionHandoffSystem = AerialProviderController
+                    .prewarmLockScreenProvider
+            }
         }
     }
 
@@ -424,7 +437,13 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 _ = try await installLocked(
                     videoURL: videoURL,
                     forceRefresh: false,
-                    refreshAction: rearmSystem,
+                    // Lock-only installation must not kill WallpaperAgent.
+                    // The secure surface is about to be resolved by
+                    // loginwindow; restarting the owner here exposes a blank
+                    // transition surface and makes the first Lock appear to
+                    // do nothing. Prewarm only launches the provider when it
+                    // is genuinely absent.
+                    refreshAction: lockSessionHandoffSystem,
                     // Keep the user's Desktop route intact while unlocked. The
                     // agent promotes this installation to the shared route from
                     // the early shield callback immediately before loginwindow

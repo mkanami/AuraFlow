@@ -5,9 +5,19 @@ import Testing
 
 private final class AerialRefreshCounter: @unchecked Sendable {
     private(set) var count = 0
+    private(set) var rearmCount = 0
+    private(set) var lockSessionHandoffCount = 0
 
     func increment() {
         count += 1
+    }
+
+    func incrementRearm() {
+        rearmCount += 1
+    }
+
+    func incrementLockSessionHandoff() {
+        lockSessionHandoffCount += 1
     }
 }
 
@@ -50,6 +60,8 @@ private struct AerialLockScreenFixture {
     let assetURL: URL
     let videoURL: URL
     let refreshCounter: AerialRefreshCounter
+    let rearmCounter: AerialRefreshCounter
+    let lockSessionHandoffCounter: AerialRefreshCounter
     let installer: AerialLockScreenInstaller
 
     init(
@@ -237,6 +249,10 @@ private struct AerialLockScreenFixture {
 
         let counter = AerialRefreshCounter()
         refreshCounter = counter
+        let rearmCounter = AerialRefreshCounter()
+        self.rearmCounter = rearmCounter
+        let lockSessionHandoffCounter = AerialRefreshCounter()
+        self.lockSessionHandoffCounter = lockSessionHandoffCounter
         let refreshStoreURL = storeURL
         installer = AerialLockScreenInstaller(
             fileManager: .default,
@@ -253,6 +269,11 @@ private struct AerialLockScreenFixture {
             },
             rearmSystem: {
                 counter.increment()
+                rearmCounter.incrementRearm()
+            },
+            lockSessionHandoffSystem: {
+                counter.increment()
+                lockSessionHandoffCounter.incrementLockSessionHandoff()
             }
         )
     }
@@ -401,6 +422,17 @@ private struct AerialLockScreenFixture {
         provider: "com.apple.wallpaper.choice.aerials",
         assetID: AerialLockScreenFixture.assetID
     ))
+}
+
+@Test func modernLockScreenOnlyDoesNotRestartWallpaperAgent() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    #expect(fixture.rearmCounter.rearmCount == 0)
+    #expect(fixture.lockSessionHandoffCounter.lockSessionHandoffCount == 1)
+    #expect(fixture.installer.installationConfirmed)
 }
 
 @Test func modernLockScreenOnlyPreservesDesktopRoute() async throws {
