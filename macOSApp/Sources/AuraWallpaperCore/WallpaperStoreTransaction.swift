@@ -66,6 +66,39 @@ internal final class WallpaperStoreTransaction {
         ) as? [String: Any]
     }
 
+    func referencedAerialAssetIDs(in data: Data) throws -> Set<String> {
+        guard let root = try propertyListDictionary(from: data) else {
+            throw AerialLockScreenInstallerError.malformedWallpaperStore
+        }
+        var result = Set<String>()
+        collectReferencedAerialAssetIDs(from: root, into: &result)
+        return result
+    }
+
+    private func collectReferencedAerialAssetIDs(
+        from value: Any,
+        into result: inout Set<String>
+    ) {
+        if let dictionary = value as? [String: Any] {
+            if dictionary["Provider"] as? String
+                == WallpaperPlatformConstants.aerialProviderID,
+               let configurationData = dictionary["Configuration"] as? Data,
+               let configuration = try? propertyListDictionary(
+                   from: configurationData
+               ),
+               let assetID = configuration["assetID"] as? String {
+                result.insert(assetID)
+            }
+            for child in dictionary.values {
+                collectReferencedAerialAssetIDs(from: child, into: &result)
+            }
+        } else if let array = value as? [Any] {
+            for child in array {
+                collectReferencedAerialAssetIDs(from: child, into: &result)
+            }
+        }
+    }
+
     func cleanedWallpaperStoreData(from data: Data) throws -> Data {
         guard var root = try propertyListDictionary(from: data) else {
             throw AerialLockScreenInstallerError.malformedWallpaperStore
@@ -257,6 +290,26 @@ internal final class WallpaperStoreTransaction {
         guard !desktopRoutes.isEmpty else {
             throw AerialLockScreenInstallerError.malformedWallpaperStore
         }
+        let fallbackDesktopMode = desktopRoutes
+            .sorted { lhs, rhs in
+                func priority(_ path: String) -> Int {
+                    if path.hasPrefix("SystemDefault.") { return 0 }
+                    if path.hasPrefix("Displays.") { return 1 }
+                    if path.hasPrefix("Spaces.") { return 2 }
+                    return 3
+                }
+                let lhsPriority = priority(lhs.key)
+                let rhsPriority = priority(rhs.key)
+                return lhsPriority == rhsPriority
+                    ? lhs.key < rhs.key
+                    : lhsPriority < rhsPriority
+            }
+            .lazy
+            .compactMap { try? self.propertyListDictionary(from: $0.value) }
+            .first
+        guard let fallbackDesktopMode else {
+            throw AerialLockScreenInstallerError.malformedWallpaperStore
+        }
 
         var invalidRoute = false
         var selectedModes: [[String: Any]] = []
@@ -266,11 +319,26 @@ internal final class WallpaperStoreTransaction {
                 in: container,
                 managedAssetID: managedAssetID
             ) else {
-                if containerContainsManagedWallpaper(
-                    container,
-                    managedAssetID: managedAssetID
-                ) {
+                let containsManagedDesktop = ["Linked", "Desktop"].contains {
+                    guard let mode = container[$0] as? [String: Any] else {
+                        return false
+                    }
+                    return modeIsManaged(mode, assetID: managedAssetID)
+                }
+                if containsManagedDesktop {
                     invalidRoute = true
+                    return container
+                }
+                if let idle = container["Idle"] as? [String: Any],
+                   modeIsManaged(idle, assetID: managedAssetID) {
+                    // macOS may keep AllSpacesAndDisplays as an Idle-only
+                    // aggregate while concrete Display/Space containers own
+                    // every Desktop route. Replace only the managed Idle with
+                    // a real current Desktop; its missing local Desktop is not
+                    // corruption and must not make Remove fail.
+                    var updated = container
+                    updated["Idle"] = fallbackDesktopMode
+                    return updated
                 }
                 return container
             }

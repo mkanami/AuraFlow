@@ -46,6 +46,7 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
     private var outputBuffer = Data()
     private var state: State = .stopped
     private var generation: UInt64 = 0
+    private var presentationGeneration: UInt64 = 0
     private var pending: [String: PendingRequest] = [:]
     private var requestTimeouts: [String: DispatchWorkItem] = [:]
     private var preparationWaiters: [@Sendable (Bool) -> Void] = []
@@ -84,11 +85,15 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
                 }
                 return
             }
+            let presentationGeneration = self.presentationGeneration
             // A lock notification can arrive while the asynchronous prepare
             // request is still in flight. Queue show behind the readiness
             // handshake instead of sending it to an empty bridge state.
             self.ensureReady { [weak self] prepared in
-                guard let self, prepared else {
+                guard let self,
+                      prepared,
+                      self.presentationGeneration == presentationGeneration
+                else {
                     if let completion {
                         Self.completeOnMain(completion, succeeded: false)
                     }
@@ -113,12 +118,21 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
     }
 
     func hideAfterUnlock() {
-        sendWhenReady(.hide)
+        ioQueue.sync {
+            // Cancel a show that is waiting behind the capability/prepare
+            // handshake. Starting a stopped bridge only to hide it turns the
+            // next real Lock into a cold launch and used to leave a stale show
+            // request alive after a quick unlock.
+            presentationGeneration &+= 1
+            guard process?.isRunning == true else { return }
+            _ = send(.hide, completion: nil)
+        }
     }
 
     func shutdown() {
         ioQueue.async { [weak self] in
             guard let self else { return }
+            self.presentationGeneration &+= 1
             guard self.process?.isRunning == true else {
                 self.closeTransport(finalState: .stopped, terminateProcess: false)
                 return

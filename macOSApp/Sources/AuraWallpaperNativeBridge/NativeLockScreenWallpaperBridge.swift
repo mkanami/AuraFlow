@@ -18,8 +18,10 @@ final class NativeLockScreenWallpaperBridge {
     private var window: NSWindow?
     private var preparing = false
     private var showing = false
+    private var lockedPresentationReady = false
     private var paused = false
     private var pendingCompletions: [(Bool, String?) -> Void] = []
+    private var pendingShowCompletions: [(Bool, String?) -> Void] = []
     private var presentationRequestID: UInt64 = 0
 
     /// Performs a non-mutating startup probe. The bridge only reports itself
@@ -209,15 +211,26 @@ final class NativeLockScreenWallpaperBridge {
         }
 
         if showing {
-            completion?(isReady, nil)
+            if lockedPresentationReady {
+                completion?(true, nil)
+            } else if let completion {
+                pendingShowCompletions.append(completion)
+            }
             return
         }
         showing = true
+        lockedPresentationReady = false
+        if let completion {
+            pendingShowCompletions.append(completion)
+        }
         presentationRequestID &+= 1
         let requestID = presentationRequestID
         guard let displayAssertion else {
             showing = false
-            completion?(false, "Native Lock Screen display assertion is not ready.")
+            finishShowRequests(
+                succeeded: false,
+                errorDescription: "Native Lock Screen display assertion is not ready."
+            )
             return
         }
         // Keep the prewarmed layer hidden. Making it visible here creates a
@@ -237,17 +250,34 @@ final class NativeLockScreenWallpaperBridge {
                     return
                 }
                 self.presentationAssertion = assertion
+                self.lockedPresentationReady = true
                 if self.paused {
                     self.pauseLayer(displayAssertion.layer)
                 }
-                completion?(true, nil)
+                self.finishShowRequests(succeeded: true)
             } catch {
+                guard self.presentationRequestID == requestID else { return }
                 Self.logger.error(
                     "Native locked presentation failed: \(error.localizedDescription, privacy: .public)"
                 )
                 self.showing = false
-                completion?(false, error.localizedDescription)
+                self.lockedPresentationReady = false
+                self.finishShowRequests(
+                    succeeded: false,
+                    errorDescription: error.localizedDescription
+                )
             }
+        }
+    }
+
+    private func finishShowRequests(
+        succeeded: Bool,
+        errorDescription: String? = nil
+    ) {
+        let completions = pendingShowCompletions
+        pendingShowCompletions.removeAll()
+        for completion in completions {
+            completion(succeeded, errorDescription)
         }
     }
 
@@ -289,8 +319,13 @@ final class NativeLockScreenWallpaperBridge {
 
     func hideAfterUnlock() {
         showing = false
+        lockedPresentationReady = false
         presentationRequestID &+= 1
         let requestID = presentationRequestID
+        finishShowRequests(
+            succeeded: false,
+            errorDescription: "Lock Screen presentation was cancelled by unlock."
+        )
         window?.alphaValue = 0
         guard let displayAssertion else { return }
         Task { @MainActor [weak self] in
@@ -312,6 +347,12 @@ final class NativeLockScreenWallpaperBridge {
 
     func shutdown() {
         presentationRequestID &+= 1
+        showing = false
+        lockedPresentationReady = false
+        finishShowRequests(
+            succeeded: false,
+            errorDescription: "Native Lock Screen bridge is shutting down."
+        )
         window?.orderOut(nil)
         window = nil
         presentationAssertion = nil

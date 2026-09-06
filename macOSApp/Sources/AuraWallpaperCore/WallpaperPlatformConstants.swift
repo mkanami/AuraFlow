@@ -34,7 +34,6 @@ public enum WallpaperPlatformConstants {
     public static let dockProcessName = "Dock"
     public static let loginFrameworkPath =
         "/System/Library/PrivateFrameworks/login.framework/login"
-    public static let startScreenSaverSymbol = "SACScreenSaverStartNow"
 
     public static func wallpaperSupportURL(homeURL: URL) -> URL {
         homeURL.appendingPathComponent(

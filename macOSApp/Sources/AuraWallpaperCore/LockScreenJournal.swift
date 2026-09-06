@@ -28,6 +28,7 @@ internal struct AerialLockScreenMarker: Codable {
     var desiredMode: String?
     var lastValidatedStoreHash: String?
     var lastProviderRefreshGeneration: UInt64?
+    var lastAssetRepairGeneration: UInt64?
     var fallbackFramePath: String?
     var lastOperationID: UInt64?
     var state: String?
@@ -206,6 +207,7 @@ internal final class LockScreenJournal {
             desiredMode: nil,
             lastValidatedStoreHash: nil,
             lastProviderRefreshGeneration: nil,
+            lastAssetRepairGeneration: nil,
             fallbackFramePath: nil,
             lastOperationID: nil,
             state: "recovering"

@@ -24,6 +24,7 @@ public enum AerialLockScreenInstallerError: LocalizedError {
     case malformedWallpaperStore
     case wallpaperStoreUpdateFailed
     case aerialProviderRestartFailed
+    case aerialAssetReplacedBySystem
     case aerialVideoPreparationFailed(String)
     case videoMissing(String)
 
@@ -32,13 +33,15 @@ public enum AerialLockScreenInstallerError: LocalizedError {
         case .wallpaperStoreUnavailable:
             return "The macOS wallpaper store is not available."
         case .aerialAssetUnavailable:
-            return "No free macOS Aerial slot is available. AuraFlow did not change the wallpaper."
+            return "No downloaded, unused macOS Aerial slot is available. AuraFlow will use the legacy Lock Screen fallback."
         case .malformedWallpaperStore:
             return "The macOS wallpaper store could not be read safely."
         case .wallpaperStoreUpdateFailed:
             return "macOS did not keep the new Lock Screen wallpaper configuration."
         case .aerialProviderRestartFailed:
             return "macOS did not restart the Lock Screen wallpaper provider."
+        case .aerialAssetReplacedBySystem:
+            return "macOS replaced the reserved Aerial asset. AuraFlow stopped native repair and will use the legacy Lock Screen fallback."
         case .aerialVideoPreparationFailed(let detail):
             return "AuraFlow could not prepare the Lock Screen video: \(detail)"
         case .videoMissing(let path):
@@ -388,8 +391,18 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     }
 
     public var isAvailable: Bool {
-        fileManager.fileExists(atPath: wallpaperStoreURL.path)
-            && !assetStore.supportedProviderAssetIDs().isEmpty
+        guard fileManager.fileExists(atPath: wallpaperStoreURL.path) else {
+            return false
+        }
+        if let marker = loadMarker(),
+           marker.completed == true,
+           assetStore.providerSupportsAsset(marker.assetID) {
+            return true
+        }
+        if let configuredAssetID {
+            return assetStore.providerSupportsAsset(configuredAssetID)
+        }
+        return !availableDownloadedAssetIDs().isEmpty
     }
 
     /// Re-applies the managed still frame immediately before a real lock.
@@ -557,7 +570,6 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         }
 
         let assetURL = URL(fileURLWithPath: marker.assetPath)
-        let assetBefore = try? Data(contentsOf: assetURL)
         let currentAssetSignature = try? mediaPreparer.fileSignature(at: assetURL)
         let assetWasValid = fileManager.fileExists(atPath: assetURL.path)
             && marker.assetSignature != nil
@@ -575,19 +587,42 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         var assetChanged = false
         var selectionChanged = false
         var providerRefreshed = false
+        let repairAssetSnapshotURL = !assetWasValid
+            ? try rollbackSnapshotURL(for: assetURL)
+            : nil
+        defer { removeRollbackSnapshot(at: repairAssetSnapshotURL) }
+        var expectedRepairedAssetSignature: String?
 
         do {
             if !assetWasValid {
+                // Older journals and configured test/provider slots may not
+                // carry a slot generation. Treat them as generation zero so
+                // the one-repair limit also applies after an app upgrade.
+                let repairGeneration = marker.generation ?? 0
+                if marker.lastAssetRepairGeneration == repairGeneration {
+                    throw AerialLockScreenInstallerError
+                        .aerialAssetReplacedBySystem
+                }
                 let preparedVideoURL = try await mediaPreparer.prepare(from: videoURL)
                 guard shouldProceed() else {
                     throw AerialLockScreenOperationAbort.sessionChanged
                 }
+                expectedRepairedAssetSignature = try mediaPreparer.fileSignature(
+                    at: preparedVideoURL
+                )
+                var attemptedMarker = marker
+                attemptedMarker.lastAssetRepairGeneration = repairGeneration
+                try saveMarker(attemptedMarker)
+                // `replaceFile` restores metadata after the atomic swap. Mark
+                // the mutation first so a metadata failure still restores the
+                // rollback snapshot.
+                assetChanged = true
                 try replaceFile(
                     at: assetURL,
                     withContentsOf: preparedVideoURL,
+                    preservingDestinationMetadata: true,
                     shouldProceed: shouldProceed
                 )
-                assetChanged = true
             }
 
             if !saverWasSelected {
@@ -658,9 +693,18 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 // An interrupted or legacy marker may carry the signature of
                 // an older file. Persist the exact asset we just committed so
                 // the next health check is a no-op.
-                updatedMarker.assetSignature = try mediaPreparer.fileSignature(
+                let installedSignature = try mediaPreparer.fileSignature(
                     at: assetURL
                 )
+                guard let expectedRepairedAssetSignature,
+                      installedSignature == expectedRepairedAssetSignature
+                else {
+                    throw AerialLockScreenInstallerError
+                        .aerialAssetReplacedBySystem
+                }
+                updatedMarker.assetSignature = expectedRepairedAssetSignature
+                updatedMarker.lastAssetRepairGeneration =
+                    marker.generation ?? 0
             }
             updatedMarker.desiredMode = "lockOnly"
             updatedMarker.lastValidatedStoreHash = signature(
@@ -685,8 +729,12 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 )
             }
             if assetChanged {
-                if let assetBefore {
-                    try? assetBefore.write(to: assetURL, options: .atomic)
+                if let repairAssetSnapshotURL {
+                    try? replaceFile(
+                        at: assetURL,
+                        withContentsOf: repairAssetSnapshotURL,
+                        preservingDestinationMetadata: false
+                    )
                 } else {
                     try? fileManager.removeItem(at: assetURL)
                 }
@@ -867,10 +915,22 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             )
         }
 
+        // Re-read after slot selection. System Settings can select the same
+        // downloaded Aerial between the initial availability check and this
+        // transaction; a new install must never overwrite that user route.
+        let currentStoreDataForAttempt = try Data(contentsOf: wallpaperStoreURL)
+        if configuredAssetID == nil,
+           existingMarker?.completed != true,
+           try wallpaperStoreTransaction.referencedAerialAssetIDs(
+                in: currentStoreDataForAttempt
+           ).contains(assetID) {
+            throw AerialLockScreenInstallerError.aerialAssetUnavailable
+        }
+
         if originalAssetExisted,
            fileManager.fileExists(atPath: assetURL.path),
            !fileManager.fileExists(atPath: assetBackupURL.path) {
-            try fileManager.copyItem(at: assetURL, to: assetBackupURL)
+            try copyItemEfficiently(at: assetURL, to: assetBackupURL)
         }
         if originalThumbnailExisted,
            fileManager.fileExists(atPath: thumbnailURL.path),
@@ -884,7 +944,6 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         // In lock-only mode, the live Index is the sole source of truth for
         // Desktop. Session snapshots are recovery data for Remove and must
         // never select a wallpaper for a later Apply.
-        let currentStoreDataForAttempt = try Data(contentsOf: wallpaperStoreURL)
         let updateBaseStoreData: Data
         if lockScreenOnlyRoute {
             updateBaseStoreData = currentStoreDataForAttempt
@@ -926,7 +985,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             desktopRoutesBeforeAttempt = [:]
         }
         let storeBeforeAttempt = currentStoreDataForAttempt
-        let assetBeforeAttempt = try? Data(contentsOf: assetURL)
+        let assetSnapshotURL = try rollbackSnapshotURL(for: assetURL)
+        defer { removeRollbackSnapshot(at: assetSnapshotURL) }
         let thumbnailBeforeAttempt = try? Data(contentsOf: thumbnailURL)
         let markerBeforeAttempt = try? Data(contentsOf: markerURL)
         let marker = try marker(
@@ -958,23 +1018,24 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             guard shouldProceed() else {
                 throw AerialLockScreenOperationAbort.sessionChanged
             }
+            assetMutated = true
             try replaceFile(
                 at: assetURL,
                 withContentsOf: preparedVideoURL,
+                preservingDestinationMetadata: true,
                 shouldProceed: shouldProceed
             )
-            assetMutated = true
             guard shouldProceed() else {
                 throw AerialLockScreenOperationAbort.sessionChanged
             }
             if let currentStillURL = currentStillFrameURL(),
                fileManager.fileExists(atPath: currentStillURL.path) {
+                thumbnailMutated = true
                 try replaceFile(
                     at: thumbnailURL,
                     withContentsOf: currentStillURL,
                     shouldProceed: shouldProceed
                 )
-                thumbnailMutated = true
             }
             guard shouldProceed() else {
                 throw AerialLockScreenOperationAbort.sessionChanged
@@ -1098,10 +1159,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 )
             }
             if assetMutated {
-                if let assetBeforeAttempt {
-                    try? assetBeforeAttempt.write(
-                        to: assetURL,
-                        options: .atomic
+                if let assetSnapshotURL {
+                    try? replaceFile(
+                        at: assetURL,
+                        withContentsOf: assetSnapshotURL,
+                        preservingDestinationMetadata: false
                     )
                 } else {
                     try? fileManager.removeItem(at: assetURL)
@@ -1586,10 +1648,9 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         if let marker = loadMarker(), marker.completed == true {
             return marker.assetID
         }
-        return assetStore.orderedFreeProviderAssetIDs(
+        return availableDownloadedAssetIDs(
             lastAssetID: journal.loadSlotState()?.lastAssetID
         ).first
-            ?? assetStore.supportedProviderAssetIDs().sorted().first
     }
 
     private func resolveAssetIDForInstallation() -> String? {
@@ -1599,7 +1660,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         if let marker = loadMarker(), marker.completed == true {
             return marker.assetID
         }
-        guard let assetID = assetStore.orderedFreeProviderAssetIDs(
+        guard let assetID = availableDownloadedAssetIDs(
             lastAssetID: journal.loadSlotState()?.lastAssetID
         ).first else {
             return nil
@@ -1617,9 +1678,27 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             return nil
         }
         lockScreenLifecycleLogger.notice(
-            "Selected free Aerial slot generation=\(state.generation, privacy: .public)"
+            "Selected downloaded Aerial slot generation=\(state.generation, privacy: .public)"
         )
         return assetID
+    }
+
+    private func availableDownloadedAssetIDs(
+        lastAssetID: String? = nil
+    ) -> [String] {
+        let referencedAssetIDs: Set<String>
+        if let storeData = try? Data(contentsOf: wallpaperStoreURL),
+           let referenced = try? wallpaperStoreTransaction
+               .referencedAerialAssetIDs(in: storeData) {
+            referencedAssetIDs = referenced
+        } else {
+            // Selection must fail closed if the live store cannot be parsed;
+            // otherwise AuraFlow could reserve an Aerial the user is using.
+            return []
+        }
+        return assetStore.orderedDownloadedProviderAssetIDs(
+            lastAssetID: lastAssetID
+        ).filter { !referencedAssetIDs.contains($0) }
     }
 
     private func applyLockOnlySystemWallpaperURLUpdate(
@@ -2201,8 +2280,12 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     private func replaceFile(
         at destinationURL: URL,
         withContentsOf sourceURL: URL,
+        preservingDestinationMetadata: Bool = false,
         shouldProceed: (() -> Bool)? = nil
     ) throws {
+        let replacementMetadata = preservingDestinationMetadata
+            ? assetStore.replacementMetadata(at: destinationURL)
+            : nil
         try fileManager.createDirectory(
             at: destinationURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -2215,7 +2298,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         defer {
             try? fileManager.removeItem(at: temporaryURL)
         }
-        try fileManager.copyItem(at: sourceURL, to: temporaryURL)
+        try copyItemEfficiently(at: sourceURL, to: temporaryURL)
         if let shouldProceed, !shouldProceed() {
             throw AerialLockScreenOperationAbort.sessionChanged
         }
@@ -2230,6 +2313,51 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 to: destinationURL
             )
         }
+        if preservingDestinationMetadata {
+            try assetStore.restoreReplacementMetadata(
+                replacementMetadata,
+                to: destinationURL
+            )
+        }
+    }
+
+    /// APFS clonefile keeps rollback of large Apple Aerial downloads cheap.
+    /// Fall back to FileManager when the source and state directory are on
+    /// different volumes or the filesystem does not support cloning.
+    private func rollbackSnapshotURL(for sourceURL: URL) throws -> URL? {
+        guard fileManager.fileExists(atPath: sourceURL.path) else { return nil }
+        try fileManager.createDirectory(
+            at: stateDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        let snapshotURL = stateDirectoryURL.appendingPathComponent(
+            ".asset-rollback-\(UUID().uuidString).mov"
+        )
+        try copyItemEfficiently(at: sourceURL, to: snapshotURL)
+        return snapshotURL
+    }
+
+    private func copyItemEfficiently(
+        at sourceURL: URL,
+        to destinationURL: URL
+    ) throws {
+        let cloned = sourceURL.path.withCString { sourcePath in
+            destinationURL.path.withCString { destinationPath in
+                clonefile(sourcePath, destinationPath, 0) == 0
+            }
+        }
+        guard !cloned else { return }
+        // A failed clone must not leave a partial destination that prevents
+        // FileManager's portable fallback.
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    private func removeRollbackSnapshot(at snapshotURL: URL?) {
+        guard let snapshotURL else { return }
+        try? fileManager.removeItem(at: snapshotURL)
     }
 
     private func marker(
@@ -2279,6 +2407,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             desiredMode: lockScreenOnlyRoute ? "lockOnly" : "shared",
             lastValidatedStoreHash: nil,
             lastProviderRefreshGeneration: nil,
+            lastAssetRepairGeneration: nil,
             fallbackFramePath: currentStillFrameURL()?.path,
             lastOperationID: nil,
             state: "preparing"

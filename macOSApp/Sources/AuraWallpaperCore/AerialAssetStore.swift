@@ -1,4 +1,12 @@
+import Darwin
 import Foundation
+
+internal struct AerialAssetReplacementMetadata {
+    let modificationDate: Date?
+    let posixPermissions: NSNumber?
+    let sourceURL: Data?
+    let lastETag: Data?
+}
 
 /// Resolves the downloaded Aerial cache files and the signed Apple provider's
 /// catalog. The video cache is the ownership boundary for slot selection:
@@ -103,25 +111,132 @@ internal final class AerialAssetStore {
         return assetIDs
     }
 
-    /// Returns free provider slots in deterministic order, rotating the
-    /// result after `lastAssetID` when that ID is itself a free slot.
-    internal func orderedFreeProviderAssetIDs(
+    /// Returns downloaded provider slots in deterministic order. Selecting a
+    /// catalog ID whose movie is absent asks WallpaperAerialsExtension to
+    /// download Apple's original asset over AuraFlow's file. Reusing an
+    /// already-downloaded, otherwise-unreferenced slot avoids that race.
+    internal func orderedDownloadedProviderAssetIDs(
         lastAssetID: String? = nil
     ) -> [String] {
-        let freeAssetIDs = supportedProviderAssetIDs()
-            .filter { !fileManager.fileExists(atPath: assetURL(for: $0).path) }
+        let downloadedAssetIDs = supportedProviderAssetIDs()
+            .filter { fileManager.fileExists(atPath: assetURL(for: $0).path) }
             .sorted()
 
-        guard freeAssetIDs.count > 1,
+        guard downloadedAssetIDs.count > 1,
               let lastAssetID,
-              let index = freeAssetIDs.firstIndex(of: lastAssetID)
+              let index = downloadedAssetIDs.firstIndex(of: lastAssetID)
         else {
-            return freeAssetIDs
+            return downloadedAssetIDs
         }
 
-        let next = freeAssetIDs.index(after: index)
-        return Array(freeAssetIDs[next...])
-            + Array(freeAssetIDs[..<next])
+        let next = downloadedAssetIDs.index(after: index)
+        return Array(downloadedAssetIDs[next...])
+            + Array(downloadedAssetIDs[..<next])
+    }
+
+    internal func replacementMetadata(
+        at url: URL
+    ) -> AerialAssetReplacementMetadata? {
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+        return AerialAssetReplacementMetadata(
+            modificationDate: attributes?[.modificationDate] as? Date,
+            posixPermissions: attributes?[.posixPermissions] as? NSNumber,
+            sourceURL: extendedAttribute(named: "SourceURL", at: url),
+            lastETag: extendedAttribute(named: "LastETag", at: url)
+        )
+    }
+
+    /// Keeps the Apple downloader metadata attached to a reserved slot. The
+    /// prepared Aura file must not inherit its own quarantine metadata, while
+    /// SourceURL/LastETag tell WallpaperAerialsExtension that this downloaded
+    /// slot is already materialized.
+    internal func restoreReplacementMetadata(
+        _ metadata: AerialAssetReplacementMetadata?,
+        to url: URL
+    ) throws {
+        guard let metadata else { return }
+        var attributes: [FileAttributeKey: Any] = [:]
+        if let modificationDate = metadata.modificationDate {
+            attributes[.modificationDate] = modificationDate
+        }
+        if let posixPermissions = metadata.posixPermissions {
+            attributes[.posixPermissions] = posixPermissions
+        }
+        if !attributes.isEmpty {
+            try fileManager.setAttributes(attributes, ofItemAtPath: url.path)
+        }
+        try restoreExtendedAttribute(
+            named: "SourceURL",
+            value: metadata.sourceURL,
+            at: url
+        )
+        try restoreExtendedAttribute(
+            named: "LastETag",
+            value: metadata.lastETag,
+            at: url
+        )
+    }
+
+    private func extendedAttribute(named name: String, at url: URL) -> Data? {
+        let size = url.path.withCString { path in
+            name.withCString { attribute in
+                getxattr(path, attribute, nil, 0, 0, 0)
+            }
+        }
+        guard size >= 0 else { return nil }
+        var data = Data(count: size)
+        let result = data.withUnsafeMutableBytes { bytes in
+            url.path.withCString { path in
+                name.withCString { attribute in
+                    getxattr(
+                        path,
+                        attribute,
+                        bytes.baseAddress,
+                        size,
+                        0,
+                        0
+                    )
+                }
+            }
+        }
+        return result == size ? data : nil
+    }
+
+    private func restoreExtendedAttribute(
+        named name: String,
+        value: Data?,
+        at url: URL
+    ) throws {
+        let result: Int32
+        if let value {
+            result = value.withUnsafeBytes { bytes in
+                url.path.withCString { path in
+                    name.withCString { attribute in
+                        setxattr(
+                            path,
+                            attribute,
+                            bytes.baseAddress,
+                            value.count,
+                            0,
+                            0
+                        )
+                    }
+                }
+            }
+        } else {
+            result = url.path.withCString { path in
+                name.withCString { attribute in
+                    removexattr(path, attribute, 0)
+                }
+            }
+            if result != 0, errno == ENOATTR {
+                return
+            }
+        }
+        guard result == 0 else {
+            throw AerialLockScreenInstallerError.wallpaperStoreUpdateFailed
+        }
     }
 
     private func providerInfoIsCompatible() -> Bool {

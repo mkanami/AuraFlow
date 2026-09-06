@@ -891,7 +891,9 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         let removingLockScreenOnly =
             store.isLockScreenOnlyAgent()
             || store.loadLockScreenOnlySource() != nil
-        if daemonProcessManager.isRunning {
+        let runtimeWasRunning = daemonProcessManager.isRunning
+        let runtimeWasPaused = store.isPaused()
+        if runtimeWasRunning {
             try? send(
                 removingLockScreenOnly
                     ? .terminatePreservingDesktop
@@ -906,14 +908,41 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
         store.removeCommand()
         store.removeHealth()
-        if currentConfig.show_on_lock_screen == true
-            || lockScreenPlatform.isInstalled {
-            if removingLockScreenOnly {
-                try await lockScreenPlatform
-                    .uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
-            } else {
-                try await lockScreenPlatform.uninstallAsync()
+        do {
+            if currentConfig.show_on_lock_screen == true
+                || lockScreenPlatform.isInstalled {
+                if removingLockScreenOnly {
+                    try await lockScreenPlatform
+                        .uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
+                } else {
+                    try await lockScreenPlatform.uninstallAsync()
+                }
             }
+        } catch {
+            // Remove must not leave a still-configured wallpaper with its
+            // runtime already stopped. The uninstaller keeps its marker/source
+            // until the system transaction commits, so restore the previous
+            // process when any part of that transaction fails.
+            if runtimeWasRunning {
+                do {
+                    store.markPaused(runtimeWasPaused)
+                    store.markLockScreenOnlyAgent(removingLockScreenOnly)
+                    try launchAgentIfNeeded(
+                        lockScreenOnly: removingLockScreenOnly
+                    )
+                    try send(
+                        runtimeWasPaused ? .pause : .reload,
+                        config: currentConfig
+                    )
+                } catch let rollbackError {
+                    throw NativeWallpaperControllerError.unavailable(
+                        "Remove failed: \(error.localizedDescription); "
+                            + "runtime rollback failed: "
+                            + rollbackError.localizedDescription
+                    )
+                }
+            }
+            throw error
         }
         store.clearLockScreenOnlySource()
         store.markLockScreenOnlyAgent(false)
