@@ -425,6 +425,12 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         self.recoveryCoordinator = WallpaperRecoveryCoordinator(store: store)
         self.nextRuntimeOperationID =
             store.loadCommand()?.operationID ?? 0
+        let selectedPlatformName = self.lockScreenPlatform.capabilities.platformName
+        let selectedPlatformIsSecure = self.lockScreenPlatform.capabilities
+            .supportsSecureLockScreen
+        lockScreenLifecycleLogger.notice(
+            "Lock Screen platform selected=\(selectedPlatformName, privacy: .public) secure=\(selectedPlatformIsSecure, privacy: .public) nativeBridge=\(resolvedNativeBridgeCapabilities.isAvailable, privacy: .public)"
+        )
         migrateExistingLaunchAgentIfNeeded()
         if helperResolution.didUpdateInstalledCopy {
             try restartRunningAgentAfterHelperUpdate()
@@ -1014,6 +1020,11 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
         let requiresDedicatedLockScreenAgent =
             lockScreenPlatform.capabilities.supportsSecureLockScreen
+        let platformName = lockScreenPlatform.capabilities.platformName
+        let requiresNativeBridge = nativeBridgeRequired
+        lockScreenLifecycleLogger.notice(
+            "Lock Screen install requested platform=\(platformName, privacy: .public) secure=\(requiresDedicatedLockScreenAgent, privacy: .public) nativeRequired=\(requiresNativeBridge, privacy: .public)"
+        )
 
         // Keep the selected source dedicated to Lock Screen. The runtime
         // temporarily promotes its Aerial route only during the lock handoff
@@ -1032,6 +1043,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 ensureStillFrame: true,
                 lockScreenOnly: true
             )
+            lockScreenLifecycleLogger.notice("Lock Screen route transaction completed")
             guard lockScreenPlatform.installationConfirmed else {
                 throw NativeWallpaperControllerError.unavailable(
                     "macOS did not confirm the Lock Screen wallpaper configuration."

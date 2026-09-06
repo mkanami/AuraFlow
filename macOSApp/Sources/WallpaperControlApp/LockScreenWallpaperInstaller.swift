@@ -213,7 +213,14 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     func installLockScreenOnly(videoURL: URL) async throws {
-        if modernIsUsable {
+        let canUseModern = modernIsUsable
+        let modernAvailable = modern.capabilities.isAvailable
+        let bridgeAvailable = nativeBridgeCapabilities.isAvailable
+        let legacyAvailable = legacy.capabilities.isAvailable
+        lockScreenFallbackLogger.notice(
+            "Lock Screen adapter install modernUsable=\(canUseModern, privacy: .public) modernAvailable=\(modernAvailable, privacy: .public) nativeBridge=\(bridgeAvailable, privacy: .public) legacyAvailable=\(legacyAvailable, privacy: .public)"
+        )
+        if canUseModern {
             try await installModernAndLegacy(videoURL: videoURL, lockScreenOnly: true)
         } else if legacy.capabilities.isAvailable {
             try await legacy.installLockScreenOnly(videoURL: videoURL)

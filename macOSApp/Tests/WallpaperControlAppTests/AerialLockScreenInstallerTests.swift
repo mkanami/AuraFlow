@@ -1725,6 +1725,54 @@ private struct AerialLockScreenFixture {
     #expect(try Data(contentsOf: secondAssetURL) == Data("new-wallpaper".utf8))
 }
 
+@Test func lockOnlyReusesLastManagedSlotWhenRemoveLeavesOnlyReferencedAerial() async throws {
+    let fixture = try AerialLockScreenFixture(
+        hasExistingAsset: true,
+        configuredAssetID: nil
+    )
+    defer { fixture.cleanup() }
+
+    var store = try readWallpaperStore(fixture.storeURL)
+    let referencedAerial = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.aerials",
+        configuration: ["assetID": AerialLockScreenFixture.assetID]
+    )
+    for containerName in ["AllSpacesAndDisplays", "SystemDefault"] {
+        guard var container = store[containerName] as? [String: Any] else {
+            continue
+        }
+        container["Idle"] = referencedAerial
+        store[containerName] = container
+    }
+    try writeWallpaperStore(store, to: fixture.storeURL)
+
+    let slotStateURL = fixture.stateURL.deletingLastPathComponent()
+        .appendingPathComponent("lock_screen_slot_state.json")
+    let slotState = "{\"generation\":83,\"lastAssetID\":\""
+        + AerialLockScreenFixture.assetID
+        + "\"}"
+    try Data(slotState.utf8).write(to: slotStateURL)
+
+    #expect(fixture.installer.isAvailable)
+    try await fixture.installer.installLockScreenOnly(
+        videoURL: fixture.videoURL
+    )
+
+    let marker = try #require(
+        JSONSerialization.jsonObject(
+            with: Data(
+                contentsOf: fixture.stateURL
+                    .appendingPathComponent("installation.json")
+            )
+        ) as? [String: Any]
+    )
+    #expect(marker["assetID"] as? String == AerialLockScreenFixture.assetID)
+    #expect(
+        try Data(contentsOf: fixture.assetURL)
+            == Data("new-wallpaper".utf8)
+    )
+}
+
 @Test func lockOnlyIgnoresThumbnailOnlySlots() async throws {
     let fixture = try AerialLockScreenFixture(
         hasExistingAsset: true,

@@ -409,7 +409,13 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         if let configuredAssetID {
             return assetStore.providerSupportsAsset(configuredAssetID)
         }
+        // After Remove the last Aura-owned slot can still be the user's only
+        // locally downloaded Aerial. It is referenced by Apple's default Idle
+        // route, so the free-slot filter intentionally excludes it. The slot
+        // is nevertheless safe to reuse because the install transaction
+        // snapshots the original movie and restores it on Remove.
         return !availableDownloadedAssetIDs().isEmpty
+            || reusablePreviouslyManagedAssetID() != nil
     }
 
     /// Re-applies the managed still frame immediately before a real lock.
@@ -937,12 +943,18 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             )
         }
 
-        // Re-read after slot selection. System Settings can select the same
+        // Re-read after slot selection. System Settings can select a different
         // downloaded Aerial between the initial availability check and this
         // transaction; a new install must never overwrite that user route.
+        // The one exception is the slot previously owned by AuraFlow. It is
+        // recoverable after Remove when no free local slot exists because the
+        // transaction snapshots its original contents first.
         let currentStoreDataForAttempt = try Data(contentsOf: wallpaperStoreURL)
+        let reusingPreviouslyManagedSlot = reusablePreviouslyManagedAssetID()
+            == assetID
         if configuredAssetID == nil,
            existingMarker?.completed != true,
+           !reusingPreviouslyManagedSlot,
            try wallpaperStoreTransaction.referencedAerialAssetIDs(
                 in: currentStoreDataForAttempt
            ).contains(assetID) {
@@ -1690,9 +1702,18 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         if let marker = loadMarker(), marker.completed == true {
             return marker.assetID
         }
-        guard let assetID = availableDownloadedAssetIDs(
-            lastAssetID: journal.loadSlotState()?.lastAssetID
-        ).first else {
+        let lastAssetID = journal.loadSlotState()?.lastAssetID
+        let assetID: String
+        if let availableAssetID = availableDownloadedAssetIDs(
+            lastAssetID: lastAssetID
+        ).first {
+            assetID = availableAssetID
+        } else if let reusableAssetID = reusablePreviouslyManagedAssetID() {
+            assetID = reusableAssetID
+            lockScreenLifecycleLogger.notice(
+                "Reusing the last Aura-owned Aerial slot after Remove"
+            )
+        } else {
             return nil
         }
         var state = journal.loadSlotState()
@@ -1729,6 +1750,24 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         return assetStore.orderedDownloadedProviderAssetIDs(
             lastAssetID: lastAssetID
         ).filter { !referencedAssetIDs.contains($0) }
+    }
+
+    /// Returns the last locally downloaded slot that AuraFlow owned. Remove
+    /// restores that slot's file and system route but intentionally keeps the
+    /// rotation state. This lets a subsequent Lock reuse the slot when
+    /// Apple's default configuration references every local Aerial, while
+    /// still rejecting an arbitrary user-selected slot.
+    private func reusablePreviouslyManagedAssetID() -> String? {
+        guard loadMarker()?.completed != true,
+              let assetID = journal.loadSlotState()?.lastAssetID,
+              assetStore.providerSupportsAsset(assetID),
+              fileManager.fileExists(
+                  atPath: assetStore.assetURL(for: assetID).path
+              )
+        else {
+            return nil
+        }
+        return assetID
     }
 
     private func applyLockOnlySystemWallpaperURLUpdate(
