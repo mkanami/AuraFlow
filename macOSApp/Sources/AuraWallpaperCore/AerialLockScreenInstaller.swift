@@ -437,20 +437,21 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 _ = try await installLocked(
                     videoURL: videoURL,
                     forceRefresh: false,
-                    // Reload the Aerial owner while the user is still
-                    // unlocked. The provider caches the selected asset, so a
-                    // prewarm-only path can report success while the old
-                    // generation is still in memory and only switch after
-                    // loginwindow enters the Lock Screen. This is a targeted
-                    // WallpaperAgent refresh; it never restarts Dock or
-                    // starts the system screen saver.
-                    refreshAction: rearmSystem,
+                    // Lock-only installation must not kill WallpaperAgent.
+                    // The secure surface is resolved by loginwindow at the
+                    // lock transition; restarting the owner here can leave
+                    // the first Lock Screen with a blank/stale surface.
+                    refreshAction: lockSessionHandoffSystem,
                     // Keep the user's Desktop route intact while unlocked. The
                     // agent promotes this installation to the shared route from
                     // the early shield callback immediately before loginwindow
                     // resolves the real Lock Screen.
                     scope: .lockScreenOnly,
                     lockScreenOnlyRoute: true,
+                    // Replacing an existing lock-only source must not restart
+                    // WallpaperAgent: it can replay the stale Desktop
+                    // preference captured when the lock session started.
+                    avoidProviderRestartOnExistingLockOnlySourceChange: true,
                     // A failed Lock-only attempt must not restart Dock. Doing so
                     // can bring existing Finder and Wallpaper Settings windows
                     // forward even though AuraFlow never asked to open them.
@@ -751,6 +752,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         scope: AerialWallpaperStoreScope,
         currentInstallationRefreshAction: ConditionalSystemAction? = nil,
         lockScreenOnlyRoute: Bool = false,
+        avoidProviderRestartOnExistingLockOnlySourceChange: Bool = false,
         rollbackAction: ConditionalSystemAction,
         shouldProceed: @escaping () -> Bool
     ) async throws -> Bool {
@@ -771,6 +773,23 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         let thumbnailURL = assetStore.thumbnailURL(for: assetID)
         let systemWallpaperURLBeforeAttempt = currentSystemWallpaperURL()
         let existingMarker = loadMarker()
+        let currentVideoSignature = try? mediaPreparer.fileSignature(at: videoURL)
+        let replacingExistingLockOnlySource: Bool = {
+            guard let existingMarker,
+                  existingMarker.completed == true,
+                  existingMarker.lockScreenOnly == true
+                    || existingMarker.desktopIncluded == false
+            else {
+                return false
+            }
+            if let previousSignature = existingMarker.videoSignature,
+               let currentVideoSignature {
+                return previousSignature != currentVideoSignature
+            }
+            return URL(fileURLWithPath: existingMarker.videoPath)
+                .standardizedFileURL
+                != videoURL.standardizedFileURL
+        }()
 
         if installationIsCurrent(
             videoURL: videoURL,
@@ -985,7 +1004,22 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 systemWallpaperURLMutated = true
             }
             let didRefresh: Bool
-            if shouldProceed() {
+            if lockScreenOnlyRoute,
+               avoidProviderRestartOnExistingLockOnlySourceChange,
+               replacingExistingLockOnlySource {
+                // The dedicated lock-only route is already registered. A
+                // WallpaperAgent restart here can replay an old
+                // SystemWallpaperURL and overwrite the user's live Desktop.
+                // Keep the owner alive; the updated Idle asset is consumed by
+                // the next lock transition. If the provider is absent,
+                // prewarm it without replacing the current owner.
+                if usesCanonicalWallpaperStore {
+                    try AerialProviderController.prewarmLockScreenProvider(
+                        shouldProceed: { shouldProceed() }
+                    )
+                }
+                didRefresh = false
+            } else if shouldProceed() {
                 try refreshAction({ shouldProceed() })
                 didRefresh = true
             } else {

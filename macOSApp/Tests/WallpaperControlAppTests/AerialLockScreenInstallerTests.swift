@@ -425,14 +425,14 @@ private struct AerialLockScreenFixture {
     ))
 }
 
-@Test func modernLockScreenOnlyRefreshesProviderForNewGeneration() async throws {
+@Test func modernLockScreenOnlyUsesSessionHandoffForNewGeneration() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
     try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
 
-    #expect(fixture.rearmCounter.rearmCount == 1)
-    #expect(fixture.lockSessionHandoffCounter.lockSessionHandoffCount == 0)
+    #expect(fixture.rearmCounter.rearmCount == 0)
+    #expect(fixture.lockSessionHandoffCounter.lockSessionHandoffCount == 1)
     #expect(fixture.installer.installationConfirmed)
 }
 
@@ -489,7 +489,9 @@ private struct AerialLockScreenFixture {
 
     root = try readWallpaperStore(fixture.storeURL)
     #expect(testDesktopRouteData(in: root) == latestDesktopRoutes)
-    #expect(fixture.refreshCounter.count == 2)
+    // Replacing an already-installed Lock-only source keeps WallpaperAgent
+    // alive; the updated Idle route is consumed by the next lock transition.
+    #expect(fixture.refreshCounter.count == 1)
 }
 
 @Test func lockOnlyRepairRefreshesStaleAssetSignature() async throws {
