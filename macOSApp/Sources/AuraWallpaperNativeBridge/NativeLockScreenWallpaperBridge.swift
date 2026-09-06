@@ -41,10 +41,6 @@ final class NativeLockScreenWallpaperBridge {
             && requiredWallpaperSymbols.allSatisfy { symbol in
                 hasSymbol(named: symbol, in: frameworkHandles[0])
             }
-            && hasSymbol(
-                named: WallpaperPlatformConstants.startScreenSaverSymbol,
-                in: frameworkHandles.last
-            )
 
         return NativeLockScreenBridgeRuntimeCapabilities(
             protocolVersion: NativeLockScreenBridgeRuntimeCapabilities

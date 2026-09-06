@@ -2745,13 +2745,15 @@ final class AppViewModel: ObservableObject {
     }
 
     func applyLockScreenOnly() {
-        // Keep an in-flight Lock Screen cache warm-up alive. The installer
-        // serializes behind the same Aerial mutation coordinator, so
-        // cancelling here only throws away work that was already paid for
-        // and makes the button start the conversion a second time.
-        // Preview preparation may be the task that will produce the exact
-        // source URL used by the Lock action. Let it finish and reuse its
-        // result instead of cancelling a conversion and starting it again.
+        // Preview and Lock can be requested back-to-back while a catalog
+        // source is being converted. They do not share an in-flight Task, so
+        // leaving preview alive starts a second conversion against the same
+        // cache output and delays the actual Lock operation. Cancel only the
+        // unfinished preview task; an already completed Lock cache warm-up is
+        // left intact and can still be reused by the installer.
+        previewPreparationGeneration &+= 1
+        previewPreparationTask?.cancel()
+        previewPreparationTask = nil
         lifecycleViewModel.applyLockScreenOnly(selectedVideoURL: selectedVideoURL)
     }
 

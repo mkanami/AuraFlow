@@ -751,8 +751,16 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminating else { return }
         let actualLocked = systemSessionIsLocked()
         if expectedLocked {
-            if actualLocked == true || actualLocked == nil {
+            if actualLocked == true {
                 applySystemSessionState(locked: true)
+            } else if actualLocked == nil {
+                // An inactive-session notification is not proof of a real
+                // Lock Screen transition. CGSession can be temporarily
+                // unavailable while the helper starts or restarts; treating
+                // nil as locked can trigger a false handoff and gray surface.
+                // Keep the bounded confirmation poll and wait for an explicit
+                // locked value.
+                scheduleLockConfirmation(reason: "session-notification")
             } else {
                 scheduleLockConfirmation(reason: "session-notification")
             }
@@ -879,6 +887,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 reason: "session-unlocked"
             )
         } else {
+            if lockScreenPlatform.capabilities.supportsSecureLockScreen {
+                nativeLockScreenBridge.hideAfterUnlock()
+            }
             showWindows(forceOrder: true)
             applyPlaybackRate()
         }

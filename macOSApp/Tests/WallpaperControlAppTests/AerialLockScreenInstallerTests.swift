@@ -270,6 +270,7 @@ private struct AerialLockScreenFixture {
             rearmSystem: {
                 counter.increment()
                 rearmCounter.incrementRearm()
+                onRefresh?(refreshStoreURL)
             },
             lockSessionHandoffSystem: {
                 counter.increment()
@@ -424,14 +425,14 @@ private struct AerialLockScreenFixture {
     ))
 }
 
-@Test func modernLockScreenOnlyDoesNotRestartWallpaperAgent() async throws {
+@Test func modernLockScreenOnlyRefreshesProviderForNewGeneration() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
     try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
 
-    #expect(fixture.rearmCounter.rearmCount == 0)
-    #expect(fixture.lockSessionHandoffCounter.lockSessionHandoffCount == 1)
+    #expect(fixture.rearmCounter.rearmCount == 1)
+    #expect(fixture.lockSessionHandoffCounter.lockSessionHandoffCount == 0)
     #expect(fixture.installer.installationConfirmed)
 }
 
@@ -488,7 +489,7 @@ private struct AerialLockScreenFixture {
 
     root = try readWallpaperStore(fixture.storeURL)
     #expect(testDesktopRouteData(in: root) == latestDesktopRoutes)
-    #expect(fixture.refreshCounter.count == 1)
+    #expect(fixture.refreshCounter.count == 2)
 }
 
 @Test func lockOnlyRepairRefreshesStaleAssetSignature() async throws {

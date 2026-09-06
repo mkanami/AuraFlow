@@ -120,8 +120,13 @@ resolve_macos_sdk() {
 }
 
 private_frameworks_available() {
-  [[ -e "$PRIVATE_FRAMEWORKS_DIR/Wallpaper.framework/Wallpaper" ]] || return 1
-  [[ -e "$PRIVATE_FRAMEWORKS_DIR/WallpaperTypes.framework/WallpaperTypes" ]] || return 1
+  # On newer macOS releases the framework image can be supplied by the dyld
+  # shared cache instead of being present as a standalone file inside the
+  # bundle. The native bridge links successfully against that installation,
+  # so checking only `.../Wallpaper.framework/Wallpaper` incorrectly forced
+  # every release build into legacy-fallback mode.
+  [[ -d "$PRIVATE_FRAMEWORKS_DIR/Wallpaper.framework" ]] || return 1
+  [[ -d "$PRIVATE_FRAMEWORKS_DIR/WallpaperTypes.framework" ]] || return 1
 }
 
 configure_native_bridge() {
