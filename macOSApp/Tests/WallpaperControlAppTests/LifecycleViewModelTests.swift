@@ -112,3 +112,18 @@ func lifecycleViewModelCancellationClearsQueuedWork() async {
     #expect(!viewModel.isBusy)
     #expect(!viewModel.hasActiveOrPendingLifecycleOperation)
 }
+
+@Test @MainActor
+func lifecycleViewModelIgnoresLockWhenLockScreenOnlyIsAlreadyActive() async {
+    let controller = MockNativeWallpaperController()
+    let viewModel = makeLifecycleViewModel(controller: controller)
+    viewModel.isLockScreenOnlyActive = true
+
+    viewModel.applyLockScreenOnly(
+        selectedVideoURL: URL(fileURLWithPath: "/tmp/already-locked.mp4")
+    )
+    await waitForLifecycleToBecomeIdle(viewModel)
+
+    #expect(controller.lockCallCount == 0)
+    #expect(!viewModel.hasActiveOrPendingLifecycleOperation)
+}

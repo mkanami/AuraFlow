@@ -259,7 +259,10 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         guard let marker = loadMarker(),
               marker.completed == true,
               fileManager.fileExists(atPath: marker.assetPath),
-              assetStore.providerSupportsAsset(marker.assetID)
+              assetStore.providerSupportsAsset(marker.assetID),
+              assetStore.managedAssetSignature(
+                  at: URL(fileURLWithPath: marker.assetPath)
+              ) == marker.assetSignature
         else {
             return false
         }
@@ -318,8 +321,12 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         // without one are treated as needing an async repair.
         let assetSignatureMatches = marker.assetSignature != nil
             && marker.assetSignature == currentAssetSignature
+        let ownershipStampMatches = marker.assetSignature != nil
+            && assetStore.managedAssetSignature(at: assetURL)
+                == marker.assetSignature
         let assetValid = fileManager.fileExists(atPath: assetURL.path)
             && assetSignatureMatches
+            && ownershipStampMatches
         let providerAvailable = assetStore.providerSupportsAsset(marker.assetID)
         let providerRunning: Bool
         if usesCanonicalWallpaperStore {
@@ -449,12 +456,18 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             try await withCrossProcessLockAsync {
                 _ = try await installLocked(
                     videoURL: videoURL,
-                    forceRefresh: false,
-                    // Lock-only installation must not kill WallpaperAgent.
-                    // The secure surface is resolved by loginwindow at the
-                    // lock transition; restarting the owner here can leave
-                    // the first Lock Screen with a blank/stale surface.
-                    refreshAction: lockSessionHandoffSystem,
+                    // Lock is an explicit user request. Even if the journal
+                    // already looks current, rearm the provider so a stale
+                    // WallpaperAgent cannot make this action a false no-op.
+                    forceRefresh: true,
+                    // A new or repaired lock-only generation must restart
+                    // WallpaperAgent while the user is still unlocked. The
+                    // provider keeps the selected Aerial asset in memory;
+                    // prewarming an already-running owner can therefore
+                    // report success while it still serves the old
+                    // generation at the next lock. The targeted rearm only
+                    // restarts WallpaperAgent, never Dock.
+                    refreshAction: rearmSystem,
                     // Keep the user's Desktop route intact while unlocked. The
                     // agent promotes this installation to the shared route from
                     // the early shield callback immediately before loginwindow
@@ -623,6 +636,14 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     preservingDestinationMetadata: true,
                     shouldProceed: shouldProceed
                 )
+                guard let expectedRepairedAssetSignature else {
+                    throw AerialLockScreenInstallerError
+                        .aerialAssetReplacedBySystem
+                }
+                try assetStore.markManagedAsset(
+                    signature: expectedRepairedAssetSignature,
+                    at: assetURL
+                )
             }
 
             if !saverWasSelected {
@@ -661,7 +682,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             let canRefreshProvider =
                 assetChanged || storeChanged
             if canRefreshProvider,
-               marker.lastProviderRefreshGeneration != marker.generation {
+               (assetChanged
+                || marker.lastProviderRefreshGeneration != marker.generation) {
                 try rearmSystem({ shouldProceed() })
                 providerRefreshed = true
                 updatedMarker.lastProviderRefreshGeneration = marker.generation
@@ -1024,6 +1046,14 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 withContentsOf: preparedVideoURL,
                 preservingDestinationMetadata: true,
                 shouldProceed: shouldProceed
+            )
+            guard let assetSignature = marker.assetSignature else {
+                throw AerialLockScreenInstallerError
+                    .wallpaperStoreUpdateFailed
+            }
+            try assetStore.markManagedAsset(
+                signature: assetSignature,
+                at: assetURL
             )
             guard shouldProceed() else {
                 throw AerialLockScreenOperationAbort.sessionChanged
@@ -2236,6 +2266,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
 
         guard let sourceSignature = try? mediaPreparer.fileSignature(at: videoURL),
               let assetSignature = try? mediaPreparer.fileSignature(at: assetURL),
+              assetStore.managedAssetSignature(at: assetURL)
+                  == marker.assetSignature,
               usesCanonicalWallpaperStore
                 ? marker.assetSignature == assetSignature
                 : sourceSignature == assetSignature

@@ -1928,6 +1928,7 @@ final class AppViewModel: ObservableObject {
         isControllerAvailable
             && lockScreenCapabilities.supportsLockScreenOnly
             && !isDesktopAndLockModeActiveForControls
+            && !isLockScreenOnlyModeActiveForControls
             && selectedVideoURL != nil
     }
 

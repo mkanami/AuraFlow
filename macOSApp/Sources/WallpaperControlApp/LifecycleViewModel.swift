@@ -129,6 +129,12 @@ final class LifecycleViewModel: ObservableObject {
     }
 
     func applyLockScreenOnly(selectedVideoURL: URL?) {
+        guard !isLockScreenOnlyActive,
+              activeLifecycleIntent?.name != "lock",
+              pendingLifecycleRequest?.intent.name != "lock"
+        else {
+            return
+        }
         guard let selectedVideoURL else {
             callbacks.setAlertMessage(
                 "Choose a video before applying it to the Lock Screen."

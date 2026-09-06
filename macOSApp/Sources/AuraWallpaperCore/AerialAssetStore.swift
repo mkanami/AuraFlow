@@ -12,6 +12,15 @@ internal struct AerialAssetReplacementMetadata {
 /// catalog. The video cache is the ownership boundary for slot selection:
 /// catalog thumbnails can exist before a movie has ever been downloaded.
 internal final class AerialAssetStore {
+    /// Aerial's downloader can replace a cached movie in place while keeping
+    /// the same catalog ID.  The journal's content hash alone cannot tell
+    /// whether the file was replaced and the journal was left stale, so keep
+    /// a small ownership stamp on the file itself.  This xattr disappears
+    /// when Apple's downloader replaces the inode and is harmless to the
+    /// provider when it is present.
+    internal static let managedAssetSignatureAttribute =
+        "com.andrijvergeles.auraflow.asset-signature"
+
     internal let aerialVideosURL: URL
     internal let aerialThumbnailsURL: URL
     internal let aerialProviderURL: URL
@@ -176,6 +185,43 @@ internal final class AerialAssetStore {
             value: metadata.lastETag,
             at: url
         )
+    }
+
+    internal func managedAssetSignature(at url: URL) -> String? {
+        guard let data = extendedAttribute(
+            named: Self.managedAssetSignatureAttribute,
+            at: url
+        ) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Stamps the exact prepared-media signature after the atomic asset swap.
+    /// Callers must do this only after the replacement succeeds, otherwise a
+    /// failed transaction could advertise an asset that was never committed.
+    internal func markManagedAsset(
+        signature: String,
+        at url: URL
+    ) throws {
+        let value = Data(signature.utf8)
+        let result = value.withUnsafeBytes { bytes in
+            url.path.withCString { path in
+                Self.managedAssetSignatureAttribute.withCString { attribute in
+                    setxattr(
+                        path,
+                        attribute,
+                        bytes.baseAddress,
+                        value.count,
+                        0,
+                        0
+                    )
+                }
+            }
+        }
+        guard result == 0 else {
+            throw AerialLockScreenInstallerError.wallpaperStoreUpdateFailed
+        }
     }
 
     private func extendedAttribute(named name: String, at url: URL) -> Data? {

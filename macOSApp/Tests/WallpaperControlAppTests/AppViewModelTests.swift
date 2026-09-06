@@ -1267,7 +1267,7 @@ private func pngData(for image: CGImage) -> Data {
 
     #expect(viewModel.isLockScreenOnlyActive)
     #expect(viewModel.canStart == false)
-    #expect(viewModel.canApplyLockScreenOnly)
+    #expect(viewModel.canApplyLockScreenOnly == false)
 }
 
 @MainActor

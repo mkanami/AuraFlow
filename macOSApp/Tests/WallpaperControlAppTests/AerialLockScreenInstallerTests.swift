@@ -434,14 +434,25 @@ private struct AerialLockScreenFixture {
     ))
 }
 
-@Test func modernLockScreenOnlyUsesSessionHandoffForNewGeneration() async throws {
+@Test func modernLockScreenOnlyRearmsProviderForNewGeneration() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
     try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
 
-    #expect(fixture.rearmCounter.rearmCount == 0)
-    #expect(fixture.lockSessionHandoffCounter.lockSessionHandoffCount == 1)
+    #expect(fixture.rearmCounter.rearmCount == 1)
+    #expect(fixture.lockSessionHandoffCounter.lockSessionHandoffCount == 0)
+    #expect(fixture.installer.installationConfirmed)
+}
+
+@Test func explicitLockApplyRearmsAnAlreadyCurrentProvider() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    #expect(fixture.rearmCounter.rearmCount == 2)
     #expect(fixture.installer.installationConfirmed)
 }
 
@@ -541,6 +552,61 @@ private struct AerialLockScreenFixture {
         fixture.installer.lockScreenOnlyStatus(
             videoURL: fixture.videoURL
         ).assetValid
+    )
+}
+
+@Test func lockOnlyStatusRejectsAssetWithStaleJournalAndNoOwnershipStamp() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    let removeResult = fixture.assetURL.path.withCString { path in
+        AerialAssetStore.managedAssetSignatureAttribute.withCString {
+            removexattr(path, $0, 0)
+        }
+    }
+    #expect(removeResult == 0)
+
+    let status = fixture.installer.lockScreenOnlyStatus(
+        videoURL: fixture.videoURL
+    )
+    #expect(status.sourceMatches)
+    #expect(status.assetValid == false)
+}
+
+@Test func lockOnlyApplyReplacesAnUnstampedAssetEvenWhenJournalMatches() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    let removeResult = fixture.assetURL.path.withCString { path in
+        AerialAssetStore.managedAssetSignatureAttribute.withCString {
+            removexattr(path, $0, 0)
+        }
+    }
+    #expect(removeResult == 0)
+    #expect(
+        fixture.installer.lockScreenOnlyStatus(
+            videoURL: fixture.videoURL
+        ).assetValid == false
+    )
+
+    try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+
+    #expect(
+        fixture.installer.lockScreenOnlyStatus(
+            videoURL: fixture.videoURL
+        ).assetValid
+    )
+    #expect(
+        AerialAssetStore(
+            aerialVideosURL: fixture.videosURL,
+            aerialThumbnailsURL: fixture.thumbnailsURL,
+            aerialProviderURL: fixture.providerURL,
+            fileManager: .default
+        ).managedAssetSignature(at: fixture.assetURL) != nil
     )
 }
 
