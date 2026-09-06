@@ -268,10 +268,18 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         }
         if marker.lockScreenOnly == true
             || marker.desktopIncluded == false {
-            return wallpaperStoreTransaction.wallpaperStoreFullySelectsAerial(
+            let storeIsCorrect = wallpaperStoreTransaction
+                .wallpaperStoreFullySelectsAerial(
                 assetID: marker.assetID,
                 scope: .lockScreenOnly
-            ) && (!usesCanonicalWallpaperStore || lockScreenSaverIsSelected())
+                )
+            guard storeIsCorrect else { return false }
+            if usesCanonicalWallpaperStore {
+                guard systemWallpaperURLMatches(assetID: marker.assetID),
+                      lockScreenSaverIsSelected()
+                else { return false }
+            }
+            return true
         }
         guard !usesCanonicalWallpaperStore
             || systemWallpaperURLMatchesInstalledState(
@@ -360,6 +368,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 root,
                 assetID: marker.assetID
             )
+            && (!usesCanonicalWallpaperStore
+                || systemWallpaperURLMatches(assetID: marker.assetID))
         } ?? false
 
         return LockScreenOnlyGenerationStatus(
@@ -1097,7 +1107,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             guard shouldProceed() else {
                 throw AerialLockScreenOperationAbort.sessionChanged
             }
-            if usesCanonicalWallpaperStore, !lockScreenOnlyRoute {
+            if usesCanonicalWallpaperStore {
                 guard setSystemWallpaperURL(
                     desiredSystemWallpaperURL(assetID: assetID)
                 ) else {
@@ -1147,7 +1157,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     to: wallpaperStoreURL,
                     options: .atomic
                 )
-                if usesCanonicalWallpaperStore, !lockScreenOnlyRoute {
+                if usesCanonicalWallpaperStore {
                     guard setSystemWallpaperURL(
                         desiredSystemWallpaperURL(assetID: assetID)
                     ) else {
@@ -2317,15 +2327,19 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
            markerSignature != sourceSignature {
             return false
         }
-        if !lockScreenOnlyRoute {
-            guard !usesCanonicalWallpaperStore
-                || systemWallpaperURLMatchesInstalledState(
+        if usesCanonicalWallpaperStore {
+            // A dedicated Lock-only marker is not current when the URL that
+            // loginwindow consumes is missing or still points at the user's
+            // previous wallpaper. Otherwise an old marker could take the
+            // refresh-only fast path forever and never repair the real Lock
+            // Screen route.
+            let systemURLMatches = lockScreenOnlyRoute
+                ? systemWallpaperURLMatches(assetID: assetID)
+                : systemWallpaperURLMatchesInstalledState(
                     assetID: assetID,
                     marker: marker
                 )
-            else {
-                return false
-            }
+            guard systemURLMatches else { return false }
         }
         return wallpaperStoreTransaction.wallpaperStoreFullySelectsAerial(
             assetID: assetID,
