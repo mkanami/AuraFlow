@@ -210,6 +210,11 @@ final class LifecycleViewModel: ObservableObject {
             intent: intent
         )
         pendingLifecycleRequest = request
+        // Publish the busy state synchronously with queueing. The lifecycle
+        // task starts on the next actor turn, which otherwise leaves a brief
+        // window where SwiftUI can still render Lock as enabled after Start
+        // was pressed.
+        isBusy = true
         lifecycleViewModelLogger.notice(
             "Queued operation=\(request.id, privacy: .public) intent=\(intent.name, privacy: .public)"
         )
@@ -239,7 +244,7 @@ final class LifecycleViewModel: ObservableObject {
         defer {
             activeLifecycleIntent = nil
             lifecycleTask = nil
-            isBusy = false
+            isBusy = pendingLifecycleRequest != nil
             callbacks.scheduleFallbackRetry()
         }
 
