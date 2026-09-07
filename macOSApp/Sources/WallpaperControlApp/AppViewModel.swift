@@ -70,6 +70,22 @@ struct AdaptiveGlassAppearance: Equatable, Sendable {
         textTone: .light
     )
 
+    /// Used only while a new preview is being decoded and its exact tone is
+    /// not known yet. Keep the existing deterministic polarity for the
+    /// transition, but use minimal backing so changing or downloading a
+    /// wallpaper cannot turn every glass surface white for a frame.
+    static let previewTransitionFallback = AdaptiveGlassAppearance(
+        topGlassAlpha: 0.94,
+        bottomGlassAlpha: 0.92,
+        centerGlassAlpha: 0.93,
+        topProtectionOverlayOpacity: 0.10,
+        bottomProtectionOverlayOpacity: 0.14,
+        centerProtectionOverlayOpacity: 0.12,
+        bottomButtonProtectionOpacity: 0.10,
+        bottomButtonHighlightOpacity: 0.035,
+        textTone: .dark
+    )
+
     static let `default` = emptyState
 }
 
@@ -4003,6 +4019,12 @@ final class AppViewModel: ObservableObject {
             lastKnownGoodAdaptiveGlassAppearance = .safeFallback
             return
         }
+
+        // Never carry the previous wallpaper's black/white polarity into a
+        // new preview. Until the current source is analyzed, use the
+        // low-contrast transition fallback; the current source's exact profile
+        // is published below once its signature has been verified.
+        adaptiveGlassAppearance = .previewTransitionFallback
 
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 0.35

@@ -735,6 +735,16 @@ private func pngData(for image: CGImage) -> Data {
     #expect(appearance.bottomButtonProtectionOpacity < 0.20)
 }
 
+@Test func adaptiveGlassAppearanceUsesLowBackingDuringPreviewTransition() {
+    let appearance = AdaptiveGlassAppearance.previewTransitionFallback
+
+    #expect(appearance.textTone == .dark)
+    #expect(appearance.topProtectionOverlayOpacity < 0.20)
+    #expect(appearance.centerProtectionOverlayOpacity < 0.20)
+    #expect(appearance.bottomProtectionOverlayOpacity < 0.20)
+    #expect(appearance.bottomButtonProtectionOpacity < 0.20)
+}
+
 @Test func adaptiveGlassAppearanceChoosesBlackForLightPastelWallpaper() {
     let image = solidColorImage(
         width: 144,
