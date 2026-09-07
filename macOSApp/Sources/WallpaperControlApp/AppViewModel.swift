@@ -1974,8 +1974,8 @@ final class AppViewModel: ObservableObject {
             && !isLifecycleBusy
             && !lifecycleViewModel.hasActiveOrPendingLifecycleOperation
             && lockScreenCapabilities.supportsLockScreenOnly
-            && !isDesktopAndLockModeActiveForControls
             && !isLockScreenOnlyModeActiveForControls
+            && !isPlaybackRunningForControls
             && !(isPlaybackRunningForControls && isStaticWallpaperForControls)
             && selectedVideoURL != nil
     }
