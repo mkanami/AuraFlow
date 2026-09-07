@@ -805,15 +805,6 @@ struct SettingsPopupCard: View {
             Divider()
 
             Toggle(isOn: Binding(
-                get: { viewModel.autostartEnabled },
-                set: { newValue in viewModel.toggleAutostart(newValue) }
-            )) {
-                Label("Launch at Login", systemImage: "power")
-            }
-            .toggleStyle(.switch)
-            .disabled(!viewModel.canToggleAutostart)
-
-            Toggle(isOn: Binding(
                 get: { viewModel.pauseOnFullscreenEnabled },
                 set: { newValue in viewModel.togglePauseOnFullscreen(newValue) }
             )) {
