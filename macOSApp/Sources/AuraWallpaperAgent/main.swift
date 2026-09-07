@@ -1687,7 +1687,18 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildPlayback(from config: ControlConfig, keepPaused: Bool) {
-        tearDownPlayback()
+        // Keep the current surface alive until the replacement player and its
+        // windows have been constructed. Ordering the old windows out first
+        // leaves WindowServer with no wallpaper for one compositor pass,
+        // which is visible as a gray flash during reload/recovery.
+        let previousPlayer = player
+        let previousLooper = looper
+        let previousTimeObserver = playbackTimeObserver
+        let previousWindows = windows
+        let previousPlayerLayers = playerLayers
+        let previousFallbackImage = fallbackImage
+        let previousProgressUptime = lastPlaybackProgressUptime
+        let previousStallPolls = consecutiveStallPolls
         let url: URL
         if lockScreenOnlyMode {
             guard let lockScreenURL = effectiveLockScreenVideoURL() else {
@@ -1709,10 +1720,37 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
         prepareFallbackImage(from: url)
         if WallpaperMediaKind.forURL(url).isStaticImage {
-            rebuildWindows()
-            if keepPaused || manualPaused {
-                showWindows()
+            previousPlayer?.pause()
+            player = nil
+            looper = nil
+            playbackTimeObserver = nil
+            lastPlaybackProgressUptime = nil
+            consecutiveStallPolls = 0
+
+            guard rebuildWindows() else {
+                // A malformed image must not blank an otherwise valid
+                // wallpaper. Restore the previous generation atomically.
+                player = previousPlayer
+                looper = previousLooper
+                playbackTimeObserver = previousTimeObserver
+                fallbackImage = previousFallbackImage
+                lastPlaybackProgressUptime = previousProgressUptime
+                consecutiveStallPolls = previousStallPolls
+                if keepPaused || manualPaused {
+                    previousPlayer?.pause()
+                } else {
+                    applyPlaybackRate()
+                }
+                return
             }
+
+            discardPlaybackResources(
+                player: previousPlayer,
+                looper: previousLooper,
+                timeObserver: previousTimeObserver,
+                windows: previousWindows,
+                playerLayers: previousPlayerLayers
+            )
             lastPlaybackProgressUptime = nil
             writeHealth(reason: "ok")
             return
@@ -1723,10 +1761,11 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         player.actionAtItemEnd = .none
         player.volume = Float(max(0, min(config.volume ?? 0, 1)))
         player.automaticallyWaitsToMinimizeStalling = false
-        looper = AVPlayerLooper(player: player, templateItem: item)
+        let looper = AVPlayerLooper(player: player, templateItem: item)
         self.player = player
+        self.looper = looper
         lastPlaybackProgressUptime = ProcessInfo.processInfo.systemUptime
-        playbackTimeObserver = player.addPeriodicTimeObserver(
+        let timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
             queue: .main
         ) { [weak self] _ in
@@ -1735,7 +1774,32 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     ProcessInfo.processInfo.systemUptime
             }
         }
-        rebuildWindows()
+        playbackTimeObserver = timeObserver
+
+        guard rebuildWindows() else {
+            discardPlaybackResources(
+                player: player,
+                looper: looper,
+                timeObserver: timeObserver,
+                windows: [],
+                playerLayers: []
+            )
+            self.player = previousPlayer
+            self.looper = previousLooper
+            playbackTimeObserver = previousTimeObserver
+            fallbackImage = previousFallbackImage
+            lastPlaybackProgressUptime = previousProgressUptime
+            consecutiveStallPolls = previousStallPolls
+            return
+        }
+
+        discardPlaybackResources(
+            player: previousPlayer,
+            looper: previousLooper,
+            timeObserver: previousTimeObserver,
+            windows: previousWindows,
+            playerLayers: previousPlayerLayers
+        )
 
         if keepPaused || manualPaused {
             player.pause()
@@ -1744,21 +1808,21 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func rebuildWindows() {
+    @discardableResult
+    private func rebuildWindows() -> Bool {
+        let previousWindows = windows
+        let previousPlayerLayers = playerLayers
         let existingPlayer = player
-        for window in windows {
-            window.orderOut(nil)
-        }
-        windows.removeAll()
-        playerLayers.removeAll()
 
-        guard existingPlayer != nil || fallbackImage != nil else { return }
+        guard existingPlayer != nil || fallbackImage != nil else { return false }
         let behavior: NSWindow.CollectionBehavior = [
             .canJoinAllSpaces,
             .stationary,
             .ignoresCycle,
             .fullScreenAuxiliary
         ]
+        var newWindows: [NSWindow] = []
+        var newPlayerLayers: [AVPlayerLayer] = []
 
         for screen in NSScreen.screens {
             let window = NSWindow(
@@ -1794,15 +1858,51 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 playerLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
                 playerLayer.videoGravity = videoGravity(for: config.scale_mode)
                 content.layer?.addSublayer(playerLayer)
-                playerLayers.append(playerLayer)
+                newPlayerLayers.append(playerLayer)
             }
             window.contentView = content
 
-            windows.append(window)
-            if !manualPaused {
-                present(window, as: lockScreenState.presentationMode)
-            }
+            newWindows.append(window)
         }
+
+        guard !newWindows.isEmpty else { return false }
+
+        // Put the replacement surface up before removing the old one. This
+        // keeps either the old decoded frame or the new fallback frame in the
+        // compositor at all times.
+        for window in newWindows {
+            present(window, as: lockScreenState.presentationMode)
+        }
+        windows = newWindows
+        playerLayers = newPlayerLayers
+
+        for window in previousWindows {
+            window.orderOut(nil)
+        }
+        for layer in previousPlayerLayers {
+            layer.player = nil
+        }
+        return true
+    }
+
+    private func discardPlaybackResources(
+        player: AVQueuePlayer?,
+        looper: AVPlayerLooper?,
+        timeObserver: Any?,
+        windows: [NSWindow],
+        playerLayers: [AVPlayerLayer]
+    ) {
+        player?.pause()
+        if let timeObserver, let player {
+            player.removeTimeObserver(timeObserver)
+        }
+        for window in windows {
+            window.orderOut(nil)
+        }
+        for layer in playerLayers {
+            layer.player = nil
+        }
+        _ = looper
     }
 
     private func tearDownPlayback() {
@@ -1950,10 +2050,11 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
               )
         else {
             fallbackImage = nil
-            return
+            return false
         }
 
         fallbackImage = cgImage
+        return true
     }
 
     private func fallbackContentsGravity(
