@@ -687,6 +687,42 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         )
     }
 
+    private func waitForDesktopAgentSurfaceReady() async throws {
+        // The shared agent is the visual cover for the Aerial provider
+        // transaction below. Do not ask WallpaperAgent to replace the
+        // Desktop route until Aura's own window has actually been presented;
+        // otherwise a first Start has a short interval with no wallpaper
+        // surface and WindowServer exposes its gray background.
+        guard !store.isLockScreenOnlyAgent(),
+              store.appSupportURL.standardizedFileURL
+                == WallpaperRuntimeStore.defaultAppSupportURL()
+                    .standardizedFileURL,
+              !NSScreen.screens.isEmpty
+        else {
+            return
+        }
+
+        let expectedWindows = NSScreen.screens.count
+        let deadline = Date().addingTimeInterval(3.0)
+        while Date() < deadline {
+            guard daemonProcessManager.isRunning else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The wallpaper agent stopped during initialization."
+                )
+            }
+            if let health = store.loadHealth(),
+               health.available == true,
+               (health.visible_desktop_windows ?? 0) >= expectedWindows {
+                return
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        throw NativeWallpaperControllerError.unavailable(
+            "The wallpaper agent did not present the Desktop surface."
+        )
+    }
+
     private func waitForLockScreenGenerationReady(videoURL: URL) async throws {
         // The agent-ready marker only says that its run loop is alive. The
         // selected generation must also be valid and owned by the provider;
@@ -809,6 +845,16 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             try store.saveConfig(nextConfig)
             store.clearLockScreenOnlySource()
 
+            // Put the new Desktop surface up before installing the system
+            // Lock Screen route. The native installer may restart Apple's
+            // WallpaperAgent; having Aura's own window already visible keeps
+            // that provider transition covered instead of exposing a gray
+            // compositor frame on the first Start.
+            store.markPaused(false)
+            try launchAgentIfNeeded()
+            try send(.reload, config: nextConfig)
+            try await waitForDesktopAgentSurfaceReady()
+
             // Start keeps the original all-surfaces behavior: the selected
             // wallpaper is applied to the Desktop and Lock Screen together.
             // The separate Lock button uses installLockScreenOnly() and is the
@@ -819,9 +865,6 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                     "macOS did not confirm the Desktop and Lock Screen wallpaper configuration."
                 )
             }
-            store.markPaused(false)
-            try launchAgentIfNeeded()
-            try send(.reload, config: nextConfig)
             return store.status()
         } catch {
             let rollbackFailures = await rollbackStart(
@@ -899,21 +942,19 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             || store.loadLockScreenOnlySource() != nil
         let runtimeWasRunning = daemonProcessManager.isRunning
         let runtimeWasPaused = store.isPaused()
-        if runtimeWasRunning {
+        if runtimeWasRunning, removingLockScreenOnly {
             try? send(
-                removingLockScreenOnly
-                    ? .terminatePreservingDesktop
-                    : .terminate,
+                .terminatePreservingDesktop,
                 config: currentConfig
             )
+            guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "Wallpaper was not removed. Free up disk space and try again."
+                )
+            }
+            store.removeCommand()
+            store.removeHealth()
         }
-        guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
-            throw NativeWallpaperControllerError.unavailable(
-                "The wallpaper agent did not stop, so its desktop window could not be removed."
-            )
-        }
-        store.removeCommand()
-        store.removeHealth()
         do {
             if currentConfig.show_on_lock_screen == true
                 || lockScreenPlatform.isInstalled {
@@ -929,7 +970,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             // runtime already stopped. The uninstaller keeps its marker/source
             // until the system transaction commits, so restore the previous
             // process when any part of that transaction fails.
-            if runtimeWasRunning {
+            if runtimeWasRunning, removingLockScreenOnly {
                 do {
                     store.markPaused(runtimeWasPaused)
                     store.markLockScreenOnlyAgent(removingLockScreenOnly)
@@ -950,6 +991,21 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             }
             throw error
         }
+
+        // The shared Aura window remains the visual cover until the Desktop
+        // store and the original wallpaper have been fully restored. Stop it
+        // only after that commit, so Remove never exposes the system's gray
+        // transition surface.
+        if runtimeWasRunning, !removingLockScreenOnly {
+            try? send(.terminate, config: currentConfig)
+            guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "Wallpaper was not removed. Free up disk space and try again."
+                )
+            }
+        }
+        store.removeCommand()
+        store.removeHealth()
         store.clearLockScreenOnlySource()
         store.markLockScreenOnlyAgent(false)
         let restoreStatus: WallpaperRestoreStatus
@@ -976,14 +1032,30 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
         _ = try updateConfig { config in
             config.video_path = ""
+            config.show_on_lock_screen = false
         }
         if !removingLockScreenOnly, restoreStatus != .failed {
             store.removeManagedFallback()
         }
+        try verifyRemovePostconditions()
         return store.status(
             wallpaperRestored: restoreStatus == .failed ? nil : restoreStatus == .restored,
             wallpaperRestoreStatus: restoreStatus
         )
+    }
+
+    private func verifyRemovePostconditions() throws {
+        guard store.loadPID() == nil,
+              !daemonProcessManager.isRunning,
+              !store.isLockScreenOnlyAgent(),
+              store.loadLockScreenOnlySource() == nil,
+              !lockScreenPlatform.isInstalled,
+              store.loadConfig().show_on_lock_screen == false
+        else {
+            throw NativeWallpaperControllerError.unavailable(
+                "Remove completed with incomplete cleanup."
+            )
+        }
     }
 
     func setVideo(_ url: URL) throws -> ControlStatus {
@@ -1487,6 +1559,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                     }
                     try store.saveLockScreenOnlySource(sourceURL)
                     store.markLockScreenOnlyAgent(false)
+                    store.markPaused(previousPaused)
                     try launchAgentIfNeeded(lockScreenOnly: true)
                     try send(.reload, config: previousConfig)
                     if previousPaused {
