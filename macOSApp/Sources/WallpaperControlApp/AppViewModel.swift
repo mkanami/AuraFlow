@@ -39,9 +39,9 @@ struct AdaptiveGlassAppearance: Equatable, Sendable {
     var bottomTextTone: AdaptiveTextTone { textTone }
     var centerTextTone: AdaptiveTextTone { textTone }
 
-    /// Used only before the first valid frame is available. It intentionally
-    /// favors a readable black palette and local light backing instead of
-    /// briefly rendering the old white-on-wallpaper palette.
+    /// Used while a real wallpaper source is present but its first valid frame
+    /// has not been analyzed yet. Keep this light-backed so the transition to
+    /// a bright wallpaper never flashes an unreadable palette.
     static let safeFallback = AdaptiveGlassAppearance(
         topGlassAlpha: 0.92,
         bottomGlassAlpha: 0.88,
@@ -54,7 +54,23 @@ struct AdaptiveGlassAppearance: Equatable, Sendable {
         textTone: .dark
     )
 
-    static let `default` = safeFallback
+    /// Used when there is no wallpaper at all (for example after a fresh
+    /// install or after the catalog/runtime cache has been cleared). The
+    /// preview surface is black in this state, so a dark translucent glass
+    /// palette keeps the controls from becoming opaque white slabs.
+    static let emptyState = AdaptiveGlassAppearance(
+        topGlassAlpha: 0.94,
+        bottomGlassAlpha: 0.92,
+        centerGlassAlpha: 0.93,
+        topProtectionOverlayOpacity: 0.10,
+        bottomProtectionOverlayOpacity: 0.14,
+        centerProtectionOverlayOpacity: 0.12,
+        bottomButtonProtectionOpacity: 0.10,
+        bottomButtonHighlightOpacity: 0.035,
+        textTone: .light
+    )
+
+    static let `default` = emptyState
 }
 
 struct CatalogVideoSource: Hashable, Codable, Sendable {
@@ -3440,9 +3456,7 @@ final class AppViewModel: ObservableObject {
                     }
                 } else {
                     Self.setIfChanged(&appliedVideoURL, to: nil)
-                    if previewPlayer != nil {
-                        previewPlayer = nil
-                    }
+                    configurePreview(for: nil)
                 }
             }
         }
