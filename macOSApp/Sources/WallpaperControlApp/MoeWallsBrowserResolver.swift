@@ -66,12 +66,7 @@ final class MoeWallsBrowserResolver: NSObject {
         }
 
         do {
-            return try await startBrowserManagedDownload(to: destinationURL)
-        } catch {
-            lastError = error
-        }
-
-        if let playableSourceURL = try? await waitForPlayableSourceURL(pageURL: pageURL) {
+            let playableSourceURL = try await waitForPlayableSourceURL(pageURL: pageURL)
             do {
                 return try await downloadWithBrowserContext(
                     from: playableSourceURL,
@@ -82,6 +77,18 @@ final class MoeWallsBrowserResolver: NSObject {
             } catch {
                 lastError = error
             }
+        } catch {
+        }
+
+        // A JavaScript click can be intercepted by WebKit without producing
+        // a WKDownload (for example when the site opens the response in a
+        // popup). Keep that path only as the final compatibility fallback;
+        // direct playable sources above are deterministic and do not leave
+        // the catalog button waiting for the 20-second timeout.
+        do {
+            return try await startBrowserManagedDownload(to: destinationURL)
+        } catch {
+            lastError = error
         }
 
         throw lastError ?? MoeWallsBrowserResolverError.downloadDidNotStart
@@ -291,10 +298,12 @@ final class MoeWallsBrowserResolver: NSObject {
         cookies.forEach { configuration.httpCookieStorage?.setCookie($0) }
 
         let session = URLSession(configuration: configuration)
-        let (temporaryURL, response) = try await CatalogFileDownloader.download(
-            request: request,
-            session: session
-        )
+        // The browser resolver already has a page-scoped token and cookies.
+        // Use one regular download for this compatibility path: the range
+        // assembler is optimized for stable CDN assets, while token-backed
+        // responses can reject parallel range requests even though a normal
+        // full response is valid.
+        let (temporaryURL, response) = try await session.download(for: request)
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
         if let httpResponse = response as? HTTPURLResponse,
            !(200...299).contains(httpResponse.statusCode) {

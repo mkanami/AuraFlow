@@ -36,21 +36,6 @@ final class CatalogDownloadService: @unchecked Sendable {
 
         var lastError: Error?
 
-        if isMoeWallsWallpaper(wallpaper) {
-            do {
-                try Task.checkCancellation()
-                if let detailSource = try await moeWallsDetailDownloadSource(for: wallpaper) {
-                    try Task.checkCancellation()
-                    return try await downloadSource(detailSource, for: wallpaper)
-                }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                try Task.checkCancellation()
-                lastError = error
-            }
-        }
-
         do {
             try Task.checkCancellation()
             let sources = try await sources(for: wallpaper)
@@ -72,6 +57,45 @@ final class CatalogDownloadService: @unchecked Sendable {
         } catch {
             try Task.checkCancellation()
             lastError = error
+        }
+
+        // If cached catalog metadata did not contain a usable direct source,
+        // refresh the provider-specific detail only after trying the sources
+        // already available locally. This keeps a catalog download fast and
+        // avoids making a Cloudflare/browser round trip the first step.
+        if isMoeWallsWallpaper(wallpaper) {
+            do {
+                try Task.checkCancellation()
+                if let detailSource = try await moeWallsDetailDownloadSource(for: wallpaper) {
+                    try Task.checkCancellation()
+                    return try await downloadSource(detailSource, for: wallpaper)
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try Task.checkCancellation()
+                lastError = error
+            }
+        }
+
+        // Managed catalogs can contain an older entry with no sources at all.
+        // If the derived preview URLs above are unavailable, ask the provider
+        // for its current full download URL before entering the WebKit path.
+        if isMoeWallsWallpaper(wallpaper), wallpaper.sources.isEmpty {
+            do {
+                try Task.checkCancellation()
+                let resolvedURL = try await provider.resolveDownloadURL(for: wallpaper)
+                try Task.checkCancellation()
+                return try await downloadSource(
+                    CatalogVideoSource(url: resolvedURL, width: 0, height: 0),
+                    for: wallpaper
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try Task.checkCancellation()
+                lastError = error
+            }
         }
 
         // MoeWalls pages can require a JavaScript-generated token. Keep the
@@ -237,6 +261,11 @@ final class CatalogDownloadService: @unchecked Sendable {
     private func sources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
         if !wallpaper.sources.isEmpty {
             var ordered = wallpaper.sources
+            if isMoeWallsWallpaper(wallpaper) {
+                ordered.append(contentsOf: moeWallsPreviewSources(for: wallpaper))
+                var seen = Set<String>()
+                ordered = ordered.filter { seen.insert($0.url.absoluteString).inserted }
+            }
             if let preferred = preferredSource(for: wallpaper),
                let preferredIndex = ordered.firstIndex(of: preferred),
                preferredIndex != 0 {
@@ -246,10 +275,36 @@ final class CatalogDownloadService: @unchecked Sendable {
             return ordered
         }
 
+        let previewSources = moeWallsPreviewSources(for: wallpaper)
+        if !previewSources.isEmpty {
+            return previewSources
+        }
+
         try Task.checkCancellation()
         let resolvedURL = try await provider.resolveDownloadURL(for: wallpaper)
         try Task.checkCancellation()
         return [CatalogVideoSource(url: resolvedURL, width: 0, height: 0)]
+    }
+
+    private func moeWallsPreviewSources(
+        for wallpaper: CatalogWallpaper
+    ) -> [CatalogVideoSource] {
+        guard isMoeWallsWallpaper(wallpaper),
+              let previewImageURL = wallpaper.previewImageURL,
+              let sourcePageURL = wallpaper.sourcePageURL,
+              let slug = sourcePageURL.pathComponents.last,
+              let webmURL = MoeWallsParser.derivedPreviewVideoURL(
+                  from: previewImageURL,
+                  slug: slug
+              ) else {
+            return []
+        }
+
+        let mp4URL = webmURL.deletingPathExtension().appendingPathExtension("mp4")
+        return [
+            CatalogVideoSource(url: webmURL, width: 0, height: 0),
+            CatalogVideoSource(url: mp4URL, width: 0, height: 0),
+        ]
     }
 
     private func downloadFileExtension(for url: URL) -> String {
