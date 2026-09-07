@@ -1180,6 +1180,7 @@ private func pngData(for image: CGImage) -> Data {
     #expect(viewModel.canStop == false)
 
     viewModel.start()
+    #expect(viewModel.canApplyLockScreenOnly == false)
     for _ in 0..<20 {
         if viewModel.isRunning {
             break

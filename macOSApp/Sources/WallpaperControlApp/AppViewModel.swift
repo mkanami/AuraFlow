@@ -1938,6 +1938,9 @@ final class AppViewModel: ObservableObject {
 
     var canApplyLockScreenOnly: Bool {
         isControllerAvailable
+            && !isBusy
+            && !isLifecycleBusy
+            && !lifecycleViewModel.hasActiveOrPendingLifecycleOperation
             && lockScreenCapabilities.supportsLockScreenOnly
             && !isDesktopAndLockModeActiveForControls
             && !isLockScreenOnlyModeActiveForControls
