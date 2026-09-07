@@ -114,10 +114,9 @@ struct MoeWallsArchivePage: Sendable {
 enum MoeWallsParser {
     static func isChallengePage(_ text: String) -> Bool {
         let lowercased = text.lowercased()
-        return lowercased.contains("just a moment") ||
-            lowercased.contains("enable javascript and cookies to continue") ||
-            lowercased.contains("/cdn-cgi/challenge-platform/") ||
-            lowercased.contains("cf_chl_opt")
+        let hasChallengeTitle = lowercased.contains("just a moment")
+        let asksForBrowserFeatures = lowercased.contains("enable javascript and cookies to continue")
+        return hasChallengeTitle || asksForBrowserFeatures
     }
 
     static func parseRESTRootRoutes(from data: Data) -> Set<String> {
@@ -131,7 +130,7 @@ enum MoeWallsParser {
     static func parseArchivePage(html: String, pageURL: URL) -> MoeWallsArchivePage {
         let normalized = decodeHTMLEntities(html)
         let cardPattern = #"<a[^>]+href=["'](https?://moewalls\.com/[^"']+)["'][^>]*>(?:(?!</a>).)*?<img[^>]+(?:data-src|data-lazy-src|src)=["']([^"']+)["'][^>]*?(?:alt=["']([^"']+)["'])?[^>]*>"#
-        let markdownCardPattern = #"\[\!\[[^\]]*\]\((https?://moewalls\.com/wp-content/uploads/[^)\s]+)\)\]\((https?://moewalls\.com/[^)\s]+)\s+\"([^\"]+)\"\)"#
+        let markdownCardPattern = #"\[\!\[[^\]]*\]\((https?://moewalls\.com/wp-content/uploads/[^)\s]+)\)\]\((https?://moewalls\.com/[^)\s]+)\s+\"([^\"]+)\"\)(?:\s+\[(\d{3,5})[×x](\d{3,5})(?:[^\]]*)\])?"#
         let matches = regexMatches(pattern: cardPattern, in: normalized, options: [.caseInsensitive, .dotMatchesLineSeparators])
         let markdownMatches = regexMatches(pattern: markdownCardPattern, in: normalized, options: [.caseInsensitive])
 
@@ -153,6 +152,7 @@ enum MoeWallsParser {
                 fromPageURL: match.count > 2 ? match[2] : nil,
                 previewImageURLString: match.count > 1 ? match[1] : nil,
                 titleString: match.count > 3 ? match[3] : nil,
+                resolution: resolution(from: match, widthIndex: 4, heightIndex: 5),
                 seen: &seen,
                 wallpapers: &wallpapers
             )
@@ -273,6 +273,7 @@ enum MoeWallsParser {
         fromPageURL pageURLString: String?,
         previewImageURLString: String?,
         titleString: String?,
+        resolution: MoeWallsResolution? = nil,
         seen: inout Set<String>,
         wallpapers: inout [MoeWallsWallpaper]
     ) {
@@ -305,7 +306,7 @@ enum MoeWallsParser {
                 previewVideoURL: derivedPreviewVideoURL(from: previewImageURL, slug: slug),
                 category: category,
                 tags: [],
-                resolution: nil,
+                resolution: resolution,
                 fileSizeMB: nil,
                 sourceName: "MoeWalls",
                 publishedAt: nil,
@@ -313,6 +314,19 @@ enum MoeWallsParser {
                 hasExplicitPlayableSource: nil
             )
         )
+    }
+
+    private static func resolution(
+        from match: [String],
+        widthIndex: Int,
+        heightIndex: Int
+    ) -> MoeWallsResolution? {
+        guard match.count > heightIndex,
+              let width = Int(match[widthIndex]),
+              let height = Int(match[heightIndex]) else {
+            return nil
+        }
+        return MoeWallsResolution(width: width, height: height)
     }
 
     private static func firstPlayableURL(in html: String, relativeTo baseURL: URL) -> URL? {

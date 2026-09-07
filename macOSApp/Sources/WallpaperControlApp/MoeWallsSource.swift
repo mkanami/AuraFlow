@@ -84,6 +84,11 @@ actor MoeWallsSource: WallpaperCatalogProviding {
     private let probeService: MoeWallsProbeService
     private let restPageSize = 100
     private let archiveDetailFetchLimit = 20
+    // Archive pages are the compatibility fallback when the REST API is
+    // unavailable. Keep refresh bounded because the live archive currently
+    // advertises hundreds of pages and proxy readers enforce a tight request
+    // budget. The catalog remains pageable through a later refresh.
+    private let archiveCatalogPageLimit = 8
     private let catalogRESTBatchSize = 4
     private let detailCacheLimit = 160
 
@@ -370,8 +375,17 @@ actor MoeWallsSource: WallpaperCatalogProviding {
         var resolved: [MoeWallsWallpaper] = []
 
         for wallpaper in selected {
-            let details = try await fetchDetails(pageURL: wallpaper.pageURL)
-            if isSupported(details) {
+            // Jina's fallback response already contains the card's resolution
+            // and preview URL. Keep that card without spending another request
+            // on its detail page; the detail request is still used for older
+            // HTML fixtures and cards whose listing metadata is incomplete.
+            if wallpaper.resolution == nil || isSupported(wallpaper) {
+                resolved.append(wallpaper)
+                continue
+            }
+
+            if let details = try? await fetchDetails(pageURL: wallpaper.pageURL),
+               isSupported(details) {
                 resolved.append(details)
             }
         }
@@ -465,9 +479,14 @@ actor MoeWallsSource: WallpaperCatalogProviding {
         var aggregated: [MoeWallsWallpaper] = []
         var page = 1
 
-        while true {
+        while page <= archiveCatalogPageLimit {
             let path = archivePath(categorySlug: "anime", page: page)
-            let pageWallpapers = try await fetchArchive(path: path)
+            // A proxy or an upstream rate limit can fail a later page after
+            // earlier pages were already parsed successfully. Preserve the
+            // usable cards instead of discarding the whole refresh.
+            guard let pageWallpapers = try? await fetchArchive(path: path) else {
+                break
+            }
             if pageWallpapers.isEmpty {
                 break
             }
