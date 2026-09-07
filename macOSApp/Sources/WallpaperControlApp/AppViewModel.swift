@@ -78,11 +78,11 @@ struct AdaptiveGlassAppearance: Equatable, Sendable {
         topGlassAlpha: 0.94,
         bottomGlassAlpha: 0.92,
         centerGlassAlpha: 0.93,
-        topProtectionOverlayOpacity: 0.10,
-        bottomProtectionOverlayOpacity: 0.14,
-        centerProtectionOverlayOpacity: 0.12,
-        bottomButtonProtectionOpacity: 0.10,
-        bottomButtonHighlightOpacity: 0.035,
+        topProtectionOverlayOpacity: 0.03,
+        bottomProtectionOverlayOpacity: 0.055,
+        centerProtectionOverlayOpacity: 0.045,
+        bottomButtonProtectionOpacity: 0.025,
+        bottomButtonHighlightOpacity: 0.020,
         textTone: .dark
     )
 
