@@ -74,6 +74,16 @@ private extension AdaptiveTextTone {
     }
 }
 
+// Adaptive protection is still useful for text contrast, but letting the
+// analyzer's strongest value reach the compositor makes a glass surface read
+// as a solid white or black panel. Keep the normal adaptive range intact and
+// only cap the extreme end at the rendering boundary.
+private let maximumAdaptiveSurfaceProtectionOpacity: CGFloat = 0.28
+
+private func boundedAdaptiveSurfaceProtectionOpacity(_ value: CGFloat) -> CGFloat {
+    min(max(value, 0.0), maximumAdaptiveSurfaceProtectionOpacity)
+}
+
 private func speedOverlayPillWidth(for availableWidth: CGFloat) -> CGFloat {
     min(max(availableWidth * 0.46, 420), 720)
 }
@@ -2087,7 +2097,9 @@ private struct AuraPanelButton: View {
     }
 
     private var protectionOpacity: CGFloat {
-        let adaptive = adaptiveGlassAppearance.bottomButtonProtectionOpacity
+        let adaptive = boundedAdaptiveSurfaceProtectionOpacity(
+            adaptiveGlassAppearance.bottomButtonProtectionOpacity
+        )
         return (usesNativeLiquidGlass ? 0.035 : 0.10) + adaptive
     }
 
@@ -2148,7 +2160,9 @@ private struct AuraPanelButton: View {
                                     ? min(
                                         0.34,
                                         0.035
-                                            + adaptiveGlassAppearance.bottomButtonProtectionOpacity
+                                            + boundedAdaptiveSurfaceProtectionOpacity(
+                                                adaptiveGlassAppearance.bottomButtonProtectionOpacity
+                                            )
                                             + (configuration.isPressed ? 0.025 : 0.0)
                                             + (selected ? 0.018 : (emphasized ? 0.010 : 0.0))
                                     )
@@ -2343,7 +2357,9 @@ private struct AuraGlassButton: View {
                                     ? min(
                                         0.34,
                                         0.045
-                                            + (adaptiveGlassAppearance.centerProtectionOverlayOpacity * 0.80)
+                                            + (boundedAdaptiveSurfaceProtectionOpacity(
+                                                adaptiveGlassAppearance.centerProtectionOverlayOpacity
+                                            ) * 0.80)
                                             + (configuration.isPressed ? 0.025 : 0.0)
                                     )
                                     : 0.016
@@ -2433,6 +2449,9 @@ private struct AuraGlassRoundedSurface: View {
 
     var body: some View {
         let strength = min(max(Double(alphaMultiplier), 0), 1)
+        let effectiveProtectionOpacity = boundedAdaptiveSurfaceProtectionOpacity(
+            protectionOverlayOpacity
+        )
 
         Group {
             if #available(macOS 26.0, *) {
@@ -2453,8 +2472,8 @@ private struct AuraGlassRoundedSurface: View {
             }
         }
         .overlay {
-            if protectionOverlayOpacity > 0.001 {
-                shape.fill(protectionOverlayColor.opacity(protectionOverlayOpacity))
+            if effectiveProtectionOpacity > 0.001 {
+                shape.fill(protectionOverlayColor.opacity(effectiveProtectionOpacity))
             }
         }
         .clipShape(shape)
@@ -2471,6 +2490,9 @@ private struct AuraGlassCapsuleSurface: View {
     var body: some View {
         let shape = Capsule()
         let strength = min(max(Double(alphaMultiplier), 0), 1)
+        let effectiveProtectionOpacity = boundedAdaptiveSurfaceProtectionOpacity(
+            protectionOverlayOpacity
+        )
 
         Group {
             if #available(macOS 26.0, *) {
@@ -2489,8 +2511,8 @@ private struct AuraGlassCapsuleSurface: View {
             }
         }
         .overlay {
-            if protectionOverlayOpacity > 0.001 {
-                shape.fill(protectionOverlayColor.opacity(protectionOverlayOpacity))
+            if effectiveProtectionOpacity > 0.001 {
+                shape.fill(protectionOverlayColor.opacity(effectiveProtectionOpacity))
             }
         }
         .clipShape(shape)
@@ -2528,6 +2550,9 @@ struct AuraGlassInsetCard: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         let textTone = adaptiveGlassAppearance.centerTextTone
+        let protectionOpacity = boundedAdaptiveSurfaceProtectionOpacity(
+            adaptiveGlassAppearance.centerProtectionOverlayOpacity
+        )
 
         ZStack {
             if #available(macOS 26.0, *) {
@@ -2539,7 +2564,7 @@ struct AuraGlassInsetCard: View {
                         min(
                             0.34,
                             (emphasized ? 0.08 : 0.06)
-                                + (adaptiveGlassAppearance.centerProtectionOverlayOpacity * 0.75)
+                                + (protectionOpacity * 0.75)
                         )
                     )
                 )
@@ -2549,7 +2574,7 @@ struct AuraGlassInsetCard: View {
                         min(
                             0.44,
                             (emphasized ? 0.30 : 0.22)
-                                + (adaptiveGlassAppearance.centerProtectionOverlayOpacity * 0.30)
+                                + (protectionOpacity * 0.30)
                         )
                     )
                 )
