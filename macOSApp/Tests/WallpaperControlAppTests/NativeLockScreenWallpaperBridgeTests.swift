@@ -23,6 +23,7 @@ private final class NativeBridgeFixture {
     let executableURL: URL
     let markerURL: URL
     let releaseURL: URL
+    let actionsURL: URL
 
     init(_ mode: NativeBridgeFixtureMode) throws {
         root = FileManager.default.temporaryDirectory
@@ -37,10 +38,12 @@ private final class NativeBridgeFixture {
         executableURL = root.appendingPathComponent("bridge.sh")
         markerURL = root.appendingPathComponent("first-process.marker")
         releaseURL = root.appendingPathComponent("release-prepare.marker")
+        actionsURL = root.appendingPathComponent("actions.log")
         let script = Self.script(
             for: mode,
             markerURL: markerURL,
-            releaseURL: releaseURL
+            releaseURL: releaseURL,
+            actionsURL: actionsURL
         )
         try script.write(to: executableURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
@@ -56,13 +59,17 @@ private final class NativeBridgeFixture {
     private static func script(
         for mode: NativeBridgeFixtureMode,
         markerURL: URL,
-        releaseURL: URL
+        releaseURL: URL,
+        actionsURL: URL
     ) -> String {
         let marker = shellQuote(markerURL.path)
         let release = shellQuote(releaseURL.path)
         switch mode {
         case .responds:
-            return responseLoop(exitOnShutdown: true)
+            return responseLoop(
+                actionLogURL: actionsURL,
+                exitOnShutdown: true
+            )
         case .exitsDuringRequest:
             return "#!/bin/sh\nexit 0\n"
         case .doesNotRespond:
@@ -98,7 +105,7 @@ private final class NativeBridgeFixture {
               action=$(printf '%s' "$line" | sed -n 's/.*"action":"\\([^"]*\\)".*/\\1/p')
               if [ "$action" = "capabilities" ]; then
                 printf '{"id":"stale-response","action":"capabilities","succeeded":true}\\n'
-                printf '{"id":"%s","action":"capabilities","succeeded":true,"capabilities":{"protocolVersion":1,"architecture":"\(NativeLockScreenBridgeRuntimeCapabilities.currentArchitecture)","privateFrameworksLoaded":true,"requiredSymbolsResolved":true,"supportedActions":["capabilities","prepare","show","hide","pause","resume","shutdown"]}}\\n' "$id"
+                printf '{"id":"%s","action":"capabilities","succeeded":true,"capabilities":{"protocolVersion":1,"architecture":"\(NativeLockScreenBridgeRuntimeCapabilities.currentArchitecture)","privateFrameworksLoaded":true,"requiredSymbolsResolved":true,"supportedActions":["capabilities","prepare","show","hide","pause","resume","setPlaybackSpeed","shutdown"]}}\\n' "$id"
               else
                 printf '{"id":"stale-response","action":"%s","succeeded":true}\\n' "$action"
                 printf '{"id":"%s","action":"%s","succeeded":true}\\n' "$id" "$action"
@@ -125,6 +132,7 @@ private final class NativeBridgeFixture {
     }
 
     private static func responseLoop(
+        actionLogURL: URL? = nil,
         prepareSucceeded: Bool = true,
         prepareError: String? = nil,
         capabilityProtocolVersion: Int = 1,
@@ -138,11 +146,14 @@ private final class NativeBridgeFixture {
         exitOnShutdown: Bool
     ) -> String {
         let escapedError = prepareError.map(shellQuote) ?? "''"
+        let actionLogCommand = actionLogURL.map {
+            "printf '%s\\n' \"$action\" >> \(shellQuote($0.path))"
+        } ?? ":"
         let capabilitiesResponse: String
         if includeCapabilities {
             let frameworksLoaded = privateFrameworksLoaded ? "true" : "false"
             let symbolsResolved = requiredSymbolsResolved ? "true" : "false"
-            capabilitiesResponse = "printf '{\"id\":\"%s\",\"action\":\"capabilities\",\"succeeded\":true,\"capabilities\":{\"protocolVersion\":\(capabilityProtocolVersion),\"architecture\":\"\(capabilityArchitecture)\",\"privateFrameworksLoaded\":\(frameworksLoaded),\"requiredSymbolsResolved\":\(symbolsResolved),\"supportedActions\":[\"capabilities\",\"prepare\",\"show\",\"hide\",\"pause\",\"resume\",\"shutdown\"]}}\\n' \"$id\""
+            capabilitiesResponse = "printf '{\"id\":\"%s\",\"action\":\"capabilities\",\"succeeded\":true,\"capabilities\":{\"protocolVersion\":\(capabilityProtocolVersion),\"architecture\":\"\(capabilityArchitecture)\",\"privateFrameworksLoaded\":\(frameworksLoaded),\"requiredSymbolsResolved\":\(symbolsResolved),\"supportedActions\":[\"capabilities\",\"prepare\",\"show\",\"hide\",\"pause\",\"resume\",\"setPlaybackSpeed\",\"shutdown\"]}}\\n' \"$id\""
         } else {
             capabilitiesResponse = "printf '{\"id\":\"%s\",\"action\":\"capabilities\",\"succeeded\":true}\\n' \"$id\""
         }
@@ -162,6 +173,7 @@ private final class NativeBridgeFixture {
         while IFS= read -r line; do
           id=$(printf '%s' "$line" | sed -n 's/.*"id":"\\([^"]*\\)".*/\\1/p')
           action=$(printf '%s' "$line" | sed -n 's/.*"action":"\\([^"]*\\)".*/\\1/p')
+          \(actionLogCommand)
           if [ "$action" = "capabilities" ]; then
             \(capabilitiesResponse)
           elif [ "$action" = "prepare" ]; then
@@ -211,6 +223,56 @@ private func stopBridge(
     #expect(await awaitBridgeResult { bridge.prepare(completion: $0) })
     #expect(await awaitBridgeResult { bridge.showForLockTransition(completion: $0) })
     #expect(bridge.isReady)
+    stopBridge(bridge, fixture: fixture)
+}
+
+@Test func nativeBridgeForwardsPauseAndResume() async throws {
+    let fixture = try NativeBridgeFixture(.responds)
+    defer { fixture.cleanup() }
+    let bridge = NativeLockScreenWallpaperBridge(
+        executableURL: fixture.executableURL,
+        requestTimeout: 1.0
+    )
+
+    #expect(await awaitBridgeResult { bridge.prepare(completion: $0) })
+    bridge.pause()
+    bridge.resumeAfterPause()
+
+    var actions = ""
+    for _ in 0..<40 {
+        actions = (try? String(contentsOf: fixture.actionsURL)) ?? ""
+        if actions.contains("pause") && actions.contains("resume") {
+            break
+        }
+        try await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(actions.contains("pause"))
+    #expect(actions.contains("resume"))
+    stopBridge(bridge, fixture: fixture)
+}
+
+@Test func nativeBridgeForwardsPlaybackSpeed() async throws {
+    let fixture = try NativeBridgeFixture(.responds)
+    defer { fixture.cleanup() }
+    let bridge = NativeLockScreenWallpaperBridge(
+        executableURL: fixture.executableURL,
+        requestTimeout: 1.0
+    )
+
+    #expect(await awaitBridgeResult { bridge.prepare(completion: $0) })
+    bridge.setPlaybackSpeed(1.75)
+
+    var actions = ""
+    for _ in 0..<40 {
+        actions = (try? String(contentsOf: fixture.actionsURL)) ?? ""
+        if actions.contains("setPlaybackSpeed") {
+            break
+        }
+        try await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(actions.contains("setPlaybackSpeed"))
     stopBridge(bridge, fixture: fixture)
 }
 

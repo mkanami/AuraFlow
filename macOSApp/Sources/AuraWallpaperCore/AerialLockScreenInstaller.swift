@@ -7,8 +7,6 @@ private let wallpaperPreferencesApplicationID =
     WallpaperPlatformConstants.wallpaperApplicationID as CFString
 private let systemWallpaperURLPreferenceKey =
     WallpaperPlatformConstants.systemWallpaperURLKey as CFString
-private let screenSaverPreferencesApplicationID =
-    WallpaperPlatformConstants.screenSaverApplicationID as CFString
 private let lockScreenRemovalLogger = Logger(
     subsystem: "com.andrijvergeles.auraflow",
     category: "LockScreenRemoval"
@@ -245,10 +243,12 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     /// only for that transition and restore the user's Desktop route after
     /// unlock.
     public var requiresLockScreenSessionPromotion: Bool {
-        // Dedicated Lock Screen installs stay in Idle for their complete
-        // lifetime. Promoting them to Linked/Desktop is what allowed the
-        // provider's cached Aerial to spill onto the unlocked Desktop.
-        return false
+        guard let marker = loadMarker(), marker.completed == true else {
+            return false
+        }
+        return marker.lockScreenOnly == true
+            || (marker.lockScreenOnly != true
+                && marker.desktopIncluded == false)
     }
 
     /// Confirms the system configuration, rather than only checking that our
@@ -275,8 +275,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 )
             guard storeIsCorrect else { return false }
             if usesCanonicalWallpaperStore {
-                guard systemWallpaperURLMatches(assetID: marker.assetID),
-                      lockScreenSaverIsSelected()
+                guard systemWallpaperURLMatches(assetID: marker.assetID)
                 else { return false }
             }
             return true
@@ -379,9 +378,10 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             providerAvailable: providerAvailable,
             providerRunning: providerRunning,
             wallpaperStoreValid: storeValid,
-            screenSaverSelected: usesCanonicalWallpaperStore
-                ? lockScreenSaverIsSelected()
-                : true,
+            // Native macOS 26 Aerial does not use the legacy screen-saver
+            // selection. Keep this compatibility field satisfied so native
+            // readiness is determined by the Aerial route itself.
+            screenSaverSelected: true,
             sourceSignature: marker.videoSignature,
             generation: marker.generation,
             assetID: marker.assetID,
@@ -657,21 +657,21 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
 
         let assetURL = URL(fileURLWithPath: marker.assetPath)
         let currentAssetSignature = try? mediaPreparer.fileSignature(at: assetURL)
-        let assetWasValid = fileManager.fileExists(atPath: assetURL.path)
+        // A paused still-frame is valid for the provider, but it is not the
+        // animated asset that Resume must restore. Manual pause/resume cycles
+        // are allowed to repair this deliberate replacement repeatedly; the
+        // one-repair guard below remains for an externally replaced asset.
+        let assetWasValid = marker.state != "paused"
+            && fileManager.fileExists(atPath: assetURL.path)
             && marker.assetSignature != nil
             && marker.assetSignature == currentAssetSignature
         let storeChanged = updatedStoreData != currentStoreData
-        let usesCanonicalStore = usesCanonicalWallpaperStore
-        let saverWasSelected = usesCanonicalStore
-            ? lockScreenSaverIsSelected()
-            : true
         let providerWasRunning = usesCanonicalWallpaperStore
             && !AerialProviderController.processIdentifiers(
                 named: WallpaperPlatformConstants.aerialExtensionProcessName
             )
                 .isEmpty
         var assetChanged = false
-        var selectionChanged = false
         var providerRefreshed = false
         let repairAssetSnapshotURL = !assetWasValid
             ? try rollbackSnapshotURL(for: assetURL)
@@ -721,14 +721,6 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     signature: expectedRepairedAssetSignature,
                     at: assetURL
                 )
-            }
-
-            if !saverWasSelected {
-                guard selectAuraFlowScreenSaver() else {
-                    throw AerialLockScreenInstallerError
-                        .wallpaperStoreUpdateFailed
-                }
-                selectionChanged = true
             }
 
             if storeChanged {
@@ -817,8 +809,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             lockScreenLifecycleLogger.notice(
                 "Validated Lock Screen generation repair"
             )
-            return assetChanged || storeChanged || selectionChanged
-                || providerRefreshed
+            return assetChanged || storeChanged || providerRefreshed
         } catch {
             if storeChanged,
                (try? Data(contentsOf: wallpaperStoreURL)) == updatedStoreData {
@@ -1283,7 +1274,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             originalSystemWallpaperURL: originalSystemWallpaperURL,
             systemWallpaperURLWasCaptured: systemWallpaperURLWasCaptured,
             scope: scope,
-            lockScreenOnlyRoute: lockScreenOnlyRoute
+            lockScreenOnlyRoute: lockScreenOnlyRoute,
+            playbackSpeed: normalizedSpeed
         )
         guard shouldProceed() else {
             return false
@@ -2148,7 +2140,10 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 let hasManagedSystemURL = systemWallpaperURLMatches(
                     assetID: marker.assetID
                 )
-                guard hasManagedDesktop || hasManagedSystemURL else {
+                let promotionIsActive = markerStoreIncludesDesktop(marker)
+                    ? hasManagedDesktop || hasManagedSystemURL
+                    : hasSessionBackup
+                guard promotionIsActive else {
                     // No lock promotion is active. A leftover session snapshot is
                     // stale and must never overwrite a Desktop changed by the
                     // user while AuraFlow keeps running.
@@ -2247,7 +2242,10 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         let hasManagedSystemURL = systemWallpaperURLMatches(
             assetID: marker.assetID
         )
-        guard hasManagedDesktop || hasManagedSystemURL else {
+        let promotionIsActive = markerStoreIncludesDesktop(marker)
+            ? hasManagedDesktop || hasManagedSystemURL
+            : hasSessionBackup
+        guard promotionIsActive else {
             if hasSessionBackup {
                 try? fileManager.removeItem(at: lockSessionStoreBackupURL)
             }

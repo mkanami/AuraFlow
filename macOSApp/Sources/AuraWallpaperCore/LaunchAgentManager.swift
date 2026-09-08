@@ -7,7 +7,7 @@ import Foundation
 /// the existing public API. This component owns the state transition around
 /// bootout, plist replacement, bootstrap, and rollback.
 public final class LaunchAgentManager {
-    private static let label = "com.andrijvergeles.auraflow"
+    static let label = "com.andrijvergeles.auraflow"
 
     private let store: WallpaperRuntimeStore
     private let launchAgentURL: URL

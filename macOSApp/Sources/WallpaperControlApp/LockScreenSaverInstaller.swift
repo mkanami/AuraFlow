@@ -1,6 +1,12 @@
 import CoreFoundation
 import AuraWallpaperCore
 import Foundation
+import OSLog
+
+private let lockScreenSaverInstallerLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "LockScreenSaverInstaller"
+)
 
 enum LockScreenSaverInstallerError: LocalizedError {
     case componentNotBundled
@@ -278,6 +284,19 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         }
     }
 
+    func refreshInstalledCompatibilityComponentIfNeeded() {
+        guard isInstalled else { return }
+        do {
+            try withOperationLock {
+                try refreshInstalledCompatibilityComponentLocked()
+            }
+        } catch {
+            lockScreenSaverInstallerLogger.error(
+                "Could not refresh the installed Lock Screen saver: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
     private func withOperationLock<T>(
         _ operation: () throws -> T
     ) rethrows -> T {
@@ -344,6 +363,59 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
             try restorePreviousInstallation(
                 from: previousInstallationURL,
                 hadExistingInstallation: hadExistingInstallation
+            )
+            throw error
+        }
+    }
+
+    private func refreshInstalledCompatibilityComponentLocked() throws {
+        guard let templateURL,
+              fileManager.fileExists(atPath: templateURL.path),
+              fileManager.fileExists(atPath: destinationURL.path)
+        else {
+            return
+        }
+
+        let templateExecutable = templateURL
+            .appendingPathComponent("Contents/MacOS/AuraFlowLockScreen")
+        let installedExecutable = destinationURL
+            .appendingPathComponent("Contents/MacOS/AuraFlowLockScreen")
+        guard fileManager.fileExists(atPath: templateExecutable.path),
+              fileManager.fileExists(atPath: installedExecutable.path),
+              !fileManager.contentsEqual(
+                  atPath: templateExecutable.path,
+                  andPath: installedExecutable.path
+              )
+        else {
+            return
+        }
+
+        let parentURL = destinationURL.deletingLastPathComponent()
+        let stagingURL = parentURL.appendingPathComponent(
+            ".AuraFlowLockScreen.refresh.\(UUID().uuidString).saver",
+            isDirectory: true
+        )
+        let previousInstallationURL = parentURL.appendingPathComponent(
+            ".AuraFlowLockScreen.previous.\(UUID().uuidString).saver",
+            isDirectory: true
+        )
+        defer {
+            try? fileManager.removeItem(at: stagingURL)
+            try? fileManager.removeItem(at: previousInstallationURL)
+        }
+
+        try fileManager.copyItem(at: templateURL, to: stagingURL)
+        try signatureVerifier(stagingURL)
+        try fileManager.moveItem(
+            at: destinationURL,
+            to: previousInstallationURL
+        )
+        do {
+            try fileManager.moveItem(at: stagingURL, to: destinationURL)
+        } catch {
+            try restorePreviousInstallation(
+                from: previousInstallationURL,
+                hadExistingInstallation: true
             )
             throw error
         }

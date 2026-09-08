@@ -1,4 +1,5 @@
 import Darwin
+import AVFoundation
 import Foundation
 import Testing
 @testable import AuraWallpaperCore
@@ -314,6 +315,78 @@ private struct AerialLockScreenFixture {
                 "EncodedOptionValues": "$null",
             ],
         ]
+    }
+}
+
+private enum AerialTestMediaError: Error {
+    case writerCouldNotAddInput
+    case writerCouldNotStart
+    case pixelBufferCouldNotBeCreated
+    case frameCouldNotBeAppended
+    case writerDidNotComplete
+}
+
+private func writeAerialTestVideo(to url: URL) async throws {
+    let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+    let input = AVAssetWriterInput(
+        mediaType: .video,
+        outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: 16,
+            AVVideoHeightKey: 16,
+        ]
+    )
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+        assetWriterInput: input,
+        sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String:
+                Int(kCVPixelFormatType_32ARGB),
+            kCVPixelBufferWidthKey as String: 16,
+            kCVPixelBufferHeightKey as String: 16,
+        ]
+    )
+    guard writer.canAdd(input) else {
+        throw AerialTestMediaError.writerCouldNotAddInput
+    }
+    writer.add(input)
+    guard writer.startWriting() else {
+        throw AerialTestMediaError.writerCouldNotStart
+    }
+    writer.startSession(atSourceTime: .zero)
+
+    while !input.isReadyForMoreMediaData {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    var pixelBuffer: CVPixelBuffer?
+    let status = CVPixelBufferCreate(
+        kCFAllocatorDefault,
+        16,
+        16,
+        kCVPixelFormatType_32ARGB,
+        nil,
+        &pixelBuffer
+    )
+    guard status == kCVReturnSuccess, let pixelBuffer else {
+        writer.cancelWriting()
+        throw AerialTestMediaError.pixelBufferCouldNotBeCreated
+    }
+    CVPixelBufferLockBaseAddress(pixelBuffer, [])
+    if let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) {
+        baseAddress.initializeMemory(
+            as: UInt8.self,
+            repeating: 0xFF,
+            count: 16 * 16 * 4
+        )
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+    guard adaptor.append(pixelBuffer, withPresentationTime: .zero) else {
+        writer.cancelWriting()
+        throw AerialTestMediaError.frameCouldNotBeAppended
+    }
+    input.markAsFinished()
+    await writer.finishWriting()
+    guard writer.status == .completed else {
+        throw AerialTestMediaError.writerDidNotComplete
     }
 }
 
@@ -837,7 +910,7 @@ private struct AerialLockScreenFixture {
     )
 }
 
-@Test func linkedWallpaperNeverPromotesIntoDesktopDuringLockSession() async throws {
+@Test func linkedWallpaperPromotesOnlyDuringLockSession() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
@@ -875,21 +948,20 @@ private struct AerialLockScreenFixture {
         assetID: AerialLockScreenFixture.assetID
     ))
 
-    let desktopBeforeLock = wallpaperModeData(desktop)
-    let idleBeforeLock = wallpaperModeData(idle)
     let promoted = try fixture.installer
         .activateLockScreenForCurrentSession()
-    #expect(promoted == false)
+    #expect(promoted)
     root = try readWallpaperStore(fixture.storeURL)
     container = try #require(
         root["AllSpacesAndDisplays"] as? [String: Any]
     )
-    desktop = try #require(container["Desktop"] as? [String: Any])
-    let lockIdle = try #require(container["Idle"] as? [String: Any])
-    #expect(wallpaperModeData(desktop) == desktopBeforeLock)
-    #expect(wallpaperModeData(lockIdle) == idleBeforeLock)
-    #expect(container["Type"] as? String == "individual")
-    #expect(fixture.refreshCounter.count == 1)
+    let lockLinked = try #require(container["Linked"] as? [String: Any])
+    #expect(wallpaperStoreContains(
+        lockLinked,
+        provider: "com.apple.wallpaper.choice.aerials",
+        assetID: AerialLockScreenFixture.assetID
+    ))
+    #expect(container["Type"] as? String == "linked")
 
     _ = try fixture.installer.restoreDesktopAfterLockScreenSession()
     root = try readWallpaperStore(fixture.storeURL)
@@ -1322,7 +1394,7 @@ private struct AerialLockScreenFixture {
     #expect(try Data(contentsOf: fixture.storeURL) == liveDesktopStore)
 }
 
-@Test func modernLockScreenOnlyNeverMutatesDesktopAtSessionBoundary() async throws {
+@Test func modernLockScreenOnlyPromotesAndRestoresDesktopRoute() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
@@ -1333,14 +1405,10 @@ private struct AerialLockScreenFixture {
     var allSpacesAndDisplays = try #require(
         root["AllSpacesAndDisplays"] as? [String: Any]
     )
-    let desktopBeforeLock = wallpaperModeData(
-        try #require(allSpacesAndDisplays["Desktop"] as? [String: Any])
-    )
-
     let promoted = try fixture.installer
         .activateLockScreenForCurrentSession()
-    #expect(promoted == false)
-    #expect(fixture.refreshCounter.count == 1)
+    #expect(promoted)
+    #expect(fixture.refreshCounter.count == 2)
     root = try readWallpaperStore(fixture.storeURL)
     allSpacesAndDisplays = try #require(
         root["AllSpacesAndDisplays"] as? [String: Any]
@@ -1348,7 +1416,11 @@ private struct AerialLockScreenFixture {
     let lockDesktop = try #require(
         allSpacesAndDisplays["Desktop"] as? [String: Any]
     )
-    #expect(wallpaperModeData(lockDesktop) == desktopBeforeLock)
+    #expect(wallpaperStoreContains(
+        lockDesktop,
+        provider: "com.apple.wallpaper.choice.aerials",
+        assetID: AerialLockScreenFixture.assetID
+    ))
 
     _ = try fixture.installer.restoreDesktopAfterLockScreenSession()
     root = try readWallpaperStore(fixture.storeURL)
@@ -1358,7 +1430,11 @@ private struct AerialLockScreenFixture {
     let restoredDesktop = try #require(
         allSpacesAndDisplays["Desktop"] as? [String: Any]
     )
-    #expect(wallpaperModeData(restoredDesktop) == desktopBeforeLock)
+    #expect(wallpaperStoreContains(
+        restoredDesktop,
+        provider: "com.apple.wallpaper.choice.image",
+        assetID: nil
+    ))
     #expect(fixture.installer.isLockScreenOnlyInstallation)
 }
 

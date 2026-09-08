@@ -445,9 +445,11 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 nativeBridgeCapabilities: resolvedNativeBridgeCapabilities
             )
         }
+        let legacyHelperURLs = Self.legacyHelperURLs(for: store)
         self.daemonProcessManager = DaemonProcessManager(
             store: store,
-            expectedExecutableURL: helperResolution.url
+            expectedExecutableURL: helperResolution.url,
+            additionalExpectedExecutableURLs: legacyHelperURLs
         )
         self.autostartManager = AutostartManager(
             store: store,
@@ -463,11 +465,42 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         lockScreenLifecycleLogger.notice(
             "Lock Screen platform selected=\(selectedPlatformName, privacy: .public) secure=\(selectedPlatformIsSecure, privacy: .public) nativeBridge=\(resolvedNativeBridgeCapabilities.isAvailable, privacy: .public)"
         )
+        (self.lockScreenPlatform as? LockScreenSaverInstalling)?
+            .refreshInstalledCompatibilityComponentIfNeeded()
         migrateExistingLaunchAgentIfNeeded()
+        let terminatedOrphanedPIDs = daemonProcessManager
+            .terminateOrphanedProcesses(timeout: 1.0)
+        if !terminatedOrphanedPIDs.isEmpty {
+            lockScreenLifecycleLogger.notice(
+                "Terminated orphaned AuraFlow wallpaper agents: \(terminatedOrphanedPIDs.map(String.init).joined(separator: ", "), privacy: .public)"
+            )
+        }
         if helperResolution.didUpdateInstalledCopy {
             try restartRunningAgentAfterHelperUpdate()
         }
         recoverInterruptedWallpaperRemovalIfNeeded()
+    }
+
+    private static func legacyHelperURLs(for store: WallpaperRuntimeStore) -> [URL] {
+        var urls: [URL] = []
+        if let launchAgentURL = store.loadLaunchAgentExecutableURL() {
+            urls.append(launchAgentURL)
+        }
+
+        // Before the runtime helper was decoupled from the app bundle, the
+        // LaunchAgent and manual starts used one of these paths. Keep them as
+        // exact-path fallbacks so an upgrade can stop that old process without
+        // weakening PID-reuse protection.
+        urls.append(
+            Bundle.main.bundleURL
+                .appendingPathComponent("Contents/MacOS/AuraWallpaperAgent")
+        )
+        if let executableDirectory = Bundle.main.executableURL?
+            .deletingLastPathComponent()
+        {
+            urls.append(executableDirectory.appendingPathComponent("AuraWallpaperAgent"))
+        }
+        return urls
     }
 
     private static func resolveHelperURL() throws -> RuntimeHelperResolution {
@@ -611,6 +644,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         guard daemonProcessManager.isRunning else { return }
         let config = store.loadConfig()
         let lockScreenOnlyAgent = store.isLockScreenOnlyAgent()
+        let runtimeWasPaused = store.isPaused()
         guard daemonProcessManager.terminate(timeout: 1.0).succeeded else {
             throw NativeWallpaperControllerError.unavailable(
                 "The previous wallpaper agent did not stop during the update."
@@ -624,7 +658,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             return
         }
         try launchAgentIfNeeded(lockScreenOnly: lockScreenOnlyAgent)
-        try send(.reload, config: config)
+        try send(runtimeWasPaused ? .pause : .reload, config: config)
     }
 
     private func recoverInterruptedWallpaperRemovalIfNeeded() {
@@ -648,6 +682,10 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 config: config
             )
         )
+        postRuntimeCommandDidChange()
+    }
+
+    private func postRuntimeCommandDidChange() {
         DistributedNotificationCenter.default().post(
             name: WallpaperRuntimeNotifications.commandDidChange,
             object: nil,
@@ -686,7 +724,21 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
         try task.run()
-        try store.savePID(task.processIdentifier)
+        do {
+            try store.savePID(task.processIdentifier)
+        } catch {
+            // The PID and identity are the ownership proof for this exact
+            // child. If persistence fails (for example, because the disk is
+            // full), terminate this Process directly before propagating the
+            // error; the manager cannot safely find it without persisted
+            // metadata.
+            if task.isRunning {
+                task.terminate()
+            }
+            task.waitUntilExit()
+            store.removePID()
+            throw error
+        }
         store.markLockScreenOnlyAgent(lockScreenOnly)
     }
 
@@ -883,6 +935,32 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
+
+        if store.isLockScreenOnlyMode() {
+            guard let sourceURL = store.effectiveLockScreenSourceURL(for: config),
+                  FileManager.default.fileExists(atPath: sourceURL.path)
+            else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "Lock Screen wallpaper file not found. Choose a wallpaper first."
+                )
+            }
+
+            if lockScreenCapabilities.supportsSecureLockScreen {
+                // A native Lock Screen-only route owns a dedicated agent. If
+                // an older agent disappeared while the wallpaper was paused,
+                // launch the correct mode before queueing the resume command.
+                try launchAgentIfNeeded(lockScreenOnly: true)
+                try send(.resume, config: config)
+                store.markPaused(false)
+            } else {
+                // The legacy screen saver observes the shared pause marker
+                // directly and resumes on the distributed notification.
+                store.markPaused(false)
+                postRuntimeCommandDidChange()
+            }
+            return store.status()
+        }
+
         guard !config.video_path.isEmpty else {
             throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
         }
@@ -890,13 +968,13 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
 
-        store.markPaused(false)
         try launchAgentIfNeeded()
         if daemonProcessManager.isRunning {
             try send(.resume, config: config)
         } else {
             try send(.reload, config: config)
         }
+        store.markPaused(false)
         return store.status()
     }
 
@@ -904,14 +982,31 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
-        if store.isLockScreenOnlyAgent(),
-           let sourceURL = store.effectiveLockScreenSourceURL(for: config),
+        if let sourceURL = store.effectiveLockScreenSourceURL(for: config),
            WallpaperMediaKind.forURL(sourceURL).isStaticImage {
+            // A still image has no playback state to pause. In particular,
+            // do not create a paused marker or a pause command for a photo;
+            // Stop remains a no-op for both Desktop and Lock Screen routes.
             return store.status()
         }
         store.markPaused(true)
         if daemonProcessManager.isRunning {
-            try send(.pause, config: config)
+            do {
+                try send(.pause, config: config)
+            } catch {
+                // The screen-saver process is separate from the agent. Still
+                // notify it when command persistence is unavailable (for
+                // example, during a full disk) so the marker can freeze the
+                // currently rendered Lock Screen frame immediately.
+                postRuntimeCommandDidChange()
+                throw error
+            }
+        } else {
+            // A stale or legacy agent may still exist without a valid
+            // PID/identity pair. The Lock Screen saver must not depend on
+            // that ownership check to observe Stop; it reads the marker and
+            // freezes its own AVPlayer on this notification.
+            postRuntimeCommandDidChange()
         }
         return store.status()
     }
@@ -1163,11 +1258,10 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             config.playback_speed = speed
         }
 
-        // Desktop playback is updated by the agent's .update command. The
-        // native Aerial provider owns a different player process, so update
-        // its managed movie as well. This covers both Start's shared route
-        // and the dedicated Lock Screen-only route. The legacy screen saver
-        // uses the same config and distributed notification below.
+        // The agent updates Desktop immediately. Apple's Aerial provider owns
+        // a separate player and ignores CALayer rate changes, so its active
+        // movie must also be regenerated with physically retimed samples.
+        // This covers both Start and the dedicated Lock-only route.
         if lockScreenCapabilities.supportsSecureLockScreen,
            lockScreenPlatform.isInstalled,
            let sourceURL = store.effectiveLockScreenSourceURL(for: config),
@@ -1695,6 +1789,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             }
         }
 
+        // A saved non-default rate must also be applied when the user starts
+        // a new shared or Lock-only route before touching the speed slider.
         let configuredSpeed = store.loadConfig().playback_speed
         if lockScreenPlatform.capabilities.supportsSecureLockScreen,
            !WallpaperMediaKind.forURL(videoURL).isStaticImage,
@@ -1915,7 +2011,10 @@ final class AppViewModel: ObservableObject {
     private var suspendedPreviewRate: Float?
     private var glassAnalysisTask: Task<Void, Never>?
     private var glassAnalysisGeneration = 0
-    private var lastKnownGoodAdaptiveGlassAppearance: AdaptiveGlassAppearance = .safeFallback
+    // Keep valid profiles by the exact content signature. A single global
+    // "last good" profile makes A -> B -> A history-dependent: if B's
+    // analysis fails, A can temporarily inherit B's text polarity.
+    private var adaptiveGlassAppearancesBySourceSignature: [String: AdaptiveGlassAppearance] = [:]
     private var cacheGeneration = 0
     private var previewPreparationTask: Task<Void, Never>?
     private var previewPreparationGeneration = 0
@@ -1945,14 +2044,6 @@ final class AppViewModel: ObservableObject {
         controllerAvailable
     }
 
-    var lockScreenCapabilityMessage: String {
-        if lockScreenCapabilities.supportsSecureLockScreen {
-            return "On macOS 26 and later, AuraFlow uses Apple's native Aerial Lock Screen. Lock Screen-only mode leaves Desktop unchanged."
-        }
-        return lockScreenCapabilities.availabilityMessage
-            ?? "Lock Screen is unavailable on this macOS version."
-    }
-
     var selectedVideoName: String {
         selectedVideoURL?.lastPathComponent ?? "Not selected"
     }
@@ -1975,12 +2066,6 @@ final class AppViewModel: ObservableObject {
             || lifecycleViewModel.pendingIntentName == "lock"
     }
 
-    private var isDesktopAndLockModeActiveForControls: Bool {
-        isPlaybackRunningForControls
-            || lifecycleViewModel.activeIntentName == "start"
-            || lifecycleViewModel.pendingIntentName == "start"
-    }
-
     var isStartButtonHighlighted: Bool {
         selectedVideoURL != nil
             && (!isPlaybackRunningForControls
@@ -1990,6 +2075,27 @@ final class AppViewModel: ObservableObject {
 
     var isStopButtonHighlighted: Bool {
         appliedVideoURL != nil && isPlaybackPaused
+    }
+
+    var playbackButtonTitle: String {
+        isPlaybackPaused ? "Play" : "Stop"
+    }
+
+    var playbackButtonSystemImage: String {
+        isPlaybackPaused ? "play.fill" : "stop.circle"
+    }
+
+    private var activeWallpaperURLForControls: URL? {
+        if isLockScreenOnlyModeActiveForControls {
+            return selectedVideoURL ?? appliedVideoURL
+        }
+        return appliedVideoURL ?? selectedVideoURL
+    }
+
+    private var isStaticWallpaperForControls: Bool {
+        activeWallpaperURLForControls.map {
+            WallpaperMediaKind.forURL($0).isStaticImage
+        } ?? false
     }
 
     var canStart: Bool {
@@ -2018,6 +2124,18 @@ final class AppViewModel: ObservableObject {
                 || isLockScreenOnlyActive
                 || lifecycleViewModel.activeIntentName == "lock"
                 || lifecycleViewModel.pendingIntentName == "lock")
+    }
+
+    var canTogglePlayback: Bool {
+        guard isControllerAvailable,
+              !isBusy,
+              !lifecycleViewModel.hasActiveOrPendingLifecycleOperation,
+              !isStaticWallpaperForControls
+        else {
+            return false
+        }
+
+        return isPlaybackPaused || canStop
     }
 
     var canClearWallpaper: Bool {
@@ -2848,10 +2966,27 @@ final class AppViewModel: ObservableObject {
     }
 
     func start() {
+        // Start is also the legacy resume affordance. Once Stop has been
+        // confirmed, route this click directly through the resume lifecycle
+        // operation instead of asking the start path to infer the intent
+        // again. A newly selected preview still takes the normal start path.
+        if isPlaybackPaused, pendingPreviewVideoURL == nil {
+            lifecycleViewModel.resume()
+            return
+        }
         lifecycleViewModel.start(
             selectedVideoURL: selectedVideoURL,
             hasPendingPreview: pendingPreviewVideoURL != nil
         )
+    }
+
+    func togglePlayback() {
+        guard canTogglePlayback else { return }
+        if isPlaybackPaused {
+            lifecycleViewModel.resume()
+        } else {
+            lifecycleViewModel.stop(selectedVideoURL: selectedVideoURL)
+        }
     }
 
     func applyLockScreenOnly() {
@@ -2872,6 +3007,12 @@ final class AppViewModel: ObservableObject {
     }
 
     func clearWallpaper() {
+        // Preview selection starts a best-effort native Aerial cache warm-up
+        // in the background. Remove must cancel that conversion first;
+        // otherwise its installer mutation lock can make the button wait for
+        // avconvert to finish even though the wallpaper is already being
+        // removed.
+        cancelPreviewPreparation()
         lifecycleViewModel.clearWallpaper()
     }
 
@@ -3459,9 +3600,30 @@ final class AppViewModel: ObservableObject {
                     && status.health?.available == true
                     && status.health?.suspicious != true
             )
+        let pauseSourceURL: URL?
+        if lockScreenOnlyActive {
+            // Lock Screen-only keeps the Desktop video_path intact. The
+            // selected preview/source is the useful media identity for this
+            // route; otherwise a previous Desktop image could hide a paused
+            // Lock Screen video (or vice versa).
+            pauseSourceURL = selectedVideoURL ?? appliedVideoURL
+        } else if hasConfiguredVideo {
+            pauseSourceURL = URL(fileURLWithPath: status.config.video_path)
+        } else {
+            pauseSourceURL = appliedVideoURL ?? selectedVideoURL
+        }
+        let pauseSourceIsStatic = pauseSourceURL.map {
+            WallpaperMediaKind.forURL($0).isStaticImage
+        } ?? false
         Self.setIfChanged(&isRunning, to: status.running)
         Self.setIfChanged(&isPlaybackActive, to: effectiveRunning)
-        Self.setIfChanged(&isPlaybackPaused, to: paused && hasConfiguredVideo && !effectiveRunning)
+        Self.setIfChanged(
+            &isPlaybackPaused,
+            to: paused
+                && (hasConfiguredVideo || lockScreenOnlyActive)
+                && !pauseSourceIsStatic
+                && !effectiveRunning
+        )
         Self.setIfChanged(
             &isLockScreenOnlyActive,
             to: lockScreenOnlyActive
@@ -4049,8 +4211,7 @@ final class AppViewModel: ObservableObject {
             previewPlayer?.pause()
             previewPlayer?.replaceCurrentItem(with: nil)
             previewPlayer = nil
-            adaptiveGlassAppearance = .safeFallback
-            lastKnownGoodAdaptiveGlassAppearance = .safeFallback
+            adaptiveGlassAppearance = .emptyState
             return
         }
 
@@ -4125,23 +4286,34 @@ final class AppViewModel: ObservableObject {
         let requestedScaleMode = scaleMode
 
         glassAnalysisTask = Task.detached(priority: .utility) { [requestedURL, requestedScaleMode, requestedGeneration] in
+            let requestedSourceSignature = AdaptiveContrastAnalyzer.sourceSignature(for: requestedURL)
             let analysis = await AdaptiveContrastAnalyzer.analyze(
                 url: requestedURL,
                 scaleMode: requestedScaleMode
             )
             guard !Task.isCancelled else { return }
             guard let analysis else {
+                // Do not restore another wallpaper's profile when decoding is
+                // temporarily unavailable. Reuse only a profile whose exact
+                // content signature matches this source; otherwise remain on
+                // the deterministic safe fallback.
+                guard AdaptiveContrastAnalyzer.sourceSignature(for: requestedURL) == requestedSourceSignature else {
+                    return
+                }
                 await MainActor.run { [weak self] in
                     guard let self,
                           requestedGeneration == self.glassAnalysisGeneration else {
                         return
                     }
-                    // Keep the last valid palette while a source is temporarily
-                    // undecodable. A failed analysis must never flash the old
-                    // white default or a partially computed profile.
-                    self.adaptiveGlassAppearance = self.lastKnownGoodAdaptiveGlassAppearance
+                    let fallbackAppearance = requestedSourceSignature
+                        .flatMap { self.adaptiveGlassAppearancesBySourceSignature[$0] }
+                        ?? .safeFallback
+                    let reusedSourceProfile = requestedSourceSignature
+                        .map { self.adaptiveGlassAppearancesBySourceSignature[$0] != nil }
+                        ?? false
+                    self.adaptiveGlassAppearance = fallbackAppearance
                     adaptiveContrastLogger.debug(
-                        "Appearance analysis deferred; last known good profile retained"
+                        "Appearance analysis unavailable; source-specific profile reused=\(reusedSourceProfile, privacy: .public)"
                     )
                 }
                 return
@@ -4169,7 +4341,7 @@ final class AppViewModel: ObservableObject {
                 }
 
                 self.adaptiveGlassAppearance = analysis.appearance
-                self.lastKnownGoodAdaptiveGlassAppearance = analysis.appearance
+                self.adaptiveGlassAppearancesBySourceSignature[analysis.sourceSignature] = analysis.appearance
                 adaptiveContrastLogger.debug(
                     "Appearance analysis accepted: samples=\(analysis.sampleCount, privacy: .public), cache_hit=\(analysis.cacheHit, privacy: .public), selected_score=\(analysis.selectedToneScore, privacy: .public), alternate_score=\(analysis.alternateToneScore, privacy: .public)"
                 )

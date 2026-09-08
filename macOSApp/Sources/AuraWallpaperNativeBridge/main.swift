@@ -79,6 +79,20 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
         case .resume:
             bridge.resumeAfterPause()
             respond(to: request, succeeded: true)
+        case .setPlaybackSpeed:
+            guard let playbackSpeed = request.playbackSpeed,
+                  playbackSpeed.isFinite,
+                  playbackSpeed > 0
+            else {
+                respond(
+                    to: request,
+                    succeeded: false,
+                    errorDescription: "Native Lock Screen playback speed is invalid."
+                )
+                return
+            }
+            bridge.setPlaybackSpeed(playbackSpeed)
+            respond(to: request, succeeded: true)
         case .shutdown:
             bridge.shutdown()
             respond(to: request, succeeded: true, terminateAfterWrite: true)

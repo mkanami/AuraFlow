@@ -13,6 +13,7 @@ enum WallpaperLifecycleState: String, Equatable {
 
 enum WallpaperLifecycleIntent: Equatable {
     case start(URL, resume: Bool)
+    case resume
     case lock(URL)
     case stop(lockScreenOnly: Bool, staticImage: Bool)
     case remove(lockScreenOnly: Bool)
@@ -20,6 +21,7 @@ enum WallpaperLifecycleIntent: Equatable {
     var name: String {
         switch self {
         case .start: return "start"
+        case .resume: return "resume"
         case .lock: return "lock"
         case .stop: return "stop"
         case .remove: return "remove"
@@ -128,6 +130,16 @@ final class LifecycleViewModel: ObservableObject {
         )
     }
 
+    func resume() {
+        guard dependencies?.controller() != nil,
+              isPlaybackPaused,
+              !hasActiveOrPendingLifecycleOperation
+        else {
+            return
+        }
+        submitLifecycle(.resume)
+    }
+
     func applyLockScreenOnly(selectedVideoURL: URL?) {
         guard !isLockScreenOnlyActive,
               activeLifecycleIntent?.name != "lock",
@@ -218,12 +230,21 @@ final class LifecycleViewModel: ObservableObject {
         lifecycleViewModelLogger.notice(
             "Queued operation=\(request.id, privacy: .public) intent=\(intent.name, privacy: .public)"
         )
+        if intent.name == "remove", activeLifecycleIntent != nil {
+            // Remove is destructive cleanup and must not wait for a stale
+            // Start/Lock preparation (for example, a media conversion) to
+            // finish. The active operation checks cancellation before every
+            // commit; its defer below immediately drains this request.
+            lifecycleTask?.cancel()
+        }
         switch intent {
         case .remove:
             state = .removing
             callbacks.setStatusMessage("Removing wallpaper…")
         case .stop:
             callbacks.setStatusMessage("Pausing wallpaper…")
+        case .resume:
+            callbacks.setStatusMessage("Resuming wallpaper…")
         case .start:
             state = .preparing
             callbacks.setStatusMessage("Starting wallpaper…")
@@ -246,6 +267,11 @@ final class LifecycleViewModel: ObservableObject {
             lifecycleTask = nil
             isBusy = pendingLifecycleRequest != nil
             callbacks.scheduleFallbackRetry()
+            if pendingLifecycleRequest != nil {
+                lifecycleTask = Task { [weak self] in
+                    await self?.drainLifecycleQueue()
+                }
+            }
         }
 
         while !Task.isCancelled,
@@ -295,6 +321,7 @@ final class LifecycleViewModel: ObservableObject {
                 case .start: context = "start"
                 case .lock: context = "lock-screen-only"
                 case .stop: context = "pause"
+                case .resume: context = "resume"
                 case .remove: context = "clear-wallpaper"
                 }
                 callbacks.recordBridgeFailure(error, context)
@@ -323,22 +350,7 @@ final class LifecycleViewModel: ObservableObject {
         switch request.intent {
         case .start(let sourceURL, let resume):
             if resume {
-                // Start always owns both surfaces, including the paused
-                // resume path. Re-enable and synchronize Lock Screen before
-                // asking the Desktop agent to resume.
-                _ = try await runAsync {
-                    try await controller.setShowOnLockScreen(true)
-                }
-                let status = try await runAsync { try controller.resume() }
-                return LifecycleResult(
-                    status: status,
-                    state: .ready,
-                    statusMessage: "Wallpaper resumed.",
-                    successMessage: "Wallpaper started.",
-                    previewURL: nil,
-                    clearPendingPreview: false,
-                    refreshPreview: true
-                )
+                return try await executeResume(using: controller)
             }
             let prepared = dependencies.isManagedCacheURL(sourceURL)
                 ? try await dependencies.prepareCatalogVideo(sourceURL)
@@ -356,6 +368,9 @@ final class LifecycleViewModel: ObservableObject {
                 clearPendingPreview: true,
                 refreshPreview: false
             )
+
+        case .resume:
+            return try await executeResume(using: controller)
 
         case .lock(let sourceURL):
             let prepared = try await dependencies.prepareLockScreenVideo(sourceURL)
@@ -418,6 +433,29 @@ final class LifecycleViewModel: ObservableObject {
                 refreshPreview: true
             )
         }
+    }
+
+    private func executeResume(
+        using controller: WallpaperControlling
+    ) async throws -> LifecycleResult {
+        // Start owns both surfaces for Desktop playback. Lock Screen-only
+        // playback already has its own native/legacy route and must not be
+        // migrated through the Desktop Lock Screen setting while resuming.
+        if !isLockScreenOnlyActive {
+            _ = try await runAsync {
+                try await controller.setShowOnLockScreen(true)
+            }
+        }
+        let status = try await runAsync { try controller.resume() }
+        return LifecycleResult(
+            status: status,
+            state: .ready,
+            statusMessage: "Wallpaper resumed.",
+            successMessage: "Wallpaper resumed.",
+            previewURL: nil,
+            clearPendingPreview: false,
+            refreshPreview: true
+        )
     }
 
     private func ensureLifecycleMayCommit(

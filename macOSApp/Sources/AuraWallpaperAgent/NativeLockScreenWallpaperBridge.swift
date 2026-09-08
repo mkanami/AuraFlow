@@ -113,6 +113,10 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
         sendWhenReady(.resume)
     }
 
+    func setPlaybackSpeed(_ speed: Double) {
+        sendWhenReady(.setPlaybackSpeed, playbackSpeed: speed)
+    }
+
     func pause() {
         sendWhenReady(.pause)
     }
@@ -163,12 +167,19 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
         }
     }
 
-    private func sendWhenReady(_ action: NativeLockScreenBridgeAction) {
+    private func sendWhenReady(
+        _ action: NativeLockScreenBridgeAction,
+        playbackSpeed: Double? = nil
+    ) {
         ioQueue.async { [weak self] in
             guard let self else { return }
             self.ensureReady { [weak self] succeeded in
                 guard let self, succeeded else { return }
-                _ = self.send(action, completion: nil)
+                _ = self.send(
+                    action,
+                    playbackSpeed: playbackSpeed,
+                    completion: nil
+                )
             }
         }
     }
@@ -246,6 +257,7 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
     @discardableResult
     private func send(
         _ action: NativeLockScreenBridgeAction,
+        playbackSpeed: Double? = nil,
         completion: (@Sendable (Bool) -> Void)?
     ) -> Bool {
         guard let input,
@@ -257,7 +269,10 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
             }
             return false
         }
-        let request = NativeLockScreenBridgeRequest(action: action)
+        let request = NativeLockScreenBridgeRequest(
+            action: action,
+            playbackSpeed: playbackSpeed
+        )
         guard let encoded = try? encoder.encode(request) else { return false }
         var line = encoded
         line.append(0x0A)

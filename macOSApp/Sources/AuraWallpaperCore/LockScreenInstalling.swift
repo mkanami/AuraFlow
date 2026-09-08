@@ -264,6 +264,9 @@ public struct LockScreenOnlyGenerationStatus: Equatable, Sendable {
 public protocol LockScreenSaverInstalling: LockScreenPlatformOperating {
     func install(videoURL: URL) async throws
     func installLockScreenOnly(videoURL: URL) async throws
+    /// Refreshes an already-installed compatibility component from the
+    /// bundled signed template without changing the user's selection.
+    func refreshInstalledCompatibilityComponentIfNeeded()
     /// Prepares native Lock Screen media without changing the active
     /// wallpaper store, provider, or installation.
     func prepareLockScreenMedia(videoURL: URL) async throws
@@ -286,6 +289,8 @@ public protocol ModernLockScreenInstalling: LockScreenSaverInstalling {
 }
 
 public extension LockScreenSaverInstalling {
+    func refreshInstalledCompatibilityComponentIfNeeded() {}
+
     var capabilities: PlatformCapabilities {
         .legacyMacOS
     }

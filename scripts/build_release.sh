@@ -627,7 +627,9 @@ prepare_bundle_for_codesign() {
 
 find_macho_files() {
   while IFS= read -r -d '' candidate; do
-    if /usr/bin/file -b "$candidate" 2>/dev/null | grep -q "Mach-O"; then
+    # Read the complete `file` output. With `set -o pipefail`, grep -q can
+    # make universal Mach-O detection fail when `file` receives SIGPIPE.
+    if /usr/bin/file -b "$candidate" 2>/dev/null | grep "Mach-O" >/dev/null 2>&1; then
       printf '%s\n' "$candidate"
     fi
   done < <(find "$APP_BUNDLE" -type f -print0)
@@ -654,6 +656,13 @@ sign_app_bundle() {
   prepare_bundle_for_codesign
 
   log "Signing app bundle"
+  if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
+    # Sign the optional private-framework client before the main executable.
+    # The universal lipo output has no reusable ad-hoc signature, and the
+    # main executable rejects an unsigned nested bridge during signing.
+    codesign_target "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
+  fi
+
   while IFS= read -r target; do
     codesign_target "$target"
   done < <(find_macho_files)

@@ -48,6 +48,10 @@ final class LegacyMacOSAdapter: LockScreenSaverInstalling {
         try await installer.install(videoURL: videoURL)
     }
 
+    func refreshInstalledCompatibilityComponentIfNeeded() {
+        installer.refreshInstalledCompatibilityComponentIfNeeded()
+    }
+
     func installLegacyLockScreenFallback(
         videoURL: URL,
         restoringLockScreenOnlyVideoURL: URL?
@@ -227,6 +231,10 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
         } else {
             try await unsupported.installLockScreenOnly(videoURL: videoURL)
         }
+    }
+
+    func refreshInstalledCompatibilityComponentIfNeeded() {
+        legacy.refreshInstalledCompatibilityComponentIfNeeded()
     }
 
     func installLegacyLockScreenFallback(

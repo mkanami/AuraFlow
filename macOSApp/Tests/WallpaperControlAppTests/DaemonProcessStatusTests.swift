@@ -85,6 +85,27 @@ private func stopStatusFixtureProcess(_ process: Process) {
     #expect(metrics.health?.reason == "identity-mismatch")
 }
 
+@Test func metricsExposeOwnedProcessResources() throws {
+    let fixture = try makeDaemonStatusStore()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    let process = try launchStatusFixtureProcess()
+    defer { stopStatusFixtureProcess(process) }
+
+    try fixture.store.savePID(process.processIdentifier)
+    let metrics = fixture.store.metrics()
+
+    #expect(metrics.pid == Int(process.processIdentifier))
+    #expect(metrics.process_count == 1)
+    #expect(metrics.cpu_percent != nil)
+    #expect(metrics.memory_mb != nil)
+    #expect(metrics.memory_mb ?? 0 > 0)
+    #expect(metrics.virtual_memory_mb != nil)
+    #expect(metrics.virtual_memory_mb ?? 0 > 0)
+    #expect(metrics.thread_count != nil)
+    #expect(metrics.thread_count ?? 0 > 0)
+}
+
 @Test func daemonProcessStatusDistinguishesUnknownStaleAndMissingPID() throws {
     let fixture = try makeDaemonStatusStore()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

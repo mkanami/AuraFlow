@@ -115,7 +115,7 @@ private func makeRuntimeBridgeFixture(
     let frameworkValue = privateFrameworksLoaded ? "true" : "false"
     let symbolValue = requiredSymbolsResolved ? "true" : "false"
     let capabilityField = includeCapabilities
-        ? ",\"capabilities\":{\"protocolVersion\":\(protocolVersion),\"architecture\":\"\(architecture)\",\"privateFrameworksLoaded\":\(frameworkValue),\"requiredSymbolsResolved\":\(symbolValue),\"supportedActions\":[\"capabilities\",\"prepare\",\"show\",\"hide\",\"pause\",\"resume\",\"shutdown\"]}"
+        ? ",\"capabilities\":{\"protocolVersion\":\(protocolVersion),\"architecture\":\"\(architecture)\",\"privateFrameworksLoaded\":\(frameworkValue),\"requiredSymbolsResolved\":\(symbolValue),\"supportedActions\":[\"capabilities\",\"prepare\",\"show\",\"hide\",\"pause\",\"resume\",\"setPlaybackSpeed\",\"shutdown\"]}"
         : ""
     let script = """
     #!/bin/sh

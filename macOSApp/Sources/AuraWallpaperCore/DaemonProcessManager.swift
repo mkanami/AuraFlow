@@ -23,6 +23,13 @@ public enum DaemonProcessStatus: Equatable, Sendable {
     }
 }
 
+struct DaemonProcessResourceMetrics: Equatable, Sendable {
+    let cpuPercent: Double?
+    let memoryMB: Double?
+    let virtualMemoryMB: Double?
+    let threadCount: Int?
+}
+
 /// Owns PID persistence, process identity validation, and daemon termination.
 ///
 /// `WallpaperRuntimeStore` exposes the durable URLs and config state, while
@@ -42,15 +49,77 @@ public final class DaemonProcessManager {
         case unavailable
     }
 
+    private struct ResourceSample {
+        let totalCPUTime: UInt64
+        let sampledAt: TimeInterval
+        let startTimeMicros: Int64
+    }
+
+    private final class ResourceSampleStore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var samples: [Int: ResourceSample] = [:]
+
+        func cpuPercent(
+            pid: Int,
+            totalCPUTime: UInt64,
+            startTimeMicros: Int64,
+            sampledAt: TimeInterval
+        ) -> Double? {
+            lock.lock()
+            defer { lock.unlock() }
+
+            let previous = samples.updateValue(
+                ResourceSample(
+                    totalCPUTime: totalCPUTime,
+                    sampledAt: sampledAt,
+                    startTimeMicros: startTimeMicros
+                ),
+                forKey: pid
+            )
+
+            if let previous,
+               previous.startTimeMicros == startTimeMicros,
+               totalCPUTime >= previous.totalCPUTime
+            {
+                let elapsed = sampledAt - previous.sampledAt
+                if elapsed > 0.01 {
+                    let cpuSeconds = Double(totalCPUTime - previous.totalCPUTime) / 1_000_000_000.0
+                    return max(0.0, (cpuSeconds / elapsed) * 100.0)
+                }
+            }
+
+            // The first refresh has no previous sample yet. Return a useful
+            // lifetime average instead of showing n/a until the next poll.
+            let processLifetime = sampledAt - (Double(startTimeMicros) / 1_000_000.0)
+            guard processLifetime > 0 else { return 0.0 }
+            let cpuSeconds = Double(totalCPUTime) / 1_000_000_000.0
+            return max(0.0, (cpuSeconds / processLifetime) * 100.0)
+        }
+    }
+
+    private static let resourceSamples = ResourceSampleStore()
+
     private let store: WallpaperRuntimeStore
-    private let expectedExecutableURL: URL?
+    private let expectedExecutablePaths: Set<String>
+    private let usesExplicitExecutablePaths: Bool
 
     public init(
         store: WallpaperRuntimeStore,
-        expectedExecutableURL: URL? = nil
+        expectedExecutableURL: URL? = nil,
+        additionalExpectedExecutableURLs: [URL] = []
     ) {
         self.store = store
-        self.expectedExecutableURL = expectedExecutableURL?.standardizedFileURL
+        self.usesExplicitExecutablePaths =
+            expectedExecutableURL != nil || !additionalExpectedExecutableURLs.isEmpty
+        var expectedURLs = additionalExpectedExecutableURLs
+        if let expectedExecutableURL {
+            expectedURLs.append(expectedExecutableURL)
+        } else if additionalExpectedExecutableURLs.isEmpty {
+            expectedURLs = Self.defaultExpectedExecutableURLs(for: store)
+        }
+        self.expectedExecutablePaths = Set(
+            expectedURLs.map(Self.normalizedExecutablePath)
+        )
     }
 
     public var currentPID: Int? {
@@ -67,8 +136,65 @@ public final class DaemonProcessManager {
         processStatus.isOwned
     }
 
+    /// Stops helper instances that still point at an AuraFlow-owned
+    /// executable but are no longer represented by the persisted PID.
+    ///
+    /// A failed migration or an older app instance can leave one such helper
+    /// behind. It must not be allowed to keep observing the shared command
+    /// file and mutate the Lock Screen alongside the current agent.
+    @discardableResult
+    public func terminateOrphanedProcesses(
+        timeout: TimeInterval = 1.0
+    ) -> [Int] {
+        let persistedPID = store.loadPID()
+        let orphanedPIDs = Self.runningProcessIDs()
+            .filter { pid in
+                pid != persistedPID
+                    && expectedExecutablePaths.contains(
+                        Self.normalizedExecutablePath(
+                            Self.processExecutablePath(for: pid) ?? ""
+                        )
+                    )
+            }
+
+        var terminatedPIDs: [Int] = []
+        for pid in orphanedPIDs {
+            guard terminateOrphanedProcess(pid, timeout: timeout) else {
+                continue
+            }
+            terminatedPIDs.append(pid)
+        }
+        return terminatedPIDs
+    }
+
     public func isRunning(pid: Int?) -> Bool {
         processStatus(for: pid).isOwned
+    }
+
+    /// Reads resource usage for an already verified AuraFlow process. The
+    /// caller still receives nil when macOS refuses a particular proc query,
+    /// but a live owned process normally provides all four values.
+    func resourceMetrics(for pid: Int) -> DaemonProcessResourceMetrics? {
+        guard processStatus(for: pid).isOwned,
+              let taskInfo = Self.taskInfo(for: pid),
+              let startTimeMicros = Self.processStartTimeMicros(for: pid)
+        else {
+            return nil
+        }
+
+        let totalCPUTime = taskInfo.pti_total_user &+ taskInfo.pti_total_system
+        let sampledAt = Date().timeIntervalSince1970
+        return DaemonProcessResourceMetrics(
+            cpuPercent: Self.resourceSamples.cpuPercent(
+                pid: pid,
+                totalCPUTime: totalCPUTime,
+                startTimeMicros: startTimeMicros,
+                sampledAt: sampledAt
+            ),
+            memoryMB: Double(taskInfo.pti_resident_size) / 1_048_576.0,
+            virtualMemoryMB: Double(taskInfo.pti_virtual_size) / 1_048_576.0,
+            threadCount: Int(taskInfo.pti_threadnum)
+        )
     }
 
     public func processStatus(for pid: Int?) -> DaemonProcessStatus {
@@ -91,14 +217,26 @@ public final class DaemonProcessManager {
             break
         }
 
-        guard let actual = processIdentity(for: pid),
-              let expected = loadIdentity()
-        else {
+        guard let actual = processIdentity(for: pid) else {
             // An identity that cannot be read is not proof that the process
             // is foreign; it is simply not safe to call it AuraFlow-owned.
             return .unknown
         }
-        return expected == actual ? .owned : .identityMismatch
+        if let expected = loadIdentity() {
+            return expected == actual ? .owned : .identityMismatch
+        }
+
+        // Native helpers from versions before identity persistence can still
+        // be managed when proc_pidpath matches a path explicitly owned by
+        // AuraFlow: the current helper, an old app-bundle helper, or the path
+        // captured from AuraFlow's LaunchAgent before migration.
+        guard !expectedExecutablePaths.isEmpty else { return .unknown }
+        if expectedExecutablePaths.contains(
+            Self.normalizedExecutablePath(actual.executablePath)
+        ) {
+            return .owned
+        }
+        return usesExplicitExecutablePaths ? .identityMismatch : .unknown
     }
 
     public func recordPID(_ pid: Int32 = getpid()) throws {
@@ -258,6 +396,115 @@ public final class DaemonProcessManager {
         ) > 0 ? .alive : .unknown
     }
 
+    private func terminateOrphanedProcess(
+        _ pid: Int,
+        timeout: TimeInterval
+    ) -> Bool {
+        // The executable path was resolved immediately before this call and
+        // matched one of the exact AuraFlow helper paths. Re-check it before
+        // every signal so PID reuse cannot turn cleanup into a foreign-process
+        // kill.
+        guard let executablePath = Self.processExecutablePath(for: pid),
+              expectedExecutablePaths.contains(
+                  Self.normalizedExecutablePath(executablePath)
+              )
+        else {
+            return false
+        }
+
+        kill(pid_t(pid), SIGTERM)
+        guard !Self.isProcessAlive(pid: pid)
+            || Self.waitForExit(pid: pid, timeout: max(timeout, 0.2))
+        else {
+            guard let currentPath = Self.processExecutablePath(for: pid),
+                  expectedExecutablePaths.contains(
+                      Self.normalizedExecutablePath(currentPath)
+                  )
+            else {
+                return false
+            }
+            kill(pid_t(pid), SIGKILL)
+            return Self.waitForExit(pid: pid, timeout: 1.0)
+        }
+        return true
+    }
+
+    private static func runningProcessIDs() -> [Int] {
+        let requiredBytes = proc_listpids(
+            UInt32(PROC_ALL_PIDS),
+            0,
+            nil,
+            0
+        )
+        guard requiredBytes > 0 else { return [] }
+
+        let capacity = Int(requiredBytes) / MemoryLayout<Int32>.stride + 16
+        var pids = [Int32](repeating: 0, count: capacity)
+        let returnedBytes = pids.withUnsafeMutableBytes { buffer in
+            proc_listpids(
+                UInt32(PROC_ALL_PIDS),
+                0,
+                buffer.baseAddress,
+                Int32(buffer.count)
+            )
+        }
+        guard returnedBytes > 0 else { return [] }
+        let returnedCount = min(
+            Int(returnedBytes) / MemoryLayout<Int32>.stride,
+            pids.count
+        )
+        return pids.prefix(returnedCount)
+            .map(Int.init)
+            .filter { $0 > 0 }
+    }
+
+    private static func processExecutablePath(for pid: Int) -> String? {
+        guard pid > 0 else { return nil }
+        var path = [Int8](repeating: 0, count: 4_096)
+        guard proc_pidpath(
+            pid_t(pid),
+            &path,
+            UInt32(path.count)
+        ) > 0
+        else {
+            return nil
+        }
+        return String(cString: path)
+    }
+
+    private static func taskInfo(for pid: Int) -> proc_taskinfo? {
+        guard pid > 0 else { return nil }
+        var info = proc_taskinfo()
+        let infoSize = proc_pidinfo(
+            pid_t(pid),
+            PROC_PIDTASKINFO,
+            0,
+            &info,
+            Int32(MemoryLayout<proc_taskinfo>.stride)
+        )
+        guard infoSize == Int32(MemoryLayout<proc_taskinfo>.stride) else {
+            return nil
+        }
+        return info
+    }
+
+    private static func processStartTimeMicros(for pid: Int) -> Int64? {
+        guard pid > 0 else { return nil }
+        var processInfo = proc_bsdinfo()
+        let infoSize = proc_pidinfo(
+            pid_t(pid),
+            PROC_PIDTBSDINFO,
+            0,
+            &processInfo,
+            Int32(MemoryLayout<proc_bsdinfo>.stride)
+        )
+        guard infoSize == Int32(MemoryLayout<proc_bsdinfo>.stride) else {
+            return nil
+        }
+        return Int64(processInfo.pbi_start_tvsec) * 1_000_000
+            + Int64(processInfo.pbi_start_tvusec)
+    }
+
     private func clearRuntimeMetadata() {
         store.removePID()
         store.markPaused(false)
@@ -276,10 +523,12 @@ public final class DaemonProcessManager {
         if let expected = loadIdentity() {
             return expected == actual ? .matched : .mismatch
         }
-        guard let expectedExecutableURL else {
+        guard !expectedExecutablePaths.isEmpty else {
             return .mismatch
         }
-        return actual.executablePath == expectedExecutableURL.path
+        return expectedExecutablePaths.contains(
+            Self.normalizedExecutablePath(actual.executablePath)
+        )
             ? .matched
             : .mismatch
     }
@@ -334,5 +583,35 @@ public final class DaemonProcessManager {
             }
         }
         return nil
+    }
+
+    private static func normalizedExecutablePath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private static func normalizedExecutablePath(_ path: String) -> String {
+        normalizedExecutablePath(URL(fileURLWithPath: path))
+    }
+
+    private static func defaultExpectedExecutableURLs(
+        for store: WallpaperRuntimeStore
+    ) -> [URL] {
+        var urls = [
+            store.appSupportURL
+                .appendingPathComponent("Runtime/AuraWallpaperAgent")
+        ]
+        if let launchAgentURL = store.loadLaunchAgentExecutableURL() {
+            urls.append(launchAgentURL)
+        }
+        urls.append(
+            Bundle.main.bundleURL
+                .appendingPathComponent("Contents/MacOS/AuraWallpaperAgent")
+        )
+        if let executableDirectory = Bundle.main.executableURL?
+            .deletingLastPathComponent()
+        {
+            urls.append(executableDirectory.appendingPathComponent("AuraWallpaperAgent"))
+        }
+        return urls
     }
 }

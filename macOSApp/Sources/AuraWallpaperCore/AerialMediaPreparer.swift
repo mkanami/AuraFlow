@@ -246,7 +246,7 @@ internal final class AerialMediaPreparer {
         let speedTag = String(format: "%.3f", normalizedSpeed)
             .replacingOccurrences(of: ".", with: "_")
         let cacheURL = preparedCacheDirectoryURL.appendingPathComponent(
-            "prepared-v2-\(sourceSignature)-rate-\(speedTag).mov"
+            "prepared-v3-\(sourceSignature)-rate-\(speedTag).mov"
         )
         if fileManager.fileExists(atPath: cacheURL.path),
            try await isCompatible(at: cacheURL) {
@@ -271,91 +271,197 @@ internal final class AerialMediaPreparer {
                 )
         }
 
-        let composition = AVMutableComposition()
-        guard let compositionTrack = composition.addMutableTrack(
-            withMediaType: .video,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else {
-            throw AerialLockScreenInstallerError
-                .aerialVideoPreparationFailed(
-                    "The retimed video track could not be created."
-                )
-        }
-        do {
-            try compositionTrack.insertTimeRange(
-                CMTimeRange(start: .zero, duration: duration),
-                of: sourceVideoTrack,
-                at: .zero
-            )
-            compositionTrack.preferredTransform = try await sourceVideoTrack
-                .load(.preferredTransform)
-            compositionTrack.scaleTimeRange(
-                CMTimeRange(start: .zero, duration: duration),
-                toDuration: CMTimeMultiplyByFloat64(
-                    duration,
-                    multiplier: 1.0 / normalizedSpeed
-                )
-            )
-        } catch {
-            throw AerialLockScreenInstallerError
-                .aerialVideoPreparationFailed(error.localizedDescription)
-        }
-
-        let exportPreset: String
-        if await AVAssetExportSession.compatibility(
-            ofExportPreset: AVAssetExportPresetHEVCHighestQuality,
-            with: composition,
-            outputFileType: .mov
-        ) {
-            exportPreset = AVAssetExportPresetHEVCHighestQuality
-        } else if await AVAssetExportSession.compatibility(
-            ofExportPreset: AVAssetExportPresetHEVC1920x1080,
-            with: composition,
-            outputFileType: .mov
-        ) {
-            exportPreset = AVAssetExportPresetHEVC1920x1080
-        } else {
-            throw AerialLockScreenInstallerError
-                .aerialVideoPreparationFailed(
-                    "This Mac cannot export the retimed video as HEVC."
-                )
-        }
-        guard let exportSession = AVAssetExportSession(
-            asset: composition,
-            presetName: exportPreset
-        ) else {
-            throw AerialLockScreenInstallerError
-                .aerialVideoPreparationFailed(
-                    "The HEVC export session could not be created."
-                )
-        }
-
         let outputURL = preparedCacheDirectoryURL.appendingPathComponent(
             ".prepared-rate-\(UUID().uuidString).mov"
         )
         defer { try? fileManager.removeItem(at: outputURL) }
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = .mov
-        exportSession.shouldOptimizeForNetworkUse = false
-
-        await withCheckedContinuation { continuation in
-            exportSession.exportAsynchronously {
-                continuation.resume()
-            }
-        }
-        guard exportSession.status == .completed,
-              fileManager.fileExists(atPath: outputURL.path),
+        try await writeRetimedMovie(
+            asset: sourceAsset,
+            videoTrack: sourceVideoTrack,
+            duration: duration,
+            speed: normalizedSpeed,
+            to: outputURL
+        )
+        guard fileManager.fileExists(atPath: outputURL.path),
               try await isCompatible(at: outputURL)
         else {
             throw AerialLockScreenInstallerError
-                .aerialVideoPreparationFailed(
-                    exportSession.error?.localizedDescription
-                        ?? "HEVC retiming failed."
-                )
+                .aerialVideoPreparationFailed("HEVC retiming failed.")
         }
 
         try replaceCacheItem(at: cacheURL, with: outputURL)
         return cacheURL
+    }
+
+    /// Rewrites compressed HEVC samples with physical timestamps. Apple's
+    /// Aerial provider normalizes QuickTime edit lists, so composition-only
+    /// scaling still plays at 1x even though the container duration changes.
+    private func writeRetimedMovie(
+        asset: AVAsset,
+        videoTrack: AVAssetTrack,
+        duration: CMTime,
+        speed: Double,
+        to outputURL: URL
+    ) async throws {
+        let formatDescriptions = try await videoTrack.load(.formatDescriptions)
+        guard let sourceFormat = formatDescriptions.first else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The video track has no format description."
+                )
+        }
+
+        let reader = try AVAssetReader(asset: asset)
+        let readerOutput = AVAssetReaderTrackOutput(
+            track: videoTrack,
+            outputSettings: nil
+        )
+        readerOutput.alwaysCopiesSampleData = false
+        guard reader.canAdd(readerOutput) else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The video samples could not be read for retiming."
+                )
+        }
+        reader.add(readerOutput)
+
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
+        let writerInput = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: nil,
+            sourceFormatHint: sourceFormat
+        )
+        writerInput.transform = try await videoTrack.load(.preferredTransform)
+        guard writer.canAdd(writerInput) else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The retimed HEVC samples could not be written."
+                )
+        }
+        writer.add(writerInput)
+        guard writer.startWriting(), reader.startReading() else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    writer.error?.localizedDescription
+                        ?? reader.error?.localizedDescription
+                        ?? "The retimed movie could not be started."
+                )
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        var firstPresentationTime: CMTime?
+        var appendedSamples = 0
+        while reader.status == .reading {
+            try Task.checkCancellation()
+            guard writer.status == .writing else { break }
+            guard writerInput.isReadyForMoreMediaData else {
+                try await Task.sleep(nanoseconds: 2_000_000)
+                continue
+            }
+            guard let sample = readerOutput.copyNextSampleBuffer() else {
+                break
+            }
+            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sample)
+            if firstPresentationTime == nil, presentationTime.isValid {
+                firstPresentationTime = presentationTime
+            }
+            guard let retimedSample = try retimedSampleBuffer(
+                sample,
+                origin: firstPresentationTime ?? .zero,
+                speed: speed
+            ), writerInput.append(retimedSample) else {
+                reader.cancelReading()
+                writer.cancelWriting()
+                throw AerialLockScreenInstallerError
+                    .aerialVideoPreparationFailed(
+                        writer.error?.localizedDescription
+                            ?? "A retimed video sample could not be written."
+                    )
+            }
+            appendedSamples += 1
+        }
+
+        guard reader.status == .completed, appendedSamples > 0 else {
+            writer.cancelWriting()
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    reader.error?.localizedDescription
+                        ?? "The source video ended before retiming completed."
+                )
+        }
+        writerInput.markAsFinished()
+        writer.endSession(
+            atSourceTime: CMTimeMultiplyByFloat64(
+                duration,
+                multiplier: 1.0 / speed
+            )
+        )
+        await writer.finishWriting()
+        guard writer.status == .completed else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    writer.error?.localizedDescription
+                        ?? "The retimed movie could not be finalized."
+                )
+        }
+    }
+
+    private func retimedSampleBuffer(
+        _ sampleBuffer: CMSampleBuffer,
+        origin: CMTime,
+        speed: Double
+    ) throws -> CMSampleBuffer? {
+        var timing = CMSampleTimingInfo(
+            duration: scaledDuration(
+                CMSampleBufferGetDuration(sampleBuffer),
+                speed: speed
+            ),
+            presentationTimeStamp: .invalid,
+            decodeTimeStamp: .invalid
+        )
+        timing.presentationTimeStamp = scaledTimestamp(
+            CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
+            origin: origin,
+            speed: speed
+        )
+        timing.decodeTimeStamp = scaledTimestamp(
+            CMSampleBufferGetDecodeTimeStamp(sampleBuffer),
+            origin: origin,
+            speed: speed
+        )
+
+        var retimedSample: CMSampleBuffer?
+        let status = CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sampleBuffer,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleBufferOut: &retimedSample
+        )
+        guard status == noErr else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The video sample timestamps could not be rewritten."
+                )
+        }
+        return retimedSample
+    }
+
+    private func scaledDuration(_ time: CMTime, speed: Double) -> CMTime {
+        guard time.isValid, time.isNumeric else { return time }
+        return CMTimeMultiplyByFloat64(time, multiplier: 1.0 / speed)
+    }
+
+    private func scaledTimestamp(
+        _ time: CMTime,
+        origin: CMTime,
+        speed: Double
+    ) -> CMTime {
+        guard time.isValid, time.isNumeric else { return time }
+        return CMTimeMultiplyByFloat64(
+            CMTimeSubtract(time, origin),
+            multiplier: 1.0 / speed
+        )
     }
 
     /// Writes a valid Aerial-compatible movie whose frames are all the same
@@ -516,7 +622,8 @@ internal final class AerialMediaPreparer {
 
     private func writeStillImageAerialVideo(
         _ image: NSImage,
-        to outputURL: URL
+        to outputURL: URL,
+        frameCount: Int = 90
     ) async throws {
         guard let sourceImage = image.cgImage(
             forProposedRect: nil,
@@ -638,7 +745,7 @@ internal final class AerialMediaPreparer {
             in: CGRect(x: 0, y: 0, width: width, height: height)
         )
 
-        for frame in 0..<90 {
+        for frame in 0..<frameCount {
             while !input.isReadyForMoreMediaData,
                   writer.status == .writing {
                 do {

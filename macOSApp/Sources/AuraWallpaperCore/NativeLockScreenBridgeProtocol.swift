@@ -109,6 +109,7 @@ public struct NativeLockScreenBridgeRuntimeCapabilities: Codable, Equatable, Sen
         .hide,
         .pause,
         .resume,
+        .setPlaybackSpeed,
         .shutdown,
     ]
 }
@@ -223,19 +224,23 @@ public enum NativeLockScreenBridgeAction: String, Codable, Hashable, Sendable {
     case hide
     case pause
     case resume
+    case setPlaybackSpeed
     case shutdown
 }
 
 public struct NativeLockScreenBridgeRequest: Codable, Sendable {
     public let id: String
     public let action: NativeLockScreenBridgeAction
+    public let playbackSpeed: Double?
 
     public init(
         id: String = UUID().uuidString,
-        action: NativeLockScreenBridgeAction
+        action: NativeLockScreenBridgeAction,
+        playbackSpeed: Double? = nil
     ) {
         self.id = id
         self.action = action
+        self.playbackSpeed = playbackSpeed
     }
 }
 

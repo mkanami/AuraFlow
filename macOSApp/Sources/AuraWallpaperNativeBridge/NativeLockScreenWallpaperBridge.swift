@@ -8,6 +8,8 @@ import AuraWallpaperCore
 
 @MainActor
 final class NativeLockScreenWallpaperBridge {
+    private typealias StartScreenSaverFunction = @convention(c) () -> Int32
+
     private static let logger = Logger(
         subsystem: "com.auraflow.wallpaper",
         category: "native-lock-screen"
@@ -20,6 +22,7 @@ final class NativeLockScreenWallpaperBridge {
     private var showing = false
     private var lockedPresentationReady = false
     private var paused = false
+    private var pauseEnforcementTask: Task<Void, Never>?
     private var pendingCompletions: [(Bool, String?) -> Void] = []
     private var pendingShowCompletions: [(Bool, String?) -> Void] = []
     private var presentationRequestID: UInt64 = 0
@@ -43,6 +46,10 @@ final class NativeLockScreenWallpaperBridge {
             && requiredWallpaperSymbols.allSatisfy { symbol in
                 hasSymbol(named: symbol, in: frameworkHandles[0])
             }
+            && hasSymbol(
+                named: WallpaperPlatformConstants.startScreenSaverSymbol,
+                in: frameworkHandles.last
+            )
 
         return NativeLockScreenBridgeRuntimeCapabilities(
             protocolVersion: NativeLockScreenBridgeRuntimeCapabilities
@@ -58,6 +65,7 @@ final class NativeLockScreenWallpaperBridge {
     private static let nativeBridgePrivateFrameworkPaths = [
         "/System/Library/PrivateFrameworks/Wallpaper.framework",
         "/System/Library/PrivateFrameworks/WallpaperTypes.framework",
+        "/System/Library/PrivateFrameworks/login.framework",
     ]
 
     private static let requiredWallpaperSymbols = [
@@ -136,6 +144,7 @@ final class NativeLockScreenWallpaperBridge {
                 self.window = window
                 if self.paused {
                     self.pauseLayer(assertion.layer)
+                    self.startPauseEnforcement()
                 }
                 self.finishPreparation(succeeded: true)
                 Self.logger.notice("Native Lock Screen layer prepared")
@@ -225,6 +234,7 @@ final class NativeLockScreenWallpaperBridge {
         }
         presentationRequestID &+= 1
         let requestID = presentationRequestID
+        startSystemScreenSaverNow()
         guard let displayAssertion else {
             showing = false
             finishShowRequests(
@@ -253,6 +263,7 @@ final class NativeLockScreenWallpaperBridge {
                 self.lockedPresentationReady = true
                 if self.paused {
                     self.pauseLayer(displayAssertion.layer)
+                    self.startPauseEnforcement()
                 }
                 self.finishShowRequests(succeeded: true)
             } catch {
@@ -282,6 +293,8 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     func resumeAfterPause() {
+        pauseEnforcementTask?.cancel()
+        pauseEnforcementTask = nil
         if let layer = displayAssertion?.layer, layer.speed == 0 {
             let pausedTime = layer.timeOffset
             layer.speed = 1
@@ -296,14 +309,43 @@ final class NativeLockScreenWallpaperBridge {
         paused = false
     }
 
+    func setPlaybackSpeed(_ speed: Double) {
+        // Retained as a wire-compatible no-op for already-running agents.
+        // Apple owns the Aerial player's clock and ignores its host CALayer's
+        // speed; AuraFlow now retimes the managed movie samples instead.
+        _ = speed
+    }
+
     func pause() {
         let wasPaused = paused
         paused = true
         if let layer = displayAssertion?.layer {
             pauseLayer(layer)
         }
+        startPauseEnforcement()
         if !wasPaused {
             Self.logger.notice("Native Lock Screen layer paused")
+        }
+    }
+
+    /// The secure Lock Screen can refresh or rebind the presentation layer
+    /// while loginwindow is active. Re-apply the paused timing state so Stop
+    /// remains equivalent to Desktop pause instead of being lost on one of
+    /// those compositor refreshes.
+    private func startPauseEnforcement() {
+        guard pauseEnforcementTask == nil else { return }
+        pauseEnforcementTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.paused else { return }
+                if let layer = self.displayAssertion?.layer {
+                    self.pauseLayer(layer)
+                }
+                do {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                } catch {
+                    return
+                }
+            }
         }
     }
 
@@ -346,6 +388,8 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     func shutdown() {
+        pauseEnforcementTask?.cancel()
+        pauseEnforcementTask = nil
         presentationRequestID &+= 1
         showing = false
         lockedPresentationReady = false
@@ -362,6 +406,34 @@ final class NativeLockScreenWallpaperBridge {
         showing = false
         paused = false
     }
+
+    private func startSystemScreenSaverNow() {
+        guard let function = Self.startScreenSaverFunction else {
+            Self.logger.error("SACScreenSaverStartNow is unavailable")
+            return
+        }
+        let result = function()
+        if result != 0 {
+            Self.logger.error(
+                "SACScreenSaverStartNow failed: \(result, privacy: .public)"
+            )
+        }
+    }
+
+    private static let startScreenSaverFunction: StartScreenSaverFunction? = {
+        guard let handle = dlopen(
+            WallpaperPlatformConstants.loginFrameworkPath,
+            RTLD_NOW | RTLD_LOCAL
+        ),
+        let symbol = dlsym(
+            handle,
+            WallpaperPlatformConstants.startScreenSaverSymbol
+        )
+        else {
+            return nil
+        }
+        return unsafeBitCast(symbol, to: StartScreenSaverFunction.self)
+    }()
 
     private func makeWindow(for wallpaperLayer: CALayer) -> NSWindow {
         let frame = NSScreen.main?.frame

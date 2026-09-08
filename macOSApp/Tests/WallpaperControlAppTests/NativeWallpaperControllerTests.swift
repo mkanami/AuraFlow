@@ -1,6 +1,8 @@
 import Darwin
+import AVFoundation
 import Foundation
 import Testing
+@testable import AuraWallpaperCore
 @testable import WallpaperControlApp
 
 private struct NativeRuntimeFixture {
@@ -9,7 +11,10 @@ private struct NativeRuntimeFixture {
     let helperURL: URL
     let videoURL: URL
 
-    init(_ name: String) throws {
+    init(
+        _ name: String,
+        pidPersistenceFailureProvider: ((Int32) -> Error?)? = nil
+    ) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AuraFlowNativeRuntimeTests-\(name)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -18,7 +23,8 @@ private struct NativeRuntimeFixture {
             launchAgentURL: root.appendingPathComponent("LaunchAgents/com.andrijvergeles.auraflow.plist"),
             launchctlRunner: { _ in
                 LaunchctlResult(succeeded: true)
-            }
+            },
+            pidPersistenceFailureProvider: pidPersistenceFailureProvider
         )
         try store.ensureDirectories()
 
@@ -114,6 +120,11 @@ private enum NativeTestAgentError: Error {
     case readinessHandshakeFailed
 }
 
+private final class PIDPersistenceFailureGate {
+    var error: Error?
+    var failedPID: Int?
+}
+
 private func terminateAndReapTestAgent(_ agent: Process) {
     if agent.isRunning {
         kill(agent.processIdentifier, SIGKILL)
@@ -132,13 +143,65 @@ private func reapTestChild(_ pid: Int) {
     }
 }
 
-private func launchReadyTestAgent() throws -> Process {
+private func writeTestVideo(to url: URL) async throws {
+    let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+    let input = AVAssetWriterInput(
+        mediaType: .video,
+        outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: 16,
+            AVVideoHeightKey: 16,
+        ]
+    )
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+        assetWriterInput: input,
+        sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32ARGB),
+            kCVPixelBufferWidthKey as String: 16,
+            kCVPixelBufferHeightKey as String: 16,
+        ]
+    )
+    #expect(writer.canAdd(input))
+    writer.add(input)
+    #expect(writer.startWriting())
+    writer.startSession(atSourceTime: .zero)
+
+    while !input.isReadyForMoreMediaData {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    var pixelBuffer: CVPixelBuffer?
+    let status = CVPixelBufferCreate(
+        kCFAllocatorDefault,
+        16,
+        16,
+        kCVPixelFormatType_32ARGB,
+        nil,
+        &pixelBuffer
+    )
+    #expect(status == kCVReturnSuccess)
+    let frame = try #require(pixelBuffer)
+    CVPixelBufferLockBaseAddress(frame, [])
+    if let baseAddress = CVPixelBufferGetBaseAddress(frame) {
+        baseAddress.initializeMemory(as: UInt8.self, repeating: 0xFF, count: 16 * 16 * 4)
+    }
+    CVPixelBufferUnlockBaseAddress(frame, [])
+    #expect(adaptor.append(frame, withPresentationTime: .zero))
+    input.markAsFinished()
+    await writer.finishWriting()
+    #expect(writer.status == .completed)
+}
+
+private func launchReadyTestAgent(
+    executableURL: URL = URL(fileURLWithPath: "/usr/bin/tail")
+) throws -> Process {
     let agent = Process()
-    agent.executableURL = URL(fileURLWithPath: "/bin/bash")
-    agent.arguments = [
-        "-c",
-        "exec /usr/bin/tail -f /dev/null"
-    ]
+    if executableURL == URL(fileURLWithPath: "/usr/bin/tail") {
+        agent.executableURL = URL(fileURLWithPath: "/bin/bash")
+        agent.arguments = ["-c", "exec /usr/bin/tail -f /dev/null"]
+    } else {
+        agent.executableURL = executableURL
+        agent.arguments = ["-f", "/dev/null"]
+    }
     agent.standardOutput = FileHandle.nullDevice
     agent.standardError = FileHandle.nullDevice
     try agent.run()
@@ -151,7 +214,9 @@ private func launchReadyTestAgent() throws -> Process {
             UInt32(executablePath.count)
         )
         if pathLength > 0,
-           String(cString: executablePath) == "/usr/bin/tail" {
+           URL(fileURLWithPath: String(cString: executablePath))
+                .resolvingSymlinksInPath().path
+                == executableURL.resolvingSymlinksInPath().path {
             return agent
         }
         usleep(20_000)
@@ -162,6 +227,7 @@ private func launchReadyTestAgent() throws -> Process {
 
 private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling {
     var requiresNativeBridge = false
+    var supportsSecureLockScreen = true
 
     var capabilities: PlatformCapabilities {
         // Keep the recording adapter independent from the private framework.
@@ -173,7 +239,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
             minimumMajorOSVersion: 26,
             supportsLockScreen: true,
             supportsLockScreenOnly: true,
-            supportsSecureLockScreen: true,
+            supportsSecureLockScreen: supportsSecureLockScreen,
             supportsAnimatedMedia: true,
             usesPrivateWallpaperFramework: requiresNativeBridge,
             availabilityMessage: "Test Lock Screen provider"
@@ -183,8 +249,10 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     private(set) var installedLockScreenOnlyVideoURL: URL?
     private(set) var sourceAtInstall: URL?
     var sourceProviderAtInstall: (() -> URL?)?
+    var onInstallLockScreenOnly: (() -> Void)?
     private(set) var uninstallCallCount = 0
     private(set) var preservingUninstallCallCount = 0
+    private(set) var playbackSpeedUpdates: [(URL, Double)] = []
     var installError: TestInstallerError?
     var failNextDesktopInstall = false
     var uninstallError: TestInstallerError?
@@ -209,6 +277,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
 
     func installLockScreenOnly(videoURL: URL) throws {
         sourceAtInstall = sourceProviderAtInstall?()
+        onInstallLockScreenOnly?()
         if let installError {
             throw installError
         }
@@ -228,6 +297,14 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         }
         preservingUninstallCallCount += 1
         uninstallCallCount += 1
+    }
+
+    func updatePlaybackSpeed(
+        videoURL: URL,
+        speed: Double
+    ) async throws -> Bool {
+        playbackSpeedUpdates.append((videoURL, speed))
+        return true
     }
 
     func lockScreenOnlyStatus(
@@ -446,6 +523,35 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(termination.succeeded)
     #expect(fixture.store.loadPID() == nil)
     #expect(fixture.store.processIsAlive(pid: pid) == false)
+}
+
+@Test func processManagerRecognizesLegacyExpectedExecutableWhenIdentityIsMissing() async throws {
+    let fixture = try NativeRuntimeFixture("legacy-extra-expected-path")
+    defer { fixture.cleanup() }
+
+    let agent = try launchReadyTestAgent()
+    defer { terminateAndReapTestAgent(agent) }
+    try fixture.store.savePID(agent.processIdentifier)
+    try FileManager.default.removeItem(at: fixture.store.daemonIdentityURL)
+
+    let manager = DaemonProcessManager(
+        store: fixture.store,
+        expectedExecutableURL: fixture.root.appendingPathComponent("new/AuraWallpaperAgent"),
+        additionalExpectedExecutableURLs: [URL(fileURLWithPath: "/usr/bin/tail")]
+    )
+    #expect(manager.processStatus == .owned)
+    #expect(manager.terminate(timeout: 0.2).succeeded)
+    #expect(fixture.store.loadPID() == nil)
+}
+
+@Test func launchAgentHelperPathCanBeRecoveredBeforeMigration() throws {
+    let fixture = try NativeRuntimeFixture("legacy-launch-agent-path")
+    defer { fixture.cleanup() }
+
+    let legacyHelperURL = fixture.root.appendingPathComponent("AuraWallpaperAgent")
+    try fixture.store.enableLaunchAgent(helperPath: legacyHelperURL.path)
+
+    #expect(fixture.store.loadLaunchAgentExecutableURL() == legacyHelperURL)
 }
 
 @Test func nativeStartWritesConfigAndLaunchesMockHelper() async throws {
@@ -794,10 +900,11 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         DaemonHealth(available: true, fresh: true, suspicious: false)
     )
 
+    let installer = RecordingLockScreenSaverInstaller()
     let controller = try NativeWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
-        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller()
+        lockScreenSaverInstaller: installer
     )
 
     try await controller.syncLockScreenSaver()
@@ -916,21 +1023,49 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let fixture = try NativeRuntimeFixture("settings")
     defer { fixture.cleanup() }
 
+    let installer = RecordingLockScreenSaverInstaller()
     let controller = try NativeWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
-        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller()
+        lockScreenSaverInstaller: installer
     )
-    _ = try await controller.start(videoURL: fixture.videoURL, speed: 1.0)
+    let videoURL = fixture.root.appendingPathComponent("settings-video.mp4")
+    try await writeTestVideo(to: videoURL)
+    _ = try await controller.start(videoURL: videoURL, speed: 1.0)
     _ = try await controller.setSpeed(2.25)
     _ = try controller.setScaleMode(.fit)
     let config = fixture.store.loadConfig()
     let command = fixture.store.loadCommand()
 
     #expect(config.playback_speed == 2.25)
+    #expect(installer.playbackSpeedUpdates.count == 1)
+    #expect(installer.playbackSpeedUpdates.first?.0 == videoURL)
+    #expect(installer.playbackSpeedUpdates.first?.1 == 2.25)
     #expect(config.scale_mode == WallpaperScaleMode.fit.rawValue)
     #expect(command?.action == .update)
     #expect(command?.config?.scale_mode == WallpaperScaleMode.fit.rawValue)
+}
+
+@Test func nativeSetSpeedUpdatesDedicatedLockScreenOnlyRoute() async throws {
+    let fixture = try NativeRuntimeFixture("lock-only-speed")
+    defer { fixture.cleanup() }
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+    let videoURL = fixture.root.appendingPathComponent("lock-only-speed.mp4")
+    try await writeTestVideo(to: videoURL)
+
+    _ = try await controller.installLockScreenOnly(videoURL: videoURL)
+    _ = try await controller.setSpeed(0.5)
+
+    #expect(installer.playbackSpeedUpdates.count == 1)
+    #expect(installer.playbackSpeedUpdates.first?.0 == videoURL)
+    #expect(installer.playbackSpeedUpdates.first?.1 == 0.5)
+    #expect(fixture.store.loadConfig().playback_speed == 0.5)
+    #expect(fixture.store.loadCommand()?.action == .update)
 }
 
 @Test func nativeStopPausesButClearTerminatesHelper() async throws {
@@ -943,7 +1078,9 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         helperURL: fixture.helperURL,
         lockScreenSaverInstaller: installer
     )
-    let started = try await controller.start(videoURL: fixture.videoURL, speed: 1.0)
+    let videoURL = fixture.root.appendingPathComponent("wallpaper.mp4")
+    try await writeTestVideo(to: videoURL)
+    let started = try await controller.start(videoURL: videoURL, speed: 1.0)
     #expect(fixture.store.processIsAlive(pid: started.pid))
 
     let stopped = try controller.stop()
@@ -970,7 +1107,10 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     defer { fixture.cleanup() }
 
     let installer = RecordingLockScreenSaverInstaller()
-    try await installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    let videoURL = fixture.root.appendingPathComponent("wallpaper.mp4")
+    try Data([0, 1, 2, 3]).write(to: videoURL)
+    try await installer.installLockScreenOnly(videoURL: videoURL)
+    try fixture.store.saveLockScreenOnlySource(videoURL)
     let controller = try NativeWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
@@ -993,6 +1133,95 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(
         fixture.store.processIsAlive(pid: Int(agent.processIdentifier))
     )
+}
+
+@Test func nativeResumeRestoresLockScreenOnlyPlaybackWithoutDesktopVideoPath() async throws {
+    let fixture = try NativeRuntimeFixture("resume-lock-screen-only")
+    defer { fixture.cleanup() }
+
+    let videoURL = fixture.root.appendingPathComponent("lock-screen-only.mp4")
+    try await writeTestVideo(to: videoURL)
+    let installer = RecordingLockScreenSaverInstaller()
+    try await installer.installLockScreenOnly(videoURL: videoURL)
+    try fixture.store.saveLockScreenOnlySource(videoURL)
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: "",
+            playback_speed: 1.0,
+            show_on_lock_screen: true
+        )
+    )
+    fixture.store.markPaused(true)
+
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    let resumed = try controller.resume()
+
+    #expect(resumed.paused == false)
+    #expect(resumed.lock_screen_only == true)
+    #expect(fixture.store.loadConfig().video_path.isEmpty)
+    #expect(fixture.store.loadCommand()?.action == .resume)
+    #expect(fixture.store.isLockScreenOnlyAgent())
+    #expect(fixture.store.processIsAlive(pid: fixture.store.loadPID()))
+}
+
+@Test func legacyResumeClearsPauseMarkerAndNotifiesScreenSaver() async throws {
+    let fixture = try NativeRuntimeFixture("resume-legacy-lock-screen-only")
+    defer { fixture.cleanup() }
+
+    let installer = RecordingLockScreenSaverInstaller()
+    installer.supportsSecureLockScreen = false
+    try await installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+    fixture.store.markPaused(true)
+
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    let resumed = try controller.resume()
+
+    #expect(resumed.paused == false)
+    #expect(resumed.lock_screen_only == true)
+    #expect(fixture.store.isPaused() == false)
+    #expect(fixture.store.loadCommand() == nil)
+    #expect(fixture.store.isLockScreenOnlyAgent() == false)
+}
+
+@Test func nativeStopIsNoOpForStaticDesktopWallpaper() async throws {
+    let fixture = try NativeRuntimeFixture("stop-static-desktop")
+    defer { fixture.cleanup() }
+
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: fixture.videoURL.path,
+            playback_speed: 1.0,
+            show_on_lock_screen: false
+        )
+    )
+    let agent = Process()
+    agent.executableURL = fixture.helperURL
+    try agent.run()
+    defer { terminateAndReapTestAgent(agent) }
+    try fixture.store.savePID(agent.processIdentifier)
+
+    let stopped = try controller.stop()
+
+    #expect(stopped.paused == false)
+    #expect(fixture.store.loadCommand() == nil)
+    #expect(fixture.store.processIsAlive(pid: Int(agent.processIdentifier)))
 }
 
 @Test func nativeStopIsNoOpForStaticLockScreenWallpaper() async throws {
@@ -1514,6 +1743,63 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.isPaused())
     #expect(fixture.store.loadCommand()?.action == .pause)
     #expect(fixture.store.processIsAlive(pid: fixture.store.loadPID()))
+}
+
+@Test func diskFullDuringStartRollbackTerminatesSpawnedAgent() async throws {
+    let failureGate = PIDPersistenceFailureGate()
+    let fixture = try NativeRuntimeFixture(
+        "start-rollback-disk-full",
+        pidPersistenceFailureProvider: { pid in
+            guard let error = failureGate.error else {
+                return nil
+            }
+            failureGate.failedPID = Int(pid)
+            return error
+        }
+    )
+    defer { fixture.cleanup() }
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: fixture.videoURL.path,
+            playback_speed: 1.0,
+            show_on_lock_screen: true
+        )
+    )
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+    let previousAgent = try launchReadyTestAgent()
+    defer { terminateAndReapTestAgent(previousAgent) }
+    try fixture.store.savePID(previousAgent.processIdentifier)
+    fixture.store.markLockScreenOnlyAgent(true)
+
+    let installer = RecordingLockScreenSaverInstaller()
+    installer.failNextDesktopInstall = true
+    installer.onInstallLockScreenOnly = {
+        failureGate.error = NSError(
+            domain: NSCocoaErrorDomain,
+            code: NSFileWriteOutOfSpaceError,
+            userInfo: [NSLocalizedDescriptionKey: "No space left on device"]
+        )
+    }
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    do {
+        _ = try await controller.start(
+            videoURL: fixture.videoURL,
+            speed: 1.0
+        )
+        Issue.record("Expected Start to fail")
+    } catch {
+        #expect(error.localizedDescription.contains("No space left on device"))
+        #expect(error.localizedDescription.contains("rollback failed"))
+    }
+
+    let pid = try #require(failureGate.failedPID)
+    #expect(fixture.store.loadPID() == nil)
+    #expect(fixture.store.processIsAlive(pid: pid) == false)
 }
 
 @Test func failedStartReportsAnIncompleteRollback() async throws {

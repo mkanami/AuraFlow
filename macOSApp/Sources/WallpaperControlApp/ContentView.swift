@@ -845,11 +845,6 @@ struct SettingsPopupCard: View {
                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             }
 
-            Text(viewModel.lockScreenCapabilityMessage)
-                .font(.caption2)
-                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                .fixedSize(horizontal: false, vertical: true)
-
             Toggle(isOn: Binding(
                 get: { viewModel.blendInterpolationEnabled },
                 set: { newValue in viewModel.toggleBlendInterpolation(newValue) }
@@ -1289,17 +1284,22 @@ struct ControlButtons: View {
     }
 
     private var stopButton: some View {
-        Button(role: .destructive) {
-            viewModel.stop()
+        Button(role: viewModel.isPlaybackPaused ? nil : .destructive) {
+            viewModel.togglePlayback()
         } label: {
-            Label("Stop", systemImage: "stop.circle")
+            Label(
+                viewModel.playbackButtonTitle,
+                systemImage: viewModel.playbackButtonSystemImage
+            )
                 .lineLimit(1)
                 .minimumScaleFactor(0.95)
                 .allowsTightening(true)
                 .frame(maxWidth: .infinity)
         }
+        .accessibilityLabel(viewModel.playbackButtonTitle)
+        .help(viewModel.isPlaybackPaused ? "Resume wallpaper" : "Stop wallpaper")
         .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canStop)
+        .disabled(!viewModel.canTogglePlayback)
     }
 
     private var clearButton: some View {

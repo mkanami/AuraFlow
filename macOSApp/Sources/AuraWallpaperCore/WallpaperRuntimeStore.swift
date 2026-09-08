@@ -118,14 +118,31 @@ public final class WallpaperRuntimeStore {
     private let fileStore: RuntimeFileStore
     private let launchctlRunner: LaunchctlRunner
     private let launchAgentFileRemover: (URL) throws -> Void
+    private let pidPersistenceFailureProvider: ((Int32) -> Error?)?
 
     public var appSupportURL: URL { fileStore.appSupportURL }
 
-    public init(
+    public convenience init(
         appSupportURL: URL = WallpaperRuntimeStore.defaultAppSupportURL(),
         launchAgentURL: URL? = nil,
         launchctlRunner: LaunchctlRunner? = nil,
         launchAgentFileRemover: ((URL) throws -> Void)? = nil
+    ) {
+        self.init(
+            appSupportURL: appSupportURL,
+            launchAgentURL: launchAgentURL,
+            launchctlRunner: launchctlRunner,
+            launchAgentFileRemover: launchAgentFileRemover,
+            pidPersistenceFailureProvider: nil
+        )
+    }
+
+    init(
+        appSupportURL: URL = WallpaperRuntimeStore.defaultAppSupportURL(),
+        launchAgentURL: URL? = nil,
+        launchctlRunner: LaunchctlRunner? = nil,
+        launchAgentFileRemover: ((URL) throws -> Void)? = nil,
+        pidPersistenceFailureProvider: ((Int32) -> Error?)?
     ) {
         self.fileStore = RuntimeFileStore(
             appSupportURL: appSupportURL,
@@ -135,6 +152,7 @@ public final class WallpaperRuntimeStore {
         self.launchAgentFileRemover = launchAgentFileRemover ?? {
             try FileManager.default.removeItem(at: $0)
         }
+        self.pidPersistenceFailureProvider = pidPersistenceFailureProvider
     }
 
     public static func defaultAppSupportURL() -> URL {
@@ -329,6 +347,9 @@ public final class WallpaperRuntimeStore {
     }
 
     public func savePID(_ pid: Int32 = getpid()) throws {
+        if let error = pidPersistenceFailureProvider?(pid) {
+            throw error
+        }
         try DaemonProcessManager(store: self).recordPID(pid)
     }
 
@@ -415,6 +436,12 @@ public final class WallpaperRuntimeStore {
         let owned = processStatus.isOwned
         let paused = isPaused()
         let lockScreenOnly = isLockScreenOnlyMode()
+        let resourceMetrics: DaemonProcessResourceMetrics?
+        if owned, let pid {
+            resourceMetrics = DaemonProcessManager(store: self).resourceMetrics(for: pid)
+        } else {
+            resourceMetrics = nil
+        }
         return DaemonMetrics(
             updated_at: Date().timeIntervalSince1970,
             running: owned && !paused && !lockScreenOnly,
@@ -422,10 +449,10 @@ public final class WallpaperRuntimeStore {
             pid: owned ? pid : nil,
             daemon_pids: owned ? pid.map { [$0] } : [],
             process_count: owned ? 1 : 0,
-            cpu_percent: nil,
-            memory_mb: nil,
-            virtual_memory_mb: nil,
-            thread_count: nil,
+            cpu_percent: resourceMetrics?.cpuPercent,
+            memory_mb: resourceMetrics?.memoryMB,
+            virtual_memory_mb: resourceMetrics?.virtualMemoryMB,
+            thread_count: resourceMetrics?.threadCount,
             health: healthForStatus(processStatus: processStatus, paused: paused)
         )
     }
@@ -507,6 +534,32 @@ public final class WallpaperRuntimeStore {
 
     public func launchAgentPlistExists() -> Bool {
         launchAgentManager().launchAgentPlistExists()
+    }
+
+    /// Reads the native helper path before a new app version migrates the
+    /// LaunchAgent plist. Older native agents may not have identity metadata,
+    /// but their exact helper path is still safe ownership evidence when it is
+    /// recorded in AuraFlow's own plist.
+    public func loadLaunchAgentExecutableURL() -> URL? {
+        guard let data = try? Data(contentsOf: launchAgentURL),
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: data,
+                  options: [],
+                  format: nil
+              ) as? [String: Any],
+              plist["Label"] as? String == LaunchAgentManager.label,
+              let arguments = plist["ProgramArguments"] as? [String],
+              arguments.count >= 3,
+              arguments[1] == "--config",
+              URL(fileURLWithPath: arguments[2]).standardizedFileURL.path
+                  == configURL.standardizedFileURL.path,
+              let helperPath = arguments.first,
+              URL(fileURLWithPath: helperPath).lastPathComponent
+                  == "AuraWallpaperAgent"
+        else {
+            return nil
+        }
+        return URL(fileURLWithPath: helperPath).standardizedFileURL
     }
 
     public func launchAgentStatus() -> LaunchAgentStatus {

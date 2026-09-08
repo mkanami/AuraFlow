@@ -183,6 +183,14 @@ private final class LockScreenPlatformBox: @unchecked Sendable {
         )
     }
 
+    func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try await platform.pauseLockScreenOnlyPlayback(videoURL: videoURL)
+    }
+
+    func resumeLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try await platform.resumeLockScreenOnlyPlayback(videoURL: videoURL)
+    }
+
 }
 
 /// Owns the compatibility wrapper behind an actor boundary. The delegate
@@ -228,6 +236,22 @@ private actor LockScreenPlatformExecutor {
             try await platformBox.rearmForNextLock(
                 videoURL: videoURL,
                 shouldProceed: shouldProceed
+            )
+        }
+    }
+
+    func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try await withExclusivePlatformOperation {
+            try await platformBox.pauseLockScreenOnlyPlayback(
+                videoURL: videoURL
+            )
+        }
+    }
+
+    func resumeLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try await withExclusivePlatformOperation {
+            try await platformBox.resumeLockScreenOnlyPlayback(
+                videoURL: videoURL
             )
         }
     }
@@ -338,6 +362,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var lockScreenRepairInProgress = false
     private var lockScreenLifecycleCoordinator = LockScreenLifecycleCoordinator()
     private var lockScreenOnlyRepairInProgress = false
+    private var lockScreenPlaybackMutationTask: Task<Void, Never>?
     // Keep the operation object alongside its ID so a stale repair completion
     // can immediately re-run the currently desired operation after clearing
     // the shared repair gate. Without this, a superseded repair could leave
@@ -395,7 +420,17 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         // Claim the runtime before any startup cleanup. This lets the same
         // ownership check protect the legacy fallback path below when an old
         // helper is terminating during LaunchAgent migration.
-        try? store.savePID()
+        do {
+            try store.savePID()
+        } catch {
+            // An agent without durable PID/identity metadata cannot safely
+            // touch the shared wallpaper state. In particular, do not leave
+            // a second helper alive when the app's runtime directory is full.
+            terminationHealthReason = "runtime-identity-persistence-failed"
+            isTerminating = true
+            NSApp.terminate(nil)
+            return
+        }
         if lockScreenOnlyMode,
            !lockScreenPlatform.capabilities.supportsLockScreenOnly {
             // The legacy screen saver is managed by the main app. An old
@@ -408,7 +443,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
         publishRearmGuardState()
-        store.markPaused(false)
+        // Stop is persistent across a helper restart. Clearing the marker here
+        // would let a newly launched lock-only agent resume the Aerial provider
+        // before the user explicitly presses Resume.
+        let persistedManualPause = store.isPaused()
+        manualPaused = persistedManualPause
+        if !persistedManualPause {
+            store.markPaused(false)
+        }
         installSignalHandlers()
         if !lockScreenOnlyMode {
             rebuildPlayback(from: config, keepPaused: false)
@@ -429,10 +471,17 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // Do this before advertising the agent as ready. The Apply button
             // waits for this handshake so an immediate direct-lock cannot
             // arrive while the first provider rearm is still in flight.
-            requestLockScreenLifecycle(
-                .healthCheck,
-                reason: "startup"
-            )
+            if persistedManualPause {
+                // A previous Stop may have been followed by an agent restart.
+                // Freeze the independent Apple provider again before it gets
+                // a chance to replay the animated asset.
+                freezeLockScreenOnlyPlayback()
+            } else {
+                requestLockScreenLifecycle(
+                    .healthCheck,
+                    reason: "startup"
+                )
+            }
         } else if config.show_on_lock_screen == true,
                   lockScreenPlatform.capabilities.supportsSecureLockScreen,
                   lockScreenPlatform.isInstalled {
@@ -473,6 +522,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if lockScreenOnlyMode {
             nativeLockScreenBridge.shutdown()
         }
+        lockScreenPlaybackMutationTask?.cancel()
+        lockScreenPlaybackMutationTask = nil
         transitionGeneration += 1
         lockSessionGeneration &+= 1
         if ownsRuntimePID {
@@ -1182,6 +1233,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func pollCommand() {
         guard !isTerminating else { return }
+        guard ownsRuntimeState() else {
+            terminationHealthReason = "runtime-ownership-lost"
+            isTerminating = true
+            lifecycleGuard.markTerminating()
+            NSApp.terminate(nil)
+            return
+        }
         guard let command = store.loadCommand(), command.id != lastCommandID else { return }
         if let operationID = command.operationID,
            let lastCommandOperationID,
@@ -1249,14 +1307,27 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             store.markPaused(false)
             if !lockScreenOnlyMode {
                 applyPlaybackRate()
+                if config.show_on_lock_screen == true,
+                   lockScreenPlatform.capabilities.supportsSecureLockScreen,
+                   lockScreenPlatform.isInstalled {
+                    restoreLockScreenOnlyPlaybackAfterResume()
+                }
+            } else {
+                restoreLockScreenOnlyPlaybackAfterResume()
             }
         case .pause:
             nativeLockScreenBridge.pause()
             if lockScreenOnlyMode {
                 manualPaused = true
                 store.markPaused(true)
+                freezeLockScreenOnlyPlayback()
             } else {
                 pauseAndCommitStillFrame()
+                if config.show_on_lock_screen == true,
+                   lockScreenPlatform.capabilities.supportsSecureLockScreen,
+                   lockScreenPlatform.isInstalled {
+                    freezeLockScreenOnlyPlayback()
+                }
             }
         case .previewLock:
             syncLockScreenSetting(reason: "lock-setting")
@@ -1272,6 +1343,60 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
 
         writeHealth(reason: "ok")
+    }
+
+    private func freezeLockScreenOnlyPlayback() {
+        lockScreenPlaybackMutationTask?.cancel()
+        guard let videoURL = effectiveLockScreenVideoURL() else {
+            writeHealth(reason: "paused-source-missing")
+            return
+        }
+        let platformExecutor = lockScreenPlatformExecutor
+        lockScreenPlaybackMutationTask = Task { @MainActor [weak self] in
+            do {
+                _ = try await platformExecutor.pauseLockScreenOnlyPlayback(
+                    videoURL: videoURL
+                )
+                guard let self, !self.isTerminating else { return }
+                self.writeHealth(reason: "paused")
+            } catch is CancellationError {
+                return
+            } catch {
+                // The portable pause marker and the legacy saver remain valid
+                // even if a native still asset cannot be written (for example,
+                // on a full disk). Keep the failure visible in diagnostics;
+                // do not turn Stop into a blocking UI operation.
+                self?.writeHealth(
+                    reason: "lock-screen-freeze-failed: "
+                        + error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func restoreLockScreenOnlyPlaybackAfterResume() {
+        lockScreenPlaybackMutationTask?.cancel()
+        guard let videoURL = effectiveLockScreenVideoURL() else {
+            writeHealth(reason: "resume-source-missing")
+            return
+        }
+        let platformExecutor = lockScreenPlatformExecutor
+        lockScreenPlaybackMutationTask = Task { @MainActor [weak self] in
+            do {
+                _ = try await platformExecutor.resumeLockScreenOnlyPlayback(
+                    videoURL: videoURL
+                )
+                guard let self, !self.isTerminating else { return }
+                self.writeHealth(reason: "resumed")
+            } catch is CancellationError {
+                return
+            } catch {
+                self?.writeHealth(
+                    reason: "lock-screen-resume-failed: "
+                        + error.localizedDescription
+                )
+            }
+        }
     }
 
     private func prepareNativeLockScreenBridgeForStart() {
@@ -1318,7 +1443,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         _ event: LockScreenLifecycleEvent,
         reason: String
     ) {
-        guard lockScreenOnlyMode, !isTerminating else { return }
+        guard lockScreenOnlyMode,
+              !isTerminating,
+              ownsRuntimeState(),
+              !manualPaused,
+              !store.isPaused()
+        else { return }
         if event == .shieldRaised || event == .sessionLocked,
            !isConfirmedLockScreenSession() {
             return
@@ -1521,7 +1651,6 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     self.finishLockScreenLifecycle(operation, reason: reason)
                     return
                 }
-
                 guard operation.expectedLocked else {
                     self.nativeLockScreenBridge.hideAfterUnlock()
                     self.store.markLockScreenAgentReady(
@@ -2154,7 +2283,24 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func samplePlaybackHealth() {
         reconcileSystemSessionState()
 
+        guard ownsRuntimeState() else {
+            terminationHealthReason = "runtime-ownership-lost"
+            isTerminating = true
+            lifecycleGuard.markTerminating()
+            NSApp.terminate(nil)
+            return
+        }
+
         if lockScreenOnlyMode {
+            // Stop is a manual pause for the native Lock Screen route too.
+            // Do not let the periodic generation health-check repair/rearm
+            // the provider while paused: that can recreate the secure layer
+            // and make the video continue after the user pressed Stop.
+            if manualPaused || store.isPaused() {
+                manualPaused = true
+                writeHealth(reason: "paused")
+                return
+            }
             requestLockScreenLifecycle(
                 .healthCheck,
                 reason: "health-check"
