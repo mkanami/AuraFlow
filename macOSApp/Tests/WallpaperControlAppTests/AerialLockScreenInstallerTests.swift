@@ -1653,6 +1653,54 @@ private func writeAerialTestVideo(to url: URL) async throws {
     )
 }
 
+@Test func sharedRestoreSnapshotRefreshesAfterInterruptedRemove() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+
+    // Simulate the user selecting a new Desktop wallpaper after an earlier
+    // Remove left the shared journal behind. The managed Idle route may still
+    // exist, but the Desktop route itself is now user-owned and is safe to
+    // promote to the new restore snapshot.
+    var currentRoot = try readWallpaperStore(fixture.storeURL)
+    currentRoot = replaceTestDesktopModes(
+        in: currentRoot,
+        provider: "com.apple.wallpaper.choice.user-latest"
+    )
+    try writeWallpaperStore(currentRoot, to: fixture.storeURL)
+
+    #expect(try fixture.installer.refreshSharedWallpaperRestoreSnapshotIfNeeded())
+    let refreshedBackup = try readWallpaperStore(
+        fixture.stateURL.appendingPathComponent("Index.before-auraflow.plist")
+    )
+    let refreshedContainer = try #require(
+        refreshedBackup["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let refreshedDesktop = try #require(
+        refreshedContainer["Desktop"] as? [String: Any]
+    )
+    #expect(wallpaperStoreContains(
+        refreshedDesktop,
+        provider: "com.apple.wallpaper.choice.user-latest",
+        assetID: nil
+    ))
+
+    try await fixture.installer.uninstallAsync()
+    let restoredRoot = try readWallpaperStore(fixture.storeURL)
+    let restoredContainer = try #require(
+        restoredRoot["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let restoredDesktop = try #require(
+        restoredContainer["Desktop"] as? [String: Any]
+    )
+    #expect(wallpaperStoreContains(
+        restoredDesktop,
+        provider: "com.apple.wallpaper.choice.user-latest",
+        assetID: nil
+    ))
+}
+
 @Test func healthyModernLockScreenSyncIsANoOp() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

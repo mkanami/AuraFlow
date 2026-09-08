@@ -6,10 +6,12 @@ import Foundation
 public enum WallpaperDesktopPlatform {
     @discardableResult
     public static func captureCurrentDesktopWallpaperBackup(
-        appSupportPath: String
+        appSupportPath: String,
+        overwriteExisting: Bool = false
     ) -> Bool {
         WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(
-            appSupportPath: appSupportPath
+            appSupportPath: appSupportPath,
+            overwriteExisting: overwriteExisting
         )
     }
 

@@ -197,6 +197,11 @@ public protocol LockScreenPlatformOperating: LockScreenPlatform {
     func restoreDesktopAfterLockScreenSessionAsync() async throws -> Bool
     @discardableResult
     func applyCurrentDesktopFallback() -> Bool
+    /// Refreshes a stale shared-install recovery snapshot after a previous
+    /// full Remove left its journal behind. Dedicated Lock Screen installs do
+    /// not use this hook.
+    @discardableResult
+    func refreshSharedWallpaperRestoreSnapshotIfNeeded() throws -> Bool
     @discardableResult
     func repair(
         videoURL: URL,
@@ -392,6 +397,11 @@ public extension LockScreenSaverInstalling {
 
     func restoreDesktopAfterLockScreenSessionAsync() async throws -> Bool {
         try restoreDesktopAfterLockScreenSession()
+    }
+
+    @discardableResult
+    func refreshSharedWallpaperRestoreSnapshotIfNeeded() throws -> Bool {
+        false
     }
 
     func applyCurrentDesktopFallback() -> Bool { false }

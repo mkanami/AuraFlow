@@ -2144,6 +2144,18 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         )
     )
 
+    // A new full Start after an interrupted Remove must be able to replace a
+    // stale snapshot with the wallpaper the user currently selected. The
+    // default remains non-destructive so repeated calls during one active
+    // install still preserve its original restore target.
+    #expect(
+        WallpaperDesktopSupport.saveWallpaperBackup(
+            appSupportPath: appSupportPath,
+            wallpapers: ["screen-b": laterWallpaperURL.path],
+            overwriteExisting: true
+        )
+    )
+
     let backupURL = fixture.store.appSupportURL.appendingPathComponent("wallpaper_backup.json")
     let legacyBackupURL = fixture.store.appSupportURL.appendingPathComponent("wallpaper_backup_original.json")
     let backupData = try Data(contentsOf: backupURL)
@@ -2152,6 +2164,6 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let legacyBackup = try #require(JSONSerialization.jsonObject(with: legacyData) as? [String: String])
 
     #expect(backup["screen-a"] == nil)
-    #expect(backup["screen-b"] == latestWallpaperURL.standardizedFileURL.path)
+    #expect(backup["screen-b"] == laterWallpaperURL.standardizedFileURL.path)
     #expect(legacyBackup == backup)
 }

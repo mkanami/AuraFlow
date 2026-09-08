@@ -853,14 +853,41 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             )
         }
 
+        // A previous full Remove can finish its native transaction but fail
+        // while restoring the Desktop (for example when the disk is full).
+        // In that state the old JSON/Aerial snapshots are no longer a safe
+        // description of the wallpaper the user currently has. A new shared
+        // Start is the boundary at which the live Desktop becomes the new
+        // restore target. Lock-only state is explicitly excluded here.
+        let isFreshSharedStart = previousConfig.video_path.isEmpty
+            && previousConfig.show_on_lock_screen != true
+            && !previousLockScreenOnlyMode
+            && !previousAgentWasAlive
+
         // The desktop backup is the last operation that can fail without
         // requiring a rollback. Keep the old lock-only route alive until this
         // succeeds, otherwise Start could destroy a working Lock Screen mode
         // and then return an error.
         let didCaptureDesktopBackup =
             WallpaperDesktopPlatform.captureCurrentDesktopWallpaperBackup(
-                appSupportPath: store.appSupportURL.path
+                appSupportPath: store.appSupportURL.path,
+                overwriteExisting: isFreshSharedStart
             )
+        if isFreshSharedStart,
+           !didCaptureDesktopBackup,
+           !NSScreen.screens.isEmpty {
+            lockScreenLifecycleLogger.error(
+                "Current Desktop wallpaper could not be captured for a new Start"
+            )
+            throw NativeWallpaperControllerError.unavailable(
+                "AuraFlow could not save the current Desktop wallpaper before starting."
+            )
+        }
+        if isFreshSharedStart, didCaptureDesktopBackup {
+            // Do not let the recovery coordinator replay a snapshot from the
+            // failed Remove while this new Start is becoming authoritative.
+            store.markWallpaperRestorePending(false)
+        }
         if !didCaptureDesktopBackup,
            !WallpaperDesktopPlatform.hasWallpaperBackupFiles(
                appSupportPath: store.appSupportURL.path
@@ -871,6 +898,13 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             )
             throw NativeWallpaperControllerError.unavailable(
                 "AuraFlow could not save the current Desktop wallpaper before starting."
+            )
+        }
+
+        if isFreshSharedStart,
+           try lockScreenPlatform.refreshSharedWallpaperRestoreSnapshotIfNeeded() {
+            lockScreenLifecycleLogger.notice(
+                "Refreshed stale native Desktop restore snapshot before Start"
             )
         }
 

@@ -374,6 +374,12 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     @discardableResult
+    func refreshSharedWallpaperRestoreSnapshotIfNeeded() throws -> Bool {
+        guard modernIsUsable else { return false }
+        return try modern.refreshSharedWallpaperRestoreSnapshotIfNeeded()
+    }
+
+    @discardableResult
     func repair(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool
