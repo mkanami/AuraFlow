@@ -57,6 +57,21 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
         try await installer.prepareLockScreenMedia(videoURL: videoURL)
     }
 
+    public func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try requireAvailability()
+        return try await installer.pauseLockScreenOnlyPlayback(videoURL: videoURL)
+    }
+
+    public func resumeLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try requireAvailability()
+        return try await installer.resumeLockScreenOnlyPlayback(videoURL: videoURL)
+    }
+
+    public func updatePlaybackSpeed(videoURL: URL, speed: Double) async throws -> Bool {
+        try requireAvailability()
+        return try await installer.updatePlaybackSpeed(videoURL: videoURL, speed: speed)
+    }
+
     public func lockScreenOnlyStatus(
         videoURL: URL?
     ) -> LockScreenOnlyGenerationStatus {

@@ -2,6 +2,7 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import <QuartzCore/QuartzCore.h>
+#import <math.h>
 
 static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
 static NSString * const AuraFlowRuntimeCommandNotification =
@@ -14,6 +15,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 @property(nonatomic, strong, nullable) AVPlayerLooper *playerLooper;
 @property(nonatomic, copy, nullable) NSString *configurationSignature;
 @property(nonatomic, copy) NSString *scaleMode;
+@property(nonatomic) float playbackRate;
 @property(nonatomic) BOOL observingReadyForDisplay;
 @property(nonatomic) BOOL runtimePaused;
 @property(nonatomic) BOOL playerLayerPaused;
@@ -33,6 +35,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     if (self) {
         self.animationTimeInterval = 1.0 / 30.0;
         self.scaleMode = @"fill";
+        self.playbackRate = 1.0;
         [self createLayers];
         [self applyResolvedConfiguration:[self resolvedConfiguration] force:YES];
         [[NSDistributedNotificationCenter defaultCenter]
@@ -75,7 +78,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
     [self syncRuntimePauseState];
     if (!self.runtimePaused) {
-        [self.player playImmediatelyAtRate:1.0];
+        [self.player playImmediatelyAtRate:self.playbackRate];
     }
 }
 
@@ -98,6 +101,10 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     // the next secure-surface refresh, without waiting for animateOneFrame.
     dispatch_async(dispatch_get_main_queue(), ^{
         [self syncRuntimePauseState];
+        [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
+        if (!self.runtimePaused) {
+            [self.player playImmediatelyAtRate:self.playbackRate];
+        }
     });
 }
 
@@ -175,6 +182,12 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         scaleMode = [self normalizedScaleMode:runtimeConfig[@"scale_mode"]];
     }
 
+    double playbackSpeed = 1.0;
+    if ([runtimeConfig[@"playback_speed"] isKindOfClass:NSNumber.class]) {
+        playbackSpeed = [runtimeConfig[@"playback_speed"] doubleValue];
+    }
+    playbackSpeed = MAX(0.1, MIN(playbackSpeed, 4.0));
+
     NSURL *runtimeFallbackURL =
         [applicationSupportURL URLByAppendingPathComponent:@"last_frame.png"];
     if ([[NSFileManager defaultManager] isReadableFileAtPath:runtimeFallbackURL.path]) {
@@ -185,6 +198,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         @"video_path" : videoURL.path ?: @"",
         @"fallback_path" : fallbackURL.path ?: @"",
         @"scale_mode" : scaleMode,
+        @"playback_rate" : [NSString stringWithFormat:@"%.6f", playbackSpeed],
     };
 }
 
@@ -217,7 +231,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 
     self.runtimePaused = NO;
     [self resumePlayerLayer];
-    [self.player playImmediatelyAtRate:1.0];
+    [self.player playImmediatelyAtRate:self.playbackRate];
 }
 
 - (void)pausePlayerLayerAtCurrentFrame {
@@ -305,6 +319,13 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 
 - (void)applyResolvedConfiguration:(NSDictionary<NSString *, NSString *> *)configuration
                              force:(BOOL)force {
+    float requestedPlaybackRate = [configuration[@"playback_rate"] floatValue];
+    if (requestedPlaybackRate < 0.1 || requestedPlaybackRate > 4.0) {
+        requestedPlaybackRate = 1.0;
+    }
+    BOOL playbackRateChanged = fabsf(self.playbackRate - requestedPlaybackRate)
+        > 0.0001f;
+    self.playbackRate = requestedPlaybackRate;
     NSString *signature =
         [NSString stringWithFormat:@"%@|%@|%@|%@|%@",
                                    configuration[@"video_path"],
@@ -313,6 +334,9 @@ static NSString * const AuraFlowRuntimeCommandNotification =
                                    [self fileRevisionAtPath:configuration[@"video_path"]],
                                    [self fileRevisionAtPath:configuration[@"fallback_path"]]];
     if (!force && [signature isEqualToString:self.configurationSignature]) {
+        if (playbackRateChanged && !self.runtimePaused && self.player != nil) {
+            [self.player playImmediatelyAtRate:self.playbackRate];
+        }
         return;
     }
 

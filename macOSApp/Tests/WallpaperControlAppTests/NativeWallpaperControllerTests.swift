@@ -922,7 +922,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         lockScreenSaverInstaller: RecordingLockScreenSaverInstaller()
     )
     _ = try await controller.start(videoURL: fixture.videoURL, speed: 1.0)
-    _ = try controller.setSpeed(2.25)
+    _ = try await controller.setSpeed(2.25)
     _ = try controller.setScaleMode(.fit)
     let config = fixture.store.loadConfig()
     let command = fixture.store.loadCommand()
@@ -957,8 +957,12 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadCommand() == nil)
     #expect(fixture.store.loadConfig().video_path.isEmpty)
     #expect(
-        fixture.store.loadConfig().show_on_lock_screen == true
+        fixture.store.loadConfig().show_on_lock_screen == false
     )
+    #expect(fixture.store.loadPID() == nil)
+    #expect(fixture.store.isLockScreenOnlyAgent() == false)
+    #expect(fixture.store.loadLockScreenOnlySource() == nil)
+    #expect(installer.isInstalled == false)
 }
 
 @Test func nativeStopPausesLockScreenOnlyWithoutUninstalling() async throws {
@@ -1674,8 +1678,12 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadCommand()?.action == .previewUnlock)
 
     _ = try await controller.clearWallpaper()
-    #expect(fixture.store.loadConfig().show_on_lock_screen == true)
+    #expect(fixture.store.loadConfig().show_on_lock_screen == false)
     #expect(fixture.store.loadConfig().video_path.isEmpty)
+    #expect(fixture.store.loadPID() == nil)
+    #expect(fixture.store.isLockScreenOnlyAgent() == false)
+    #expect(fixture.store.loadLockScreenOnlySource() == nil)
+    #expect(installer.isInstalled == false)
     #expect(installer.uninstallCallCount == 1)
 }
 

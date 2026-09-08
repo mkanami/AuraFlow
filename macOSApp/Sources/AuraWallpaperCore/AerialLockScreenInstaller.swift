@@ -504,6 +504,63 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         }
     }
 
+    /// Updates the speed of the movie consumed by Apple's Aerial provider.
+    /// The provider has its own player process, so this is intentionally an
+    /// asset-generation update rather than an AVPlayer rate update.
+    public func updatePlaybackSpeed(
+        videoURL: URL,
+        speed: Double
+    ) async throws -> Bool {
+        guard !WallpaperMediaKind.forURL(videoURL).isStaticImage else {
+            return false
+        }
+        let normalizedSpeed = normalizedPlaybackSpeed(speed)
+        return try await withMutationCoordinator {
+            try await withCrossProcessLockAsync {
+                guard let marker = loadMarker(),
+                      marker.completed == true,
+                      URL(fileURLWithPath: marker.videoPath)
+                        .standardizedFileURL == videoURL.standardizedFileURL,
+                      fileManager.fileExists(atPath: videoURL.path)
+                else {
+                    return false
+                }
+
+                let currentSpeed = marker.playbackSpeed ?? 1.0
+                guard abs(currentSpeed - normalizedSpeed) > 0.0001 else {
+                    return false
+                }
+
+                // Speed changes made while Stop is active must not replace the
+                // still frame. Store the requested speed in the journal; the
+                // normal Resume repair will build the matching movie.
+                if marker.state == "paused" {
+                    var updatedMarker = marker
+                    updatedMarker.playbackSpeed = normalizedSpeed
+                    try saveMarker(updatedMarker)
+                    return false
+                }
+
+                let lockScreenOnlyRoute = marker.lockScreenOnly == true
+                    || marker.desktopIncluded == false
+                return try await installLocked(
+                    videoURL: videoURL,
+                    playbackSpeed: normalizedSpeed,
+                    forceRefresh: true,
+                    refreshAction: rearmSystem,
+                    scope: lockScreenOnlyRoute
+                        ? .lockScreenOnly
+                        : .sharedWallpaper,
+                    lockScreenOnlyRoute: lockScreenOnlyRoute,
+                    avoidProviderRestartOnExistingLockOnlySourceChange:
+                        lockScreenOnlyRoute,
+                    rollbackAction: refreshSystem,
+                    shouldProceed: { true }
+                )
+            }
+        }
+    }
+
     public func installLegacyLockScreenFallback(
         videoURL: URL,
         restoringLockScreenOnlyVideoURL: URL?
@@ -628,11 +685,15 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 // carry a slot generation. Treat them as generation zero so
                 // the one-repair limit also applies after an app upgrade.
                 let repairGeneration = marker.generation ?? 0
-                if marker.lastAssetRepairGeneration == repairGeneration {
+                if marker.lastAssetRepairGeneration == repairGeneration,
+                   marker.state != "paused" {
                     throw AerialLockScreenInstallerError
                         .aerialAssetReplacedBySystem
                 }
-                let preparedVideoURL = try await mediaPreparer.prepare(from: videoURL)
+                let preparedVideoURL = try await mediaPreparer.prepare(
+                    from: videoURL,
+                    playbackSpeed: marker.playbackSpeed ?? 1.0
+                )
                 guard shouldProceed() else {
                     throw AerialLockScreenOperationAbort.sessionChanged
                 }
@@ -831,8 +892,181 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         }
     }
 
+    /// Freezes the movie consumed by Apple's native Aerial extension. The
+    /// extension owns its AVPlayer in another process, so pausing AuraFlow's
+    /// private assertion layer cannot stop the visible Lock Screen. Keep the
+    /// normal source and the original asset backup in the journal; Resume and
+    /// Remove can therefore restore the animated route without another source
+    /// conversion.
+    public func pauseLockScreenOnlyPlayback(
+        videoURL: URL
+    ) async throws -> Bool {
+        guard let marker = loadMarker(),
+              marker.completed == true,
+              fileManager.fileExists(atPath: marker.assetPath)
+        else {
+            return false
+        }
+
+        return try await withMutationCoordinator {
+            try await withCrossProcessLockAsync {
+                guard let currentMarker = loadMarker(),
+                      currentMarker.completed == true,
+                      fileManager.fileExists(atPath: currentMarker.assetPath)
+                else {
+                    return false
+                }
+
+                let assetURL = URL(fileURLWithPath: currentMarker.assetPath)
+                let pausedAssetSignature = try? mediaPreparer.fileSignature(
+                    at: assetURL
+                )
+                let alreadyFrozen = currentMarker.state == "paused"
+                    && currentMarker.assetSignature == pausedAssetSignature
+                    && assetStore.managedAssetSignature(at: assetURL)
+                        == pausedAssetSignature
+
+                if !alreadyFrozen {
+                    try fileManager.createDirectory(
+                        at: stateDirectoryURL,
+                        withIntermediateDirectories: true
+                    )
+                    let temporaryURL = stateDirectoryURL.appendingPathComponent(
+                        ".paused-\(UUID().uuidString).mov"
+                    )
+                    defer { try? fileManager.removeItem(at: temporaryURL) }
+
+                    try await mediaPreparer.writeStillFrameVideo(
+                        from: videoURL,
+                        to: temporaryURL
+                    )
+                    try replaceFile(
+                        at: assetURL,
+                        withContentsOf: temporaryURL,
+                        preservingDestinationMetadata: true
+                    )
+
+                    let frozenSignature = try mediaPreparer.fileSignature(
+                        at: assetURL
+                    )
+                    try? assetStore.markManagedAsset(
+                        signature: frozenSignature,
+                        at: assetURL
+                    )
+                    var pausedMarker = currentMarker
+                    pausedMarker.assetSignature = frozenSignature
+                    pausedMarker.state = "paused"
+                    try? journal.saveMarker(pausedMarker)
+                }
+
+                // WallpaperAerialsExtension caches the movie. Restart its
+                // owner so the new still asset is visible on the next frame.
+                try rearmSystem({ true })
+                return true
+            }
+        }
+    }
+
+    public func resumeLockScreenOnlyPlayback(
+        videoURL: URL
+    ) async throws -> Bool {
+        if isLockScreenOnlyInstallation {
+            // Repair sees the paused asset as non-current and atomically
+            // restores the original prepared video from the source URL. Do
+            // not gate this on marker.state: a full disk can leave the
+            // replacement asset committed while the optional journal update
+            // fails.
+            return try await repairLockScreenOnlyGeneration(
+                videoURL: videoURL,
+                shouldProceed: { true }
+            )
+        }
+
+        return try await withMutationCoordinator {
+            try await withCrossProcessLockAsync {
+                try await resumeSharedLockScreenPlaybackLocked(
+                    videoURL: videoURL
+                )
+            }
+        }
+    }
+
+    /// Restores the managed movie for a shared Desktop + native Lock Screen
+    /// installation without rewriting the wallpaper store. Stop replaces the
+    /// movie because Apple's secure provider owns its player in another
+    /// process; Resume must put the prepared animated movie back before the
+    /// provider is rearmed.
+    private func resumeSharedLockScreenPlaybackLocked(
+        videoURL: URL
+    ) async throws -> Bool {
+        guard let marker = loadMarker(),
+              marker.completed == true,
+              marker.lockScreenOnly != true,
+              marker.desktopIncluded != false,
+              URL(fileURLWithPath: marker.videoPath).standardizedFileURL
+                == videoURL.standardizedFileURL,
+              fileManager.fileExists(atPath: videoURL.path),
+              fileManager.fileExists(atPath: marker.assetPath)
+        else {
+            return false
+        }
+
+        let preparedVideoURL = try await mediaPreparer.prepare(
+            from: videoURL,
+            playbackSpeed: marker.playbackSpeed ?? 1.0
+        )
+        try Task.checkCancellation()
+
+        guard let currentMarker = loadMarker(),
+              currentMarker.completed == true,
+              currentMarker.lockScreenOnly != true,
+              currentMarker.desktopIncluded != false,
+              URL(fileURLWithPath: currentMarker.videoPath)
+                .standardizedFileURL == videoURL.standardizedFileURL
+        else {
+            return false
+        }
+
+        let assetURL = URL(fileURLWithPath: currentMarker.assetPath)
+        guard fileManager.fileExists(atPath: assetURL.path) else {
+            return false
+        }
+        let preparedSignature = try mediaPreparer.fileSignature(
+            at: preparedVideoURL
+        )
+        let currentSignature = try? mediaPreparer.fileSignature(at: assetURL)
+        let alreadyRestored = currentMarker.state != "paused"
+            && currentSignature == preparedSignature
+            && assetStore.managedAssetSignature(at: assetURL)
+                == preparedSignature
+
+        if !alreadyRestored {
+            try replaceFile(
+                at: assetURL,
+                withContentsOf: preparedVideoURL,
+                preservingDestinationMetadata: true
+            )
+
+            let restoredSignature = try mediaPreparer.fileSignature(at: assetURL)
+            try? assetStore.markManagedAsset(
+                signature: restoredSignature,
+                at: assetURL
+            )
+            var restoredMarker = currentMarker
+            restoredMarker.assetSignature = restoredSignature
+            restoredMarker.state = "healthy"
+            try? journal.saveMarker(restoredMarker)
+        }
+
+        // WallpaperAerialsExtension caches the movie. Restart its owner so
+        // the animated asset is visible instead of the paused still frame.
+        try rearmSystem({ true })
+        return true
+    }
+
     private func installLocked(
         videoURL: URL,
+        playbackSpeed: Double = 1.0,
         forceRefresh: Bool,
         refreshAction: ConditionalSystemAction,
         scope: AerialWallpaperStoreScope,
@@ -857,6 +1091,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
 
         let assetURL = assetStore.assetURL(for: assetID)
         let thumbnailURL = assetStore.thumbnailURL(for: assetID)
+        let normalizedSpeed = normalizedPlaybackSpeed(playbackSpeed)
         let systemWallpaperURLBeforeAttempt = currentSystemWallpaperURL()
         let existingMarker = loadMarker()
         let currentVideoSignature = try? mediaPreparer.fileSignature(at: videoURL)
@@ -881,7 +1116,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             videoURL: videoURL,
             assetID: assetID,
             scope: scope,
-            lockScreenOnlyRoute: lockScreenOnlyRoute
+            lockScreenOnlyRoute: lockScreenOnlyRoute,
+            playbackSpeed: normalizedSpeed
         ) {
             guard forceRefresh, shouldProceed() else {
                 return false
@@ -901,7 +1137,10 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             return true
         }
 
-        let preparedVideoURL = try await mediaPreparer.prepare(from: videoURL)
+        let preparedVideoURL = try await mediaPreparer.prepare(
+            from: videoURL,
+            playbackSpeed: normalizedSpeed
+        )
         try Task.checkCancellation()
 
         guard shouldProceed() else {
@@ -2071,56 +2310,6 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         ) as? String
     }
 
-    private func lockScreenSaverURL() -> URL {
-        fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Screen Savers/AuraFlowLockScreen.saver",
-                isDirectory: true
-            )
-    }
-
-    private func lockScreenSaverIsSelected() -> Bool {
-        guard fileManager.fileExists(atPath: lockScreenSaverURL().path) else {
-            return false
-        }
-        guard let module = CFPreferencesCopyValue(
-            "moduleDict" as CFString,
-            screenSaverPreferencesApplicationID,
-            kCFPreferencesCurrentUser,
-            kCFPreferencesCurrentHost
-        ) as? [String: Any],
-        let path = module["path"] as? String
-        else {
-            return false
-        }
-        return URL(fileURLWithPath: path).standardizedFileURL
-            == lockScreenSaverURL().standardizedFileURL
-    }
-
-    @discardableResult
-    private func selectAuraFlowScreenSaver() -> Bool {
-        guard fileManager.fileExists(atPath: lockScreenSaverURL().path) else {
-            return false
-        }
-        let module: [String: Any] = [
-            "moduleName": "AuraFlowLockScreen",
-            "path": lockScreenSaverURL().standardizedFileURL.path,
-            "type": 0,
-        ]
-        CFPreferencesSetValue(
-            "moduleDict" as CFString,
-            module as CFPropertyList,
-            screenSaverPreferencesApplicationID,
-            kCFPreferencesCurrentUser,
-            kCFPreferencesCurrentHost
-        )
-        return CFPreferencesSynchronize(
-            screenSaverPreferencesApplicationID,
-            kCFPreferencesCurrentUser,
-            kCFPreferencesCurrentHost
-        ) && lockScreenSaverIsSelected()
-    }
-
     @discardableResult
     private func setSystemWallpaperURL(
         _ value: String?,
@@ -2277,18 +2466,24 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         videoURL: URL,
         assetID: String,
         scope: AerialWallpaperStoreScope,
-        lockScreenOnlyRoute: Bool
+        lockScreenOnlyRoute: Bool,
+        playbackSpeed: Double
     ) -> Bool {
         guard let marker = loadMarker(),
               marker.completed == true,
               marker.assetID == assetID,
               (marker.lockScreenOnly ?? false) == lockScreenOnlyRoute,
               markerStoreIncludesDesktop(marker) == scope.includesDesktop,
+              abs((marker.playbackSpeed ?? 1.0) - playbackSpeed) < 0.0001,
               URL(fileURLWithPath: marker.videoPath).standardizedFileURL
                 == videoURL.standardizedFileURL
         else {
             return false
         }
+
+        // A paused marker deliberately points to a valid still replacement;
+        // it must still go through the restore path on Resume.
+        guard marker.state != "paused" else { return false }
 
         let assetURL = assetStore.assetURL(for: assetID)
         guard URL(fileURLWithPath: marker.assetPath).standardizedFileURL
@@ -2456,7 +2651,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         originalSystemWallpaperURL: String?,
         systemWallpaperURLWasCaptured: Bool,
         scope: AerialWallpaperStoreScope,
-        lockScreenOnlyRoute: Bool
+        lockScreenOnlyRoute: Bool,
+        playbackSpeed: Double
     ) throws -> AerialLockScreenMarker {
         let attributes = try fileManager.attributesOfItem(
             atPath: videoURL.path
@@ -2475,6 +2671,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             videoModifiedAt: modifiedAt,
             videoSignature: try mediaPreparer.fileSignature(at: videoURL),
             assetSignature: try mediaPreparer.fileSignature(at: installedAssetURL),
+            playbackSpeed: playbackSpeed,
             originalAssetExisted: originalAssetExisted,
             originalThumbnailExisted: originalThumbnailExisted,
             originalSystemWallpaperURL: originalSystemWallpaperURL,
@@ -2543,5 +2740,10 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
 
     private func removeIncompleteBackupsIfSafe() {
         journal.removeIncompleteBackupsIfSafe()
+    }
+
+    private func normalizedPlaybackSpeed(_ speed: Double) -> Double {
+        guard speed.isFinite else { return 1.0 }
+        return max(0.1, min(speed, 4.0))
     }
 }

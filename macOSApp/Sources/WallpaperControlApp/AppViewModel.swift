@@ -234,7 +234,7 @@ protocol WallpaperControlling: AnyObject, Sendable {
     func setVideo(_ url: URL) throws -> ControlStatus
     func installLockScreenOnly(videoURL: URL) async throws -> ControlStatus
     func prepareLockScreenMedia(videoURL: URL) async throws
-    func setSpeed(_ speed: Double) throws -> ControlStatus
+    func setSpeed(_ speed: Double) async throws -> ControlStatus
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus
     func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus
@@ -1008,6 +1008,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
         _ = try updateConfig { config in
             config.video_path = ""
+            config.show_on_lock_screen = false
         }
         if !removingLockScreenOnly, restoreStatus != .failed {
             store.removeManagedFallback()
@@ -1153,14 +1154,35 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
     }
 
-    func setSpeed(_ speed: Double) throws -> ControlStatus {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+    func setSpeed(_ speed: Double) async throws -> ControlStatus {
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
         let config = try updateConfig { config in
             config.playback_speed = speed
         }
+
+        // Desktop playback is updated by the agent's .update command. The
+        // native Aerial provider owns a different player process, so update
+        // its managed movie as well. This covers both Start's shared route
+        // and the dedicated Lock Screen-only route. The legacy screen saver
+        // uses the same config and distributed notification below.
+        if lockScreenCapabilities.supportsSecureLockScreen,
+           lockScreenPlatform.isInstalled,
+           let sourceURL = store.effectiveLockScreenSourceURL(for: config),
+           !WallpaperMediaKind.forURL(sourceURL).isStaticImage {
+            _ = try await lockScreenPlatform.updatePlaybackSpeed(
+                videoURL: sourceURL,
+                speed: config.playback_speed
+            )
+        }
         if daemonProcessManager.isRunning {
             try send(.update, config: config)
+        } else {
+            // A legacy saver can be active without a running Desktop agent.
+            // Its runtime notification is the equivalent of the agent update.
+            postRuntimeCommandDidChange()
         }
         return store.status()
     }
@@ -1664,13 +1686,23 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                     ? videoURL
                     : nil
             )
-            return
-        }
-        try requireNativeBridgeIfNeeded()
-        if lockScreenOnly {
-            try await lockScreenPlatform.installLockScreenOnly(videoURL: videoURL)
         } else {
-            try await lockScreenPlatform.install(videoURL: videoURL)
+            try requireNativeBridgeIfNeeded()
+            if lockScreenOnly {
+                try await lockScreenPlatform.installLockScreenOnly(videoURL: videoURL)
+            } else {
+                try await lockScreenPlatform.install(videoURL: videoURL)
+            }
+        }
+
+        let configuredSpeed = store.loadConfig().playback_speed
+        if lockScreenPlatform.capabilities.supportsSecureLockScreen,
+           !WallpaperMediaKind.forURL(videoURL).isStaticImage,
+           abs(configuredSpeed - 1.0) > 0.0001 {
+            _ = try await lockScreenPlatform.updatePlaybackSpeed(
+                videoURL: videoURL,
+                speed: configuredSpeed
+            )
         }
     }
 
@@ -2867,7 +2899,9 @@ final class AppViewModel: ObservableObject {
             isBusy = true
             defer { isBusy = false }
             do {
-                let status = try await runAsync { try controller.setSpeed(speed) }
+                let status = try await runAsync {
+                    try await controller.setSpeed(speed)
+                }
                 apply(status: status)
                 recordBridgeSuccess()
                 statusMessage = "Speed updated."

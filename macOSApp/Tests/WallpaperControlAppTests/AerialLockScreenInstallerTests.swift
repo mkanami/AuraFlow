@@ -402,6 +402,115 @@ private struct AerialLockScreenFixture {
     #expect(!wallpaperStoreText(root).contains("AuraFlowLockScreen"))
 }
 
+@Test func modernSharedLockScreenPlaybackPauseAndResumeRestoresAerialAsset() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    let videoURL = fixture.root.appendingPathComponent("shared-wallpaper.mp4")
+    try await writeAerialTestVideo(to: videoURL)
+    try await fixture.installer.install(videoURL: videoURL)
+    let runningAsset = try Data(contentsOf: fixture.assetURL)
+
+    #expect(!fixture.installer.isLockScreenOnlyInstallation)
+    #expect(
+        try await fixture.installer.pauseLockScreenOnlyPlayback(
+            videoURL: videoURL
+        )
+    )
+    let pausedAsset = try Data(contentsOf: fixture.assetURL)
+    #expect(pausedAsset != runningAsset)
+
+    #expect(
+        try await fixture.installer.resumeLockScreenOnlyPlayback(
+            videoURL: videoURL
+        )
+    )
+    #expect(try Data(contentsOf: fixture.assetURL) == runningAsset)
+    #expect(fixture.rearmCounter.rearmCount == 3)
+}
+
+@Test func modernLockScreenPlaybackSpeedIsPersistedPerGeneration() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+
+    #expect(
+        try await fixture.installer.updatePlaybackSpeed(
+            videoURL: fixture.videoURL,
+            speed: 1.75
+        )
+    )
+    let marker = LockScreenJournal(
+        stateDirectoryURL: fixture.stateURL,
+        fileManager: .default
+    ).loadMarker()
+    #expect(marker?.playbackSpeed == 1.75)
+    #expect(
+        try await fixture.installer.updatePlaybackSpeed(
+            videoURL: fixture.videoURL,
+            speed: 1.75
+    ) == false
+    )
+}
+
+@Test func modernLockScreenOnlyPlaybackSpeedUsesLockOnlyGeneration() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    #expect(
+        try await fixture.installer.updatePlaybackSpeed(
+            videoURL: fixture.videoURL,
+            speed: 0.5
+        )
+    )
+    let marker = LockScreenJournal(
+        stateDirectoryURL: fixture.stateURL,
+        fileManager: .default
+    ).loadMarker()
+    #expect(marker?.lockScreenOnly == true)
+    #expect(marker?.playbackSpeed == 0.5)
+}
+
+@Test func modernLockScreenOnlyPlaybackPauseAndResumeRestoresAerialAsset() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    let videoURL = fixture.root.appendingPathComponent("lock-only-wallpaper.mp4")
+    try await writeAerialTestVideo(to: videoURL)
+    try await fixture.installer.installLockScreenOnly(videoURL: videoURL)
+    let runningAsset = try Data(contentsOf: fixture.assetURL)
+
+    #expect(fixture.installer.isLockScreenOnlyInstallation)
+    #expect(
+        try await fixture.installer.pauseLockScreenOnlyPlayback(
+            videoURL: videoURL
+        )
+    )
+    #expect(try Data(contentsOf: fixture.assetURL) != runningAsset)
+    #expect(
+        try await fixture.installer.resumeLockScreenOnlyPlayback(
+            videoURL: videoURL
+        )
+    )
+    #expect(try Data(contentsOf: fixture.assetURL) == runningAsset)
+
+    // A second Stop -> Play must remain a normal toggle, not trip the
+    // one-time protection intended for an externally replaced asset.
+    #expect(
+        try await fixture.installer.pauseLockScreenOnlyPlayback(
+            videoURL: videoURL
+        )
+    )
+    #expect(
+        try await fixture.installer.resumeLockScreenOnlyPlayback(
+            videoURL: videoURL
+        )
+    )
+    #expect(try Data(contentsOf: fixture.assetURL) == runningAsset)
+}
+
 @Test func modernLockScreenConfirmationRejectsAStaleWallpaperStore() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

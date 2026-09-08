@@ -163,6 +163,18 @@ public protocol LockScreenPlatformOperating: LockScreenPlatform {
         restoringLockScreenOnlyVideoURL: URL?
     ) async throws
     func prepareLockScreenMedia(videoURL: URL) async throws
+    /// Freezes the native Lock Screen asset at a still frame. Compatibility
+    /// screen savers use the shared pause marker instead, so their default is
+    /// intentionally a no-op. The operation applies to both the shared
+    /// Desktop + Lock Screen route and the dedicated Lock-only route.
+    func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool
+    /// Restores the animated native Lock Screen asset after a manual pause.
+    /// This applies to both shared and Lock-only native routes.
+    func resumeLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool
+    /// Applies the configured playback speed to a native Lock Screen route.
+    /// Legacy screen savers apply the speed from the shared runtime config and
+    /// therefore use the default no-op implementation below.
+    func updatePlaybackSpeed(videoURL: URL, speed: Double) async throws -> Bool
     func lockScreenOnlyStatus(videoURL: URL?) -> LockScreenOnlyGenerationStatus
     @discardableResult
     func repairLockScreenOnlyGeneration(
@@ -312,6 +324,23 @@ public extension LockScreenSaverInstalling {
 
     func prepareLockScreenMedia(videoURL: URL) async throws {
         // Legacy screen-saver implementations have no separate media cache.
+    }
+
+    func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        // The compatibility saver reads wallpaper_daemon.paused directly.
+        false
+    }
+
+    func resumeLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        // The compatibility saver resumes when the shared pause marker is
+        // removed; no asset mutation is needed.
+        false
+    }
+
+    func updatePlaybackSpeed(videoURL: URL, speed: Double) async throws -> Bool {
+        // The compatibility saver reads playback_speed from config.json when
+        // the distributed runtime notification arrives.
+        false
     }
 
     func lockScreenOnlyStatus(

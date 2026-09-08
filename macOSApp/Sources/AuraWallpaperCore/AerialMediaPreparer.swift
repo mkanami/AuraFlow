@@ -221,6 +221,185 @@ internal final class AerialMediaPreparer {
         return cacheURL
     }
 
+    /// Returns a native-provider movie whose timestamps represent the
+    /// requested playback speed. Apple's Aerial extension owns the player in
+    /// another process, so changing AuraFlow's AVPlayer rate cannot affect
+    /// the visible Lock Screen. Retime the movie once and cache each speed.
+    internal func prepare(
+        from sourceURL: URL,
+        playbackSpeed: Double
+    ) async throws -> URL {
+        let normalizedSpeed = normalizedPlaybackSpeed(playbackSpeed)
+        let preparedURL = try await prepare(from: sourceURL)
+        guard usesCanonicalWallpaperStore,
+              !WallpaperMediaKind.forURL(sourceURL).isStaticImage,
+              abs(normalizedSpeed - 1.0) > 0.0001
+        else {
+            return preparedURL
+        }
+
+        try fileManager.createDirectory(
+            at: preparedCacheDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        let sourceSignature = try fileSignature(at: sourceURL)
+        let speedTag = String(format: "%.3f", normalizedSpeed)
+            .replacingOccurrences(of: ".", with: "_")
+        let cacheURL = preparedCacheDirectoryURL.appendingPathComponent(
+            "prepared-v2-\(sourceSignature)-rate-\(speedTag).mov"
+        )
+        if fileManager.fileExists(atPath: cacheURL.path),
+           try await isCompatible(at: cacheURL) {
+            return cacheURL
+        }
+
+        let sourceAsset = AVURLAsset(url: preparedURL)
+        let sourceTracks = try await sourceAsset.load(.tracks)
+        guard let sourceVideoTrack = sourceTracks.first(where: {
+            $0.mediaType == .video
+        }) else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The video has no video track."
+                )
+        }
+        let duration = try await sourceAsset.load(.duration)
+        guard duration.isNumeric, duration > .zero else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The video has no valid duration."
+                )
+        }
+
+        let composition = AVMutableComposition()
+        guard let compositionTrack = composition.addMutableTrack(
+            withMediaType: .video,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The retimed video track could not be created."
+                )
+        }
+        do {
+            try compositionTrack.insertTimeRange(
+                CMTimeRange(start: .zero, duration: duration),
+                of: sourceVideoTrack,
+                at: .zero
+            )
+            compositionTrack.preferredTransform = try await sourceVideoTrack
+                .load(.preferredTransform)
+            compositionTrack.scaleTimeRange(
+                CMTimeRange(start: .zero, duration: duration),
+                toDuration: CMTimeMultiplyByFloat64(
+                    duration,
+                    multiplier: 1.0 / normalizedSpeed
+                )
+            )
+        } catch {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(error.localizedDescription)
+        }
+
+        let exportPreset: String
+        if await AVAssetExportSession.compatibility(
+            ofExportPreset: AVAssetExportPresetHEVCHighestQuality,
+            with: composition,
+            outputFileType: .mov
+        ) {
+            exportPreset = AVAssetExportPresetHEVCHighestQuality
+        } else if await AVAssetExportSession.compatibility(
+            ofExportPreset: AVAssetExportPresetHEVC1920x1080,
+            with: composition,
+            outputFileType: .mov
+        ) {
+            exportPreset = AVAssetExportPresetHEVC1920x1080
+        } else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "This Mac cannot export the retimed video as HEVC."
+                )
+        }
+        guard let exportSession = AVAssetExportSession(
+            asset: composition,
+            presetName: exportPreset
+        ) else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The HEVC export session could not be created."
+                )
+        }
+
+        let outputURL = preparedCacheDirectoryURL.appendingPathComponent(
+            ".prepared-rate-\(UUID().uuidString).mov"
+        )
+        defer { try? fileManager.removeItem(at: outputURL) }
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .mov
+        exportSession.shouldOptimizeForNetworkUse = false
+
+        await withCheckedContinuation { continuation in
+            exportSession.exportAsynchronously {
+                continuation.resume()
+            }
+        }
+        guard exportSession.status == .completed,
+              fileManager.fileExists(atPath: outputURL.path),
+              try await isCompatible(at: outputURL)
+        else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    exportSession.error?.localizedDescription
+                        ?? "HEVC retiming failed."
+                )
+        }
+
+        try replaceCacheItem(at: cacheURL, with: outputURL)
+        return cacheURL
+    }
+
+    /// Writes a valid Aerial-compatible movie whose frames are all the same
+    /// still. The native macOS provider is a separate process and has no pause
+    /// API, so replacing its managed movie is the only way to make Stop affect
+    /// the surface it actually renders.
+    internal func writeStillFrameVideo(
+        from sourceURL: URL,
+        to outputURL: URL
+    ) async throws {
+        try Task.checkCancellation()
+
+        let image: NSImage
+        if WallpaperMediaKind.forURL(sourceURL).isStaticImage,
+           let sourceImage = NSImage(contentsOf: sourceURL) {
+            image = sourceImage
+        } else {
+            let asset = AVURLAsset(url: sourceURL)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 3840, height: 2160)
+            let imageRef = try generator.copyCGImage(
+                at: CMTime(seconds: 0.2, preferredTimescale: 600),
+                actualTime: nil
+            )
+            image = NSImage(
+                cgImage: imageRef,
+                size: NSSize(width: imageRef.width, height: imageRef.height)
+            )
+        }
+
+        try await writeStillImageAerialVideo(
+            image,
+            to: outputURL,
+            frameCount: 30
+        )
+        guard try await isCompatible(at: outputURL) else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The still Lock Screen frame is not HEVC compatible."
+                )
+        }
+    }
+
     private func waitForConversion(
         _ process: Process,
         errorPipe: Pipe
@@ -321,6 +500,11 @@ internal final class AerialMediaPreparer {
             mix(byte)
         }
         return String(format: "%016llx", hash)
+    }
+
+    private func normalizedPlaybackSpeed(_ speed: Double) -> Double {
+        guard speed.isFinite else { return 1.0 }
+        return max(0.1, min(speed, 4.0))
     }
 
     private func replaceCacheItem(at cacheURL: URL, with outputURL: URL) throws {

@@ -15,6 +15,9 @@ internal struct AerialLockScreenMarker: Codable {
     var videoModifiedAt: TimeInterval
     var videoSignature: String?
     var assetSignature: String?
+    /// Speed encoded in the managed Aerial movie. Missing means the legacy
+    /// 1.0x generation, keeping older journals backward compatible.
+    var playbackSpeed: Double?
     var originalAssetExisted: Bool?
     var originalThumbnailExisted: Bool?
     var originalSystemWallpaperURL: String?
@@ -190,6 +193,7 @@ internal final class LockScreenJournal {
             videoModifiedAt: 0,
             videoSignature: nil,
             assetSignature: nil,
+            playbackSpeed: nil,
             originalAssetExisted: fileManager.fileExists(
                 atPath: assetBackupURL.path
             ),

@@ -1773,7 +1773,7 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
         return statusPayload(running: false, paused: true, health: nil)
     }
 
-    func setSpeed(_ speed: Double) throws -> ControlStatus {
+    func setSpeed(_ speed: Double) async throws -> ControlStatus {
         try status()
     }
 
