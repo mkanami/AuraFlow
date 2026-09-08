@@ -1058,6 +1058,9 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         let removingLockScreenOnly =
             store.isLockScreenOnlyAgent()
             || store.loadLockScreenOnlySource() != nil
+        let hadNativeFullWallpaperRoute =
+            !removingLockScreenOnly
+            && lockScreenPlatform.capabilities.usesPrivateWallpaperFramework
         let runtimeWasRunning = daemonProcessManager.isRunning
         let runtimeWasPaused = store.isPaused()
         if runtimeWasRunning {
@@ -1134,6 +1137,19 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             if restoreStatus != .failed {
                 store.markWallpaperRestorePending(false)
             }
+        }
+        if hadNativeFullWallpaperRoute, restoreStatus != .failed {
+            // The native installer restores the authoritative store and
+            // SystemWallpaperURL, but WallpaperAgent can keep presenting its
+            // cached Aerial frame. Re-apply the URL it now reports so the
+            // visible Desktop catches up without rewriting other Spaces.
+            let didReapplyDesktop =
+                WallpaperDesktopPlatform.reapplyCurrentDesktopWallpaper(
+                    appSupportPath: store.appSupportURL.path
+                )
+            lockScreenLifecycleLogger.notice(
+                "Native full Remove refreshed Desktop presentation=\(didReapplyDesktop, privacy: .public)"
+            )
         }
         _ = try updateConfig { config in
             config.video_path = ""
