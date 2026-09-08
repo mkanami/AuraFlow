@@ -427,6 +427,79 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(!nonQuickTimeIsCompatible)
 }
 
+@Test func restoredWallpaperInsideAuraFlowPathIsNotClassifiedAsManaged() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    let restoredDirectory = fixture.root
+        .appendingPathComponent("Restored Wallpapers", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: restoredDirectory,
+        withIntermediateDirectories: true
+    )
+    let restoredWallpaperURL = restoredDirectory
+        .appendingPathComponent("user-wallpaper.jpg")
+    try Data("user-wallpaper".utf8).write(to: restoredWallpaperURL)
+
+    let userDesktop = AerialLockScreenFixture.makeMode(
+        provider: WallpaperPlatformConstants.imageProviderID,
+        configuration: [
+            "type": "imageFile",
+            "url": ["relative": restoredWallpaperURL.absoluteString],
+        ]
+    )
+    let userContainer: [String: Any] = [
+        "Type": "individual",
+        "Desktop": userDesktop,
+        "Idle": AerialLockScreenFixture.makeMode(
+            provider: WallpaperPlatformConstants.screenSaverProviderID,
+            configuration: [
+                "module": [
+                    "relative":
+                        "file:///System/Library/ExtensionKit/Extensions/Ventura.appex",
+                ],
+            ]
+        ),
+    ]
+    let root: [String: Any] = [
+        "AllSpacesAndDisplays": userContainer,
+        "SystemDefault": userContainer,
+    ]
+    let currentData = try PropertyListSerialization.data(
+        fromPropertyList: root,
+        format: .binary,
+        options: 0
+    )
+
+    let transaction = WallpaperStoreTransaction(
+        fileManager: .default,
+        wallpaperStoreURL: fixture.storeURL,
+        spacesPreferencesURL: fixture.spacesURL,
+        aerialVideosURL: fixture.videosURL
+    )
+
+    #expect(!transaction.wallpaperStoreHasManagedDesktop(
+        currentData,
+        managedAssetID: AerialLockScreenFixture.assetID
+    ))
+    #expect(transaction.wallpaperStoreHasUserDesktop(
+        currentData,
+        managedAssetID: AerialLockScreenFixture.assetID
+    ))
+
+    let cleanedData = try transaction.cleanedWallpaperStoreData(from: currentData)
+    let cleanedRoot = try #require(
+        try transaction.propertyListDictionary(from: cleanedData)
+    )
+    let cleanedContainer = try #require(
+        cleanedRoot["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let cleanedDesktop = try #require(
+        cleanedContainer["Desktop"] as? [String: Any]
+    )
+    #expect(wallpaperStoreText(cleanedDesktop).contains("user-wallpaper.jpg"))
+}
+
 @Test func modernLockScreenUsesAerialAndPrunesDeletedSpaces() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

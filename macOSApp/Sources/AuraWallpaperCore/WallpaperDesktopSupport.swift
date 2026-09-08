@@ -723,9 +723,7 @@ public enum WallpaperDesktopSupport {
 
     private static func containsManagedWallpaperReference(_ value: Any) -> Bool {
         if let string = value as? String {
-            let lowered = string.lowercased()
-            return lowered.contains("auraflow")
-                || lowered.contains("last_frame")
+            return isManagedWallpaperReferencePath(string)
         }
         if let data = value as? Data,
            let propertyList = try? PropertyListSerialization.propertyList(
@@ -747,6 +745,28 @@ public enum WallpaperDesktopSupport {
             )
         }
         return false
+    }
+
+    private static func isManagedWallpaperReferencePath(_ value: String) -> Bool {
+        let path: String
+        if let url = URL(string: value), url.isFileURL {
+            path = url.path
+        } else {
+            path = value
+        }
+        let components = URL(fileURLWithPath: path)
+            .standardizedFileURL
+            .path
+            .lowercased()
+            .split(separator: "/")
+            .map(String.init)
+        return components.contains { component in
+            component == "last_frame.png"
+                || component.hasPrefix("last_frame_")
+                    && component.hasSuffix(".png")
+                || component == "auraflowlockscreen"
+                || component == "auraflowlockscreen.saver"
+        }
     }
 
     private static func imageWallpaperStoreMode(
