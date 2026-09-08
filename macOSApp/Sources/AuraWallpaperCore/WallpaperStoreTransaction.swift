@@ -765,14 +765,27 @@ internal final class WallpaperStoreTransaction {
                         assetID: assetID
                     ) else { return false }
                 } else {
-                    guard let desktop = container["Desktop"] as? [String: Any],
-                          let idle = container["Idle"] as? [String: Any],
-                          modeFullySelectsAerial(
-                              desktop,
-                              assetID: assetID
-                          ),
-                          modeFullySelectsAerial(idle, assetID: assetID)
-                    else { return false }
+                    // macOS may keep the aggregate container as Idle-only
+                    // while the concrete Space/Display containers own the
+                    // Desktop route. For shared installs, validate every
+                    // route that exists without requiring both keys in every
+                    // container.
+                    var inspectedRoute = false
+                    if let desktop = container["Desktop"] as? [String: Any] {
+                        inspectedRoute = true
+                        guard modeFullySelectsAerial(
+                            desktop,
+                            assetID: assetID
+                        ) else { return false }
+                    }
+                    if let idle = container["Idle"] as? [String: Any] {
+                        inspectedRoute = true
+                        guard modeFullySelectsAerial(
+                            idle,
+                            assetID: assetID
+                        ) else { return false }
+                    }
+                    guard inspectedRoute else { return false }
                 }
             } else {
                 // A lock-only installation must have an Aura Idle route and

@@ -548,6 +548,39 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(!wallpaperStoreText(root).contains("AuraFlowLockScreen"))
 }
 
+@Test func modernSharedInstallAcceptsIdleOnlyAggregateContainer() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    var root = try readWallpaperStore(fixture.storeURL)
+    var aggregate = try #require(
+        root["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    // macOS 26 can keep the aggregate route as Idle-only while the concrete
+    // Space/Display containers own the Desktop route.
+    aggregate.removeValue(forKey: "Desktop")
+    aggregate.removeValue(forKey: "Linked")
+    aggregate["Type"] = "idle"
+    root["AllSpacesAndDisplays"] = aggregate
+    try writeWallpaperStore(root, to: fixture.storeURL)
+
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+
+    #expect(fixture.installer.installationConfirmed)
+    let installedRoot = try readWallpaperStore(fixture.storeURL)
+    let installedAggregate = try #require(
+        installedRoot["AllSpacesAndDisplays"] as? [String: Any]
+    )
+    let installedIdle = try #require(
+        installedAggregate["Idle"] as? [String: Any]
+    )
+    #expect(wallpaperStoreContains(
+        installedIdle,
+        provider: "com.apple.wallpaper.choice.aerials",
+        assetID: AerialLockScreenFixture.assetID
+    ))
+}
+
 @Test func modernSharedLockScreenPlaybackPauseAndResumeRestoresAerialAsset() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
