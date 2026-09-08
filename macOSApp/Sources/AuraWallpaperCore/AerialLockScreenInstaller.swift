@@ -447,55 +447,6 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         }
     }
 
-    /// Refreshes the shared-install restore journal when a previous full
-    /// Remove stopped after the native transaction had already left a user
-    /// Desktop in the live store. Without this, a later Start can reuse the
-    /// old `Index.before-auraflow.plist` and Remove restores that old wallpaper
-    /// instead of the one the user currently has selected.
-    @discardableResult
-    public func refreshSharedWallpaperRestoreSnapshotIfNeeded() throws -> Bool {
-        try withMutationCoordinator {
-            try withCrossProcessLock {
-                guard let marker = loadMarker(),
-                      marker.completed == true,
-                      markerStoreIncludesDesktop(marker),
-                      let currentStoreData = try? Data(
-                          contentsOf: wallpaperStoreURL
-                      ),
-                      let previousBackupData = try? Data(
-                          contentsOf: wallpaperStoreBackupURL
-                      )
-                else {
-                    return false
-                }
-
-                // If Aura still owns a Desktop route, the journal is still
-                // needed for an in-progress installation. Replacing it with
-                // the managed store would make rollback restore Aura itself.
-                guard !wallpaperStoreTransaction
-                    .wallpaperStoreHasManagedDesktop(
-                        currentStoreData,
-                        managedAssetID: marker.assetID
-                    )
-                else {
-                    return false
-                }
-
-                let latestUserStoreData = try wallpaperStoreTransaction
-                    .captureLatestUserWallpaperStoreData(
-                        from: currentStoreData,
-                        fallbackData: previousBackupData,
-                        managedAssetID: marker.assetID
-                    )
-                try latestUserStoreData.write(
-                    to: wallpaperStoreBackupURL,
-                    options: .atomic
-                )
-                return true
-            }
-        }
-    }
-
     public func install(videoURL: URL) async throws {
         try await withMutationCoordinator {
             try await withCrossProcessLockAsync {

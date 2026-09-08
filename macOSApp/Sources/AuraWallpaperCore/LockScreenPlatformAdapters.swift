@@ -163,12 +163,6 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
     }
 
     @discardableResult
-    public func refreshSharedWallpaperRestoreSnapshotIfNeeded() throws -> Bool {
-        guard capabilities.isAvailable else { return false }
-        return try installer.refreshSharedWallpaperRestoreSnapshotIfNeeded()
-    }
-
-    @discardableResult
     public func repair(
         videoURL: URL,
         shouldProceed: @escaping () -> Bool

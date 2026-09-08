@@ -7,8 +7,7 @@ public enum WallpaperDesktopSupport {
 
     @discardableResult
     public static func captureCurrentDesktopWallpaperBackup(
-        appSupportPath: String,
-        overwriteExisting: Bool = false
+        appSupportPath: String
     ) -> Bool {
         let managedPath = managedWallpaperPath(appSupportPath: appSupportPath)
         let workspace = NSWorkspace.shared
@@ -24,8 +23,7 @@ public enum WallpaperDesktopSupport {
         guard !wallpapers.isEmpty else { return false }
         return saveWallpaperBackup(
             appSupportPath: appSupportPath,
-            wallpapers: wallpapers,
-            overwriteExisting: overwriteExisting
+            wallpapers: wallpapers
         )
     }
 
@@ -474,14 +472,13 @@ public enum WallpaperDesktopSupport {
     @discardableResult
     public static func saveWallpaperBackup(
         appSupportPath: String,
-        wallpapers: [String: String],
-        overwriteExisting: Bool = false
+        wallpapers: [String: String]
     ) -> Bool {
         saveWallpaperBackup(
             appSupportPath: appSupportPath,
             wallpapers: wallpapers,
             fileNames: backupNames,
-            overwriteExisting: overwriteExisting
+            overwriteExisting: false
         )
     }
 
