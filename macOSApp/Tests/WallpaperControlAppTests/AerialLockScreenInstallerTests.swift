@@ -1941,6 +1941,104 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(!fixture.installer.isInstalled)
 }
 
+@Test func modernSharedRemoveUsesConcreteDesktopJournalAfterAgentRewritesStore() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+    let managedStoreData = try Data(contentsOf: fixture.storeURL)
+    var latestRoot = try readWallpaperStore(fixture.storeURL)
+    var latestUserDesktop = AerialLockScreenFixture.makeMode(
+        provider: WallpaperPlatformConstants.imageProviderID,
+        configuration: [
+            "type": "imageFile",
+            "url": ["relative": "file:///journaled-space-wallpaper.jpg"],
+        ]
+    )
+    var latestContent = try #require(
+        latestUserDesktop["Content"] as? [String: Any]
+    )
+    var latestChoices = try #require(
+        latestContent["Choices"] as? [[String: Any]]
+    )
+    latestChoices[0]["Files"] = [[
+        "relative": "file:///journaled-space-wallpaper.jpg",
+    ]]
+    latestContent["Choices"] = latestChoices
+    latestUserDesktop["Content"] = latestContent
+    var spaces = try #require(latestRoot["Spaces"] as? [String: Any])
+    var activeSpace = try #require(
+        spaces[AerialLockScreenFixture.activeSpaceID] as? [String: Any]
+    )
+    var activeDefault = try #require(
+        activeSpace["Default"] as? [String: Any]
+    )
+    activeDefault["Desktop"] = latestUserDesktop
+    activeSpace["Default"] = activeDefault
+    var spaceDisplays = try #require(
+        activeSpace["Displays"] as? [String: Any]
+    )
+    var activeDisplay = try #require(
+        spaceDisplays[AerialLockScreenFixture.displayID] as? [String: Any]
+    )
+    activeDisplay["Desktop"] = latestUserDesktop
+    spaceDisplays[AerialLockScreenFixture.displayID] = activeDisplay
+    activeSpace["Displays"] = spaceDisplays
+    spaces[AerialLockScreenFixture.activeSpaceID] = activeSpace
+    latestRoot["Spaces"] = spaces
+    try writeWallpaperStore(latestRoot, to: fixture.storeURL)
+
+    let latestUserStoreURL = fixture.stateURL
+        .appendingPathComponent("Index.latest-user.plist")
+    var captured = false
+    for _ in 0..<20 {
+        if FileManager.default.fileExists(atPath: latestUserStoreURL.path) {
+            captured = true
+            break
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+    }
+    #expect(captured)
+
+    // Simulate WallpaperAgent replacing the live store with its temporary
+    // global Aerial route before Remove is pressed.
+    try managedStoreData.write(to: fixture.storeURL, options: .atomic)
+    try await Task.sleep(nanoseconds: 120_000_000)
+    try fixture.installer.uninstall()
+
+    let restoredRoot = try readWallpaperStore(fixture.storeURL)
+    let restoredSpaces = try #require(
+        restoredRoot["Spaces"] as? [String: Any]
+    )
+    let restoredSpace = try #require(
+        restoredSpaces[AerialLockScreenFixture.activeSpaceID]
+            as? [String: Any]
+    )
+    let restoredDefault = try #require(
+        restoredSpace["Default"] as? [String: Any]
+    )
+    let restoredDesktop = try #require(
+        restoredDefault["Desktop"] as? [String: Any]
+    )
+    #expect(wallpaperModeData(restoredDesktop) == wallpaperModeData(latestUserDesktop))
+    let restoredDisplays = try #require(
+        restoredSpace["Displays"] as? [String: Any]
+    )
+    let restoredDisplay = try #require(
+        restoredDisplays[AerialLockScreenFixture.displayID]
+            as? [String: Any]
+    )
+    let restoredDisplayDesktop = try #require(
+        restoredDisplay["Desktop"] as? [String: Any]
+    )
+    #expect(
+        wallpaperModeData(restoredDisplayDesktop)
+            == wallpaperModeData(latestUserDesktop)
+    )
+    #expect(!wallpaperStoreText(restoredRoot).contains("AuraFlow"))
+    #expect(!fixture.installer.isInstalled)
+}
+
 @Test func modernSharedRemovePreservesDownloadedImageRouteAfterAgentRewritesStore() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

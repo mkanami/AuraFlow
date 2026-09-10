@@ -689,6 +689,31 @@ internal final class WallpaperStoreTransaction {
                 propagateGlobalDesktopChanges: propagateGlobalDesktopChanges,
                 userSystemWallpaperURL: userSystemWallpaperURL
             )
+
+        // WallpaperAgent can rewrite the live store to its global Aerial
+        // route after the user has selected a Desktop wallpaper. In that
+        // window the monitor's journal is the only copy of the user's real
+        // topology (often a concrete Space/display route). Do not reduce it
+        // to the already-rewritten global store: doing so restores Aerial or
+        // its built-in fallback instead of the user's image.
+        if propagateGlobalDesktopChanges,
+           !wallpaperStoreHasUserDesktop(
+               currentData,
+               managedAssetID: managedAssetID
+           ),
+           wallpaperStoreHasUserDesktop(
+               sanitizedPreviousData,
+               managedAssetID: managedAssetID
+           ) {
+            if let latestUserWallpaperStoreURL {
+                try sanitizedPreviousData.write(
+                    to: latestUserWallpaperStoreURL,
+                    options: .atomic
+                )
+            }
+            return sanitizedPreviousData
+        }
+
         let latestData = try wallpaperStoreDataByPreservingUserDesktops(
             from: currentData,
             restoringManagedModesFrom: sanitizedPreviousData,
