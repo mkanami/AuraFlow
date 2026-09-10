@@ -55,6 +55,7 @@ private final class WallpaperStoreSnapshotBox: @unchecked Sendable {
 
 private final class DesktopImageTransitionRecorder: @unchecked Sendable {
     private(set) var appliedURLs: [URL] = []
+    private(set) var appliedToAllDesktopSpaceURLs: [URL] = []
     private(set) var storeData: Data
     private var activeURL: URL?
     private let targetURL: URL?
@@ -68,41 +69,48 @@ private final class DesktopImageTransitionRecorder: @unchecked Sendable {
         self.targetURL = activeURL
     }
 
-    func operations() -> DesktopImageTransitionOperations {
-        DesktopImageTransitionOperations(
-            applyToCurrentScreens: { [self] url in
-                appliedURLs.append(url)
-                if appliedURLs.count == 1,
-                   let targetURL,
-                   let targetFileNumber = try? FileManager.default
-                    .attributesOfItem(atPath: targetURL.path)[
-                        .systemFileNumber
-                    ] as? NSNumber,
-                   let temporaryFileNumber = try? FileManager.default
-                    .attributesOfItem(atPath: url.path)[
-                        .systemFileNumber
-                    ] as? NSNumber {
-                    temporaryUsesDistinctFileIdentity =
-                        targetFileNumber.int64Value
-                        != temporaryFileNumber.int64Value
-                }
-                if failFinalURL?.standardizedFileURL
-                    == url.standardizedFileURL {
-                    return false
-                }
-                timestamp = timestamp.addingTimeInterval(1)
-                storeData = try! testImageWallpaperStoreData(
-                    url: url,
-                    timestamp: timestamp
-                )
-                activeURL = url
-                return true
-            },
+    func operations(
+        applyToAllDesktopSpaces: Bool = false
+    ) -> DesktopImageTransitionOperations {
+        let apply: (URL) -> Bool = { [self] url in
+            if applyToAllDesktopSpaces {
+                appliedToAllDesktopSpaceURLs.append(url)
+            }
+            appliedURLs.append(url)
+            if appliedURLs.count == 1,
+               let targetURL,
+               let targetFileNumber = try? FileManager.default
+                .attributesOfItem(atPath: targetURL.path)[
+                    .systemFileNumber
+                ] as? NSNumber,
+               let temporaryFileNumber = try? FileManager.default
+                .attributesOfItem(atPath: url.path)[
+                    .systemFileNumber
+                ] as? NSNumber {
+                temporaryUsesDistinctFileIdentity =
+                    targetFileNumber.int64Value
+                    != temporaryFileNumber.int64Value
+            }
+            if failFinalURL?.standardizedFileURL
+                == url.standardizedFileURL {
+                return false
+            }
+            timestamp = timestamp.addingTimeInterval(1)
+            storeData = try! testImageWallpaperStoreData(
+                url: url,
+                timestamp: timestamp
+            )
+            activeURL = url
+            return true
+        }
+        return DesktopImageTransitionOperations(
+            applyToCurrentScreens: apply,
             currentScreensMatch: { [self] url in
                 activeURL?.standardizedFileURL == url.standardizedFileURL
             },
             readWallpaperStore: { [self] in storeData },
-            pause: { _ in }
+            pause: { _ in },
+            applyToAllDesktopSpaces: applyToAllDesktopSpaces ? apply : nil
         )
     }
 }
@@ -715,11 +723,12 @@ private func writeAerialTestVideo(to url: URL) async throws {
                 appSupportPath: root.path,
                 managedAssetID: AerialLockScreenFixture.assetID,
                 wallpaperStoreURL: root.appendingPathComponent("unused.plist"),
-                operations: recorder.operations()
+                operations: recorder.operations(applyToAllDesktopSpaces: true)
             )
 
         #expect(restored)
         #expect(recorder.appliedURLs.count == 2)
+        #expect(recorder.appliedToAllDesktopSpaceURLs.count == 2)
         let temporaryURL = try #require(recorder.appliedURLs.first)
         #expect(
             temporaryURL.standardizedFileURL

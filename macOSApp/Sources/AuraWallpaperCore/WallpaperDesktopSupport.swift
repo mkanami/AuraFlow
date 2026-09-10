@@ -8,6 +8,7 @@ internal struct DesktopImageTransitionOperations {
     var readWallpaperStore: () -> Data?
     var pause: (TimeInterval) -> Void
     var setSystemWallpaperURL: ((URL) -> Bool)? = nil
+    var applyToAllDesktopSpaces: ((URL) -> Bool)? = nil
 }
 
 public enum WallpaperDesktopSupport {
@@ -259,7 +260,9 @@ public enum WallpaperDesktopSupport {
             return false
         }
         temporaryTransitionAttempted = true
-        guard operations.applyToCurrentScreens(temporaryURL),
+        let applyForTransition = operations.applyToAllDesktopSpaces
+            ?? operations.applyToCurrentScreens
+        guard applyForTransition(temporaryURL),
               waitForDesktopImageTransition(
                   to: temporaryURL,
                   after: storeBeforeTemporary,
@@ -267,7 +270,7 @@ public enum WallpaperDesktopSupport {
                   operations: operations
               ),
               let storeBeforeTarget = operations.readWallpaperStore(),
-              operations.applyToCurrentScreens(restorationURL),
+              applyForTransition(restorationURL),
               waitForDesktopImageTransition(
                   to: restorationURL,
                   after: storeBeforeTarget,
@@ -313,8 +316,45 @@ public enum WallpaperDesktopSupport {
             },
             setSystemWallpaperURL: { url in
                 setTransitionSystemWallpaperURL(url)
+            },
+            applyToAllDesktopSpaces: { url in
+                applyToAllDesktopSpaces(url)
             }
         )
+    }
+
+    /// Applies a transition to every Space on every display. The public
+    /// NSWorkspace setter normally targets only the active Space; the
+    /// all-Spaces option is required here because the other Spaces can keep
+    /// Aerial/Golden Gate even though the active Desktop reports the restored
+    /// image.
+    private static func applyToAllDesktopSpaces(_ url: URL) -> Bool {
+        let standardizedURL = url.standardizedFileURL
+        guard FileManager.default.fileExists(atPath: standardizedURL.path) else {
+            return false
+        }
+
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return false }
+        let allSpacesKey = NSWorkspace.DesktopImageOptionKey(
+            rawValue: "NSWorkspaceDesktopImageAllSpacesKey"
+        )
+        let options: [NSWorkspace.DesktopImageOptionKey: Any] = [
+            allSpacesKey: true,
+        ]
+        var appliedToEveryScreen = true
+        for screen in screens {
+            do {
+                try NSWorkspace.shared.setDesktopImageURL(
+                    standardizedURL,
+                    for: screen,
+                    options: options
+                )
+            } catch {
+                appliedToEveryScreen = false
+            }
+        }
+        return appliedToEveryScreen
     }
 
     private static func durableRestorationURL(
