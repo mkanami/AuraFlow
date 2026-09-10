@@ -1759,6 +1759,39 @@ private func writeAerialTestVideo(to url: URL) async throws {
     )
 }
 
+@Test func modernSharedRemoveRestoresDesktopChangedWhileAuraRuns() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+
+    var latestRoot = try readWallpaperStore(fixture.storeURL)
+    let latestUserDesktop = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.sequoia",
+        configuration: [
+            "type": "imageFile",
+            "url": ["relative": "file:///latest-user-wallpaper.jpg"],
+        ]
+    )
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        var container = try #require(latestRoot[key] as? [String: Any])
+        container["Desktop"] = latestUserDesktop
+        latestRoot[key] = container
+    }
+    try writeWallpaperStore(latestRoot, to: fixture.storeURL)
+
+    try fixture.installer.uninstall()
+
+    let restoredRoot = try readWallpaperStore(fixture.storeURL)
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        let container = try #require(restoredRoot[key] as? [String: Any])
+        let desktop = try #require(container["Desktop"] as? [String: Any])
+        #expect(wallpaperModeData(desktop) == wallpaperModeData(latestUserDesktop))
+    }
+    #expect(!wallpaperStoreText(restoredRoot).contains("AuraFlow"))
+    #expect(!fixture.installer.isInstalled)
+}
+
 @Test func healthyModernLockScreenSyncIsANoOp() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

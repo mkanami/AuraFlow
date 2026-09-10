@@ -1702,26 +1702,23 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 contentsOf: wallpaperStoreBackupURL
             )
             var restorationStoreData = originalStoreData
-            if marker.lockScreenOnly == true
-                || marker.desktopIncluded == false {
-                // Desktop never belongs to AuraFlow in lock-only mode. Start
-                // with the complete current store so every display and Space
-                // survives unchanged, then restore only Aura-managed modes.
-                // If Remove races the shared-Aerial lock handoff, its session
-                // snapshot is the complete user store to use instead.
-                // A real macOS store can contain the user's newly selected
-                // Desktop in one Space and a transient Aura Aerial Desktop in
-                // another. Preserve the current store whenever it contains
-                // any user Desktop; the merge below replaces only managed
-                // modes and keeps every latest user route in place.
-                if let storeBeforeAttempt {
-                    restorationStoreData = try
-                        wallpaperStoreTransaction.captureLatestUserWallpaperStoreData(
-                            from: storeBeforeAttempt,
-                            fallbackData: originalStoreData,
-                            managedAssetID: marker.assetID
-                        )
-                }
+            // Remove must preserve a Desktop wallpaper selected by the user
+            // while Aura's shared Start route was running. The exact backup
+            // remains the fallback for routes the user did not change, while
+            // the live store wins for every non-Aura Desktop/Linked route.
+            // Lock-only uses the same merge below, but its separate route
+            // semantics remain handled by the dedicated preserving path.
+            if let storeBeforeAttempt,
+               wallpaperStoreTransaction.wallpaperStoreHasUserDesktop(
+                   storeBeforeAttempt,
+                   managedAssetID: marker.assetID
+               ) {
+                restorationStoreData = try
+                    wallpaperStoreTransaction.captureLatestUserWallpaperStoreData(
+                        from: storeBeforeAttempt,
+                        fallbackData: originalStoreData,
+                        managedAssetID: marker.assetID
+                    )
             }
             try restorationStoreData.write(
                 to: wallpaperStoreURL,
