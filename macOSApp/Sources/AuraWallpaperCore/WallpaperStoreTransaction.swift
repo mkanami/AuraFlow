@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 internal enum AerialWallpaperStoreScope: Equatable {
@@ -714,6 +715,24 @@ internal final class WallpaperStoreTransaction {
         propagateGlobalDesktopChanges: Bool = false,
         userSystemWallpaperURL: String? = nil
     ) throws -> Data {
+        try withLatestUserWallpaperJournalLock {
+            try captureLatestUserWallpaperStoreDataLocked(
+                from: currentData,
+                fallbackData: fallbackData,
+                managedAssetID: managedAssetID,
+                propagateGlobalDesktopChanges: propagateGlobalDesktopChanges,
+                userSystemWallpaperURL: userSystemWallpaperURL
+            )
+        }
+    }
+
+    private func captureLatestUserWallpaperStoreDataLocked(
+        from currentData: Data,
+        fallbackData: Data,
+        managedAssetID: String,
+        propagateGlobalDesktopChanges: Bool,
+        userSystemWallpaperURL: String?
+    ) throws -> Data {
         let previousData = latestUserWallpaperStoreURL.flatMap {
             guard let journalData = try? Data(contentsOf: $0),
                   wallpaperStoreHasUserDesktop(
@@ -739,6 +758,28 @@ internal final class WallpaperStoreTransaction {
                 userSystemWallpaperURL: userSystemWallpaperURL
             )
 
+        // A later WallpaperAgent/default snapshot is not a newer user
+        // selection. Keep the last complete journal entry instead of letting
+        // the managed route erase the only restorable custom image.
+        if propagateGlobalDesktopChanges,
+           !wallpaperStoreHasUserDesktop(
+               currentData,
+               managedAssetID: managedAssetID
+           ),
+           userSystemWallpaperURL == nil,
+           wallpaperStoreHasUserDesktop(
+               sanitizedPreviousData,
+               managedAssetID: managedAssetID
+           ) {
+            if let latestUserWallpaperStoreURL {
+                try sanitizedPreviousData.write(
+                    to: latestUserWallpaperStoreURL,
+                    options: .atomic
+                )
+            }
+            return sanitizedPreviousData
+        }
+
         let latestData = try wallpaperStoreDataByPreservingUserDesktops(
             from: currentData,
             restoringManagedModesFrom: sanitizedPreviousData,
@@ -753,6 +794,38 @@ internal final class WallpaperStoreTransaction {
             )
         }
         return latestData
+    }
+
+    private func withLatestUserWallpaperJournalLock<T>(
+        _ operation: () throws -> T
+    ) throws -> T {
+        guard let latestUserWallpaperStoreURL else {
+            return try operation()
+        }
+        let directoryURL = latestUserWallpaperStoreURL
+            .deletingLastPathComponent()
+        try fileManager.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+        let lockURL = directoryURL
+            .appendingPathComponent(".latest-user-wallpaper.lock")
+        let descriptor = Darwin.open(
+            lockURL.path,
+            O_CREAT | O_RDWR | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        guard descriptor >= 0 else {
+            throw AerialLockScreenInstallerError.wallpaperStoreUnavailable
+        }
+        defer {
+            _ = flock(descriptor, LOCK_UN)
+            _ = Darwin.close(descriptor)
+        }
+        guard flock(descriptor, LOCK_EX) == 0 else {
+            throw AerialLockScreenInstallerError.wallpaperStoreUnavailable
+        }
+        return try operation()
     }
 
     private func newestGlobalUserDesktopMode(

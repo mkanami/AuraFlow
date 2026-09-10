@@ -76,6 +76,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     private var wallpaperStoreChangeMonitor: WallpaperStoreChangeMonitor?
     var lockOnlyRemovalCommitHook: (() -> Void)?
     var lockOnlyRepairCommitHook: (() -> Void)?
+    var sharedDesktopImageRestoreHook: ((String) -> Bool)?
     private var usesCanonicalWallpaperStore: Bool {
         wallpaperStoreURL.standardizedFileURL
             == Self.defaultWallpaperStoreURL().standardizedFileURL
@@ -1713,31 +1714,39 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 contentsOf: wallpaperStoreBackupURL
             )
             var restorationStoreData = originalStoreData
-            // Remove must preserve a Desktop wallpaper selected by the user
-            // while Aura's shared Start route was running. The exact backup
-            // remains the fallback for routes the user did not change, while
-            // the live store wins for every non-Aura Desktop/Linked route.
-            // Lock-only uses the same merge below, but its separate route
-            // semantics remain handled by the dedicated preserving path.
-            if let storeBeforeAttempt,
-               fileManager.fileExists(atPath: latestUserWallpaperStoreURL.path)
-                || wallpaperStoreTransaction.wallpaperStoreHasUserDesktop(
-                    storeBeforeAttempt,
-                    managedAssetID: marker.assetID
-                )
-                || userSystemWallpaperURL != nil {
-                // The live store may already have been rewritten to Aura's
-                // Aerial route by WallpaperAgent. The monitor journals the
-                // user's short-lived Desktop route; capture it here even when
-                // the current store no longer exposes that route.
-                restorationStoreData = try
-                    wallpaperStoreTransaction.captureLatestUserWallpaperStoreData(
-                        from: storeBeforeAttempt,
-                        fallbackData: originalStoreData,
-                        managedAssetID: marker.assetID,
-                        propagateGlobalDesktopChanges: true,
-                        userSystemWallpaperURL: userSystemWallpaperURL
-                    )
+            if let storeBeforeAttempt {
+                if markerStoreIncludesDesktop(marker) {
+                    // Shared Start owns Desktop. Its journal can therefore
+                    // restore a short-lived user image even when
+                    // WallpaperAgent has already flushed Aura's route back
+                    // over the live store.
+                    if fileManager.fileExists(
+                        atPath: latestUserWallpaperStoreURL.path
+                    ) || wallpaperStoreTransaction.wallpaperStoreHasUserDesktop(
+                        storeBeforeAttempt,
+                        managedAssetID: marker.assetID
+                    ) || userSystemWallpaperURL != nil {
+                        restorationStoreData = try
+                            wallpaperStoreTransaction
+                                .captureLatestUserWallpaperStoreData(
+                                    from: storeBeforeAttempt,
+                                    fallbackData: originalStoreData,
+                                    managedAssetID: marker.assetID,
+                                    propagateGlobalDesktopChanges: true,
+                                    userSystemWallpaperURL: userSystemWallpaperURL
+                                )
+                    }
+                } else {
+                    // Lock-only never owns Desktop and must preserve each
+                    // Space/display route independently. Do not let shared
+                    // global propagation enter this path.
+                    restorationStoreData = try wallpaperStoreTransaction
+                        .captureLatestUserWallpaperStoreData(
+                            from: storeBeforeAttempt,
+                            fallbackData: originalStoreData,
+                            managedAssetID: marker.assetID
+                        )
+                }
             }
             try restorationStoreData.write(
                 to: wallpaperStoreURL,
@@ -1807,55 +1816,30 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                         .wallpaperStoreUpdateFailed
                 }
             }
-            // A direct store write restores the persistent route, but a
-            // running WallpaperAgent may still hold Aura's exported Aerial
-            // descriptor in memory. Reload it before re-asserting only the
-            // currently visible Desktop screens. This is scoped to shared
-            // Remove; Lock Screen-only never touches Desktop.
+            // The store now contains the intended route, but WallpaperAgent
+            // can still present its previously exported Aerial fallback. For
+            // ordinary images force a real temporary-URL -> target-URL
+            // transition. Nothing may rewrite the store or restart
+            // WallpaperAgent after the target transition has succeeded.
             if let restoredDesktopImagePath = restoredDesktopImagePath(
                 from: restorationStoreData,
                 marker: marker
             ) {
-                let didReactivate = WallpaperDesktopPlatform.applyToCurrentScreens(
-                    imagePath: restoredDesktopImagePath
-                )
-                if didReactivate {
-                    // NSWorkspace establishes the active Space route, but
-                    // WallpaperAgent can write that route with an empty
-                    // Files array while it is resolving the image. Read the
-                    // result back and repair only the image descriptors while
-                    // preserving the restored Space/display topology.
-                    Thread.sleep(forTimeInterval: 0.05)
-                    if let currentStoreData = try? Data(
-                        contentsOf: wallpaperStoreURL
-                    ),
-                       let normalizedStoreData = try? wallpaperStoreTransaction
-                        .wallpaperStoreDataByPreservingUserDesktops(
-                            from: currentStoreData,
-                            restoringManagedModesFrom: restorationStoreData,
-                            managedAssetID: marker.assetID,
-                            propagateGlobalDesktopChanges: true,
-                            userSystemWallpaperURL: URL(
-                                fileURLWithPath: restoredDesktopImagePath
-                            ).absoluteString
-                        ) {
-                        try normalizedStoreData.write(
-                            to: wallpaperStoreURL,
-                            options: .atomic
-                        )
-                        // NSWorkspace may leave WallpaperAgent with the
-                        // temporary empty-Files descriptor it writes while
-                        // resolving a user image. Restart only after the
-                        // repaired store is on disk, so the new agent reads
-                        // the complete image descriptor from the start.
-                        WallpaperDesktopPlatform
-                            .restartWallpaperAgentForRestore()
-                        Thread.sleep(forTimeInterval: 0.25)
-                    }
-                } else {
+                let didReactivate = sharedDesktopImageRestoreHook?(
+                    restoredDesktopImagePath
+                ) ?? WallpaperDesktopSupport
+                    .reactivateCurrentScreensAfterSharedRemove(
+                        imagePath: restoredDesktopImagePath,
+                        appSupportPath: stateDirectoryURL.path,
+                        managedAssetID: marker.assetID,
+                        wallpaperStoreURL: wallpaperStoreURL
+                    )
+                guard didReactivate else {
                     lockScreenRemovalLogger.error(
                         "Could not reassert the restored user Desktop image"
                     )
+                    throw AerialLockScreenInstallerError
+                        .wallpaperStoreUpdateFailed
                 }
                 lockScreenRemovalLogger.notice(
                     "Reactivated the restored user Desktop image on current screens"
@@ -2421,7 +2405,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         from storeData: Data,
         marker: AerialLockScreenMarker
     ) -> String? {
-        guard usesCanonicalWallpaperStore,
+        guard (usesCanonicalWallpaperStore
+                || sharedDesktopImageRestoreHook != nil),
               markerStoreIncludesDesktop(marker),
               let userURL = wallpaperStoreTransaction
                   .latestUserSystemWallpaperURL(

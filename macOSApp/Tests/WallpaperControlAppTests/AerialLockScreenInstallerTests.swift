@@ -53,6 +53,60 @@ private final class WallpaperStoreSnapshotBox: @unchecked Sendable {
     }
 }
 
+private final class DesktopImageTransitionRecorder: @unchecked Sendable {
+    private(set) var appliedURLs: [URL] = []
+    private(set) var storeData: Data
+    private var activeURL: URL?
+    private var timestamp = Date(timeIntervalSince1970: 1_000)
+    var failFinalURL: URL?
+
+    init(storeData: Data, activeURL: URL?) {
+        self.storeData = storeData
+        self.activeURL = activeURL
+    }
+
+    func operations() -> DesktopImageTransitionOperations {
+        DesktopImageTransitionOperations(
+            applyToCurrentScreens: { [self] url in
+                appliedURLs.append(url)
+                if failFinalURL?.standardizedFileURL
+                    == url.standardizedFileURL {
+                    return false
+                }
+                timestamp = timestamp.addingTimeInterval(1)
+                storeData = try! testImageWallpaperStoreData(
+                    url: url,
+                    timestamp: timestamp
+                )
+                activeURL = url
+                return true
+            },
+            currentScreensMatch: { [self] url in
+                activeURL?.standardizedFileURL == url.standardizedFileURL
+            },
+            readWallpaperStore: { [self] in storeData },
+            pause: { _ in }
+        )
+    }
+}
+
+private final class ConcurrentFailureCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func record() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+}
+
 private struct AerialLockScreenFixture {
     static let activeSpaceID =
         "49BAC883-46A3-452D-97ED-8A96BBEDA1B1"
@@ -610,6 +664,320 @@ private func writeAerialTestVideo(to url: URL) async throws {
             from: data,
             managedAssetID: AerialLockScreenFixture.assetID
         ) == imageURL.absoluteString
+    )
+}
+
+@Test func sharedDesktopImageRestoreAlwaysTransitionsThroughDistinctURL() throws {
+    for fileExtension in ["png", "jpg", "heic"] {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "AuraFlowDesktopTransition-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        let targetURL = root
+            .appendingPathComponent("user-wallpaper")
+            .appendingPathExtension(fileExtension)
+        try Data("image-\(fileExtension)".utf8).write(to: targetURL)
+        let existingTargetStore = try testImageWallpaperStoreData(
+            url: targetURL,
+            timestamp: Date(timeIntervalSince1970: 500)
+        )
+        let recorder = DesktopImageTransitionRecorder(
+            storeData: existingTargetStore,
+            activeURL: targetURL
+        )
+
+        let restored = WallpaperDesktopSupport
+            .reactivateCurrentScreensAfterSharedRemove(
+                imagePath: targetURL.path,
+                appSupportPath: root.path,
+                managedAssetID: AerialLockScreenFixture.assetID,
+                wallpaperStoreURL: root.appendingPathComponent("unused.plist"),
+                operations: recorder.operations()
+            )
+
+        #expect(restored)
+        #expect(recorder.appliedURLs.count == 2)
+        let temporaryURL = try #require(recorder.appliedURLs.first)
+        #expect(
+            temporaryURL.standardizedFileURL
+                != targetURL.standardizedFileURL
+        )
+        #expect(
+            recorder.appliedURLs.last?.standardizedFileURL
+                == targetURL.standardizedFileURL
+        )
+        #expect(!FileManager.default.fileExists(atPath: temporaryURL.path))
+        #expect(wallpaperStoreText(
+            try PropertyListSerialization.propertyList(
+                from: recorder.storeData,
+                options: [],
+                format: nil
+            )
+        ).contains(targetURL.absoluteString))
+    }
+}
+
+@Test func failedDesktopImageRestoreKeepsTemporaryRouteForRecovery() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(
+            "AuraFlowFailedDesktopTransition-\(UUID().uuidString)",
+            isDirectory: true
+        )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(
+        at: root,
+        withIntermediateDirectories: true
+    )
+    let targetURL = root.appendingPathComponent("user-wallpaper.jpg")
+    try Data("image".utf8).write(to: targetURL)
+    let recorder = DesktopImageTransitionRecorder(
+        storeData: try testImageWallpaperStoreData(
+            url: targetURL,
+            timestamp: Date(timeIntervalSince1970: 500)
+        ),
+        activeURL: targetURL
+    )
+    recorder.failFinalURL = targetURL
+
+    let restored = WallpaperDesktopSupport
+        .reactivateCurrentScreensAfterSharedRemove(
+            imagePath: targetURL.path,
+            appSupportPath: root.path,
+            managedAssetID: AerialLockScreenFixture.assetID,
+            wallpaperStoreURL: root.appendingPathComponent("unused.plist"),
+            operations: recorder.operations()
+        )
+
+    #expect(!restored)
+    #expect(recorder.appliedURLs.count == 2)
+    let temporaryURL = try #require(recorder.appliedURLs.first)
+    #expect(FileManager.default.fileExists(atPath: temporaryURL.path))
+}
+
+@Test func sharedRemoveCleansRecoveryOnlyAfterImageTransitionSucceeds() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+    let targetURL = fixture.root.appendingPathComponent("selected-user.png")
+    try Data("selected-user".utf8).write(to: targetURL)
+    var root = try readWallpaperStore(fixture.storeURL)
+    let mode = try testImageWallpaperMode(url: targetURL, timestamp: Date())
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        var container = try #require(root[key] as? [String: Any])
+        container["Desktop"] = mode
+        root[key] = container
+    }
+    try writeWallpaperStore(root, to: fixture.storeURL)
+    var refreshCountAtTransition = -1
+    var restoredPath: String?
+    fixture.installer.sharedDesktopImageRestoreHook = { path in
+        restoredPath = path
+        refreshCountAtTransition = fixture.refreshCounter.count
+        return true
+    }
+
+    try fixture.installer.uninstall()
+
+    #expect(restoredPath == targetURL.standardizedFileURL.path)
+    #expect(fixture.refreshCounter.count == refreshCountAtTransition)
+    #expect(!FileManager.default.fileExists(
+        atPath: fixture.stateURL
+            .appendingPathComponent("installation.json").path
+    ))
+    #expect(!fixture.installer.isInstalled)
+}
+
+@Test func failedSharedImageTransitionPreservesRecoveryJournal() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+    let targetURL = fixture.root.appendingPathComponent("selected-user.jpg")
+    try Data("selected-user".utf8).write(to: targetURL)
+    var root = try readWallpaperStore(fixture.storeURL)
+    let mode = try testImageWallpaperMode(url: targetURL, timestamp: Date())
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        var container = try #require(root[key] as? [String: Any])
+        container["Desktop"] = mode
+        root[key] = container
+    }
+    try writeWallpaperStore(root, to: fixture.storeURL)
+    fixture.installer.sharedDesktopImageRestoreHook = { _ in false }
+
+    var didThrow = false
+    do {
+        try fixture.installer.uninstall()
+    } catch {
+        didThrow = true
+    }
+
+    #expect(didThrow)
+    #expect(FileManager.default.fileExists(
+        atPath: fixture.stateURL
+            .appendingPathComponent("installation.json").path
+    ))
+    #expect(FileManager.default.fileExists(
+        atPath: fixture.stateURL
+            .appendingPathComponent("Index.before-auraflow.plist").path
+    ))
+    #expect(fixture.installer.isInstalled)
+}
+
+@Test func imageTransitionIsNeverUsedForLockOnlyOrNativeDesktopProvider() async throws {
+    let lockFixture = try AerialLockScreenFixture()
+    defer { lockFixture.cleanup() }
+    var lockOnlyTransitionCount = 0
+    lockFixture.installer.sharedDesktopImageRestoreHook = { _ in
+        lockOnlyTransitionCount += 1
+        return true
+    }
+    try await lockFixture.installer.installLockScreenOnly(
+        videoURL: lockFixture.videoURL
+    )
+    try lockFixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    #expect(lockOnlyTransitionCount == 0)
+
+    let sharedFixture = try AerialLockScreenFixture()
+    defer { sharedFixture.cleanup() }
+    try await sharedFixture.installer.install(videoURL: sharedFixture.videoURL)
+    var root = try readWallpaperStore(sharedFixture.storeURL)
+    let nativeMode = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.sequoia",
+        configuration: [:]
+    )
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        var container = try #require(root[key] as? [String: Any])
+        container["Desktop"] = nativeMode
+        root[key] = container
+    }
+    try writeWallpaperStore(root, to: sharedFixture.storeURL)
+    var nativeTransitionCount = 0
+    sharedFixture.installer.sharedDesktopImageRestoreHook = { _ in
+        nativeTransitionCount += 1
+        return true
+    }
+    try sharedFixture.installer.uninstall()
+    #expect(nativeTransitionCount == 0)
+}
+
+@Test func lateManagedSnapshotDoesNotOverwriteLatestUserJournal() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    let fallbackData = try Data(contentsOf: fixture.storeURL)
+    let customURL = fixture.root.appendingPathComponent("latest-user.jpg")
+    try Data("latest-user".utf8).write(to: customURL)
+    var customRoot = try readWallpaperStore(fixture.storeURL)
+    let customMode = try testImageWallpaperMode(
+        url: customURL,
+        timestamp: Date(timeIntervalSince1970: 2_000)
+    )
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        var container = try #require(customRoot[key] as? [String: Any])
+        container["Desktop"] = customMode
+        customRoot[key] = container
+    }
+    let customData = try PropertyListSerialization.data(
+        fromPropertyList: customRoot,
+        format: .binary,
+        options: 0
+    )
+    let transactionWithoutJournal = WallpaperStoreTransaction(
+        fileManager: .default,
+        wallpaperStoreURL: fixture.storeURL,
+        spacesPreferencesURL: fixture.spacesURL,
+        aerialVideosURL: fixture.videosURL
+    )
+    let managedData = try transactionWithoutJournal
+        .aerialWallpaperStoreData(
+            from: fallbackData,
+            assetID: AerialLockScreenFixture.assetID,
+            scope: .sharedWallpaper
+        )
+    let journalURL = fixture.stateURL
+        .appendingPathComponent("Index.latest-user.plist")
+    let transaction = WallpaperStoreTransaction(
+        fileManager: .default,
+        wallpaperStoreURL: fixture.storeURL,
+        spacesPreferencesURL: fixture.spacesURL,
+        aerialVideosURL: fixture.videosURL,
+        latestUserWallpaperStoreURL: journalURL
+    )
+
+    _ = try transaction.captureLatestUserWallpaperStoreData(
+        from: customData,
+        fallbackData: fallbackData,
+        managedAssetID: AerialLockScreenFixture.assetID,
+        propagateGlobalDesktopChanges: true
+    )
+    _ = try transaction.captureLatestUserWallpaperStoreData(
+        from: managedData,
+        fallbackData: fallbackData,
+        managedAssetID: AerialLockScreenFixture.assetID,
+        propagateGlobalDesktopChanges: true
+    )
+
+    let journalData = try Data(contentsOf: journalURL)
+    #expect(wallpaperStoreText(
+        try PropertyListSerialization.propertyList(
+            from: journalData,
+            options: [],
+            format: nil
+        )
+    ).contains(customURL.absoluteString))
+}
+
+@Test func concurrentJournalCallbacksAlwaysLeaveAValidUserSnapshot() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    let fallbackData = try Data(contentsOf: fixture.storeURL)
+    let journalURL = fixture.stateURL
+        .appendingPathComponent("Index.latest-user.plist")
+    let firstURL = fixture.root.appendingPathComponent("first-user.jpg")
+    let secondURL = fixture.root.appendingPathComponent("second-user.jpg")
+    try Data("first".utf8).write(to: firstURL)
+    try Data("second".utf8).write(to: secondURL)
+    let userStores = try [firstURL, secondURL].map { url in
+        try testImageWallpaperStoreData(url: url, timestamp: Date())
+    }
+    let failures = ConcurrentFailureCounter()
+
+    DispatchQueue.concurrentPerform(iterations: 40) { index in
+        let transaction = WallpaperStoreTransaction(
+            fileManager: .default,
+            wallpaperStoreURL: fixture.storeURL,
+            spacesPreferencesURL: fixture.spacesURL,
+            aerialVideosURL: fixture.videosURL,
+            latestUserWallpaperStoreURL: journalURL
+        )
+        do {
+            _ = try transaction.captureLatestUserWallpaperStoreData(
+                from: userStores[index % userStores.count],
+                fallbackData: fallbackData,
+                managedAssetID: AerialLockScreenFixture.assetID,
+                propagateGlobalDesktopChanges: true
+            )
+        } catch {
+            failures.record()
+        }
+    }
+
+    #expect(failures.value == 0)
+    let journalRoot = try #require(
+        PropertyListSerialization.propertyList(
+            from: Data(contentsOf: journalURL),
+            options: [],
+            format: nil
+        ) as? [String: Any]
+    )
+    let journalText = wallpaperStoreText(journalRoot)
+    #expect(
+        journalText.contains(firstURL.absoluteString)
+            || journalText.contains(secondURL.absoluteString)
     )
 }
 
@@ -2890,6 +3258,48 @@ private func writeWallpaperStore(
         options: 0
     )
     try data.write(to: url, options: .atomic)
+}
+
+private func testImageWallpaperMode(
+    url: URL,
+    timestamp: Date
+) throws -> [String: Any] {
+    var mode = AerialLockScreenFixture.makeMode(
+        provider: WallpaperPlatformConstants.imageProviderID,
+        configuration: [
+            "type": "imageFile",
+            "url": ["relative": url.absoluteString],
+        ]
+    )
+    mode["LastSet"] = timestamp
+    mode["LastUse"] = timestamp
+    var content = try #require(mode["Content"] as? [String: Any])
+    var choices = try #require(content["Choices"] as? [[String: Any]])
+    choices[0]["Files"] = [["relative": url.absoluteString]]
+    content["Choices"] = choices
+    mode["Content"] = content
+    return mode
+}
+
+private func testImageWallpaperStoreData(
+    url: URL,
+    timestamp: Date
+) throws -> Data {
+    let mode = try testImageWallpaperMode(url: url, timestamp: timestamp)
+    let container: [String: Any] = [
+        "Type": "individual",
+        "Desktop": mode,
+    ]
+    return try PropertyListSerialization.data(
+        fromPropertyList: [
+            "AllSpacesAndDisplays": container,
+            "SystemDefault": container,
+            "Displays": [String: Any](),
+            "Spaces": [String: Any](),
+        ],
+        format: .binary,
+        options: 0
+    )
 }
 
 private func replaceTestDesktopModes(

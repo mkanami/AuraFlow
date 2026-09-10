@@ -30,15 +30,6 @@ public enum WallpaperDesktopPlatform {
     }
 
     @discardableResult
-    public static func applyToCurrentScreens(imagePath: String) -> Bool {
-        WallpaperDesktopSupport.applyToCurrentScreens(imagePath: imagePath)
-    }
-
-    public static func restartWallpaperAgentForRestore() {
-        WallpaperDesktopSupport.restartWallpaperAgentForRestore()
-    }
-
-    @discardableResult
     public static func restoreFromBackupFiles(appSupportPath: String) -> Bool {
         restoreFromBackupFilesResult(appSupportPath: appSupportPath) != .failed
     }

@@ -1,6 +1,13 @@
 import AppKit
 import Foundation
 
+internal struct DesktopImageTransitionOperations {
+    var applyToCurrentScreens: (URL) -> Bool
+    var currentScreensMatch: (URL) -> Bool
+    var readWallpaperStore: () -> Data?
+    var pause: (TimeInterval) -> Void
+}
+
 public enum WallpaperDesktopSupport {
     private static let backupNames = ["wallpaper_backup.json", "wallpaper_backup_original.json"]
     private static let lockScreenBackupName = "lock_screen_desktop_backup.json"
@@ -163,6 +170,304 @@ public enum WallpaperDesktopSupport {
             }
         }
         return appliedAny
+    }
+
+    /// Forces a real image-provider transition after the shared Aerial route
+    /// has been removed. Writing the target URL to Index.plist before calling
+    /// NSWorkspace can make the public setter a no-op, leaving WallpaperAgent
+    /// on its previously exported Aerial fallback. A temporary URL guarantees
+    /// that the final target is a distinct, system-owned transition.
+    @discardableResult
+    internal static func reactivateCurrentScreensAfterSharedRemove(
+        imagePath: String,
+        appSupportPath: String,
+        managedAssetID: String,
+        wallpaperStoreURL: URL,
+        operations suppliedOperations: DesktopImageTransitionOperations? = nil
+    ) -> Bool {
+        let fileManager = FileManager.default
+        let targetURL = URL(fileURLWithPath: imagePath).standardizedFileURL
+        guard fileManager.fileExists(atPath: targetURL.path) else {
+            return false
+        }
+
+        let transitionDirectoryURL = URL(
+            fileURLWithPath: appSupportPath,
+            isDirectory: true
+        ).appendingPathComponent(
+            ".desktop-restore-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        do {
+            try fileManager.createDirectory(
+                at: transitionDirectoryURL,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            return false
+        }
+        var temporaryTransitionAttempted = false
+        var finalTransitionConfirmed = false
+        defer {
+            // Once macOS may have accepted the temporary route, its backing
+            // file has to survive every failed attempt. The install journal
+            // and the temporary image then remain available for recovery.
+            if !temporaryTransitionAttempted || finalTransitionConfirmed {
+                try? fileManager.removeItem(at: transitionDirectoryURL)
+            }
+        }
+
+        let fileExtension = targetURL.pathExtension
+        let temporaryName = fileExtension.isEmpty
+            ? "wallpaper-transition"
+            : "wallpaper-transition.\(fileExtension)"
+        let temporaryURL = transitionDirectoryURL
+            .appendingPathComponent(temporaryName)
+        do {
+            do {
+                try fileManager.linkItem(at: targetURL, to: temporaryURL)
+            } catch {
+                try fileManager.copyItem(at: targetURL, to: temporaryURL)
+            }
+        } catch {
+            return false
+        }
+
+        let operations = suppliedOperations ?? productionTransitionOperations(
+            wallpaperStoreURL: wallpaperStoreURL
+        )
+        guard let storeBeforeTemporary = operations.readWallpaperStore()
+        else {
+            return false
+        }
+        temporaryTransitionAttempted = true
+        guard operations.applyToCurrentScreens(temporaryURL),
+              waitForDesktopImageTransition(
+                  to: temporaryURL,
+                  after: storeBeforeTemporary,
+                  managedAssetID: managedAssetID,
+                  operations: operations
+              ),
+              let storeBeforeTarget = operations.readWallpaperStore(),
+              operations.applyToCurrentScreens(targetURL),
+              waitForDesktopImageTransition(
+                  to: targetURL,
+                  after: storeBeforeTarget,
+                  managedAssetID: managedAssetID,
+                  operations: operations
+              )
+        else {
+            return false
+        }
+        finalTransitionConfirmed = true
+        return true
+    }
+
+    private static func productionTransitionOperations(
+        wallpaperStoreURL: URL
+    ) -> DesktopImageTransitionOperations {
+        DesktopImageTransitionOperations(
+            applyToCurrentScreens: { url in
+                let screens = NSScreen.screens
+                guard !screens.isEmpty else { return false }
+                var appliedToEveryScreen = true
+                for screen in screens {
+                    do {
+                        try NSWorkspace.shared.setDesktopImageURL(
+                            url,
+                            for: screen,
+                            options: [:]
+                        )
+                    } catch {
+                        appliedToEveryScreen = false
+                    }
+                }
+                return appliedToEveryScreen
+            },
+            currentScreensMatch: { url in
+                currentScreensMatch(path: url.path)
+            },
+            readWallpaperStore: {
+                try? Data(contentsOf: wallpaperStoreURL)
+            },
+            pause: { interval in
+                Thread.sleep(forTimeInterval: interval)
+            }
+        )
+    }
+
+    private static func waitForDesktopImageTransition(
+        to expectedURL: URL,
+        after previousStoreData: Data,
+        managedAssetID: String,
+        operations: DesktopImageTransitionOperations
+    ) -> Bool {
+        let timeout: TimeInterval = 1.5
+        let pollInterval: TimeInterval = 0.05
+        let deadline = Date().addingTimeInterval(timeout)
+        var stableSamples = 0
+        let previousLastSet = latestDesktopImageTimestamp(
+            in: previousStoreData,
+            matching: expectedURL
+        )
+
+        repeat {
+            if let storeData = operations.readWallpaperStore(),
+               storeData != previousStoreData,
+               let currentLastSet = latestDesktopImageTimestamp(
+                   in: storeData,
+                   matching: expectedURL
+               ),
+               previousLastSet.map({ currentLastSet > $0 }) ?? true,
+               !wallpaperStoreContainsManagedDesktop(
+                   storeData,
+                   managedAssetID: managedAssetID
+               ),
+               operations.currentScreensMatch(expectedURL) {
+                stableSamples += 1
+                if stableSamples >= 3 {
+                    return true
+                }
+            } else {
+                stableSamples = 0
+            }
+            operations.pause(pollInterval)
+        } while Date() < deadline
+
+        return false
+    }
+
+    private static func latestDesktopImageTimestamp(
+        in data: Data,
+        matching expectedURL: URL
+    ) -> Date? {
+        guard let root = try? PropertyListSerialization.propertyList(
+            from: data,
+            options: [],
+            format: nil
+        ) else {
+            return nil
+        }
+        let expectedPath = expectedURL.standardizedFileURL.path
+        var latestTimestamp: Date?
+        _ = wallpaperStoreContainsMode(root) { mode in
+            guard let content = mode["Content"] as? [String: Any],
+                  let choices = content["Choices"] as? [[String: Any]]
+            else {
+                return false
+            }
+            let matches = choices.contains { choice in
+                guard choice["Provider"] as? String
+                        == WallpaperPlatformConstants.imageProviderID
+                else {
+                    return false
+                }
+                return wallpaperImageURLs(in: choice).contains {
+                    $0.standardizedFileURL.path == expectedPath
+                }
+            }
+            guard matches else { return false }
+            let timestamp = [mode["LastSet"], mode["LastUse"]]
+                .compactMap { $0 as? Date }
+                .max() ?? .distantPast
+            latestTimestamp = max(latestTimestamp ?? .distantPast, timestamp)
+            return true
+        }
+        return latestTimestamp
+    }
+
+    private static func wallpaperStoreContainsManagedDesktop(
+        _ data: Data,
+        managedAssetID: String
+    ) -> Bool {
+        guard let root = try? PropertyListSerialization.propertyList(
+            from: data,
+            options: [],
+            format: nil
+        ) else {
+            return true
+        }
+        return wallpaperStoreContainsMode(root) { mode in
+            containsManagedWallpaperReference(mode)
+                || wallpaperModeSelectsAerial(
+                    mode,
+                    assetID: managedAssetID
+                )
+        }
+    }
+
+    private static func wallpaperModeSelectsAerial(
+        _ mode: [String: Any],
+        assetID: String
+    ) -> Bool {
+        guard let content = mode["Content"] as? [String: Any],
+              let choices = content["Choices"] as? [[String: Any]]
+        else {
+            return false
+        }
+        return choices.contains { choice in
+            guard choice["Provider"] as? String
+                    == WallpaperPlatformConstants.aerialProviderID,
+                  let configurationData = choice["Configuration"] as? Data,
+                  let configuration = try? PropertyListSerialization
+                    .propertyList(
+                        from: configurationData,
+                        options: [],
+                        format: nil
+                    ) as? [String: Any]
+            else {
+                return false
+            }
+            return configuration["assetID"] as? String == assetID
+        }
+    }
+
+    private static func wallpaperStoreContainsMode(
+        _ value: Any,
+        matching predicate: ([String: Any]) -> Bool
+    ) -> Bool {
+        if let dictionary = value as? [String: Any] {
+            for key in ["Desktop", "Linked"] {
+                if let mode = dictionary[key] as? [String: Any],
+                   predicate(mode) {
+                    return true
+                }
+            }
+            return dictionary.values.contains {
+                wallpaperStoreContainsMode($0, matching: predicate)
+            }
+        }
+        if let array = value as? [Any] {
+            return array.contains {
+                wallpaperStoreContainsMode($0, matching: predicate)
+            }
+        }
+        return false
+    }
+
+    private static func wallpaperImageURLs(
+        in choice: [String: Any]
+    ) -> [URL] {
+        var values = (choice["Files"] as? [[String: Any]])?
+            .compactMap { $0["relative"] as? String } ?? []
+        if let configurationData = choice["Configuration"] as? Data,
+           let configuration = (
+               try? PropertyListSerialization.propertyList(
+                   from: configurationData,
+                   options: [],
+                   format: nil
+               )
+           ) as? [String: Any],
+           let url = configuration["url"] as? [String: Any],
+           let relative = url["relative"] as? String {
+            values.append(relative)
+        }
+        return values.compactMap { value in
+            if let url = URL(string: value), url.isFileURL {
+                return url
+            }
+            return URL(fileURLWithPath: value)
+        }
     }
 
     @discardableResult
@@ -1050,10 +1355,6 @@ public enum WallpaperDesktopSupport {
         } catch {
             return
         }
-    }
-
-    public static func restartWallpaperAgentForRestore() {
-        restartWallpaperAgent()
     }
 
     private static func removeWallpaperBackupFiles(
