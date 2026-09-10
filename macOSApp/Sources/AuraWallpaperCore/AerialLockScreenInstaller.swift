@@ -1790,28 +1790,6 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 throw AerialLockScreenInstallerError
                     .wallpaperStoreUpdateFailed
             }
-            // A custom image route needs one public AppKit selection to make
-            // WallpaperAgent resolve it in the active Desktop session. A
-            // direct Index.plist write is persistent, but WallpaperAgent can
-            // keep the previous Aerial descriptor in memory and fall back to
-            // Golden Gate when the route has no concrete Space record. Apply
-            // the exact captured image once, then perform the final private
-            // store write below so AppKit cannot replace its Files/configuration
-            // pair with an opaque descriptor.
-            if let restoredDesktopImagePath = restoredDesktopImagePath(
-                from: restorationStoreData,
-                marker: marker
-            ) {
-                guard WallpaperDesktopPlatform.applyToAllDesktops(
-                    imagePath: restoredDesktopImagePath
-                ) else {
-                    throw AerialLockScreenInstallerError
-                        .wallpaperStoreUpdateFailed
-                }
-                lockScreenRemovalLogger.notice(
-                    "Reasserted the captured user Desktop image before final Remove commit"
-                )
-            }
             // WallpaperAgent can flush the split lock-only route and its old
             // fallback URL while it is terminating. Reassert both values
             // after the final process refresh so Remove leaves the newest
@@ -2340,12 +2318,6 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     }
 
     private func currentUserSystemWallpaperURL() -> String? {
-        // AppKit reports the real host Desktop even when tests or recovery
-        // callers inject a temporary wallpaper store. Never mix that global
-        // state into a non-canonical transaction.
-        guard usesCanonicalWallpaperStore else {
-            return nil
-        }
         // On macOS 26, an ordinary image can be visible through the public
         // Desktop API while SystemWallpaperURL still points to Aura's Aerial
         // asset (or is unset). Prefer the wallpaper currently presented by
@@ -2491,26 +2463,6 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             )
         }
         return setSystemWallpaperURL(marker.originalSystemWallpaperURL)
-    }
-
-    private func restoredDesktopImagePath(
-        from storeData: Data,
-        marker: AerialLockScreenMarker
-    ) -> String? {
-        guard usesCanonicalWallpaperStore,
-              markerStoreIncludesDesktop(marker),
-              let userURL = wallpaperStoreTransaction
-                  .latestUserSystemWallpaperURL(
-                      from: storeData,
-                      managedAssetID: marker.assetID
-                  ),
-              let url = URL(string: userURL),
-              url.isFileURL,
-              fileManager.fileExists(atPath: url.path)
-        else {
-            return nil
-        }
-        return url.standardizedFileURL.path
     }
 
     @discardableResult

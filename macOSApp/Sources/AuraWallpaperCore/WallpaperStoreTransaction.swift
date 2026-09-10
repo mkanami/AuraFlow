@@ -492,40 +492,6 @@ internal final class WallpaperStoreTransaction {
             return newest
         }
 
-        // WallpaperAgent can rewrite the live store back to Aura's Aerial
-        // route before the filesystem monitor observes the user's image. In
-        // that race the public Desktop API still gives us the exact image URL,
-        // but there is no non-managed mode left to copy. Materialize that URL
-        // as the user route so custom images do not fall back to the old
-        // built-in wallpaper on Remove.
-        let propagatedGlobalUserDesktopMode: [String: Any]? = {
-            guard propagateGlobalDesktopChanges else { return nil }
-            if let globalUserDesktop = newestGlobalUserDesktopMode(
-                in: latest,
-                managedAssetID: managedAssetID
-            ) {
-                return normalizeImageModeFiles(
-                    globalUserDesktop,
-                    preferredSystemWallpaperURL: userSystemWallpaperURL
-                )
-            }
-            guard let userSystemWallpaperURL,
-                  let relative = normalizedWallpaperURLString(
-                      userSystemWallpaperURL
-                  )
-            else {
-                return nil
-            }
-            return makeMode(
-                provider: WallpaperPlatformConstants.imageProviderID,
-                configuration: [
-                    "type": "imageFile",
-                    "url": ["relative": relative],
-                ],
-                date: Date()
-            )
-        }()
-
         func cleanContainer(
             _ latestValue: Any?,
             original originalValue: Any?
@@ -548,14 +514,11 @@ internal final class WallpaperStoreTransaction {
                 let latestUserMode = newestMode([
                     result["Desktop"] as? [String: Any],
                     result["Linked"] as? [String: Any],
+                    originalContainer["Linked"] as? [String: Any],
                 ].compactMap { mode in
                     guard let mode, !isManaged(mode) else { return nil }
                     return mode
-                }) ?? (
-                    propagatedGlobalUserDesktopMode == nil
-                        ? (originalContainer["Linked"] as? [String: Any])
-                        : nil
-                )
+                })
                 if let latestUserMode {
                     result.removeValue(forKey: "Desktop")
                     result.removeValue(forKey: "Idle")
@@ -569,10 +532,7 @@ internal final class WallpaperStoreTransaction {
             }
             if let desktop = result["Desktop"] as? [String: Any] {
                 if isManaged(desktop),
-                   let propagatedGlobalUserDesktopMode {
-                    result["Desktop"] = propagatedGlobalUserDesktopMode
-                } else if isManaged(desktop),
-                          let originalDesktop = originalContainer["Desktop"] {
+                   let originalDesktop = originalContainer["Desktop"] {
                     if let originalDesktop = originalDesktop as? [String: Any] {
                         result["Desktop"] = normalizeImageModeFiles(
                             originalDesktop,
@@ -591,10 +551,7 @@ internal final class WallpaperStoreTransaction {
             }
             if let linked = result["Linked"] as? [String: Any] {
                 if isManaged(linked),
-                   let propagatedGlobalUserDesktopMode {
-                    result["Linked"] = propagatedGlobalUserDesktopMode
-                } else if isManaged(linked),
-                          let originalLinked = originalContainer["Linked"] {
+                   let originalLinked = originalContainer["Linked"] {
                     if let originalLinked = originalLinked as? [String: Any] {
                         result["Linked"] = normalizeImageModeFiles(
                             originalLinked,
@@ -622,24 +579,32 @@ internal final class WallpaperStoreTransaction {
             return result
         }
 
-        if let propagatedGlobalUserDesktopMode {
+        if propagateGlobalDesktopChanges,
+           let globalUserDesktop = newestGlobalUserDesktopMode(
+               in: latest,
+               managedAssetID: managedAssetID
+           ) {
             // During a shared Start, macOS may record a wallpaper selected by
             // the user only in SystemDefault while AllSpacesAndDisplays still
             // contains Aura's temporary Aerial route. Treat that first-level
             // user choice as the new global Desktop and put it back into every
             // managed first-level Desktop/Linked route before Remove commits.
+            let normalizedGlobalUserDesktop = normalizeImageModeFiles(
+                globalUserDesktop,
+                preferredSystemWallpaperURL: userSystemWallpaperURL
+            )
             for key in ["AllSpacesAndDisplays", "SystemDefault"] {
                 guard var container = latest[key] as? [String: Any] else {
                     continue
                 }
                 if let linked = container["Linked"] as? [String: Any],
                    isManaged(linked) {
-                    container["Linked"] = propagatedGlobalUserDesktopMode
+                    container["Linked"] = normalizedGlobalUserDesktop
                     container.removeValue(forKey: "Desktop")
                     container["Type"] = "linked"
                 } else if let desktop = container["Desktop"] as? [String: Any],
                           isManaged(desktop) {
-                    container["Desktop"] = propagatedGlobalUserDesktopMode
+                    container["Desktop"] = normalizedGlobalUserDesktop
                     container["Type"] = "individual"
                 }
                 latest[key] = container
