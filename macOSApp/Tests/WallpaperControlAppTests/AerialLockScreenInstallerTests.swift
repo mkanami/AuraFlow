@@ -517,6 +517,158 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(wallpaperStoreText(cleanedDesktop).contains("user-wallpaper.jpg"))
 }
 
+@Test func sharedRemoveIgnoresWallpaperAgentDefaultPlaceholder() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    let defaultMode = AerialLockScreenFixture.makeMode(
+        provider: "default",
+        configuration: [:]
+    )
+    let container: [String: Any] = [
+        "Type": "individual",
+        "Desktop": defaultMode,
+    ]
+    let root: [String: Any] = [
+        "AllSpacesAndDisplays": container,
+        "SystemDefault": container,
+    ]
+    let data = try PropertyListSerialization.data(
+        fromPropertyList: root,
+        format: .binary,
+        options: 0
+    )
+    let transaction = WallpaperStoreTransaction(
+        fileManager: .default,
+        wallpaperStoreURL: fixture.storeURL,
+        spacesPreferencesURL: fixture.spacesURL,
+        aerialVideosURL: fixture.videosURL
+    )
+
+    #expect(!transaction.wallpaperStoreHasUserDesktop(
+        data,
+        managedAssetID: AerialLockScreenFixture.assetID
+    ))
+}
+
+@Test func sharedRemoveFindsConcreteImageBehindGlobalDefaultPlaceholder() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    let defaultMode = AerialLockScreenFixture.makeMode(
+        provider: "default",
+        configuration: [:]
+    )
+    let imageURL = URL(fileURLWithPath: "/Users/test/custom-wallpaper.jpg")
+    let imageMode = AerialLockScreenFixture.makeMode(
+        provider: WallpaperPlatformConstants.imageProviderID,
+        configuration: [
+            "type": "imageFile",
+            "url": ["relative": imageURL.absoluteString],
+        ]
+    )
+    var imageContent = try #require(imageMode["Content"] as? [String: Any])
+    var imageChoices = try #require(
+        imageContent["Choices"] as? [[String: Any]]
+    )
+    imageChoices[0]["Files"] = [["relative": imageURL.absoluteString]]
+    imageContent["Choices"] = imageChoices
+    var concreteImageMode = imageMode
+    concreteImageMode["Content"] = imageContent
+
+    let defaultContainer: [String: Any] = [
+        "Type": "individual",
+        "Desktop": defaultMode,
+    ]
+    let concreteContainer: [String: Any] = [
+        "Type": "individual",
+        "Desktop": concreteImageMode,
+    ]
+    let root: [String: Any] = [
+        "AllSpacesAndDisplays": defaultContainer,
+        "SystemDefault": defaultContainer,
+        "Spaces": [
+            AerialLockScreenFixture.activeSpaceID: [
+                "Default": concreteContainer,
+            ],
+        ],
+    ]
+    let data = try PropertyListSerialization.data(
+        fromPropertyList: root,
+        format: .binary,
+        options: 0
+    )
+    let transaction = WallpaperStoreTransaction(
+        fileManager: .default,
+        wallpaperStoreURL: fixture.storeURL,
+        spacesPreferencesURL: fixture.spacesURL,
+        aerialVideosURL: fixture.videosURL
+    )
+
+    #expect(
+        transaction.latestUserSystemWallpaperURL(
+            from: data,
+            managedAssetID: AerialLockScreenFixture.assetID
+        ) == imageURL.absoluteString
+    )
+}
+
+@Test func sharedRemoveFallsBackFromStaleDefaultJournalToOriginalDesktop() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+    let currentData = try Data(contentsOf: fixture.storeURL)
+    let fallbackData = try Data(contentsOf: fixture.stateURL
+        .appendingPathComponent("Index.before-auraflow.plist"))
+    let staleDefault = AerialLockScreenFixture.makeMode(
+        provider: "default",
+        configuration: [:]
+    )
+    let staleContainer: [String: Any] = [
+        "Type": "individual",
+        "Desktop": staleDefault,
+    ]
+    let staleRoot: [String: Any] = [
+        "AllSpacesAndDisplays": staleContainer,
+        "SystemDefault": staleContainer,
+    ]
+    let staleData = try PropertyListSerialization.data(
+        fromPropertyList: staleRoot,
+        format: .binary,
+        options: 0
+    )
+    let latestUserStoreURL = fixture.stateURL
+        .appendingPathComponent("Index.latest-user.plist")
+    try staleData.write(to: latestUserStoreURL, options: .atomic)
+
+    let transaction = WallpaperStoreTransaction(
+        fileManager: .default,
+        wallpaperStoreURL: fixture.storeURL,
+        spacesPreferencesURL: fixture.spacesURL,
+        aerialVideosURL: fixture.videosURL,
+        latestUserWallpaperStoreURL: latestUserStoreURL
+    )
+    let restoredData = try transaction.captureLatestUserWallpaperStoreData(
+        from: currentData,
+        fallbackData: fallbackData,
+        managedAssetID: AerialLockScreenFixture.assetID,
+        propagateGlobalDesktopChanges: true
+    )
+    let restoredRoot = try #require(
+        try transaction.propertyListDictionary(from: restoredData)
+    )
+    let restoredContainer = try #require(
+        restoredRoot["SystemDefault"] as? [String: Any]
+    )
+    let restoredDesktop = try #require(
+        restoredContainer["Desktop"] as? [String: Any]
+    )
+
+    #expect(wallpaperStoreText(restoredDesktop).contains("original.jpg"))
+    #expect(!wallpaperStoreText(restoredDesktop).contains("default"))
+}
+
 @Test func modernLockScreenUsesAerialAndPrunesDeletedSpaces() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

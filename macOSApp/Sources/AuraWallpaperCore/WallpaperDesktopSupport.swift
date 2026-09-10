@@ -154,11 +154,6 @@ public enum WallpaperDesktopSupport {
         let workspace = NSWorkspace.shared
         var appliedAny = false
         for screen in NSScreen.screens {
-            if workspace.desktopImageURL(for: screen)?
-                .standardizedFileURL.path == url.path {
-                appliedAny = true
-                continue
-            }
             if (try? workspace.setDesktopImageURL(
                 url,
                 for: screen,
@@ -1055,6 +1050,10 @@ public enum WallpaperDesktopSupport {
         } catch {
             return
         }
+    }
+
+    public static func restartWallpaperAgentForRestore() {
+        restartWallpaperAgent()
     }
 
     private static func removeWallpaperBackupFiles(
