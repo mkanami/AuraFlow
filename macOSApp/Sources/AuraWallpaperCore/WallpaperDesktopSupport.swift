@@ -1,4 +1,5 @@
 import AppKit
+import CoreFoundation
 import Foundation
 
 internal struct DesktopImageTransitionOperations {
@@ -6,6 +7,7 @@ internal struct DesktopImageTransitionOperations {
     var currentScreensMatch: (URL) -> Bool
     var readWallpaperStore: () -> Data?
     var pause: (TimeInterval) -> Void
+    var setSystemWallpaperURL: ((URL) -> Bool)? = nil
 }
 
 public enum WallpaperDesktopSupport {
@@ -236,6 +238,22 @@ public enum WallpaperDesktopSupport {
         let operations = suppliedOperations ?? productionTransitionOperations(
             wallpaperStoreURL: wallpaperStoreURL
         )
+        let restorationURL: URL
+        if suppliedOperations == nil {
+            guard let durableURL = durableRestorationURL(
+                for: targetURL,
+                appSupportPath: appSupportPath
+            ) else {
+                return false
+            }
+            restorationURL = durableURL
+            guard operations.setSystemWallpaperURL?(restorationURL) ?? true
+            else {
+                return false
+            }
+        } else {
+            restorationURL = targetURL
+        }
         guard let storeBeforeTemporary = operations.readWallpaperStore()
         else {
             return false
@@ -249,9 +267,9 @@ public enum WallpaperDesktopSupport {
                   operations: operations
               ),
               let storeBeforeTarget = operations.readWallpaperStore(),
-              operations.applyToCurrentScreens(targetURL),
+              operations.applyToCurrentScreens(restorationURL),
               waitForDesktopImageTransition(
-                  to: targetURL,
+                  to: restorationURL,
                   after: storeBeforeTarget,
                   managedAssetID: managedAssetID,
                   operations: operations
@@ -292,7 +310,117 @@ public enum WallpaperDesktopSupport {
             },
             pause: { interval in
                 Thread.sleep(forTimeInterval: interval)
+            },
+            setSystemWallpaperURL: { url in
+                setTransitionSystemWallpaperURL(url)
             }
+        )
+    }
+
+    private static func durableRestorationURL(
+        for targetURL: URL,
+        appSupportPath: String
+    ) -> URL? {
+        let fileManager = FileManager.default
+        let auraFlowDirectoryURL = URL(
+            fileURLWithPath: appSupportPath,
+            isDirectory: true
+        ).deletingLastPathComponent().standardizedFileURL
+        let targetPath = targetURL.standardizedFileURL.path
+        let rootPath = auraFlowDirectoryURL.path
+        if targetPath == rootPath || targetPath.hasPrefix(rootPath + "/") {
+            // Catalog/imported wallpapers already live in an application-owned
+            // directory that WallpaperAgent can read without a Downloads or
+            // Desktop security scope.
+            return targetURL
+        }
+
+        let restoredDirectoryURL = auraFlowDirectoryURL
+            .appendingPathComponent("Restored Wallpapers", isDirectory: true)
+        do {
+            try fileManager.createDirectory(
+                at: restoredDirectoryURL,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            return nil
+        }
+
+        let resourceValues = try? targetURL.resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey]
+        )
+        let fingerprint = [
+            targetPath,
+            String(resourceValues?.fileSize ?? 0),
+            String(
+                resourceValues?.contentModificationDate?.timeIntervalSince1970
+                    ?? 0
+            ),
+        ].joined(separator: "|")
+        let token = stableRestoreToken(fingerprint)
+        let fileExtension = targetURL.pathExtension.lowercased()
+        let fileName = fileExtension.isEmpty
+            ? "desktop-\(token)"
+            : "desktop-\(token).\(fileExtension)"
+        let destinationURL = restoredDirectoryURL
+            .appendingPathComponent(fileName)
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            return destinationURL
+        }
+
+        let accessedSecurityScopedResource =
+            targetURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessedSecurityScopedResource {
+                targetURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        do {
+            try fileManager.copyItem(at: targetURL, to: destinationURL)
+            return destinationURL
+        } catch {
+            try? fileManager.removeItem(at: destinationURL)
+            return nil
+        }
+    }
+
+    private static func stableRestoreToken(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
+    }
+
+    private static func setTransitionSystemWallpaperURL(_ url: URL) -> Bool {
+        let applicationID = WallpaperPlatformConstants.wallpaperApplicationID
+            as CFString
+        let preferenceKey = WallpaperPlatformConstants.systemWallpaperURLKey
+            as CFString
+        let value = url.standardizedFileURL.absoluteString as CFPropertyList
+        CFPreferencesSetValue(
+            preferenceKey,
+            value,
+            applicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesAnyHost
+        )
+        CFPreferencesSetValue(
+            preferenceKey,
+            value,
+            applicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesCurrentHost
+        )
+        return CFPreferencesSynchronize(
+            applicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesAnyHost
+        ) && CFPreferencesSynchronize(
+            applicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesCurrentHost
         )
     }
 
