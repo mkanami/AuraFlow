@@ -1792,6 +1792,55 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(!fixture.installer.isInstalled)
 }
 
+@Test func modernSharedRemoveUsesDesktopJournalAfterAgentRewritesStore() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+    let managedStoreData = try Data(contentsOf: fixture.storeURL)
+    var latestRoot = try readWallpaperStore(fixture.storeURL)
+    let latestUserDesktop = AerialLockScreenFixture.makeMode(
+        provider: "com.apple.wallpaper.choice.sequoia",
+        configuration: [
+            "type": "imageFile",
+            "url": ["relative": "file:///journaled-user-wallpaper.jpg"],
+        ]
+    )
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        var container = try #require(latestRoot[key] as? [String: Any])
+        container["Desktop"] = latestUserDesktop
+        latestRoot[key] = container
+    }
+    try writeWallpaperStore(latestRoot, to: fixture.storeURL)
+
+    let latestUserStoreURL = fixture.stateURL
+        .appendingPathComponent("Index.latest-user.plist")
+    var captured = false
+    for _ in 0..<10 {
+        if FileManager.default.fileExists(atPath: latestUserStoreURL.path) {
+            captured = true
+            break
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+    }
+    #expect(captured)
+
+    // WallpaperAgent can restore its managed Aerial snapshot before the user
+    // presses Remove. The journal must still win in that case.
+    try managedStoreData.write(to: fixture.storeURL, options: .atomic)
+    try await Task.sleep(nanoseconds: 120_000_000)
+    try fixture.installer.uninstall()
+
+    let restoredRoot = try readWallpaperStore(fixture.storeURL)
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        let container = try #require(restoredRoot[key] as? [String: Any])
+        let desktop = try #require(container["Desktop"] as? [String: Any])
+        #expect(wallpaperModeData(desktop) == wallpaperModeData(latestUserDesktop))
+    }
+    #expect(!wallpaperStoreText(restoredRoot).contains("AuraFlow"))
+    #expect(!fixture.installer.isInstalled)
+}
+
 @Test func healthyModernLockScreenSyncIsANoOp() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

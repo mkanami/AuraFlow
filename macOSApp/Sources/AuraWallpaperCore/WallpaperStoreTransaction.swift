@@ -888,6 +888,43 @@ internal final class WallpaperStoreTransaction {
         return candidates.max { $0.date < $1.date }?.url
     }
 
+    /// Some native Apple wallpaper providers, such as Sequoia, own their
+    /// descriptor in Index.plist and intentionally do not expose a file URL.
+    /// In that case an old Aura/Aerial SystemWallpaperURL must be cleared
+    /// instead of being used as a fallback after WallpaperAgent restarts.
+    func wallpaperStoreHasExplicitUserDesktopWithoutSystemWallpaperURL(
+        _ storeData: Data,
+        managedAssetID: String
+    ) -> Bool {
+        guard let root = try? propertyListDictionary(from: storeData) else {
+            return false
+        }
+        var foundRoute = false
+        _ = mapWallpaperContainers(in: root) { container in
+            for key in ["Linked", "Desktop"] {
+                guard let mode = container[key] as? [String: Any],
+                      !modeReferencesAuraFlow(mode),
+                      !modeFullySelectsAerial(
+                          mode,
+                          assetID: managedAssetID
+                      ),
+                      let content = mode["Content"] as? [String: Any],
+                      let choices = content["Choices"] as? [[String: Any]],
+                      !choices.isEmpty,
+                      choices.contains(where: { choice in
+                          (choice["Provider"] as? String) != "default"
+                      }),
+                      systemWallpaperURL(from: mode) == nil
+                else {
+                    continue
+                }
+                foundRoute = true
+            }
+            return container
+        }
+        return foundRoute
+    }
+
     private func mapWallpaperContainers(
         in root: [String: Any],
         transform: ([String: Any]) -> [String: Any]

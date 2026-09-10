@@ -72,6 +72,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     private let mediaPreparer: AerialMediaPreparer
     private let wallpaperStoreTransaction: WallpaperStoreTransaction
     private let mutationCoordinator = AerialMutationCoordinator()
+    private var wallpaperStoreChangeMonitor: WallpaperStoreChangeMonitor?
     var lockOnlyRemovalCommitHook: (() -> Void)?
     var lockOnlyRepairCommitHook: (() -> Void)?
     private var usesCanonicalWallpaperStore: Bool {
@@ -223,6 +224,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     .prewarmLockScreenProvider
             }
         }
+        startDesktopWallpaperChangeMonitorIfNeeded()
+    }
+
+    deinit {
+        wallpaperStoreChangeMonitor?.stop()
     }
 
     public var isInstalled: Bool {
@@ -1433,6 +1439,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             completedMarker.fallbackFramePath = currentStillFrameURL()?.path
             completedMarker.state = "healthy"
             try journal.saveMarker(completedMarker)
+            startDesktopWallpaperChangeMonitorIfNeeded()
             return didRefresh
         } catch {
             if storeMutated {
@@ -1687,6 +1694,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             throw AerialLockScreenInstallerError.wallpaperStoreUnavailable
         }
 
+        stopDesktopWallpaperChangeMonitor()
+
         let assetURL = URL(fileURLWithPath: marker.assetPath)
         let thumbnailURL = marker.thumbnailPath.map(URL.init(fileURLWithPath:))
         let storeBeforeAttempt = try? Data(contentsOf: wallpaperStoreURL)
@@ -1709,10 +1718,15 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             // Lock-only uses the same merge below, but its separate route
             // semantics remain handled by the dedicated preserving path.
             if let storeBeforeAttempt,
-               wallpaperStoreTransaction.wallpaperStoreHasUserDesktop(
-                   storeBeforeAttempt,
-                   managedAssetID: marker.assetID
-               ) {
+               fileManager.fileExists(atPath: latestUserWallpaperStoreURL.path)
+                || wallpaperStoreTransaction.wallpaperStoreHasUserDesktop(
+                    storeBeforeAttempt,
+                    managedAssetID: marker.assetID
+                ) {
+                // The live store may already have been rewritten to Aura's
+                // Aerial route by WallpaperAgent. The monitor journals the
+                // user's short-lived Desktop route; capture it here even when
+                // the current store no longer exposes that route.
                 restorationStoreData = try
                     wallpaperStoreTransaction.captureLatestUserWallpaperStoreData(
                         from: storeBeforeAttempt,
@@ -1743,13 +1757,9 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 try? fileManager.removeItem(at: thumbnailURL)
             }
             if marker.systemWallpaperURLWasCaptured == true {
-                let restoredSystemWallpaperURL =
-                    wallpaperStoreTransaction.latestUserSystemWallpaperURL(
-                        from: restorationStoreData,
-                        managedAssetID: marker.assetID
-                    ) ?? marker.originalSystemWallpaperURL
-                guard setSystemWallpaperURL(
-                    restoredSystemWallpaperURL
+                guard applyRestoredSystemWallpaperURL(
+                    from: restorationStoreData,
+                    marker: marker
                 ) else {
                     throw AerialLockScreenInstallerError
                         .wallpaperStoreUpdateFailed
@@ -1784,13 +1794,9 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 options: .atomic
             )
             if marker.systemWallpaperURLWasCaptured == true {
-                let restoredSystemWallpaperURL =
-                    wallpaperStoreTransaction.latestUserSystemWallpaperURL(
-                        from: restorationStoreData,
-                        managedAssetID: marker.assetID
-                    ) ?? marker.originalSystemWallpaperURL
-                guard setSystemWallpaperURL(
-                    restoredSystemWallpaperURL
+                guard applyRestoredSystemWallpaperURL(
+                    from: restorationStoreData,
+                    marker: marker
                 ) else {
                     throw AerialLockScreenInstallerError
                         .wallpaperStoreUpdateFailed
@@ -1826,6 +1832,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 _ = setSystemWallpaperURL(systemWallpaperURLBeforeAttempt)
             }
             try? refreshSystem({ true })
+            startDesktopWallpaperChangeMonitorIfNeeded()
             throw error
         }
     }
@@ -2303,6 +2310,91 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             kCFPreferencesCurrentUser,
             kCFPreferencesAnyHost
         ) as? String
+    }
+
+    private func startDesktopWallpaperChangeMonitorIfNeeded() {
+        guard let marker = loadMarker(),
+              marker.completed == true,
+              markerStoreIncludesDesktop(marker),
+              wallpaperStoreChangeMonitor == nil
+        else {
+            return
+        }
+
+        let monitor = WallpaperStoreChangeMonitor(
+            directoryURL: wallpaperStoreURL.deletingLastPathComponent(),
+            callback: { [weak self] in
+                self?.captureLatestUserDesktopWallpaperIfPresent()
+            }
+        )
+        monitor.start()
+        wallpaperStoreChangeMonitor = monitor
+    }
+
+    private func stopDesktopWallpaperChangeMonitor() {
+        wallpaperStoreChangeMonitor?.stop()
+        wallpaperStoreChangeMonitor = nil
+    }
+
+    private func captureLatestUserDesktopWallpaperIfPresent() {
+        guard let marker = loadMarker(),
+              marker.completed == true,
+              markerStoreIncludesDesktop(marker),
+              let currentStoreData = try? Data(contentsOf: wallpaperStoreURL),
+              wallpaperStoreTransaction.wallpaperStoreHasUserDesktop(
+                  currentStoreData,
+                  managedAssetID: marker.assetID
+              ),
+              let originalStoreData = try? Data(
+                  contentsOf: wallpaperStoreBackupURL
+              )
+        else {
+            return
+        }
+
+        do {
+            _ = try wallpaperStoreTransaction
+                .captureLatestUserWallpaperStoreData(
+                    from: currentStoreData,
+                    fallbackData: originalStoreData,
+                    managedAssetID: marker.assetID
+                )
+            lockScreenLifecycleLogger.debug(
+                "Captured a user Desktop wallpaper change while shared Aura is running"
+            )
+        } catch {
+            // A transient, partially-written Index.plist must not affect the
+            // running wallpaper. The next filesystem event retries capture.
+            lockScreenLifecycleLogger.debug(
+                "Could not capture a transient user Desktop wallpaper change"
+            )
+        }
+    }
+
+    private func applyRestoredSystemWallpaperURL(
+        from storeData: Data,
+        marker: AerialLockScreenMarker
+    ) -> Bool {
+        if let userURL = wallpaperStoreTransaction.latestUserSystemWallpaperURL(
+            from: storeData,
+            managedAssetID: marker.assetID
+        ) {
+            return setSystemWallpaperURL(userURL)
+        }
+        if wallpaperStoreTransaction
+            .wallpaperStoreHasExplicitUserDesktopWithoutSystemWallpaperURL(
+                storeData,
+                managedAssetID: marker.assetID
+            ) {
+            // Explicit native providers (for example Sequoia) are restored
+            // entirely by Index.plist. Clear both preference hosts so an old
+            // Aura URL cannot override that provider after a restart.
+            return setSystemWallpaperURL(
+                nil,
+                clearConflictingCurrentHostOverride: true
+            )
+        }
+        return setSystemWallpaperURL(marker.originalSystemWallpaperURL)
     }
 
     @discardableResult
