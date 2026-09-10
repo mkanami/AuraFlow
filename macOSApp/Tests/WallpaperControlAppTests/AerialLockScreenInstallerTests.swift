@@ -1271,6 +1271,89 @@ private func writeAerialTestVideo(to url: URL) async throws {
     )
 }
 
+@Test func sharedRemoveRepairsOpaqueDownloadedImageConfiguration() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    let downloadedImageURL = URL(
+        fileURLWithPath: "/Users/test/Downloads/opaque-wallpaper.jpg"
+    ).standardizedFileURL
+    let opaqueImageMode: [String: Any] = [
+        "LastSet": Date(),
+        "LastUse": Date(),
+        "Content": [
+            "Choices": [[
+                "Provider": WallpaperPlatformConstants.imageProviderID,
+                // Recent macOS builds can leave the image descriptor opaque
+                // after the user changes Desktop while Aura is running.
+                "Files": [],
+                "Configuration": Data("opaque-image-config".utf8),
+            ]],
+            "Shuffle": "$null",
+            "EncodedOptionValues": "$null",
+        ],
+    ]
+    var root = try readWallpaperStore(fixture.storeURL)
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        var container = try #require(root[key] as? [String: Any])
+        container["Desktop"] = opaqueImageMode
+        root[key] = container
+    }
+    let currentData = try PropertyListSerialization.data(
+        fromPropertyList: root,
+        format: .binary,
+        options: 0
+    )
+    let transaction = WallpaperStoreTransaction(
+        fileManager: .default,
+        wallpaperStoreURL: fixture.storeURL,
+        spacesPreferencesURL: fixture.spacesURL,
+        aerialVideosURL: fixture.videosURL
+    )
+
+    let restoredData = try transaction
+        .captureLatestUserWallpaperStoreData(
+            from: currentData,
+            fallbackData: currentData,
+            managedAssetID: AerialLockScreenFixture.assetID,
+            propagateGlobalDesktopChanges: true,
+            userSystemWallpaperURL: downloadedImageURL.absoluteString
+        )
+    let restoredRoot = try PropertyListSerialization.propertyList(
+        from: restoredData,
+        options: [],
+        format: nil
+    ) as? [String: Any]
+
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        let container = try #require(restoredRoot?[key] as? [String: Any])
+        let desktop = try #require(container["Desktop"] as? [String: Any])
+        let content = try #require(desktop["Content"] as? [String: Any])
+        let choice = try #require(
+            (content["Choices"] as? [[String: Any]])?.first
+        )
+        let files = try #require(choice["Files"] as? [[String: Any]])
+        #expect(files.first?["relative"] as? String
+            == downloadedImageURL.absoluteString)
+
+        let configurationData = try #require(
+            choice["Configuration"] as? Data
+        )
+        let configuration = try #require(
+            PropertyListSerialization.propertyList(
+                from: configurationData,
+                options: [],
+                format: nil
+            ) as? [String: Any]
+        )
+        #expect(configuration["type"] as? String == "imageFile")
+        #expect(
+            (configuration["url"] as? [String: Any])?["relative"]
+                as? String == downloadedImageURL.absoluteString
+        )
+    }
+}
+
 @Test func lockOnlyRemoveMirrorsTheLiveDesktopWithoutReplayingSnapshots() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

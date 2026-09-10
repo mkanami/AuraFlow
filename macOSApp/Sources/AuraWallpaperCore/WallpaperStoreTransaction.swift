@@ -455,7 +455,8 @@ internal final class WallpaperStoreTransaction {
         from latestData: Data,
         restoringManagedModesFrom originalData: Data,
         managedAssetID: String,
-        propagateGlobalDesktopChanges: Bool = false
+        propagateGlobalDesktopChanges: Bool = false,
+        userSystemWallpaperURL: String? = nil
     ) throws -> Data {
         guard var latest = try propertyListDictionary(from: latestData),
               let original = try propertyListDictionary(from: originalData)
@@ -521,7 +522,10 @@ internal final class WallpaperStoreTransaction {
                 if let latestUserMode {
                     result.removeValue(forKey: "Desktop")
                     result.removeValue(forKey: "Idle")
-                    result["Linked"] = normalizeImageModeFiles(latestUserMode)
+                    result["Linked"] = normalizeImageModeFiles(
+                        latestUserMode,
+                        preferredSystemWallpaperURL: userSystemWallpaperURL
+                    )
                     result["Type"] = "linked"
                     return result
                 }
@@ -529,17 +533,39 @@ internal final class WallpaperStoreTransaction {
             if let desktop = result["Desktop"] as? [String: Any] {
                 if isManaged(desktop),
                    let originalDesktop = originalContainer["Desktop"] {
-                    result["Desktop"] = originalDesktop
+                    if let originalDesktop = originalDesktop as? [String: Any] {
+                        result["Desktop"] = normalizeImageModeFiles(
+                            originalDesktop,
+                            preferredSystemWallpaperURL:
+                                userSystemWallpaperURL
+                        )
+                    } else {
+                        result["Desktop"] = originalDesktop
+                    }
                 } else {
-                    result["Desktop"] = normalizeImageModeFiles(desktop)
+                    result["Desktop"] = normalizeImageModeFiles(
+                        desktop,
+                        preferredSystemWallpaperURL: userSystemWallpaperURL
+                    )
                 }
             }
             if let linked = result["Linked"] as? [String: Any] {
                 if isManaged(linked),
                    let originalLinked = originalContainer["Linked"] {
-                    result["Linked"] = originalLinked
+                    if let originalLinked = originalLinked as? [String: Any] {
+                        result["Linked"] = normalizeImageModeFiles(
+                            originalLinked,
+                            preferredSystemWallpaperURL:
+                                userSystemWallpaperURL
+                        )
+                    } else {
+                        result["Linked"] = originalLinked
+                    }
                 } else {
-                    result["Linked"] = normalizeImageModeFiles(linked)
+                    result["Linked"] = normalizeImageModeFiles(
+                        linked,
+                        preferredSystemWallpaperURL: userSystemWallpaperURL
+                    )
                 }
             }
             if let idle = result["Idle"] as? [String: Any],
@@ -563,18 +589,22 @@ internal final class WallpaperStoreTransaction {
             // contains Aura's temporary Aerial route. Treat that first-level
             // user choice as the new global Desktop and put it back into every
             // managed first-level Desktop/Linked route before Remove commits.
+            let normalizedGlobalUserDesktop = normalizeImageModeFiles(
+                globalUserDesktop,
+                preferredSystemWallpaperURL: userSystemWallpaperURL
+            )
             for key in ["AllSpacesAndDisplays", "SystemDefault"] {
                 guard var container = latest[key] as? [String: Any] else {
                     continue
                 }
                 if let linked = container["Linked"] as? [String: Any],
                    isManaged(linked) {
-                    container["Linked"] = globalUserDesktop
+                    container["Linked"] = normalizedGlobalUserDesktop
                     container.removeValue(forKey: "Desktop")
                     container["Type"] = "linked"
                 } else if let desktop = container["Desktop"] as? [String: Any],
                           isManaged(desktop) {
-                    container["Desktop"] = globalUserDesktop
+                    container["Desktop"] = normalizedGlobalUserDesktop
                     container["Type"] = "individual"
                 }
                 latest[key] = container
@@ -640,7 +670,8 @@ internal final class WallpaperStoreTransaction {
         from currentData: Data,
         fallbackData: Data,
         managedAssetID: String,
-        propagateGlobalDesktopChanges: Bool = false
+        propagateGlobalDesktopChanges: Bool = false,
+        userSystemWallpaperURL: String? = nil
     ) throws -> Data {
         let previousData = latestUserWallpaperStoreURL.flatMap {
             try? Data(contentsOf: $0)
@@ -655,13 +686,15 @@ internal final class WallpaperStoreTransaction {
                 from: previousData,
                 restoringManagedModesFrom: fallbackData,
                 managedAssetID: managedAssetID,
-                propagateGlobalDesktopChanges: propagateGlobalDesktopChanges
+                propagateGlobalDesktopChanges: propagateGlobalDesktopChanges,
+                userSystemWallpaperURL: userSystemWallpaperURL
             )
         let latestData = try wallpaperStoreDataByPreservingUserDesktops(
             from: currentData,
             restoringManagedModesFrom: sanitizedPreviousData,
             managedAssetID: managedAssetID,
-            propagateGlobalDesktopChanges: propagateGlobalDesktopChanges
+            propagateGlobalDesktopChanges: propagateGlobalDesktopChanges,
+            userSystemWallpaperURL: userSystemWallpaperURL
         )
         if let latestUserWallpaperStoreURL {
             try latestData.write(
@@ -927,6 +960,41 @@ internal final class WallpaperStoreTransaction {
         guard let root = try? propertyListDictionary(from: storeData) else {
             return nil
         }
+
+        // AllSpacesAndDisplays/SystemDefault are the active global choices.
+        // A stale image route can remain in a hidden Space or display after
+        // macOS changes the global wallpaper; it must not win over the current
+        // global choice merely because it has a newer LastUse timestamp.
+        var hasGlobalUserRoute = false
+        var globalCandidates: [(date: Date, url: String)] = []
+        for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+            guard let container = root[key] as? [String: Any] else {
+                continue
+            }
+            for routeKey in ["Linked", "Desktop"] {
+                guard let mode = container[routeKey] as? [String: Any],
+                      !modeReferencesAuraFlow(mode),
+                      !modeFullySelectsAerial(
+                          mode,
+                          assetID: managedAssetID
+                      )
+                else {
+                    continue
+                }
+                hasGlobalUserRoute = true
+                guard let url = systemWallpaperURL(from: mode) else {
+                    continue
+                }
+                let date = [mode["LastSet"], mode["LastUse"]]
+                    .compactMap { $0 as? Date }
+                    .max() ?? .distantPast
+                globalCandidates.append((date, url))
+            }
+        }
+        if hasGlobalUserRoute {
+            return globalCandidates.max { $0.date < $1.date }?.url
+        }
+
         var candidates: [(date: Date, url: String)] = []
         _ = mapWallpaperContainers(in: root) { container in
             for key in ["Linked", "Desktop"] {
@@ -961,6 +1029,37 @@ internal final class WallpaperStoreTransaction {
         guard let root = try? propertyListDictionary(from: storeData) else {
             return false
         }
+        var foundGlobalRoute = false
+        var foundGlobalRouteWithoutURL = false
+        for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+            guard let container = root[key] as? [String: Any] else {
+                continue
+            }
+            for routeKey in ["Linked", "Desktop"] {
+                guard let mode = container[routeKey] as? [String: Any],
+                      !modeReferencesAuraFlow(mode),
+                      !modeFullySelectsAerial(
+                          mode,
+                          assetID: managedAssetID
+                      ),
+                      let content = mode["Content"] as? [String: Any],
+                      let choices = content["Choices"] as? [[String: Any]],
+                      !choices.isEmpty
+                else {
+                    continue
+                }
+                foundGlobalRoute = true
+                if choices.contains(where: { choice in
+                    (choice["Provider"] as? String) != "default"
+                }), systemWallpaperURL(from: mode) == nil {
+                    foundGlobalRouteWithoutURL = true
+                }
+            }
+        }
+        if foundGlobalRoute {
+            return foundGlobalRouteWithoutURL
+        }
+
         var foundRoute = false
         _ = mapWallpaperContainers(in: root) { container in
             for key in ["Linked", "Desktop"] {
@@ -1071,6 +1170,14 @@ internal final class WallpaperStoreTransaction {
         try? PropertyListSerialization.data(
             fromPropertyList: value,
             format: .xml,
+            options: 0
+        )
+    }
+
+    private func binaryPropertyListData(_ value: Any) -> Data? {
+        try? PropertyListSerialization.data(
+            fromPropertyList: value,
+            format: .binary,
             options: 0
         )
     }
@@ -1221,7 +1328,8 @@ internal final class WallpaperStoreTransaction {
     }
 
     private func normalizeImageModeFiles(
-        _ mode: [String: Any]
+        _ mode: [String: Any],
+        preferredSystemWallpaperURL: String? = nil
     ) -> [String: Any] {
         guard var content = mode["Content"] as? [String: Any],
               var choices = content["Choices"] as? [[String: Any]]
@@ -1231,18 +1339,49 @@ internal final class WallpaperStoreTransaction {
         var changed = false
         choices = choices.map { choice in
             guard choice["Provider"] as? String
-                    == WallpaperPlatformConstants.imageProviderID,
-                  let data = choice["Configuration"] as? Data,
-                  let configuration =
-                    try? propertyListDictionary(from: data),
-                  let url = configuration["url"] as? [String: Any],
-                  let relative = url["relative"] as? String
+                    == WallpaperPlatformConstants.imageProviderID
             else {
                 return choice
             }
+            let decodedConfiguration: [String: Any]? = {
+                guard let data = choice["Configuration"] as? Data else {
+                    return nil
+                }
+                return try? propertyListDictionary(from: data)
+            }()
+            let decodedRelative = (decodedConfiguration?["url"]
+                as? [String: Any])?["relative"] as? String
+            let fileRelative = (choice["Files"] as? [[String: Any]])?
+                .compactMap { $0["relative"] as? String }
+                .first
+            let preferredRelative = preferredSystemWallpaperURL.flatMap {
+                normalizedWallpaperURLString($0)
+            }
+            guard let relative = decodedRelative ?? fileRelative
+                    ?? preferredRelative else {
+                return choice
+            }
+            let normalizedRelative = normalizedWallpaperURLString(relative)
+                ?? relative
+            let usesPreferredURL = decodedRelative == nil
+                && fileRelative == nil
+                && preferredRelative != nil
             var normalized = choice
-            normalized["Files"] = [["relative": relative]]
-            changed = true
+            normalized["Files"] = [["relative": normalizedRelative]]
+
+            let shouldRewriteConfiguration = decodedConfiguration == nil
+                || usesPreferredURL
+            if shouldRewriteConfiguration {
+                var configuration = decodedConfiguration ?? [:]
+                configuration["type"] = configuration["type"] ?? "imageFile"
+                configuration["url"] = ["relative": normalizedRelative]
+                if let configurationData = binaryPropertyListData(
+                    configuration
+                ) {
+                    normalized["Configuration"] = configurationData
+                }
+            }
+            changed = changed || propertyListData(normalized) != propertyListData(choice)
             return normalized
         }
         guard changed else { return mode }

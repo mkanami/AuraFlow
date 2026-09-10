@@ -1732,7 +1732,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                         from: storeBeforeAttempt,
                         fallbackData: originalStoreData,
                         managedAssetID: marker.assetID,
-                        propagateGlobalDesktopChanges: true
+                        propagateGlobalDesktopChanges: true,
+                        userSystemWallpaperURL: currentUserSystemWallpaperURL()
                     )
             }
             try restorationStoreData.write(
@@ -2313,6 +2314,29 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         ) as? String
     }
 
+    private func currentUserSystemWallpaperURL() -> String? {
+        guard let currentURL = currentSystemWallpaperURL(),
+              let url = URL(string: currentURL),
+              url.isFileURL
+        else {
+            return nil
+        }
+        let path = url.standardizedFileURL.path
+        let managedAssetRoot = assetStore.aerialVideosURL
+            .standardizedFileURL.path
+        let managedStillFramePath = WallpaperRuntimeStore
+            .defaultAppSupportURL()
+            .appendingPathComponent("last_frame.png")
+            .standardizedFileURL.path
+        let loweredPath = path.lowercased()
+        guard !loweredPath.hasPrefix(managedAssetRoot.lowercased() + "/"),
+              loweredPath != managedStillFramePath.lowercased(),
+              fileManager.fileExists(atPath: path) else {
+            return nil
+        }
+        return url.standardizedFileURL.absoluteString
+    }
+
     private func startDesktopWallpaperChangeMonitorIfNeeded() {
         guard let marker = loadMarker(),
               marker.completed == true,
@@ -2351,14 +2375,23 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         guard let marker = loadMarker(),
               marker.completed == true,
               markerStoreIncludesDesktop(marker),
-              wallpaperStoreTransaction.wallpaperStoreHasUserDesktop(
-                  currentStoreData,
-                  managedAssetID: marker.assetID
-              ),
               let originalStoreData = try? Data(
                   contentsOf: wallpaperStoreBackupURL
               )
         else {
+            return
+        }
+
+        let userSystemWallpaperURL = currentUserSystemWallpaperURL()
+        let hasUserDesktop = wallpaperStoreTransaction.wallpaperStoreHasUserDesktop(
+            currentStoreData,
+            managedAssetID: marker.assetID
+        )
+        // WallpaperAgent can rewrite Index.plist back to Aura's route before
+        // the filesystem callback runs, while SystemWallpaperURL still holds
+        // the image just selected by the user. Keep that URL as a valid change
+        // signal so the exact image can be journaled instead of being lost.
+        guard hasUserDesktop || userSystemWallpaperURL != nil else {
             return
         }
 
@@ -2368,7 +2401,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     from: currentStoreData,
                     fallbackData: originalStoreData,
                     managedAssetID: marker.assetID,
-                    propagateGlobalDesktopChanges: true
+                    propagateGlobalDesktopChanges: true,
+                    userSystemWallpaperURL: userSystemWallpaperURL
                 )
             lockScreenLifecycleLogger.notice(
                 "Captured a user Desktop wallpaper change while shared Aura is running"
