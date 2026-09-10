@@ -1708,6 +1708,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         let systemWallpaperURLBeforeAttempt = currentSystemWallpaperURL()
         let userSystemWallpaperURL = currentUserSystemWallpaperURL()
         var systemWallpaperURLMutated = false
+        let sharedDesktopRemove = markerStoreIncludesDesktop(marker)
 
         do {
             let originalStoreData = try Data(
@@ -1780,40 +1781,51 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 }
                 systemWallpaperURLMutated = true
             }
-            var restorationVerified = false
-            for _ in 0..<3 {
+            if sharedDesktopRemove {
+                // Shared Start owns Desktop. Restore the complete journal,
+                // asset and SystemWallpaperURL once, then perform one normal
+                // WallpaperAgent refresh. Rewriting Index.plist or restarting
+                // the owner again after the image transition races the
+                // choice.image exporter and can resurrect Aerial/Golden Gate.
+                try refreshSystem({ true })
+            } else {
+                // Keep the lock-only stabilization path unchanged: it must
+                // preserve independent Space/display Desktop routes while
+                // WallpaperAgent is settling the Lock Screen route.
+                var restorationVerified = false
+                for _ in 0..<3 {
+                    try restorationStoreData.write(
+                        to: wallpaperStoreURL,
+                        options: .atomic
+                    )
+                    try refreshSystem({ true })
+                    Thread.sleep(forTimeInterval: 0.4)
+                    if wallpaperStoreTransaction.wallpaperStoreSemanticallyMatches(
+                        expectedData: restorationStoreData
+                    ) {
+                        restorationVerified = true
+                        break
+                    }
+                }
+                guard restorationVerified else {
+                    throw AerialLockScreenInstallerError
+                        .wallpaperStoreUpdateFailed
+                }
+                // WallpaperAgent can flush the split lock-only route and its
+                // old fallback URL while it is terminating. Reassert both
+                // values after the final process refresh.
                 try restorationStoreData.write(
                     to: wallpaperStoreURL,
                     options: .atomic
                 )
-                try refreshSystem({ true })
-                Thread.sleep(forTimeInterval: 0.4)
-                if wallpaperStoreTransaction.wallpaperStoreSemanticallyMatches(
-                    expectedData: restorationStoreData
-                ) {
-                    restorationVerified = true
-                    break
-                }
-            }
-            guard restorationVerified else {
-                throw AerialLockScreenInstallerError
-                    .wallpaperStoreUpdateFailed
-            }
-            // WallpaperAgent can flush the split lock-only route and its old
-            // fallback URL while it is terminating. Reassert both values
-            // after the final process refresh so Remove leaves the newest
-            // user wallpaper on Desktop and Lock Screen atomically.
-            try restorationStoreData.write(
-                to: wallpaperStoreURL,
-                options: .atomic
-            )
-            if marker.systemWallpaperURLWasCaptured == true {
-                guard applyRestoredSystemWallpaperURL(
-                    from: restorationStoreData,
-                    marker: marker
-                ) else {
-                    throw AerialLockScreenInstallerError
-                        .wallpaperStoreUpdateFailed
+                if marker.systemWallpaperURLWasCaptured == true {
+                    guard applyRestoredSystemWallpaperURL(
+                        from: restorationStoreData,
+                        marker: marker
+                    ) else {
+                        throw AerialLockScreenInstallerError
+                            .wallpaperStoreUpdateFailed
+                    }
                 }
             }
             // The store now contains the intended route, but WallpaperAgent

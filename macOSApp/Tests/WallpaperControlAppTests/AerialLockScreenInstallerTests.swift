@@ -57,18 +57,35 @@ private final class DesktopImageTransitionRecorder: @unchecked Sendable {
     private(set) var appliedURLs: [URL] = []
     private(set) var storeData: Data
     private var activeURL: URL?
+    private let targetURL: URL?
     private var timestamp = Date(timeIntervalSince1970: 1_000)
     var failFinalURL: URL?
+    private(set) var temporaryUsesDistinctFileIdentity = false
 
     init(storeData: Data, activeURL: URL?) {
         self.storeData = storeData
         self.activeURL = activeURL
+        self.targetURL = activeURL
     }
 
     func operations() -> DesktopImageTransitionOperations {
         DesktopImageTransitionOperations(
             applyToCurrentScreens: { [self] url in
                 appliedURLs.append(url)
+                if appliedURLs.count == 1,
+                   let targetURL,
+                   let targetFileNumber = try? FileManager.default
+                    .attributesOfItem(atPath: targetURL.path)[
+                        .systemFileNumber
+                    ] as? NSNumber,
+                   let temporaryFileNumber = try? FileManager.default
+                    .attributesOfItem(atPath: url.path)[
+                        .systemFileNumber
+                    ] as? NSNumber {
+                    temporaryUsesDistinctFileIdentity =
+                        targetFileNumber.int64Value
+                        != temporaryFileNumber.int64Value
+                }
                 if failFinalURL?.standardizedFileURL
                     == url.standardizedFileURL {
                     return false
@@ -712,6 +729,7 @@ private func writeAerialTestVideo(to url: URL) async throws {
             recorder.appliedURLs.last?.standardizedFileURL
                 == targetURL.standardizedFileURL
         )
+        #expect(recorder.temporaryUsesDistinctFileIdentity)
         #expect(!FileManager.default.fileExists(atPath: temporaryURL.path))
         #expect(wallpaperStoreText(
             try PropertyListSerialization.propertyList(

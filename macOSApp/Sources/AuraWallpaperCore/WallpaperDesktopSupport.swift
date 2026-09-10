@@ -224,11 +224,11 @@ public enum WallpaperDesktopSupport {
         let temporaryURL = transitionDirectoryURL
             .appendingPathComponent(temporaryName)
         do {
-            do {
-                try fileManager.linkItem(at: targetURL, to: temporaryURL)
-            } catch {
-                try fileManager.copyItem(at: targetURL, to: temporaryURL)
-            }
+            // A hard link has a different path but the same inode. Wallpaper
+            // Agent can deduplicate that as the already-selected image and
+            // skip the provider transition. A real copy gives it a distinct
+            // file identity as well as a distinct URL.
+            try fileManager.copyItem(at: targetURL, to: temporaryURL)
         } catch {
             return false
         }
@@ -302,8 +302,13 @@ public enum WallpaperDesktopSupport {
         managedAssetID: String,
         operations: DesktopImageTransitionOperations
     ) -> Bool {
-        let timeout: TimeInterval = 1.5
-        let pollInterval: TimeInterval = 0.05
+        // WallpaperAgent exports an image asynchronously. The store and
+        // NSWorkspace can report the target before that export has settled;
+        // a short three-sample check lets the agent later fall back to Aerial
+        // with NSCocoaErrorDomain 4865. Require a full quiet second and allow
+        // slow HEIC/JPEG exports enough time to finish.
+        let timeout: TimeInterval = 8.0
+        let pollInterval: TimeInterval = 0.1
         let deadline = Date().addingTimeInterval(timeout)
         var stableSamples = 0
         let previousLastSet = latestDesktopImageTimestamp(
@@ -325,7 +330,7 @@ public enum WallpaperDesktopSupport {
                ),
                operations.currentScreensMatch(expectedURL) {
                 stableSamples += 1
-                if stableSamples >= 3 {
+                if stableSamples >= 10 {
                     return true
                 }
             } else {
