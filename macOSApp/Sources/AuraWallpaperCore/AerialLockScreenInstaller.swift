@@ -1731,7 +1731,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     wallpaperStoreTransaction.captureLatestUserWallpaperStoreData(
                         from: storeBeforeAttempt,
                         fallbackData: originalStoreData,
-                        managedAssetID: marker.assetID
+                        managedAssetID: marker.assetID,
+                        propagateGlobalDesktopChanges: true
                     )
             }
             try restorationStoreData.write(
@@ -2324,8 +2325,10 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         let monitor = WallpaperStoreChangeMonitor(
             directoryURL: wallpaperStoreURL.deletingLastPathComponent(),
             storeURL: wallpaperStoreURL,
-            callback: { [weak self] in
-                self?.captureLatestUserDesktopWallpaperIfPresent()
+            callback: { [weak self] storeData in
+                self?.captureLatestUserDesktopWallpaperIfPresent(
+                    storeData: storeData
+                )
             }
         )
         if monitor.start() {
@@ -2342,11 +2345,12 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         wallpaperStoreChangeMonitor = nil
     }
 
-    private func captureLatestUserDesktopWallpaperIfPresent() {
+    private func captureLatestUserDesktopWallpaperIfPresent(
+        storeData currentStoreData: Data
+    ) {
         guard let marker = loadMarker(),
               marker.completed == true,
               markerStoreIncludesDesktop(marker),
-              let currentStoreData = try? Data(contentsOf: wallpaperStoreURL),
               wallpaperStoreTransaction.wallpaperStoreHasUserDesktop(
                   currentStoreData,
                   managedAssetID: marker.assetID
@@ -2363,7 +2367,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 .captureLatestUserWallpaperStoreData(
                     from: currentStoreData,
                     fallbackData: originalStoreData,
-                    managedAssetID: marker.assetID
+                    managedAssetID: marker.assetID,
+                    propagateGlobalDesktopChanges: true
                 )
             lockScreenLifecycleLogger.notice(
                 "Captured a user Desktop wallpaper change while shared Aura is running"

@@ -36,6 +36,23 @@ private final class AerialProceedGate: @unchecked Sendable {
     }
 }
 
+private final class WallpaperStoreSnapshotBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Data] = []
+
+    func append(_ value: Data) {
+        lock.lock()
+        values.append(value)
+        lock.unlock()
+    }
+
+    func contains(_ value: Data) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return values.contains(value)
+    }
+}
+
 private struct AerialLockScreenFixture {
     static let activeSpaceID =
         "49BAC883-46A3-452D-97ED-8A96BBEDA1B1"
@@ -1893,7 +1910,75 @@ private func writeAerialTestVideo(to url: URL) async throws {
     for key in ["AllSpacesAndDisplays", "SystemDefault"] {
         let container = try #require(restoredRoot[key] as? [String: Any])
         let desktop = try #require(container["Desktop"] as? [String: Any])
-        #expect(wallpaperModeData(desktop) == wallpaperModeData(downloadedImageMode))
+        #expect(
+            wallpaperModeData(desktop) == wallpaperModeData(downloadedImageMode),
+            "unexpected restored Desktop route for \(key)"
+        )
+    }
+    #expect(!wallpaperStoreText(restoredRoot).contains("AuraFlow"))
+    #expect(!fixture.installer.isInstalled)
+}
+
+@Test func modernSharedRemovePropagatesDownloadedImageFromSystemDefault() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+    let managedStoreData = try Data(contentsOf: fixture.storeURL)
+    var latestRoot = try readWallpaperStore(fixture.storeURL)
+    let downloadedImageURL = URL(
+        fileURLWithPath: "/Users/test/Downloads/latest-aura-wallpaper.jpg"
+    ).standardizedFileURL
+    let imageMode = AerialLockScreenFixture.makeMode(
+        provider: WallpaperPlatformConstants.imageProviderID,
+        configuration: [
+            "type": "imageFile",
+            "url": ["relative": downloadedImageURL.absoluteString],
+        ]
+    )
+    var imageContent = try #require(imageMode["Content"] as? [String: Any])
+    var imageChoices = try #require(
+        imageContent["Choices"] as? [[String: Any]]
+    )
+    imageChoices[0]["Files"] = [["relative": downloadedImageURL.absoluteString]]
+    imageContent["Choices"] = imageChoices
+    var downloadedImageMode = imageMode
+    downloadedImageMode["Content"] = imageContent
+
+    // This is the topology produced by WallpaperAgent while a shared Aura
+    // route is still active: the user's new image exists in SystemDefault,
+    // while AllSpacesAndDisplays still points at Aura's Aerial route.
+    var systemDefault = try #require(
+        latestRoot["SystemDefault"] as? [String: Any]
+    )
+    systemDefault["Desktop"] = downloadedImageMode
+    latestRoot["SystemDefault"] = systemDefault
+    try writeWallpaperStore(latestRoot, to: fixture.storeURL)
+
+    let latestUserStoreURL = fixture.stateURL
+        .appendingPathComponent("Index.latest-user.plist")
+    var captured = false
+    for _ in 0..<20 {
+        if FileManager.default.fileExists(atPath: latestUserStoreURL.path) {
+            captured = true
+            break
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+    }
+    #expect(captured)
+
+    try managedStoreData.write(to: fixture.storeURL, options: .atomic)
+    try await Task.sleep(nanoseconds: 120_000_000)
+    try fixture.installer.uninstall()
+
+    let restoredRoot = try readWallpaperStore(fixture.storeURL)
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        let container = try #require(restoredRoot[key] as? [String: Any])
+        let desktop = try #require(container["Desktop"] as? [String: Any])
+        #expect(
+            wallpaperModeData(desktop) == wallpaperModeData(downloadedImageMode),
+            "unexpected restored Desktop route for \(key)"
+        )
     }
     #expect(!wallpaperStoreText(restoredRoot).contains("AuraFlow"))
     #expect(!fixture.installer.isInstalled)
@@ -2397,6 +2482,58 @@ private func writeAerialTestVideo(to url: URL) async throws {
         try Data(contentsOf: fixture.assetURL)
             == Data("original-aerial".utf8)
     )
+}
+
+@Test func wallpaperStoreChangeMonitorDeliversChangedSnapshotBeforeLaterRewrite() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(
+            "AuraFlowWallpaperMonitor-\(UUID().uuidString)",
+            isDirectory: true
+        )
+    let storeURL = root.appendingPathComponent("Index.plist")
+    try FileManager.default.createDirectory(
+        at: root,
+        withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    func plistData(_ value: String) throws -> Data {
+        try PropertyListSerialization.data(
+            fromPropertyList: ["value": value],
+            format: .binary,
+            options: 0
+        )
+    }
+
+    let initialData = try plistData("initial")
+    let changedData = try plistData("downloaded-image")
+    let laterData = try plistData("aerial")
+    try initialData.write(to: storeURL, options: .atomic)
+
+    let snapshots = WallpaperStoreSnapshotBox()
+    let monitor = WallpaperStoreChangeMonitor(
+        directoryURL: root,
+        storeURL: storeURL,
+        callback: { snapshots.append($0) }
+    )
+    let started = monitor.start()
+    #expect(started)
+    guard started else { return }
+    defer { monitor.stop() }
+
+    // Let the polling timer settle, then rewrite the store again before the
+    // directory-event debounce can fire. The callback must retain the image
+    // snapshot observed at the first write, not reread the later Aerial data.
+    try await Task.sleep(nanoseconds: 100_000_000)
+    try changedData.write(to: storeURL, options: .atomic)
+    try await Task.sleep(nanoseconds: 65_000_000)
+    try laterData.write(to: storeURL, options: .atomic)
+
+    for _ in 0..<20 {
+        if snapshots.contains(changedData) { break }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    #expect(snapshots.contains(changedData))
 }
 
 private func readWallpaperStore(_ url: URL) throws -> [String: Any] {

@@ -454,7 +454,8 @@ internal final class WallpaperStoreTransaction {
     func wallpaperStoreDataByPreservingUserDesktops(
         from latestData: Data,
         restoringManagedModesFrom originalData: Data,
-        managedAssetID: String
+        managedAssetID: String,
+        propagateGlobalDesktopChanges: Bool = false
     ) throws -> Data {
         guard var latest = try propertyListDictionary(from: latestData),
               let original = try propertyListDictionary(from: originalData)
@@ -552,6 +553,34 @@ internal final class WallpaperStoreTransaction {
             return result
         }
 
+        if propagateGlobalDesktopChanges,
+           let globalUserDesktop = newestGlobalUserDesktopMode(
+               in: latest,
+               managedAssetID: managedAssetID
+           ) {
+            // During a shared Start, macOS may record a wallpaper selected by
+            // the user only in SystemDefault while AllSpacesAndDisplays still
+            // contains Aura's temporary Aerial route. Treat that first-level
+            // user choice as the new global Desktop and put it back into every
+            // managed first-level Desktop/Linked route before Remove commits.
+            for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+                guard var container = latest[key] as? [String: Any] else {
+                    continue
+                }
+                if let linked = container["Linked"] as? [String: Any],
+                   isManaged(linked) {
+                    container["Linked"] = globalUserDesktop
+                    container.removeValue(forKey: "Desktop")
+                    container["Type"] = "linked"
+                } else if let desktop = container["Desktop"] as? [String: Any],
+                          isManaged(desktop) {
+                    container["Desktop"] = globalUserDesktop
+                    container["Type"] = "individual"
+                }
+                latest[key] = container
+            }
+        }
+
         for key in ["AllSpacesAndDisplays", "SystemDefault"] {
             latest[key] = cleanContainer(latest[key], original: original[key])
         }
@@ -610,7 +639,8 @@ internal final class WallpaperStoreTransaction {
     func captureLatestUserWallpaperStoreData(
         from currentData: Data,
         fallbackData: Data,
-        managedAssetID: String
+        managedAssetID: String,
+        propagateGlobalDesktopChanges: Bool = false
     ) throws -> Data {
         let previousData = latestUserWallpaperStoreURL.flatMap {
             try? Data(contentsOf: $0)
@@ -624,12 +654,14 @@ internal final class WallpaperStoreTransaction {
             wallpaperStoreDataByPreservingUserDesktops(
                 from: previousData,
                 restoringManagedModesFrom: fallbackData,
-                managedAssetID: managedAssetID
+                managedAssetID: managedAssetID,
+                propagateGlobalDesktopChanges: propagateGlobalDesktopChanges
             )
         let latestData = try wallpaperStoreDataByPreservingUserDesktops(
             from: currentData,
             restoringManagedModesFrom: sanitizedPreviousData,
-            managedAssetID: managedAssetID
+            managedAssetID: managedAssetID,
+            propagateGlobalDesktopChanges: propagateGlobalDesktopChanges
         )
         if let latestUserWallpaperStoreURL {
             try latestData.write(
@@ -638,6 +670,36 @@ internal final class WallpaperStoreTransaction {
             )
         }
         return latestData
+    }
+
+    private func newestGlobalUserDesktopMode(
+        in root: [String: Any],
+        managedAssetID: String
+    ) -> [String: Any]? {
+        let candidates = ["AllSpacesAndDisplays", "SystemDefault"].compactMap {
+            root[$0] as? [String: Any]
+        }.flatMap { container -> [[String: Any]] in
+            [container["Desktop"] as? [String: Any],
+             container["Linked"] as? [String: Any]].compactMap { mode in
+                guard let mode,
+                      !modeIsManaged(mode, assetID: managedAssetID)
+                else {
+                    return nil
+                }
+                return mode
+            }
+        }
+        guard var newest = candidates.first else { return nil }
+        func timestamp(_ mode: [String: Any]) -> Date {
+            [mode["LastSet"], mode["LastUse"]]
+                .compactMap { $0 as? Date }
+                .max() ?? .distantPast
+        }
+        for candidate in candidates.dropFirst()
+            where timestamp(candidate) > timestamp(newest) {
+            newest = candidate
+        }
+        return newest
     }
 
     func wallpaperStoreHasUserDesktop(

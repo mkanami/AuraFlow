@@ -12,7 +12,7 @@ internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
     private let directoryURL: URL
     private let storeURL: URL
     private let queue: DispatchQueue
-    private let callback: @Sendable () -> Void
+    private let callback: @Sendable (Data) -> Void
     private let stateLock = NSLock()
     private var source: DispatchSourceFileSystemObject?
     private var pollingTimer: DispatchSourceTimer?
@@ -24,7 +24,7 @@ internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
     internal init(
         directoryURL: URL,
         storeURL: URL,
-        callback: @escaping @Sendable () -> Void
+        callback: @escaping @Sendable (Data) -> Void
     ) {
         self.directoryURL = directoryURL
         self.storeURL = storeURL
@@ -138,7 +138,11 @@ internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
         stateLock.unlock()
 
         guard changed else { return }
-        scheduleCapture()
+
+        // Do not defer this snapshot until the directory debounce fires.
+        // WallpaperAgent can replace the user's image with Aura's Aerial
+        // route before that deferred read happens.
+        callback(currentData)
     }
 
     private func scheduleCapture() {
@@ -160,7 +164,10 @@ internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
             }
             self.stateLock.unlock()
             guard shouldCapture else { return }
-            self.callback()
+            guard let storeData = try? Data(contentsOf: self.storeURL) else {
+                return
+            }
+            self.callback(storeData)
         }
         scheduledCapture = workItem
         stateLock.unlock()
