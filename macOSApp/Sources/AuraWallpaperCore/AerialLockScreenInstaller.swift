@@ -1,5 +1,6 @@
 import Darwin
 @preconcurrency import CoreFoundation
+import AppKit
 import Foundation
 import OSLog
 
@@ -1704,6 +1705,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             try? Data(contentsOf: $0)
         }
         let systemWallpaperURLBeforeAttempt = currentSystemWallpaperURL()
+        let userSystemWallpaperURL = currentUserSystemWallpaperURL()
         var systemWallpaperURLMutated = false
 
         do {
@@ -1722,7 +1724,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 || wallpaperStoreTransaction.wallpaperStoreHasUserDesktop(
                     storeBeforeAttempt,
                     managedAssetID: marker.assetID
-                ) {
+                )
+                || userSystemWallpaperURL != nil {
                 // The live store may already have been rewritten to Aura's
                 // Aerial route by WallpaperAgent. The monitor journals the
                 // user's short-lived Desktop route; capture it here even when
@@ -1733,7 +1736,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                         fallbackData: originalStoreData,
                         managedAssetID: marker.assetID,
                         propagateGlobalDesktopChanges: true,
-                        userSystemWallpaperURL: currentUserSystemWallpaperURL()
+                        userSystemWallpaperURL: userSystemWallpaperURL
                     )
             }
             try restorationStoreData.write(
@@ -2315,10 +2318,28 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     }
 
     private func currentUserSystemWallpaperURL() -> String? {
+        // On macOS 26, an ordinary image can be visible through the public
+        // Desktop API while SystemWallpaperURL still points to Aura's Aerial
+        // asset (or is unset). Prefer the wallpaper currently presented by
+        // the active Desktop and use the preference as a fallback.
+        let visibleWallpaperURLs = NSScreen.screens.compactMap {
+            NSWorkspace.shared.desktopImageURL(for: $0)
+        }
+        for url in visibleWallpaperURLs {
+            if let userURL = validatedUserWallpaperURL(url) {
+                return userURL
+            }
+        }
+
         guard let currentURL = currentSystemWallpaperURL(),
-              let url = URL(string: currentURL),
-              url.isFileURL
-        else {
+              let url = URL(string: currentURL) else {
+            return nil
+        }
+        return validatedUserWallpaperURL(url)
+    }
+
+    private func validatedUserWallpaperURL(_ url: URL) -> String? {
+        guard url.isFileURL else {
             return nil
         }
         let path = url.standardizedFileURL.path
@@ -2331,6 +2352,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         let loweredPath = path.lowercased()
         guard !loweredPath.hasPrefix(managedAssetRoot.lowercased() + "/"),
               loweredPath != managedStillFramePath.lowercased(),
+              !loweredPath.hasPrefix("/system/library/"),
+              !loweredPath.hasPrefix("/library/desktop pictures/"),
               fileManager.fileExists(atPath: path) else {
             return nil
         }
