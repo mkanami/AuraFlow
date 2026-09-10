@@ -10,19 +10,24 @@ import Foundation
 /// user Desktop route worth journaling.
 internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
     private let directoryURL: URL
+    private let storeURL: URL
     private let queue: DispatchQueue
     private let callback: @Sendable () -> Void
     private let stateLock = NSLock()
     private var source: DispatchSourceFileSystemObject?
+    private var pollingTimer: DispatchSourceTimer?
     private var scheduledCapture: DispatchWorkItem?
+    private var lastObservedStoreData: Data?
     private var stopped = true
     private var generation: UInt64 = 0
 
     internal init(
         directoryURL: URL,
+        storeURL: URL,
         callback: @escaping @Sendable () -> Void
     ) {
         self.directoryURL = directoryURL
+        self.storeURL = storeURL
         self.queue = DispatchQueue(
             label: "com.andrijvergeles.auraflow.wallpaper-store-monitor",
             qos: .utility
@@ -30,13 +35,15 @@ internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
         self.callback = callback
     }
 
-    internal func start() {
+    @discardableResult
+    internal func start() -> Bool {
         stateLock.lock()
         guard source == nil else {
             stateLock.unlock()
-            return
+            return true
         }
         stopped = false
+        lastObservedStoreData = try? Data(contentsOf: storeURL)
         stateLock.unlock()
 
         let descriptor = Darwin.open(
@@ -47,7 +54,7 @@ internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
             stateLock.lock()
             stopped = true
             stateLock.unlock()
-            return
+            return false
         }
 
         let source = DispatchSource.makeFileSystemObjectSource(
@@ -66,15 +73,34 @@ internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
         if stopped {
             stateLock.unlock()
             source.cancel()
-            return
+            return false
         }
         self.source = source
+
+        // WallpaperAgent can replace Index.plist twice within one filesystem
+        // event burst. In particular, ordinary image wallpapers can exist in
+        // the store for less than a second before the agent reasserts Aerial.
+        // Polling the small plist closes that race when the directory event is
+        // coalesced or delivered after the second replacement.
+        let pollingTimer = DispatchSource.makeTimerSource(queue: queue)
+        pollingTimer.schedule(
+            deadline: .now() + .milliseconds(50),
+            repeating: .milliseconds(50),
+            leeway: .milliseconds(15)
+        )
+        pollingTimer.setEventHandler { [weak self] in
+            self?.observeStoreForChanges()
+        }
+        self.pollingTimer = pollingTimer
         stateLock.unlock()
         source.resume()
+        pollingTimer.resume()
+        return true
     }
 
     internal func stop() {
         let source: DispatchSourceFileSystemObject?
+        let pollingTimer: DispatchSourceTimer?
         stateLock.lock()
         stopped = true
         generation &+= 1
@@ -82,13 +108,37 @@ internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
         scheduledCapture = nil
         source = self.source
         self.source = nil
+        pollingTimer = self.pollingTimer
+        self.pollingTimer = nil
+        lastObservedStoreData = nil
         stateLock.unlock()
 
         source?.cancel()
+        pollingTimer?.cancel()
         // Wait for an already queued callback before the owner removes its
         // journal directory. The generation check prevents delayed work from
         // recreating that directory after Remove has completed.
         queue.sync {}
+    }
+
+    private func observeStoreForChanges() {
+        guard let currentData = try? Data(contentsOf: storeURL) else {
+            return
+        }
+
+        stateLock.lock()
+        guard !stopped else {
+            stateLock.unlock()
+            return
+        }
+        let changed = lastObservedStoreData != currentData
+        if changed {
+            lastObservedStoreData = currentData
+        }
+        stateLock.unlock()
+
+        guard changed else { return }
+        scheduleCapture()
     }
 
     private func scheduleCapture() {

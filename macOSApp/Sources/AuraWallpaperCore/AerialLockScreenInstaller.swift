@@ -2323,12 +2323,18 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
 
         let monitor = WallpaperStoreChangeMonitor(
             directoryURL: wallpaperStoreURL.deletingLastPathComponent(),
+            storeURL: wallpaperStoreURL,
             callback: { [weak self] in
                 self?.captureLatestUserDesktopWallpaperIfPresent()
             }
         )
-        monitor.start()
-        wallpaperStoreChangeMonitor = monitor
+        if monitor.start() {
+            wallpaperStoreChangeMonitor = monitor
+        } else {
+            lockScreenLifecycleLogger.error(
+                "Could not start Desktop wallpaper change monitor"
+            )
+        }
     }
 
     private func stopDesktopWallpaperChangeMonitor() {
@@ -2359,7 +2365,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     fallbackData: originalStoreData,
                     managedAssetID: marker.assetID
                 )
-            lockScreenLifecycleLogger.debug(
+            lockScreenLifecycleLogger.notice(
                 "Captured a user Desktop wallpaper change while shared Aura is running"
             )
         } catch {

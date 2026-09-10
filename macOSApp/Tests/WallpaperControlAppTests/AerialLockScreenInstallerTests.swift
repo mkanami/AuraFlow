@@ -1841,6 +1841,64 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(!fixture.installer.isInstalled)
 }
 
+@Test func modernSharedRemovePreservesDownloadedImageRouteAfterAgentRewritesStore() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+    let managedStoreData = try Data(contentsOf: fixture.storeURL)
+    var latestRoot = try readWallpaperStore(fixture.storeURL)
+    let downloadedImageURL = URL(
+        fileURLWithPath: "/Users/test/Downloads/aura-wallpaper.jpg"
+    ).standardizedFileURL
+    let imageMode = AerialLockScreenFixture.makeMode(
+        provider: WallpaperPlatformConstants.imageProviderID,
+        configuration: [
+            "type": "imageFile",
+            "url": ["relative": downloadedImageURL.absoluteString],
+        ]
+    )
+    var imageContent = try #require(imageMode["Content"] as? [String: Any])
+    var imageChoices = try #require(
+        imageContent["Choices"] as? [[String: Any]]
+    )
+    imageChoices[0]["Files"] = [["relative": downloadedImageURL.absoluteString]]
+    imageContent["Choices"] = imageChoices
+    var downloadedImageMode = imageMode
+    downloadedImageMode["Content"] = imageContent
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        var container = try #require(latestRoot[key] as? [String: Any])
+        container["Desktop"] = downloadedImageMode
+        latestRoot[key] = container
+    }
+    try writeWallpaperStore(latestRoot, to: fixture.storeURL)
+
+    let latestUserStoreURL = fixture.stateURL
+        .appendingPathComponent("Index.latest-user.plist")
+    var captured = false
+    for _ in 0..<20 {
+        if FileManager.default.fileExists(atPath: latestUserStoreURL.path) {
+            captured = true
+            break
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+    }
+    #expect(captured)
+
+    try managedStoreData.write(to: fixture.storeURL, options: .atomic)
+    try await Task.sleep(nanoseconds: 120_000_000)
+    try fixture.installer.uninstall()
+
+    let restoredRoot = try readWallpaperStore(fixture.storeURL)
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        let container = try #require(restoredRoot[key] as? [String: Any])
+        let desktop = try #require(container["Desktop"] as? [String: Any])
+        #expect(wallpaperModeData(desktop) == wallpaperModeData(downloadedImageMode))
+    }
+    #expect(!wallpaperStoreText(restoredRoot).contains("AuraFlow"))
+    #expect(!fixture.installer.isInstalled)
+}
+
 @Test func healthyModernLockScreenSyncIsANoOp() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
