@@ -170,37 +170,6 @@ public enum WallpaperDesktopSupport {
         return appliedAny
     }
 
-    /// Re-applies the wallpaper URLs that WallpaperAgent currently reports to
-    /// the visible Desktop surfaces. Native Aerial removal restores
-    /// `Index.plist` and `SystemWallpaperURL`, but those writes can leave the
-    /// active WallpaperAgent surface displaying its cached Aerial frame. A
-    /// short-lived hard-link URL forces the public NSWorkspace setter to see a
-    /// real URL transition, without flattening the per-Space wallpaper store.
-    @discardableResult
-    public static func reapplyCurrentDesktopWallpaper(
-        appSupportPath: String
-    ) -> Bool {
-        let workspace = NSWorkspace.shared
-        var wallpapers: [String: String] = [:]
-        for screen in NSScreen.screens {
-            guard let url = workspace.desktopImageURL(for: screen),
-                  url.isFileURL,
-                  FileManager.default.fileExists(atPath: url.path)
-            else {
-                continue
-            }
-            wallpapers[screenIdentifier(screen)] =
-                url.standardizedFileURL.path
-        }
-        guard let fallbackPath = wallpapers.values.first else { return false }
-        forceRefreshCurrentScreens(
-            wallpapers: wallpapers,
-            fallbackPath: fallbackPath,
-            appSupportPath: appSupportPath
-        )
-        return true
-    }
-
     @discardableResult
     public static func restoreFromBackupFilesResult(
         appSupportPath: String
