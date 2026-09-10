@@ -1354,6 +1354,64 @@ private func writeAerialTestVideo(to url: URL) async throws {
     }
 }
 
+@Test func sharedRemoveMaterializesImageAfterAgentRewritesToAerial() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+    let managedData = try Data(contentsOf: fixture.storeURL)
+    let originalData = try Data(
+        contentsOf: fixture.stateURL
+            .appendingPathComponent("Index.before-auraflow.plist")
+    )
+    let downloadedImageURL = URL(
+        fileURLWithPath: "/Users/test/Downloads/user-wallpaper.png"
+    ).standardizedFileURL
+    let transaction = WallpaperStoreTransaction(
+        fileManager: .default,
+        wallpaperStoreURL: fixture.storeURL,
+        spacesPreferencesURL: fixture.spacesURL,
+        aerialVideosURL: fixture.videosURL
+    )
+
+    // Simulate the real race: WallpaperAgent has already put Aura's Aerial
+    // descriptor back in Index.plist, while AppKit still reports the user's
+    // newly selected image through the fallback URL.
+    let restoredData = try transaction
+        .captureLatestUserWallpaperStoreData(
+            from: managedData,
+            fallbackData: originalData,
+            managedAssetID: AerialLockScreenFixture.assetID,
+            propagateGlobalDesktopChanges: true,
+            userSystemWallpaperURL: downloadedImageURL.absoluteString
+        )
+    let restoredRoot = try PropertyListSerialization.propertyList(
+        from: restoredData,
+        options: [],
+        format: nil
+    ) as? [String: Any]
+
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        let container = try #require(restoredRoot?[key] as? [String: Any])
+        let desktop = try #require(container["Desktop"] as? [String: Any])
+        #expect(
+            wallpaperStoreContains(
+                ["Desktop": desktop],
+                provider: WallpaperPlatformConstants.imageProviderID,
+                assetID: nil
+            )
+        )
+        let content = try #require(desktop["Content"] as? [String: Any])
+        let choice = try #require(
+            (content["Choices"] as? [[String: Any]])?.first
+        )
+        #expect(
+            ((choice["Files"] as? [[String: Any]])?.first?["relative"]
+                as? String) == downloadedImageURL.absoluteString
+        )
+    }
+}
+
 @Test func lockOnlyRemoveMirrorsTheLiveDesktopWithoutReplayingSnapshots() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
