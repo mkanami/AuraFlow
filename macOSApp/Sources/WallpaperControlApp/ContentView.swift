@@ -596,7 +596,7 @@ struct ControlPanel: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if showsStatusMessage, let message = viewModel.statusMessage {
-                Text(message)
+                Text(UserFacingMessageFormatter.format(message))
                     .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                     .font(.caption)
                     .lineLimit(1)
@@ -607,7 +607,7 @@ struct ControlPanel: View {
             if viewModel.optimizationInProgress && showsOptimizationProgress {
                 VStack(alignment: .leading, spacing: 6) {
                     if let label = viewModel.optimizationLabel {
-                        Text(label)
+                        Text(UserFacingMessageFormatter.format(label))
                             .font(.caption)
                             .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             .lineLimit(1)
@@ -931,11 +931,15 @@ struct SettingsPopupCard: View {
             .disabled(!viewModel.optimizationEnabled || !viewModel.canChangeOptimizationSettings)
 
             if viewModel.optimizationHardwareAV1DecodeAvailable {
-                Text("AV1 hardware encode is unavailable on Mac. Force AV1 uses software ffmpeg and can be CPU intensive.")
+                Text(UserFacingMessageFormatter.format(
+                    "AV1 hardware encode is unavailable on Mac. Force AV1 uses software ffmpeg and can be CPU intensive."
+                ))
                     .font(.caption2)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             } else {
-                Text("Force AV1 encode is disabled because this Mac has no hardware AV1 decode.")
+                Text(UserFacingMessageFormatter.format(
+                    "Force AV1 encode is disabled because this Mac has no hardware AV1 decode."
+                ))
                     .font(.caption2)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             }
@@ -953,7 +957,7 @@ struct SettingsPopupCard: View {
             if viewModel.optimizationInProgress {
                 VStack(alignment: .leading, spacing: 6) {
                     if let label = viewModel.optimizationLabel {
-                        Text(label)
+                        Text(UserFacingMessageFormatter.format(label))
                             .font(.caption)
                             .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                     }
@@ -1041,7 +1045,7 @@ struct MonitoringPopupCard: View {
                 }
 
                 if let reason = metrics.health?.reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("Health: \(reason)")
+                    Text(UserFacingMessageFormatter.format("Health: \(reason)"))
                         .font(.caption)
                         .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                         .padding(.top, 4)
@@ -1053,7 +1057,7 @@ struct MonitoringPopupCard: View {
             }
 
             if let error = viewModel.monitoringErrorMessage {
-                Text(error)
+                Text(UserFacingMessageFormatter.format(error))
                     .font(.caption)
                     .foregroundColor(.red)
             }
@@ -1166,7 +1170,9 @@ struct DownloadedWallpapersCard: View {
             Divider()
 
             if viewModel.downloadedCatalogWallpapers.isEmpty {
-                Text("No downloaded wallpapers yet. Use Download to Preview in the catalog.")
+                Text(UserFacingMessageFormatter.format(
+                    "No downloaded wallpapers yet. Use Download to Preview in the catalog."
+                ))
                     .font(.caption)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             } else {
@@ -2623,7 +2629,7 @@ private struct AuraNotificationBanner: View {
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: systemImage)
                 .foregroundStyle(iconColor)
-            Text(text)
+            Text(UserFacingMessageFormatter.format(text))
                 .font(.callout)
                 .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
                 .lineLimit(2)
