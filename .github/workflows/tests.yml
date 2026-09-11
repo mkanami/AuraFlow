@@ -24,11 +24,26 @@ jobs:
       - name: Select Xcode toolchain
         shell: bash
         run: |
-          selected_app="$(ls -td /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
-          if [[ -n "$selected_app" && -d "$selected_app/Contents/Developer" ]]; then
-            echo "DEVELOPER_DIR=$selected_app/Contents/Developer" >> "${GITHUB_ENV}"
+          selected_record="$({
+            for candidate in /Applications/Xcode*.app; do
+              developer_dir="$candidate/Contents/Developer"
+              [[ -d "$developer_dir" ]] || continue
+              testing_module="$developer_dir/Platforms/MacOSX.platform/Developer/Library/Frameworks/Testing.framework/Modules/Testing.swiftmodule"
+              if [[ -d "$testing_module" ]]; then
+                version="$(DEVELOPER_DIR="$developer_dir" xcodebuild -version | awk '/^Xcode / { print $2; exit }')"
+                printf '%s\t%s\n' "$version" "$candidate"
+              fi
+            done
+          } | sort -nr | head -n 1)"
+          selected_app="${selected_record#*$'\t'}"
+          if [[ -z "$selected_record" || ! -d "$selected_app/Contents/Developer" ]]; then
+            echo "::error::No installed Xcode toolchain provides the Swift Testing module" >&2
+            exit 1
           fi
-          xcodebuild -version
+          developer_dir="$selected_app/Contents/Developer"
+          echo "DEVELOPER_DIR=$developer_dir" >> "${GITHUB_ENV}"
+          DEVELOPER_DIR="$developer_dir" xcodebuild -version
+          DEVELOPER_DIR="$developer_dir" xcrun swift --version
 
       - name: Run Swift tests
         working-directory: macOSApp
