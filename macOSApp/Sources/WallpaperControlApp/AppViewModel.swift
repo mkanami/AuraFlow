@@ -1026,18 +1026,33 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             || store.loadLockScreenOnlySource() != nil
         let runtimeWasRunning = daemonProcessManager.isRunning
         let runtimeWasPaused = store.isPaused()
-        if runtimeWasRunning {
+        // Shared native Start owns the visible Desktop while the Aerial
+        // transaction restores the user's last route. Do not tear down that
+        // cover first: the safe pre-Start provider would otherwise become
+        // visible for a frame before the journal's final image transition.
+        // Lock-only and legacy routes keep their existing termination order.
+        let deferSharedNativeRuntimeTermination =
+            runtimeWasRunning
+            && !removingLockScreenOnly
+            && lockScreenPlatform.capabilities
+                .usesPrivateWallpaperFramework
+        let hadNativeSharedWallpaperRoute =
+            deferSharedNativeRuntimeTermination
+            && lockScreenPlatform.isInstalled
+        var runtimeWasTerminated = !runtimeWasRunning
+        if runtimeWasRunning && !deferSharedNativeRuntimeTermination {
             try? send(
                 removingLockScreenOnly
                     ? .terminatePreservingDesktop
                     : .terminate,
                 config: currentConfig
             )
-        }
-        guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
-            throw NativeWallpaperControllerError.unavailable(
-                "The wallpaper agent did not stop, so its desktop window could not be removed."
-            )
+            guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The wallpaper agent did not stop, so its desktop window could not be removed."
+                )
+            }
+            runtimeWasTerminated = true
         }
         store.removeCommand()
         store.removeHealth()
@@ -1056,7 +1071,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             // runtime already stopped. The uninstaller keeps its marker/source
             // until the system transaction commits, so restore the previous
             // process when any part of that transaction fails.
-            if runtimeWasRunning {
+            if runtimeWasRunning && runtimeWasTerminated {
                 do {
                     store.markPaused(runtimeWasPaused)
                     store.markLockScreenOnlyAgent(removingLockScreenOnly)
@@ -1077,6 +1092,18 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             }
             throw error
         }
+
+        if deferSharedNativeRuntimeTermination {
+            // The Aerial installer has now committed the user's final
+            // Desktop route. Remove the temporary Aura cover only after that
+            // point, so the user never sees the bootstrap/pre-Start route.
+            try? send(.terminate, config: currentConfig)
+            guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The wallpaper agent did not stop, so its desktop window could not be removed."
+                )
+            }
+        }
         store.clearLockScreenOnlySource()
         store.markLockScreenOnlyAgent(false)
         let restoreStatus: WallpaperRestoreStatus
@@ -1085,6 +1112,17 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             // already preserved every current Desktop/Space in one wallpaper
             // store update. Reapplying URL backups here would affect only the
             // active Space and would visibly switch the Desktop a second time.
+            WallpaperDesktopPlatform.discardWallpaperBackupFiles(
+                appSupportPath: store.appSupportURL.path
+            )
+            store.markWallpaperRestorePending(false)
+            restoreStatus = .notNeeded
+        } else if hadNativeSharedWallpaperRoute {
+            // The native Aerial transaction already restored the complete
+            // journal, including the current user image. Never replay the
+            // older one-image backup after removing the cover: that backup is
+            // the wallpaper from before Start and would recreate the exact
+            // one-second flash this path is designed to avoid.
             WallpaperDesktopPlatform.discardWallpaperBackupFiles(
                 appSupportPath: store.appSupportURL.path
             )

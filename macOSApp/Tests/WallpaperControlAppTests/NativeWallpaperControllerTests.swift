@@ -257,6 +257,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     var failNextDesktopInstall = false
     var uninstallError: TestInstallerError?
     var lockScreenOnlyStatusOverride: LockScreenOnlyGenerationStatus?
+    var runtimeAliveProbe: (() -> Bool)?
+    private(set) var runtimeAliveDuringUninstall: Bool?
 
     var isInstalled: Bool {
         (installedVideoURL != nil || installedLockScreenOnlyVideoURL != nil)
@@ -285,6 +287,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     }
 
     func uninstall() throws {
+        runtimeAliveDuringUninstall = runtimeAliveProbe?()
         if let uninstallError {
             throw uninstallError
         }
@@ -1100,6 +1103,35 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.isLockScreenOnlyAgent() == false)
     #expect(fixture.store.loadLockScreenOnlySource() == nil)
     #expect(installer.isInstalled == false)
+}
+
+@Test func nativeSharedRemoveKeepsAuraCoverUntilUninstallCommits() async throws {
+    let fixture = try NativeRuntimeFixture("shared-remove-cover-order")
+    defer { fixture.cleanup() }
+
+    let installer = RecordingLockScreenSaverInstaller()
+    installer.requiresNativeBridge = true
+    installer.runtimeAliveProbe = {
+        guard let pid = fixture.store.loadPID() else { return false }
+        return fixture.store.processIsAlive(pid: pid)
+    }
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    let started = try await controller.start(
+        videoURL: fixture.videoURL,
+        speed: 1.0
+    )
+    #expect(fixture.store.processIsAlive(pid: started.pid))
+
+    _ = try await controller.clearWallpaper()
+
+    #expect(installer.runtimeAliveDuringUninstall == true)
+    #expect(fixture.store.loadPID() == nil)
+    #expect(fixture.store.loadConfig().show_on_lock_screen == false)
 }
 
 @Test func nativeStopPausesLockScreenOnlyWithoutUninstalling() async throws {
