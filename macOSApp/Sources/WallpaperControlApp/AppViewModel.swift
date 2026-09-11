@@ -396,7 +396,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         store: WallpaperRuntimeStore = WallpaperRuntimeStore(),
         helperURL: URL? = nil,
         lockScreenSaverInstaller: LockScreenPlatformOperating? = nil,
-        nativeBridgeURL: URL? = nil
+        nativeBridgeURL: URL? = nil,
+        nativeBridgeCapabilitiesOverride: NativeLockScreenBridgeCapabilities? = nil
     ) throws {
         self.store = store
         let helperResolution: RuntimeHelperResolution
@@ -414,7 +415,9 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         // production resolution performs the bounded startup handshake before
         // the native route is advertised as available.
         let resolvedNativeBridgeCapabilities: NativeLockScreenBridgeCapabilities
-        if nativeBridgeURL == nil {
+        if let nativeBridgeCapabilitiesOverride {
+            resolvedNativeBridgeCapabilities = nativeBridgeCapabilitiesOverride
+        } else if nativeBridgeURL == nil {
             resolvedNativeBridgeCapabilities =
                 NativeLockScreenBridgeCapabilityChecker.checkRuntime(
                     executableURL: resolvedNativeBridgeURL,

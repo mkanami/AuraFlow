@@ -1093,7 +1093,10 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let controller = try NativeWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
-        lockScreenSaverInstaller: installer
+        lockScreenSaverInstaller: installer,
+        nativeBridgeCapabilitiesOverride: NativeLockScreenBridgeCapabilities(
+            availability: .available
+        )
     )
     let videoURL = fixture.root.appendingPathComponent("wallpaper.mp4")
     try await writeTestVideo(to: videoURL)
@@ -1133,7 +1136,10 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     let controller = try NativeWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
-        lockScreenSaverInstaller: installer
+        lockScreenSaverInstaller: installer,
+        nativeBridgeCapabilitiesOverride: NativeLockScreenBridgeCapabilities(
+            availability: .available
+        )
     )
 
     let started = try await controller.start(
