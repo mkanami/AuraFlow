@@ -6,13 +6,14 @@ import Foundation
 /// reliable than keeping an open descriptor for the plist itself.
 ///
 /// The monitor is intentionally generic and does not know about AuraFlow
-/// ownership. Its callback is responsible for deciding whether a change is a
-/// user Desktop route worth journaling.
+/// ownership. Its callback is delivered serially on the monitor queue and is
+/// responsible for deciding whether a change is a user Desktop route worth
+/// journaling.
 internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
     private let directoryURL: URL
     private let storeURL: URL
     private let queue: DispatchQueue
-    private let callback: @Sendable (Data) -> Void
+    private let callback: (Data) -> Void
     private let stateLock = NSLock()
     private var source: DispatchSourceFileSystemObject?
     private var pollingTimer: DispatchSourceTimer?
@@ -24,7 +25,7 @@ internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
     internal init(
         directoryURL: URL,
         storeURL: URL,
-        callback: @escaping @Sendable (Data) -> Void
+        callback: @escaping (Data) -> Void
     ) {
         self.directoryURL = directoryURL
         self.storeURL = storeURL

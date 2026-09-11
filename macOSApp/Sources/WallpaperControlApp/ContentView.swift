@@ -1867,6 +1867,7 @@ private struct AuraLegacySpeedSlider: View {
                     .frame(height: trackHeight)
 
                 Group {
+                    #if compiler(>=6.2)
                     if #available(macOS 26.0, *) {
                         knobShape
                             .fill(Color.clear)
@@ -1875,6 +1876,10 @@ private struct AuraLegacySpeedSlider: View {
                         knobShape
                             .fill(Color.white.opacity(0.78))
                     }
+                    #else
+                    knobShape
+                        .fill(Color.white.opacity(0.78))
+                    #endif
                 }
                     .frame(width: knobSize.width, height: knobSize.height)
                     .shadow(color: Color.black.opacity(0.20), radius: 2, x: 0, y: 1)
@@ -2147,6 +2152,7 @@ private struct AuraPanelButton: View {
             .padding(.horizontal, fillWidth ? 12 : 9)
             .background {
                 ZStack {
+                    #if compiler(>=6.2)
                     if #available(macOS 26.0, *) {
                         shape
                             .fill(Color.clear)
@@ -2180,6 +2186,20 @@ private struct AuraPanelButton: View {
                         )
                         .clipShape(shape)
                     }
+                    #else
+                    shape.fill(textTone.contrastSurfaceColor.opacity(protectionOpacity))
+                    shape.fill(textTone.contrastHighlightColor.opacity(baseSurfaceOpacity))
+                    LinearGradient(
+                        colors: [
+                            textTone.contrastHighlightColor.opacity(topHighlightOpacity),
+                            textTone.contrastHighlightColor.opacity(isEnabled ? 0.045 : 0.018),
+                            textTone.contrastSurfaceColor.opacity(isEnabled ? 0.035 : 0.06),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .clipShape(shape)
+                    #endif
                 }
             }
             .overlay {
@@ -2344,6 +2364,7 @@ private struct AuraGlassButton: View {
             .padding(.horizontal, 12)
             .background {
                 ZStack {
+                    #if compiler(>=6.2)
                     if #available(macOS 26.0, *) {
                         shape
                             .fill(Color.clear)
@@ -2378,6 +2399,20 @@ private struct AuraGlassButton: View {
                         )
                         .clipShape(shape)
                     }
+                    #else
+                    shape.fill(backdropColor)
+                    shape.fill(baseTint.opacity(tintOpacity))
+                    LinearGradient(
+                        colors: [
+                            adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.12),
+                            adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.04),
+                            adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(0.025),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .clipShape(shape)
+                    #endif
                     shape.fill(pressedOverlayColor)
                 }
                 .clipShape(shape)
@@ -2451,6 +2486,7 @@ private struct AuraGlassRoundedSurface: View {
         )
 
         Group {
+            #if compiler(>=6.2)
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
@@ -2462,6 +2498,11 @@ private struct AuraGlassRoundedSurface: View {
                     .fill(material.legacyMaterial)
                     .opacity(strength)
             }
+            #else
+            shape
+                .fill(material.legacyMaterial)
+                .opacity(strength)
+            #endif
         }
         .overlay {
             if washColor != .clear {
@@ -2492,6 +2533,7 @@ private struct AuraGlassCapsuleSurface: View {
         )
 
         Group {
+            #if compiler(>=6.2)
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
@@ -2501,6 +2543,11 @@ private struct AuraGlassCapsuleSurface: View {
                     .fill(material.legacyMaterial)
                     .opacity(strength)
             }
+            #else
+            shape
+                .fill(material.legacyMaterial)
+                .opacity(strength)
+            #endif
         }
         .overlay {
             if washColor != .clear {
@@ -2527,6 +2574,7 @@ private extension AuraSurfaceMaterial {
     }
 }
 
+#if compiler(>=6.2)
 @available(macOS 26.0, *)
 private extension AuraSurfaceMaterial {
     var systemGlass: Glass {
@@ -2538,6 +2586,7 @@ private extension AuraSurfaceMaterial {
         }
     }
 }
+#endif
 
 struct AuraGlassInsetCard: View {
     var cornerRadius: CGFloat = 10
@@ -2552,6 +2601,7 @@ struct AuraGlassInsetCard: View {
         )
 
         ZStack {
+            #if compiler(>=6.2)
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
@@ -2576,6 +2626,17 @@ struct AuraGlassInsetCard: View {
                     )
                 )
             }
+            #else
+            shape.fill(
+                textTone.contrastSurfaceColor.opacity(
+                    min(
+                        0.44,
+                        (emphasized ? 0.30 : 0.22)
+                            + (protectionOpacity * 0.30)
+                    )
+                )
+            )
+            #endif
             LinearGradient(
                 colors: [
                     textTone.contrastHighlightColor.opacity(emphasized ? 0.10 : 0.065),

@@ -469,7 +469,8 @@ public final class DaemonProcessManager {
         else {
             return nil
         }
-        return String(cString: path)
+        let bytes = path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     private static func taskInfo(for pid: Int) -> proc_taskinfo? {

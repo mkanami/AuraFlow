@@ -28,9 +28,10 @@ actor NativeBridgeTransport {
         self.onRequest = onRequest
         self.onClosed = onClosed
         input.readabilityHandler = { [weak self] handle in
+            guard let transport = self else { return }
             let data = handle.availableData
             Task {
-                await self?.receive(data)
+                await transport.receive(data)
             }
         }
     }
