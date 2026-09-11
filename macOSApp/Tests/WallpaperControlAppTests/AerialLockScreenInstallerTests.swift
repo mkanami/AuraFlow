@@ -3055,14 +3055,14 @@ private func writeAerialTestVideo(to url: URL) async throws {
 
     try await fixture.installer.install(videoURL: fixture.videoURL)
     #expect(fixture.refreshCounter.count == 1)
+    let providers = wallpaperChoiceProviders(
+        try readWallpaperStore(fixture.storeURL)
+    )
     #expect(
-        wallpaperChoiceProviders(try readWallpaperStore(fixture.storeURL))
-            == Array(
-                repeating: "com.apple.wallpaper.choice.aerials",
-                count: wallpaperChoiceProviders(
-                    try readWallpaperStore(fixture.storeURL)
-                ).count
-            )
+        providers == Array(
+            repeating: "com.apple.wallpaper.choice.aerials",
+            count: providers.count
+        )
     )
 }
 
