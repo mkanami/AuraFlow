@@ -2116,14 +2116,11 @@ final class AppViewModel: ObservableObject {
             || lifecycleViewModel.pendingIntentName == "lock"
     }
 
-    /// Pause changes playback, not ownership. Start and Lock remain mutually
-    /// exclusive with an installed wallpaper until Remove clears the session.
-    private var hasInstalledWallpaperSessionForControls: Bool {
-        isRunning || isPlaybackPaused || isLockScreenOnlyActive
-    }
-
     var isStartButtonHighlighted: Bool {
-        canStart
+        selectedVideoURL != nil
+            && (!isPlaybackRunningForControls
+                || pendingPreviewVideoURL != nil)
+            && !isPlaybackPaused
     }
 
     var isStopButtonHighlighted: Bool {
@@ -2153,11 +2150,9 @@ final class AppViewModel: ObservableObject {
 
     var canStart: Bool {
         isControllerAvailable
-            && !isBusy
-            && !isLifecycleBusy
-            && !lifecycleViewModel.hasActiveOrPendingLifecycleOperation
             && !isLockScreenOnlyModeActiveForControls
-            && !hasInstalledWallpaperSessionForControls
+            && (!isPlaybackRunningForControls
+                || pendingPreviewVideoURL != nil)
             && selectedVideoURL != nil
     }
 
@@ -2168,7 +2163,8 @@ final class AppViewModel: ObservableObject {
             && !lifecycleViewModel.hasActiveOrPendingLifecycleOperation
             && lockScreenCapabilities.supportsLockScreenOnly
             && !isLockScreenOnlyModeActiveForControls
-            && !hasInstalledWallpaperSessionForControls
+            && !isPlaybackRunningForControls
+            && !(isPlaybackRunningForControls && isStaticWallpaperForControls)
             && selectedVideoURL != nil
     }
 
@@ -3020,7 +3016,14 @@ final class AppViewModel: ObservableObject {
     }
 
     func start() {
-        guard canStart else { return }
+        // Start is also the legacy resume affordance. Once Stop has been
+        // confirmed, route this click directly through the resume lifecycle
+        // operation instead of asking the start path to infer the intent
+        // again. A newly selected preview still takes the normal start path.
+        if isPlaybackPaused, pendingPreviewVideoURL == nil {
+            lifecycleViewModel.resume()
+            return
+        }
         lifecycleViewModel.start(
             selectedVideoURL: selectedVideoURL,
             hasPendingPreview: pendingPreviewVideoURL != nil
@@ -3037,7 +3040,6 @@ final class AppViewModel: ObservableObject {
     }
 
     func applyLockScreenOnly() {
-        guard canApplyLockScreenOnly else { return }
         // Preview and Lock can be requested back-to-back while a catalog
         // source is being converted. They do not share an in-flight Task, so
         // leaving preview alive starts a second conversion against the same
