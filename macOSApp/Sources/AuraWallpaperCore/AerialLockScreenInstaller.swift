@@ -1883,6 +1883,13 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                             .wallpaperStoreUpdateFailed
                     }
                 }
+                // The live NSWorkspace transition above only changes the
+                // active Space. The complete journal now contains the target
+                // route for every captured Space/display, so make the
+                // WallpaperAgent reread that final store once. Shared Remove
+                // keeps Aura's Desktop cover alive until this refresh is
+                // complete; no Dock restart or second image setter is needed.
+                try sharedDesktopRestoreSystem({ true })
                 lockScreenRemovalLogger.notice(
                     "Restored the user Desktop image across all captured Spaces; live transition confirmed=\(didReactivate, privacy: .public)"
                 )

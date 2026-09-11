@@ -811,7 +811,7 @@ private func writeAerialTestVideo(to url: URL) async throws {
 
     #expect(restoredPath == targetURL.standardizedFileURL.path)
     #expect(storeAtTransition == originalBackup)
-    #expect(fixture.refreshCounter.count == refreshCountAtTransition)
+    #expect(fixture.refreshCounter.count == refreshCountAtTransition + 1)
     #expect(
         wallpaperStoreText(try readWallpaperStore(fixture.storeURL))
             .contains(targetURL.absoluteString)
@@ -845,7 +845,7 @@ private func writeAerialTestVideo(to url: URL) async throws {
 
     try fixture.installer.uninstall()
 
-    #expect(fixture.refreshCounter.count == refreshCountAtTransition)
+    #expect(fixture.refreshCounter.count == refreshCountAtTransition + 1)
     #expect(!FileManager.default.fileExists(
         atPath: fixture.stateURL
             .appendingPathComponent("installation.json").path
