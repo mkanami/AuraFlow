@@ -851,9 +851,20 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     /// check dropped that transition permanently, leaving the installed
     /// Lock-only route invisible. Poll briefly on Main Actor so the session
     /// confirmation and AppKit hand-off remain ordered, while keeping a
-    /// bounded timeout for stale or unrelated shield notifications.
+    /// bounded timeout for stale or unrelated shield notifications. Shared
+    /// Start needs the same confirmation window because its native bridge is
+    /// presented at the shield edge before the isolated Aerial route is
+    /// promoted for the confirmed session.
     private func scheduleLockConfirmation(reason: String) {
-        guard lockScreenOnlyMode, !isTerminating else { return }
+        guard !isTerminating else { return }
+        if !lockScreenOnlyMode {
+            guard config.show_on_lock_screen == true,
+                  lockScreenPlatform.capabilities.supportsSecureLockScreen,
+                  lockScreenPlatform.requiresLockScreenSessionPromotion
+            else {
+                return
+            }
+        }
         guard lockConfirmationTask == nil else { return }
 
         lockConfirmationTask = Task { @MainActor [weak self] in
@@ -894,36 +905,45 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// `shieldWindowRaised` is the last event delivered before loginwindow
-    /// resolves its first secure frame. Pre-present only an already prepared,
-    /// validated generation here; provider startup and repair stay on the
-    /// confirmed lifecycle path. Taking the locked Wallpaper assertion does
-    /// not initiate a screen lock.
+    /// resolves its first secure frame. Lock-only pre-presents only an already
+    /// prepared, validated generation here. Shared Start may queue this show
+    /// behind its startup preparation, but it still never mutates the system
+    /// store until CGSession confirms a real lock. Taking the locked Wallpaper
+    /// assertion does not initiate a screen lock.
     private func beginEarlyLockScreenHandoff(reason: String) {
-        guard lockScreenOnlyMode,
-              !isTerminating,
-              !earlyLockScreenHandoffArmed,
-              lockScreenPlatform.capabilities.supportsLockScreenOnly,
-              store.isLockScreenAgentReady(),
-              nativeLockScreenBridge.isReady,
-              isLockScreenGenerationReady(lastLockScreenOnlyStatus)
-        else {
-            return
-        }
+        guard !isTerminating, !earlyLockScreenHandoffArmed else { return }
 
-        // Refresh the cheap signature/store contract at the hand-off edge.
-        // This never repairs or starts a provider, but prevents a cached-ready
-        // generation from being shown after macOS replaced its Aerial asset.
-        guard let videoURL = effectiveLockScreenVideoURL() else { return }
-        let liveStatus = lockScreenPlatform.lockScreenOnlyStatus(
-            videoURL: videoURL
-        )
-        guard isLockScreenGenerationReady(liveStatus),
-              liveStatus.generation == lastLockScreenOnlyStatus.generation
-        else {
+        if lockScreenOnlyMode {
+            guard lockScreenPlatform.capabilities.supportsLockScreenOnly,
+                  store.isLockScreenAgentReady(),
+                  nativeLockScreenBridge.isReady,
+                  isLockScreenGenerationReady(lastLockScreenOnlyStatus)
+            else {
+                return
+            }
+
+            // Refresh the cheap signature/store contract at the hand-off edge.
+            // This never repairs or starts a provider, but prevents a cached-ready
+            // generation from being shown after macOS replaced its Aerial asset.
+            guard let videoURL = effectiveLockScreenVideoURL() else { return }
+            let liveStatus = lockScreenPlatform.lockScreenOnlyStatus(
+                videoURL: videoURL
+            )
+            guard isLockScreenGenerationReady(liveStatus),
+                  liveStatus.generation == lastLockScreenOnlyStatus.generation
+            else {
+                lastLockScreenOnlyStatus = liveStatus
+                return
+            }
             lastLockScreenOnlyStatus = liveStatus
-            return
+        } else {
+            guard config.show_on_lock_screen == true,
+                  lockScreenPlatform.capabilities.supportsSecureLockScreen,
+                  lockScreenPlatform.requiresLockScreenSessionPromotion
+            else {
+                return
+            }
         }
-        lastLockScreenOnlyStatus = liveStatus
 
         earlyLockScreenHandoffArmed = true
         nativeLockScreenBridge.showForLockTransition { [weak self] shown in
@@ -936,7 +956,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 }
                 guard shown else {
                     self.earlyLockScreenHandoffArmed = false
-                    self.store.markLockScreenAgentReady(false)
+                    if self.lockScreenOnlyMode {
+                        self.store.markLockScreenAgentReady(false)
+                    }
                     self.writeHealth(reason: "early-lock-handoff-failed")
                     return
                 }
@@ -983,7 +1005,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     .sessionLocked,
                     reason: "session-locked"
                 )
-            } else if lockScreenPlatform.capabilities.supportsSecureLockScreen {
+            } else if lockScreenPlatform.capabilities.supportsSecureLockScreen,
+                      !earlyLockScreenHandoffArmed {
                 nativeLockScreenBridge.showForLockTransition()
             }
             writeHealth(reason: "session-inactive")
@@ -993,7 +1016,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         // Hide immediately, even if CGSession never reached the locked state.
         // This cancels an early shield handoff after a quick unlock and keeps
         // the next Lock on the already-warm bridge instead of timing out it.
-        if lockScreenOnlyMode {
+        let hadEarlyLockScreenHandoff = earlyLockScreenHandoffArmed
+        if hadEarlyLockScreenHandoff {
             cancelEarlyLockScreenHandoff()
         }
         guard sessionInactive else { return }
@@ -1021,7 +1045,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 reason: "session-unlocked"
             )
         } else {
-            if lockScreenPlatform.capabilities.supportsSecureLockScreen {
+            if lockScreenPlatform.capabilities.supportsSecureLockScreen,
+               !hadEarlyLockScreenHandoff {
                 nativeLockScreenBridge.hideAfterUnlock()
             }
             showWindows(forceOrder: true)
