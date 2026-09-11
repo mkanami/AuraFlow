@@ -753,6 +753,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func lockShieldDidRaise(_ notification: Notification) {
         guard !isTerminating else { return }
+        promoteSharedLockScreenAtShieldEdge(reason: "shield-raised")
         beginEarlyLockScreenHandoff(reason: "shield-raised")
         if isConfirmedLockScreenSession() {
             requestLockScreenLifecycle(
@@ -781,6 +782,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 ) { [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self, !self.isTerminating else { return }
+                        self.promoteSharedLockScreenAtShieldEdge(
+                            reason: "darwin-shield-raised"
+                        )
                         self.beginEarlyLockScreenHandoff(
                             reason: "darwin-shield-raised"
                         )
@@ -853,7 +857,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     /// confirmation and AppKit hand-off remain ordered, while keeping a
     /// bounded timeout for stale or unrelated shield notifications.
     private func scheduleLockConfirmation(reason: String) {
-        guard lockScreenOnlyMode, !isTerminating else { return }
+        let sharedStartNeedsPromotion = !lockScreenOnlyMode
+            && config.show_on_lock_screen == true
+            && lockScreenPlatform.requiresLockScreenSessionPromotion
+        guard !isTerminating,
+              lockScreenOnlyMode || sharedStartNeedsPromotion
+        else {
+            return
+        }
         guard lockConfirmationTask == nil else { return }
 
         lockConfirmationTask = Task { @MainActor [weak self] in
@@ -888,8 +899,45 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             self.lockConfirmationTask = nil
-            self.cancelEarlyLockScreenHandoff()
+            if self.lockScreenOnlyMode {
+                self.cancelEarlyLockScreenHandoff()
+            } else {
+                // A shield notification is not proof that loginwindow took
+                // ownership. Undo an early shared promotion when CGSession
+                // never confirms the lock, so the user's Desktop store never
+                // remains on Aura's temporary Aerial route.
+                self.restoreDesktopStoreAfterSession()
+            }
             self.writeHealth(reason: "lock-shield-unconfirmed")
+        }
+    }
+
+    /// Shared Start keeps the user's Desktop route outside Apple's wallpaper
+    /// store while the session is unlocked. Promote its already-prepared
+    /// Aerial choice at the shield edge, before loginwindow resolves the first
+    /// secure frame. Waiting for CGSession to report `locked` is too late on
+    /// some machines and leaves the previous Lock Screen selected.
+    private func promoteSharedLockScreenAtShieldEdge(reason: String) {
+        guard !lockScreenOnlyMode,
+              !isTerminating,
+              config.show_on_lock_screen == true,
+              lockScreenPlatform.requiresLockScreenSessionPromotion
+        else {
+            return
+        }
+
+        do {
+            let changed = try lockScreenPlatform
+                .activateLockScreenForCurrentSession()
+            if changed {
+                writeHealth(reason: "early-lock-promotion-ready: " + reason)
+            }
+        } catch {
+            writeHealth(
+                reason:
+                    "lock-session-promotion-failed: "
+                    + error.localizedDescription
+            )
         }
     }
 
