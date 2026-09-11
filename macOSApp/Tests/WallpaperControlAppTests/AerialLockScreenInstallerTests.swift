@@ -1303,6 +1303,49 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(fixture.rearmCounter.rearmCount == 3)
 }
 
+@Test func pausedDesktopAgentRouteStaysFrozenAcrossRepeatedLockRearms() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    let videoURL = fixture.root.appendingPathComponent(
+        "paused-desktop-agent-wallpaper.mp4"
+    )
+    try await writeAerialTestVideo(to: videoURL)
+    try await fixture.installer.installForDesktopAgent(videoURL: videoURL)
+    let runningAsset = try Data(contentsOf: fixture.assetURL)
+
+    #expect(
+        try await fixture.installer.pauseLockScreenOnlyPlayback(
+            videoURL: videoURL
+        )
+    )
+    let pausedAsset = try Data(contentsOf: fixture.assetURL)
+    let refreshCountAfterPause = fixture.rearmCounter.rearmCount
+    #expect(pausedAsset != runningAsset)
+
+    for _ in 0..<3 {
+        #expect(
+            try await fixture.installer.rearmForNextLock(videoURL: videoURL)
+                == false
+        )
+        #expect(try Data(contentsOf: fixture.assetURL) == pausedAsset)
+        #expect(fixture.rearmCounter.rearmCount == refreshCountAfterPause)
+        #expect(
+            LockScreenJournal(
+                stateDirectoryURL: fixture.stateURL,
+                fileManager: .default
+            ).loadMarker()?.state == "paused"
+        )
+    }
+
+    #expect(
+        try await fixture.installer.resumeLockScreenOnlyPlayback(
+            videoURL: videoURL
+        )
+    )
+    #expect(try Data(contentsOf: fixture.assetURL) == runningAsset)
+}
+
 @Test func modernLockScreenPlaybackSpeedIsPersistedPerGeneration() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

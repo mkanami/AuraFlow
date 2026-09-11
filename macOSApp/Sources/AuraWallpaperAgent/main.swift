@@ -2422,6 +2422,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func repairModernLockScreenIfNeeded(force: Bool = false) {
         guard !lockScreenOnlyMode,
+              !manualPaused,
+              !store.isPaused(),
               config.show_on_lock_screen == true,
               let videoURL = effectiveLockScreenVideoURL(),
               lockScreenPlatform.isInstalled,
@@ -2483,6 +2485,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func rearmModernLockScreenForNextSession() {
         guard !lockScreenOnlyMode,
+              !manualPaused,
+              !store.isPaused(),
               config.show_on_lock_screen == true,
               let videoURL = effectiveLockScreenVideoURL(),
               lockScreenPlatform.isInstalled,

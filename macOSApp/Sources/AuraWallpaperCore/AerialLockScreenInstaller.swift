@@ -927,6 +927,23 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     ) async throws -> Bool {
         try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
+                // Stop replaces the managed movie with a still-frame asset.
+                // A normal unlock rearm must preserve that state; restoring
+                // the prepared movie here silently resumes the second Lock
+                // Screen even though the persistent pause marker is still set.
+                if let marker = loadMarker(),
+                   marker.completed == true,
+                   marker.state == "paused",
+                   URL(fileURLWithPath: marker.videoPath).standardizedFileURL
+                        == videoURL.standardizedFileURL {
+                    guard shouldProceed() else { return false }
+                    if usesCanonicalWallpaperStore {
+                        try AerialProviderController.prewarmLockScreenProvider(
+                            shouldProceed: shouldProceed
+                        )
+                    }
+                    return false
+                }
                 let dedicatedLockOnly = isLockScreenOnlyInstallation
                 let isolatedDesktopAgent =
                     isDesktopAgentIsolatedInstallation
