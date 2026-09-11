@@ -49,6 +49,7 @@ internal final class AerialProviderController {
     /// Dock here produces a grey Desktop flash, while restarting every Aerial
     /// helper is unnecessary once the original asset is already back on disk.
     internal static func refreshDesktopWallpaperProvider(
+        prepareForLaunch: () throws -> Void,
         shouldProceed: () -> Bool
     ) throws {
         guard shouldProceed() else {
@@ -68,6 +69,21 @@ internal final class AerialProviderController {
         guard shouldProceed() else {
             throw AerialLockScreenOperationAbort.sessionChanged
         }
+        guard waitForProcessesToExit(
+            previousProviderPIDs.union(previousOwnerPIDs),
+            timeout: 2.0
+        ) else {
+            throw AerialLockScreenInstallerError
+                .aerialProviderRestartFailed
+        }
+        // The old WallpaperAgent can rewrite Index.plist while exiting. The
+        // caller therefore commits the complete Files-backed image route only
+        // after every old owner/provider process is gone and before the new
+        // owner is launched.
+        try prepareForLaunch()
+        guard shouldProceed() else {
+            throw AerialLockScreenOperationAbort.sessionChanged
+        }
         runProcess(
             "/usr/bin/open",
             [
@@ -82,6 +98,24 @@ internal final class AerialProviderController {
             throw AerialLockScreenInstallerError
                 .aerialProviderRestartFailed
         }
+    }
+
+    private static func waitForProcessesToExit(
+        _ processIDs: Set<Int32>,
+        timeout: TimeInterval
+    ) -> Bool {
+        guard !processIDs.isEmpty else { return true }
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            let liveProcessIDs = processIDs.filter { processID in
+                Darwin.kill(processID, 0) == 0 || errno == EPERM
+            }
+            if liveProcessIDs.isEmpty {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        } while Date() < deadline
+        return false
     }
 
     internal static func refreshLockScreenProvider(

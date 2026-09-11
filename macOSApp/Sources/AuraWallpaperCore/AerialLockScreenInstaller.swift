@@ -56,6 +56,11 @@ public enum AerialLockScreenInstallerError: LocalizedError {
 public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     private typealias ConditionalSystemAction =
         (_ shouldProceed: () -> Bool) throws -> Void
+    private typealias PreparedConditionalSystemAction =
+        (
+            _ prepareForLaunch: () throws -> Void,
+            _ shouldProceed: () -> Bool
+        ) throws -> Void
 
     public static let preferredAssetID =
         "7C643A39-C0B2-4BA0-8BC2-2EAA47CC580E"
@@ -65,7 +70,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     private let stateDirectoryURL: URL
     private let configuredAssetID: String?
     private let refreshSystem: ConditionalSystemAction
-    private let sharedDesktopRestoreSystem: ConditionalSystemAction
+    private let sharedDesktopRestoreSystem: PreparedConditionalSystemAction
     private let rearmSystem: ConditionalSystemAction
     private let desktopRestoreSystem: ConditionalSystemAction
     private let lockSessionHandoffSystem: ConditionalSystemAction
@@ -191,7 +196,10 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         self.configuredAssetID = assetID
         if let refreshSystem {
             self.refreshSystem = { _ in refreshSystem() }
-            self.sharedDesktopRestoreSystem = { _ in refreshSystem() }
+            self.sharedDesktopRestoreSystem = { prepareForLaunch, _ in
+                try prepareForLaunch()
+                refreshSystem()
+            }
         } else {
             self.refreshSystem = AerialProviderController
                 .refreshWallpaperProcesses
@@ -1757,21 +1765,21 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 from: restorationStoreData,
                 marker: marker
             )
-            // An image route restored directly from the journal is valid on
-            // disk, but WallpaperAgent may try to export it while it still
-            // owns Aura's Aerial provider. macOS then leaves choice.image in
-            // its transient empty-Files state and falls back to the original
-            // Aerial (commonly Golden Gate). Bootstrap that one route from the
-            // known-good pre-Aura store; NSWorkspace will create the live
-            // image route after the fresh provider is running.
-            let providerBootstrapStoreData =
-                sharedDesktopRemove && restoredDesktopImagePath != nil
-                ? originalStoreData
-                : restorationStoreData
-            try providerBootstrapStoreData.write(
-                to: wallpaperStoreURL,
-                options: .atomic
-            )
+            if sharedDesktopRemove && restoredDesktopImagePath != nil {
+                // A user image can already be present before Start with an
+                // opaque Configuration and an empty Files array. A fresh
+                // WallpaperAgent cannot resolve that descriptor and falls
+                // back to Aerial/Golden Gate. Normalize every image route
+                // before the provider is relaunched, including the untouched
+                // pre-Start backup when no live wallpaper change occurred.
+                restorationStoreData = try wallpaperStoreTransaction
+                    .wallpaperStoreDataByNormalizingImageDescriptors(
+                        restorationStoreData,
+                        preferredSystemWallpaperURL:
+                            userSystemWallpaperURL
+                                ?? marker.originalSystemWallpaperURL
+                    )
+            }
             if fileManager.fileExists(atPath: assetBackupURL.path) {
                 try replaceFile(
                     at: assetURL,
@@ -1790,25 +1798,60 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                       marker.originalThumbnailExisted == false {
                 try? fileManager.removeItem(at: thumbnailURL)
             }
-            if marker.systemWallpaperURLWasCaptured == true {
-                guard applyRestoredSystemWallpaperURL(
-                    from: providerBootstrapStoreData,
-                    marker: marker
-                ) else {
-                    throw AerialLockScreenInstallerError
-                        .wallpaperStoreUpdateFailed
-                }
-                systemWallpaperURLMutated = true
-            }
             if sharedDesktopRemove {
                 if restoredDesktopImagePath != nil {
-                    // Do not restart Dock. Once the safe provider is ready,
-                    // the image transition below owns visible presentation.
-                    try sharedDesktopRestoreSystem({ true })
+                    // Stop the old WallpaperAgent before committing the image
+                    // store. Otherwise that old owner can observe the write
+                    // while it still owns Aura's Aerial provider and flush an
+                    // empty-Files descriptor back to disk during shutdown.
+                    try sharedDesktopRestoreSystem({
+                        try restorationStoreData.write(
+                            to: wallpaperStoreURL,
+                            options: .atomic
+                        )
+                        if marker.systemWallpaperURLWasCaptured == true {
+                            guard applyRestoredSystemWallpaperURL(
+                                from: restorationStoreData,
+                                marker: marker
+                            ) else {
+                                throw AerialLockScreenInstallerError
+                                    .wallpaperStoreUpdateFailed
+                            }
+                            systemWallpaperURLMutated = true
+                        }
+                    }, { true })
                 } else {
+                    try restorationStoreData.write(
+                        to: wallpaperStoreURL,
+                        options: .atomic
+                    )
+                    if marker.systemWallpaperURLWasCaptured == true {
+                        guard applyRestoredSystemWallpaperURL(
+                            from: restorationStoreData,
+                            marker: marker
+                        ) else {
+                            throw AerialLockScreenInstallerError
+                                .wallpaperStoreUpdateFailed
+                        }
+                        systemWallpaperURLMutated = true
+                    }
                     try refreshSystem({ true })
                 }
             } else {
+                try restorationStoreData.write(
+                    to: wallpaperStoreURL,
+                    options: .atomic
+                )
+                if marker.systemWallpaperURLWasCaptured == true {
+                    guard applyRestoredSystemWallpaperURL(
+                        from: restorationStoreData,
+                        marker: marker
+                    ) else {
+                        throw AerialLockScreenInstallerError
+                            .wallpaperStoreUpdateFailed
+                    }
+                    systemWallpaperURLMutated = true
+                }
                 // Keep the lock-only stabilization path unchanged: it must
                 // preserve independent Space/display Desktop routes while
                 // WallpaperAgent is settling the Lock Screen route.
@@ -1848,13 +1891,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     }
                 }
             }
-            // NSWorkspace must first make the image provider live on the
-            // active Desktop. It initially writes only that Space and can
-            // leave Files empty while the image is being acquired. After the
-            // target is visibly confirmed, commit the already-captured full
-            // journal so every hidden Space receives the same valid Files +
-            // Configuration descriptor. Never restart WallpaperAgent after
-            // this final store write.
+            // The fresh provider starts from the complete normalized journal,
+            // including every captured Space/display. NSWorkspace now owns
+            // the live temporary -> target transition. Do not write the old
+            // journal or restart WallpaperAgent after it succeeds: either
+            // action can replace macOS's working descriptor with stale data.
             if let restoredDesktopImagePath {
                 let didReactivate = sharedDesktopImageRestoreHook?(
                     restoredDesktopImagePath
@@ -1870,26 +1911,6 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                         "The live image transition was not confirmed; committing the captured user Desktop route without restarting Aura"
                     )
                 }
-                try restorationStoreData.write(
-                    to: wallpaperStoreURL,
-                    options: .atomic
-                )
-                if marker.systemWallpaperURLWasCaptured == true {
-                    guard applyRestoredSystemWallpaperURL(
-                        from: restorationStoreData,
-                        marker: marker
-                    ) else {
-                        throw AerialLockScreenInstallerError
-                            .wallpaperStoreUpdateFailed
-                    }
-                }
-                // The live NSWorkspace transition above only changes the
-                // active Space. The complete journal now contains the target
-                // route for every captured Space/display, so make the
-                // WallpaperAgent reread that final store once. Shared Remove
-                // keeps Aura's Desktop cover alive until this refresh is
-                // complete; no Dock restart or second image setter is needed.
-                try sharedDesktopRestoreSystem({ true })
                 lockScreenRemovalLogger.notice(
                     "Restored the user Desktop image across all captured Spaces; live transition confirmed=\(didReactivate, privacy: .public)"
                 )
@@ -2456,14 +2477,19 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     ) -> String? {
         guard (usesCanonicalWallpaperStore
                 || sharedDesktopImageRestoreHook != nil),
-              markerStoreIncludesDesktop(marker),
-              let userURL = wallpaperStoreTransaction
-                  .latestUserSystemWallpaperURL(
+              markerStoreIncludesDesktop(marker)
+        else {
+            return nil
+        }
+        let userURL = wallpaperStoreTransaction
+            .latestUserSystemWallpaperURL(
                       from: storeData,
                       managedAssetID: marker.assetID
-                  ),
+                  ) ?? marker.originalSystemWallpaperURL
+        guard let userURL,
               let url = URL(string: userURL),
               url.isFileURL,
+              WallpaperMediaKind.forURL(url).isStaticImage,
               fileManager.fileExists(atPath: url.path)
         else {
             return nil

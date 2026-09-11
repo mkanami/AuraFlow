@@ -704,6 +704,41 @@ internal final class WallpaperStoreTransaction {
         )
     }
 
+    /// Makes every user image choice independently resolvable by a freshly
+    /// launched WallpaperAgent. macOS can persist a working image choice with
+    /// an opaque Configuration and an empty Files array; that survives while
+    /// the current owner is alive but fails with NSCocoaErrorDomain 4865 after
+    /// the owner is restarted.
+    func wallpaperStoreDataByNormalizingImageDescriptors(
+        _ data: Data,
+        preferredSystemWallpaperURL: String?
+    ) throws -> Data {
+        guard var root = try propertyListDictionary(from: data) else {
+            throw AerialLockScreenInstallerError.malformedWallpaperStore
+        }
+        root = mapWallpaperContainers(in: root) { container in
+            var result = container
+            if let desktop = result["Desktop"] as? [String: Any] {
+                result["Desktop"] = normalizeImageModeFiles(
+                    desktop,
+                    preferredSystemWallpaperURL: preferredSystemWallpaperURL
+                )
+            }
+            if let linked = result["Linked"] as? [String: Any] {
+                result["Linked"] = normalizeImageModeFiles(
+                    linked,
+                    preferredSystemWallpaperURL: preferredSystemWallpaperURL
+                )
+            }
+            return result
+        }
+        return try PropertyListSerialization.data(
+            fromPropertyList: root,
+            format: .binary,
+            options: 0
+        )
+    }
+
     /// Captures the newest user-owned wallpaper topology independently from
     /// Aura's temporary Desktop/Idle routes. If a journal URL was supplied at
     /// initialization, it is read and updated with the same semantics used by

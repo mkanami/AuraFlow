@@ -51,6 +51,12 @@ private final class WallpaperStoreSnapshotBox: @unchecked Sendable {
         defer { lock.unlock() }
         return values.contains(value)
     }
+
+    var last: Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return values.last
+    }
 }
 
 private final class DesktopImageTransitionRecorder: @unchecked Sendable {
@@ -779,16 +785,93 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(FileManager.default.fileExists(atPath: temporaryURL.path))
 }
 
+@Test func sharedRemoveNormalizesPreStartImageBeforeProviderLaunchAndPreservesSystemTransition() async throws {
+    let refreshSnapshots = WallpaperStoreSnapshotBox()
+    let fixture = try AerialLockScreenFixture(onRefresh: { storeURL in
+        if let data = try? Data(contentsOf: storeURL) {
+            refreshSnapshots.append(data)
+        }
+    })
+    defer { fixture.cleanup() }
+
+    let targetURL = fixture.root.appendingPathComponent("pre-start-user.jpg")
+    try Data("pre-start-user-image".utf8).write(to: targetURL)
+    let emptyFilesImageMode = AerialLockScreenFixture.makeMode(
+        provider: WallpaperPlatformConstants.imageProviderID,
+        configuration: [
+            "type": "imageFile",
+            "url": ["relative": targetURL.absoluteString],
+        ]
+    )
+    var preStartRoot = try readWallpaperStore(fixture.storeURL)
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        var container = try #require(preStartRoot[key] as? [String: Any])
+        container["Desktop"] = emptyFilesImageMode
+        preStartRoot[key] = container
+    }
+    try writeWallpaperStore(preStartRoot, to: fixture.storeURL)
+
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+
+    var systemTransitionRoot = try PropertyListSerialization.propertyList(
+        from: testImageWallpaperStoreData(
+            url: targetURL,
+            timestamp: Date(timeIntervalSince1970: 9_000)
+        ),
+        options: [],
+        format: nil
+    ) as! [String: Any]
+    systemTransitionRoot["SystemTransitionSentinel"] = "must-survive"
+    let systemTransitionData = try PropertyListSerialization.data(
+        fromPropertyList: systemTransitionRoot,
+        format: .binary,
+        options: 0
+    )
+    fixture.installer.sharedDesktopImageRestoreHook = { path in
+        guard URL(fileURLWithPath: path).standardizedFileURL ==
+                targetURL.standardizedFileURL
+        else {
+            return false
+        }
+        try? systemTransitionData.write(
+            to: fixture.storeURL,
+            options: .atomic
+        )
+        return true
+    }
+
+    try fixture.installer.uninstall()
+
+    let providerLaunchData = try #require(refreshSnapshots.last)
+    let providerLaunchRoot = try #require(
+        PropertyListSerialization.propertyList(
+            from: providerLaunchData,
+            options: [],
+            format: nil
+        ) as? [String: Any]
+    )
+    for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+        let container = try #require(
+            providerLaunchRoot[key] as? [String: Any]
+        )
+        let desktop = try #require(container["Desktop"] as? [String: Any])
+        let content = try #require(desktop["Content"] as? [String: Any])
+        let choice = try #require(
+            (content["Choices"] as? [[String: Any]])?.first
+        )
+        let files = try #require(choice["Files"] as? [[String: Any]])
+        #expect(files.first?["relative"] as? String == targetURL.absoluteString)
+    }
+    #expect(try Data(contentsOf: fixture.storeURL) == systemTransitionData)
+    #expect(!fixture.installer.isInstalled)
+}
+
 @Test func sharedRemoveCleansRecoveryOnlyAfterImageTransitionSucceeds() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
     try await fixture.installer.install(videoURL: fixture.videoURL)
     let targetURL = fixture.root.appendingPathComponent("selected-user.png")
     try Data("selected-user".utf8).write(to: targetURL)
-    let originalBackup = try Data(
-        contentsOf: fixture.stateURL
-            .appendingPathComponent("Index.before-auraflow.plist")
-    )
     var root = try readWallpaperStore(fixture.storeURL)
     let mode = try testImageWallpaperMode(url: targetURL, timestamp: Date())
     for key in ["AllSpacesAndDisplays", "SystemDefault"] {
@@ -810,8 +893,12 @@ private func writeAerialTestVideo(to url: URL) async throws {
     try fixture.installer.uninstall()
 
     #expect(restoredPath == targetURL.standardizedFileURL.path)
-    #expect(storeAtTransition == originalBackup)
-    #expect(fixture.refreshCounter.count == refreshCountAtTransition + 1)
+    #expect(
+        storeAtTransition.map(wallpaperStoreText)?.contains(
+            targetURL.absoluteString
+        ) == true
+    )
+    #expect(fixture.refreshCounter.count == refreshCountAtTransition)
     #expect(
         wallpaperStoreText(try readWallpaperStore(fixture.storeURL))
             .contains(targetURL.absoluteString)
@@ -845,7 +932,7 @@ private func writeAerialTestVideo(to url: URL) async throws {
 
     try fixture.installer.uninstall()
 
-    #expect(fixture.refreshCounter.count == refreshCountAtTransition + 1)
+    #expect(fixture.refreshCounter.count == refreshCountAtTransition)
     #expect(!FileManager.default.fileExists(
         atPath: fixture.stateURL
             .appendingPathComponent("installation.json").path
