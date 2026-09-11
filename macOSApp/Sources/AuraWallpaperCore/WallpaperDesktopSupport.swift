@@ -8,7 +8,6 @@ internal struct DesktopImageTransitionOperations {
     var readWallpaperStore: () -> Data?
     var pause: (TimeInterval) -> Void
     var setSystemWallpaperURL: ((URL) -> Bool)? = nil
-    var applyToAllDesktopSpaces: ((URL) -> Bool)? = nil
 }
 
 public enum WallpaperDesktopSupport {
@@ -260,28 +259,32 @@ public enum WallpaperDesktopSupport {
             return false
         }
         temporaryTransitionAttempted = true
-        let applyForTransition = operations.applyToAllDesktopSpaces
-            ?? operations.applyToCurrentScreens
-        guard applyForTransition(temporaryURL),
-              waitForDesktopImageTransition(
-                  to: temporaryURL,
-                  after: storeBeforeTemporary,
-                  managedAssetID: managedAssetID,
-                  operations: operations
-              ),
-              let storeBeforeTarget = operations.readWallpaperStore(),
-              applyForTransition(restorationURL),
-              waitForDesktopImageTransition(
-                  to: restorationURL,
-                  after: storeBeforeTarget,
-                  managedAssetID: managedAssetID,
-                  operations: operations
-              )
+        guard operations.applyToCurrentScreens(temporaryURL) else {
+            return false
+        }
+        _ = waitForDesktopImageTransition(
+            to: temporaryURL,
+            after: storeBeforeTemporary,
+            managedAssetID: managedAssetID,
+            operations: operations
+        )
+
+        // A delayed temporary export must never prevent the real target from
+        // being sent. The full journal commit performed by the installer is
+        // the persistent source of truth; this transition only establishes a
+        // live image provider for the active Desktop.
+        guard let storeBeforeTarget = operations.readWallpaperStore(),
+              operations.applyToCurrentScreens(restorationURL)
         else {
             return false
         }
-        finalTransitionConfirmed = true
-        return true
+        finalTransitionConfirmed = waitForDesktopImageTransition(
+            to: restorationURL,
+            after: storeBeforeTarget,
+            managedAssetID: managedAssetID,
+            operations: operations
+        )
+        return finalTransitionConfirmed
     }
 
     private static func productionTransitionOperations(
@@ -316,45 +319,8 @@ public enum WallpaperDesktopSupport {
             },
             setSystemWallpaperURL: { url in
                 setTransitionSystemWallpaperURL(url)
-            },
-            applyToAllDesktopSpaces: { url in
-                applyToAllDesktopSpaces(url)
             }
         )
-    }
-
-    /// Applies a transition to every Space on every display. The public
-    /// NSWorkspace setter normally targets only the active Space; the
-    /// all-Spaces option is required here because the other Spaces can keep
-    /// Aerial/Golden Gate even though the active Desktop reports the restored
-    /// image.
-    private static func applyToAllDesktopSpaces(_ url: URL) -> Bool {
-        let standardizedURL = url.standardizedFileURL
-        guard FileManager.default.fileExists(atPath: standardizedURL.path) else {
-            return false
-        }
-
-        let screens = NSScreen.screens
-        guard !screens.isEmpty else { return false }
-        let allSpacesKey = NSWorkspace.DesktopImageOptionKey(
-            rawValue: "NSWorkspaceDesktopImageAllSpacesKey"
-        )
-        let options: [NSWorkspace.DesktopImageOptionKey: Any] = [
-            allSpacesKey: true,
-        ]
-        var appliedToEveryScreen = true
-        for screen in screens {
-            do {
-                try NSWorkspace.shared.setDesktopImageURL(
-                    standardizedURL,
-                    for: screen,
-                    options: options
-                )
-            } catch {
-                appliedToEveryScreen = false
-            }
-        }
-        return appliedToEveryScreen
     }
 
     private static func durableRestorationURL(
@@ -470,12 +436,10 @@ public enum WallpaperDesktopSupport {
         managedAssetID: String,
         operations: DesktopImageTransitionOperations
     ) -> Bool {
-        // WallpaperAgent exports an image asynchronously. The store and
-        // NSWorkspace can report the target before that export has settled;
-        // a short three-sample check lets the agent later fall back to Aerial
-        // with NSCocoaErrorDomain 4865. Require a full quiet second and allow
-        // slow HEIC/JPEG exports enough time to finish.
-        let timeout: TimeInterval = 8.0
+        // WallpaperAgent exports an image asynchronously. Require a short
+        // stable window, then let the installer's complete Files-backed
+        // journal become the final persistent route without another restart.
+        let timeout: TimeInterval = 4.0
         let pollInterval: TimeInterval = 0.1
         let deadline = Date().addingTimeInterval(timeout)
         var stableSamples = 0
@@ -498,7 +462,7 @@ public enum WallpaperDesktopSupport {
                ),
                operations.currentScreensMatch(expectedURL) {
                 stableSamples += 1
-                if stableSamples >= 10 {
+                if stableSamples >= 3 {
                     return true
                 }
             } else {

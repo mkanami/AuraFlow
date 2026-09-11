@@ -55,7 +55,6 @@ private final class WallpaperStoreSnapshotBox: @unchecked Sendable {
 
 private final class DesktopImageTransitionRecorder: @unchecked Sendable {
     private(set) var appliedURLs: [URL] = []
-    private(set) var appliedToAllDesktopSpaceURLs: [URL] = []
     private(set) var storeData: Data
     private var activeURL: URL?
     private let targetURL: URL?
@@ -69,13 +68,8 @@ private final class DesktopImageTransitionRecorder: @unchecked Sendable {
         self.targetURL = activeURL
     }
 
-    func operations(
-        applyToAllDesktopSpaces: Bool = false
-    ) -> DesktopImageTransitionOperations {
+    func operations() -> DesktopImageTransitionOperations {
         let apply: (URL) -> Bool = { [self] url in
-            if applyToAllDesktopSpaces {
-                appliedToAllDesktopSpaceURLs.append(url)
-            }
             appliedURLs.append(url)
             if appliedURLs.count == 1,
                let targetURL,
@@ -109,8 +103,7 @@ private final class DesktopImageTransitionRecorder: @unchecked Sendable {
                 activeURL?.standardizedFileURL == url.standardizedFileURL
             },
             readWallpaperStore: { [self] in storeData },
-            pause: { _ in },
-            applyToAllDesktopSpaces: applyToAllDesktopSpaces ? apply : nil
+            pause: { _ in }
         )
     }
 }
@@ -723,12 +716,11 @@ private func writeAerialTestVideo(to url: URL) async throws {
                 appSupportPath: root.path,
                 managedAssetID: AerialLockScreenFixture.assetID,
                 wallpaperStoreURL: root.appendingPathComponent("unused.plist"),
-                operations: recorder.operations(applyToAllDesktopSpaces: true)
+                operations: recorder.operations()
             )
 
         #expect(restored)
         #expect(recorder.appliedURLs.count == 2)
-        #expect(recorder.appliedToAllDesktopSpaceURLs.count == 2)
         let temporaryURL = try #require(recorder.appliedURLs.first)
         #expect(
             temporaryURL.standardizedFileURL
@@ -793,6 +785,10 @@ private func writeAerialTestVideo(to url: URL) async throws {
     try await fixture.installer.install(videoURL: fixture.videoURL)
     let targetURL = fixture.root.appendingPathComponent("selected-user.png")
     try Data("selected-user".utf8).write(to: targetURL)
+    let originalBackup = try Data(
+        contentsOf: fixture.stateURL
+            .appendingPathComponent("Index.before-auraflow.plist")
+    )
     var root = try readWallpaperStore(fixture.storeURL)
     let mode = try testImageWallpaperMode(url: targetURL, timestamp: Date())
     for key in ["AllSpacesAndDisplays", "SystemDefault"] {
@@ -803,16 +799,23 @@ private func writeAerialTestVideo(to url: URL) async throws {
     try writeWallpaperStore(root, to: fixture.storeURL)
     var refreshCountAtTransition = -1
     var restoredPath: String?
+    var storeAtTransition: Data?
     fixture.installer.sharedDesktopImageRestoreHook = { path in
         restoredPath = path
         refreshCountAtTransition = fixture.refreshCounter.count
+        storeAtTransition = try? Data(contentsOf: fixture.storeURL)
         return true
     }
 
     try fixture.installer.uninstall()
 
     #expect(restoredPath == targetURL.standardizedFileURL.path)
+    #expect(storeAtTransition == originalBackup)
     #expect(fixture.refreshCounter.count == refreshCountAtTransition)
+    #expect(
+        wallpaperStoreText(try readWallpaperStore(fixture.storeURL))
+            .contains(targetURL.absoluteString)
+    )
     #expect(!FileManager.default.fileExists(
         atPath: fixture.stateURL
             .appendingPathComponent("installation.json").path
@@ -820,7 +823,7 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(!fixture.installer.isInstalled)
 }
 
-@Test func failedSharedImageTransitionPreservesRecoveryJournal() async throws {
+@Test func unconfirmedSharedImageTransitionDoesNotRestartAura() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
     try await fixture.installer.install(videoURL: fixture.videoURL)
@@ -834,25 +837,24 @@ private func writeAerialTestVideo(to url: URL) async throws {
         root[key] = container
     }
     try writeWallpaperStore(root, to: fixture.storeURL)
-    fixture.installer.sharedDesktopImageRestoreHook = { _ in false }
-
-    var didThrow = false
-    do {
-        try fixture.installer.uninstall()
-    } catch {
-        didThrow = true
+    var refreshCountAtTransition = -1
+    fixture.installer.sharedDesktopImageRestoreHook = { _ in
+        refreshCountAtTransition = fixture.refreshCounter.count
+        return false
     }
 
-    #expect(didThrow)
-    #expect(FileManager.default.fileExists(
+    try fixture.installer.uninstall()
+
+    #expect(fixture.refreshCounter.count == refreshCountAtTransition)
+    #expect(!FileManager.default.fileExists(
         atPath: fixture.stateURL
             .appendingPathComponent("installation.json").path
     ))
-    #expect(FileManager.default.fileExists(
-        atPath: fixture.stateURL
-            .appendingPathComponent("Index.before-auraflow.plist").path
-    ))
-    #expect(fixture.installer.isInstalled)
+    #expect(!fixture.installer.isInstalled)
+    #expect(
+        wallpaperStoreText(try readWallpaperStore(fixture.storeURL))
+            .contains(targetURL.absoluteString)
+    )
 }
 
 @Test func imageTransitionIsNeverUsedForLockOnlyOrNativeDesktopProvider() async throws {

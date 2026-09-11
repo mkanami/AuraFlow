@@ -42,6 +42,48 @@ internal final class AerialProviderController {
         }
     }
 
+    /// Reloads only the process that owns the Desktop wallpaper provider.
+    ///
+    /// Shared Remove uses this after restoring a safe pre-Aura store and
+    /// before asking NSWorkspace to select the user's latest image. Restarting
+    /// Dock here produces a grey Desktop flash, while restarting every Aerial
+    /// helper is unnecessary once the original asset is already back on disk.
+    internal static func refreshDesktopWallpaperProvider(
+        shouldProceed: () -> Bool
+    ) throws {
+        guard shouldProceed() else {
+            throw AerialLockScreenOperationAbort.sessionChanged
+        }
+        let previousProviderPIDs = processIdentifiers(
+            named: WallpaperPlatformConstants.aerialExtensionProcessName
+        )
+        let previousOwnerPIDs = processIdentifiers(
+            named: WallpaperPlatformConstants.wallpaperAgentProcessName
+        )
+
+        runProcess(
+            "/usr/bin/killall",
+            [WallpaperPlatformConstants.wallpaperAgentProcessName]
+        )
+        guard shouldProceed() else {
+            throw AerialLockScreenOperationAbort.sessionChanged
+        }
+        runProcess(
+            "/usr/bin/open",
+            [
+                "-gja",
+                WallpaperPlatformConstants.wallpaperAgentApplicationPath,
+            ]
+        )
+        guard waitForFreshWallpaperRuntime(
+            excludingProviders: previousProviderPIDs,
+            excludingOwners: previousOwnerPIDs
+        ) else {
+            throw AerialLockScreenInstallerError
+                .aerialProviderRestartFailed
+        }
+    }
+
     internal static func refreshLockScreenProvider(
         shouldProceed: () -> Bool
     ) throws {
