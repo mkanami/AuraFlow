@@ -439,7 +439,7 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
-@Test func localVideoSelectionWaitsForExplicitStartWhileWallpaperRuns() async throws {
+@Test func localVideoSelectionRequiresRemoveWhileWallpaperRuns() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.local-preview-start")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.local-preview-start")
@@ -486,19 +486,14 @@ private func pngData(for image: CGImage) -> Data {
     #expect(controller.startCallCount == 1)
     #expect(viewModel.isRunning)
     #expect(viewModel.currentVideoURL == secondURL.standardizedFileURL)
-    #expect(viewModel.canStart)
+    #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly == false)
 
     viewModel.start()
-    for _ in 0..<20 {
-        if controller.lastConfiguredVideoURL == secondURL
-            && controller.startCallCount == 2 {
-            break
-        }
-        try? await Task.sleep(nanoseconds: 25_000_000)
-    }
+    try? await Task.sleep(nanoseconds: 100_000_000)
 
-    #expect(controller.lastConfiguredVideoURL == secondURL)
-    #expect(controller.startCallCount == 2)
+    #expect(controller.lastConfiguredVideoURL == firstURL)
+    #expect(controller.startCallCount == 1)
 }
 
 @MainActor
@@ -556,7 +551,7 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
-@Test func pausedWallpaperStartResumesWithoutReloading() async throws {
+@Test func pausedWallpaperCanResumeOnlyThroughPlay() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.paused-start-resume")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.paused-start-resume")
@@ -597,6 +592,14 @@ private func pngData(for image: CGImage) -> Data {
     }
 
     viewModel.start()
+    try? await Task.sleep(nanoseconds: 100_000_000)
+
+    #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly == false)
+    #expect(controller.resumeCallCount == 0)
+    #expect(viewModel.isPlaybackPaused)
+
+    viewModel.togglePlayback()
     for _ in 0..<20 {
         if controller.resumeCallCount == 1 && viewModel.isPlaybackActive {
             break
@@ -1350,8 +1353,8 @@ private func pngData(for image: CGImage) -> Data {
     #expect(viewModel.isPlaybackPaused)
     #expect(viewModel.isStartButtonHighlighted == false)
     #expect(viewModel.isStopButtonHighlighted)
-    #expect(viewModel.canStart)
-    #expect(viewModel.canApplyLockScreenOnly)
+    #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly == false)
     #expect(viewModel.canStop == false)
     #expect(viewModel.canTogglePlayback)
     #expect(viewModel.playbackButtonTitle == "Play")
@@ -1569,6 +1572,23 @@ private func pngData(for image: CGImage) -> Data {
         if viewModel.isPlaybackPaused { break }
         try? await Task.sleep(nanoseconds: 25_000_000)
     }
+
+    #expect(viewModel.isPlaybackPaused)
+    #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly == false)
+
+    viewModel.clearWallpaper()
+    for _ in 0..<40 {
+        if !viewModel.isPlaybackPaused,
+           !viewModel.isRunning,
+           !viewModel.isLifecycleBusy {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(viewModel.canStart)
+    #expect(viewModel.canApplyLockScreenOnly)
 
     viewModel.applyLockScreenOnly()
     for _ in 0..<40 {
