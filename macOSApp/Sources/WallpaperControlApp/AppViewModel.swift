@@ -4383,10 +4383,13 @@ final class AppViewModel: ObservableObject {
                     return
                 }
 
-                let currentURL = self.selectedVideoURL?.standardizedFileURL
-                let appliedURL = self.appliedVideoURL?.standardizedFileURL
-                let pendingURL = self.pendingPreviewVideoURL?.standardizedFileURL
-                guard currentURL == requestedURL || appliedURL == requestedURL || pendingURL == requestedURL else {
+                guard Self.shouldAcceptAdaptiveGlassAnalysis(
+                    requestedURL: requestedURL,
+                    displayedPreviewURL: self.previewPlayerURL,
+                    selectedURL: self.selectedVideoURL,
+                    appliedURL: self.appliedVideoURL,
+                    pendingURL: self.pendingPreviewVideoURL
+                ) else {
                     return
                 }
 
@@ -4397,6 +4400,26 @@ final class AppViewModel: ObservableObject {
                 )
             }
         }
+    }
+
+    /// The player item is authoritative after compatibility conversion. The
+    /// selected/pending URL can intentionally remain the original WebM or GIF
+    /// while the preview displays a prepared MP4; rejecting that MP4's color
+    /// analysis leaves the whole UI on its temporary black-text fallback.
+    nonisolated static func shouldAcceptAdaptiveGlassAnalysis(
+        requestedURL: URL,
+        displayedPreviewURL: URL?,
+        selectedURL: URL?,
+        appliedURL: URL?,
+        pendingURL: URL?
+    ) -> Bool {
+        let requested = requestedURL.standardizedFileURL
+        if let displayedPreviewURL {
+            return displayedPreviewURL.standardizedFileURL == requested
+        }
+        return [selectedURL, appliedURL, pendingURL]
+            .compactMap { $0?.standardizedFileURL }
+            .contains(requested)
     }
 
     nonisolated static func adaptiveGlassAppearance(for url: URL, scaleMode: WallpaperScaleMode) -> AdaptiveGlassAppearance {

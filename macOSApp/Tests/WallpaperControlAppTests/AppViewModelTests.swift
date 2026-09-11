@@ -797,6 +797,22 @@ private func pngData(for image: CGImage) -> Data {
     #expect(appearance.bottomButtonProtectionOpacity > 0.005)
 }
 
+@Test func adaptiveGlassAppearanceIncludesBlackBarsFromAspectFit() {
+    let portrait = solidImage(width: 60, height: 120, value: 248)
+
+    let fitAppearance = AdaptiveContrastAnalyzer.appearance(
+        for: portrait,
+        scaleMode: .fit
+    )
+    let fillAppearance = AdaptiveContrastAnalyzer.appearance(
+        for: portrait,
+        scaleMode: .fill
+    )
+
+    #expect(fitAppearance.textTone == .light)
+    #expect(fillAppearance.textTone == .dark)
+}
+
 @Test func adaptiveGlassAppearanceAggregatesBrightAndDarkVideoFrames() {
     let bright = solidImage(width: 144, height: 90, value: 248)
     let dark = solidImage(width: 144, height: 90, value: 28)
@@ -921,6 +937,32 @@ private func pngData(for image: CGImage) -> Data {
     let fallback = AppViewModel.adaptiveGlassAppearance(for: url, scaleMode: .fill)
     #expect(fallback.textTone == .dark)
     #expect(fallback.bottomProtectionOverlayOpacity > 0.5)
+}
+
+@Test func adaptiveAnalysisAcceptsThePreparedFileActuallyShownByPreview() {
+    let sourceURL = URL(fileURLWithPath: "/tmp/catalog-source.webm")
+    let preparedURL = URL(fileURLWithPath: "/tmp/prepared-preview.mp4")
+
+    #expect(AppViewModel.shouldAcceptAdaptiveGlassAnalysis(
+        requestedURL: preparedURL,
+        displayedPreviewURL: preparedURL,
+        selectedURL: sourceURL,
+        appliedURL: nil,
+        pendingURL: sourceURL
+    ))
+}
+
+@Test func adaptiveAnalysisRejectsAStaleSourceAfterPlayerReplacement() {
+    let oldURL = URL(fileURLWithPath: "/tmp/old-preview.mp4")
+    let newURL = URL(fileURLWithPath: "/tmp/new-preview.mp4")
+
+    #expect(!AppViewModel.shouldAcceptAdaptiveGlassAnalysis(
+        requestedURL: oldURL,
+        displayedPreviewURL: newURL,
+        selectedURL: oldURL,
+        appliedURL: oldURL,
+        pendingURL: nil
+    ))
 }
 
 @MainActor

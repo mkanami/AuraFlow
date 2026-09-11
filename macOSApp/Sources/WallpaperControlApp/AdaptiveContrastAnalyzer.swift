@@ -15,7 +15,7 @@ struct AdaptiveContrastAnalysis {
 /// Computes one stable text polarity for the whole application while keeping
 /// the amount of protection local to each glass surface.
 enum AdaptiveContrastAnalyzer {
-    static let version = "adaptive-contrast-v3"
+    static let version = "adaptive-contrast-v4"
 
     private final class AppearanceCache: @unchecked Sendable {
         private let lock = NSLock()
@@ -143,7 +143,7 @@ enum AdaptiveContrastAnalyzer {
             return nil
         }
 
-        let result = makeAppearance(for: frames)
+        let result = makeAppearance(for: frames, scaleMode: scaleMode)
         cache.setObject(
             AppearanceCacheEntry(
                 appearance: result.appearance,
@@ -191,7 +191,7 @@ enum AdaptiveContrastAnalyzer {
             return nil
         }
 
-        let result = makeAppearance(for: frames)
+        let result = makeAppearance(for: frames, scaleMode: scaleMode)
         cache.setObject(
             AppearanceCacheEntry(
                 appearance: result.appearance,
@@ -216,11 +216,18 @@ enum AdaptiveContrastAnalyzer {
     }
 
     static func appearance(for cgImage: CGImage) -> AdaptiveGlassAppearance {
-        makeAppearance(for: [cgImage]).appearance
+        makeAppearance(for: [cgImage], scaleMode: .fill).appearance
+    }
+
+    static func appearance(
+        for cgImage: CGImage,
+        scaleMode: WallpaperScaleMode
+    ) -> AdaptiveGlassAppearance {
+        makeAppearance(for: [cgImage], scaleMode: scaleMode).appearance
     }
 
     static func appearance(for frames: [CGImage]) -> AdaptiveGlassAppearance {
-        makeAppearance(for: frames).appearance
+        makeAppearance(for: frames, scaleMode: .fill).appearance
     }
 
     static func sourceSignature(for url: URL) -> String? {
@@ -357,9 +364,12 @@ enum AdaptiveContrastAnalyzer {
     }
 
     private static func makeAppearance(
-        for images: [CGImage]
+        for images: [CGImage],
+        scaleMode: WallpaperScaleMode
     ) -> (appearance: AdaptiveGlassAppearance, selectedToneScore: CGFloat, alternateToneScore: CGFloat) {
-        let profiles = images.compactMap(frameProfile(for:))
+        let profiles = images.compactMap {
+            frameProfile(for: $0, scaleMode: scaleMode)
+        }
         guard !profiles.isEmpty else {
             return (
                 AdaptiveGlassAppearance.safeFallback,
@@ -409,11 +419,15 @@ enum AdaptiveContrastAnalyzer {
         return (appearance, selectedScore, alternateScore)
     }
 
-    private static func frameProfile(for image: CGImage) -> FrameProfile? {
+    private static func frameProfile(
+        for image: CGImage,
+        scaleMode: WallpaperScaleMode
+    ) -> FrameProfile? {
         guard let pixels = rgbaPixels(
             from: image,
             width: pixelWidth,
-            height: pixelHeight
+            height: pixelHeight,
+            scaleMode: scaleMode
         ) else {
             return nil
         }
@@ -548,7 +562,8 @@ enum AdaptiveContrastAnalyzer {
     private static func rgbaPixels(
         from cgImage: CGImage,
         width: Int,
-        height: Int
+        height: Int,
+        scaleMode: WallpaperScaleMode
     ) -> [UInt8]? {
         let bytesPerPixel = 4
         let bytesPerRow = width * bytesPerPixel
@@ -568,7 +583,33 @@ enum AdaptiveContrastAnalyzer {
         }
 
         context.interpolationQuality = .medium
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let targetSize = CGSize(width: width, height: height)
+        let sourceSize = CGSize(width: cgImage.width, height: cgImage.height)
+        let destinationRect: CGRect
+        switch scaleMode {
+        case .stretch:
+            destinationRect = CGRect(origin: .zero, size: targetSize)
+        case .fit, .fill:
+            let horizontalScale = targetSize.width / sourceSize.width
+            let verticalScale = targetSize.height / sourceSize.height
+            let scale = scaleMode == .fit
+                ? min(horizontalScale, verticalScale)
+                : max(horizontalScale, verticalScale)
+            let renderedSize = CGSize(
+                width: sourceSize.width * scale,
+                height: sourceSize.height * scale
+            )
+            destinationRect = CGRect(
+                x: (targetSize.width - renderedSize.width) / 2,
+                y: (targetSize.height - renderedSize.height) / 2,
+                width: renderedSize.width,
+                height: renderedSize.height
+            )
+        }
+        // The zero-filled bitmap intentionally models PreviewLayer's black
+        // background around aspect-fit content. Aspect-fill is clipped by the
+        // CGContext bounds just like the visible preview.
+        context.draw(cgImage, in: destinationRect)
         return pixels
     }
 
