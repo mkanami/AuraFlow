@@ -66,6 +66,7 @@ private final class DesktopImageTransitionRecorder: @unchecked Sendable {
     private let targetURL: URL?
     private var timestamp = Date(timeIntervalSince1970: 1_000)
     var failFinalURL: URL?
+    var ignoreTemporaryTransition = false
     private(set) var temporaryUsesDistinctFileIdentity = false
 
     init(storeData: Data, activeURL: URL?) {
@@ -94,6 +95,9 @@ private final class DesktopImageTransitionRecorder: @unchecked Sendable {
             if failFinalURL?.standardizedFileURL
                 == url.standardizedFileURL {
                 return false
+            }
+            if ignoreTemporaryTransition && appliedURLs.count == 1 {
+                return true
             }
             timestamp = timestamp.addingTimeInterval(1)
             storeData = try! testImageWallpaperStoreData(
@@ -783,6 +787,44 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(recorder.appliedURLs.count == 2)
     let temporaryURL = try #require(recorder.appliedURLs.first)
     #expect(FileManager.default.fileExists(atPath: temporaryURL.path))
+}
+
+@Test func unpersistedTemporaryImageTransitionDoesNotDelayFinalRestore() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(
+            "AuraFlowFastDesktopTransition-\(UUID().uuidString)",
+            isDirectory: true
+        )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(
+        at: root,
+        withIntermediateDirectories: true
+    )
+    let targetURL = root.appendingPathComponent("user-wallpaper.jpg")
+    try Data("image".utf8).write(to: targetURL)
+    let recorder = DesktopImageTransitionRecorder(
+        storeData: try testImageWallpaperStoreData(
+            url: targetURL,
+            timestamp: Date(timeIntervalSince1970: 500)
+        ),
+        activeURL: targetURL
+    )
+    recorder.ignoreTemporaryTransition = true
+    let startedAt = Date()
+
+    let restored = WallpaperDesktopSupport
+        .reactivateCurrentScreensAfterSharedRemove(
+            imagePath: targetURL.path,
+            appSupportPath: root.path,
+            managedAssetID: AerialLockScreenFixture.assetID,
+            wallpaperStoreURL: root.appendingPathComponent("unused.plist"),
+            operations: recorder.operations(),
+            temporaryTransitionTimeout: 0.05
+        )
+
+    #expect(restored)
+    #expect(recorder.appliedURLs.count == 2)
+    #expect(Date().timeIntervalSince(startedAt) < 0.5)
 }
 
 @Test func sharedRemoveNormalizesPreStartImageBeforeProviderLaunchAndPreservesSystemTransition() async throws {

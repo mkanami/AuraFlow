@@ -185,7 +185,8 @@ public enum WallpaperDesktopSupport {
         appSupportPath: String,
         managedAssetID: String,
         wallpaperStoreURL: URL,
-        operations suppliedOperations: DesktopImageTransitionOperations? = nil
+        operations suppliedOperations: DesktopImageTransitionOperations? = nil,
+        temporaryTransitionTimeout: TimeInterval = 0.35
     ) -> Bool {
         let fileManager = FileManager.default
         let targetURL = URL(fileURLWithPath: imagePath).standardizedFileURL
@@ -262,11 +263,11 @@ public enum WallpaperDesktopSupport {
         guard operations.applyToCurrentScreens(temporaryURL) else {
             return false
         }
-        _ = waitForDesktopImageTransition(
+        waitForTemporaryDesktopImageTransition(
             to: temporaryURL,
             after: storeBeforeTemporary,
-            managedAssetID: managedAssetID,
-            operations: operations
+            operations: operations,
+            timeout: temporaryTransitionTimeout
         )
 
         // A delayed temporary export must never prevent the real target from
@@ -428,6 +429,36 @@ public enum WallpaperDesktopSupport {
             kCFPreferencesCurrentUser,
             kCFPreferencesCurrentHost
         )
+    }
+
+    private static func waitForTemporaryDesktopImageTransition(
+        to expectedURL: URL,
+        after previousStoreData: Data,
+        operations: DesktopImageTransitionOperations,
+        timeout: TimeInterval
+    ) {
+        // The temporary URL only prevents WallpaperAgent from deduplicating
+        // the final selection. It is never the committed result, so waiting
+        // for the full final-route invariant here wastes four seconds on
+        // macOS versions that do not persist this short-lived route in
+        // Index.plist. A brief acknowledgement window is enough to keep the
+        // two NSWorkspace commands from being coalesced.
+        let pollInterval: TimeInterval = 0.05
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        repeat {
+            if operations.currentScreensMatch(expectedURL) {
+                return
+            }
+            if let storeData = operations.readWallpaperStore(),
+               storeData != previousStoreData,
+               latestDesktopImageTimestamp(
+                   in: storeData,
+                   matching: expectedURL
+               ) != nil {
+                return
+            }
+            operations.pause(pollInterval)
+        } while Date() < deadline
     }
 
     private static func waitForDesktopImageTransition(
