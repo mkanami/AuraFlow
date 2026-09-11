@@ -962,6 +962,20 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 ProcessInfo.processInfo.systemUptime
             displaySleepLockObserved = true
             publishRearmGuardState()
+            if !lockScreenOnlyMode,
+               config.show_on_lock_screen == true,
+               lockScreenPlatform.requiresLockScreenSessionPromotion {
+                do {
+                    _ = try lockScreenPlatform
+                        .activateLockScreenForCurrentSession()
+                } catch {
+                    writeHealth(
+                        reason:
+                            "lock-session-promotion-failed: "
+                            + error.localizedDescription
+                    )
+                }
+            }
             syncLockScreenSetting(reason: "lock-setting")
             handleLockScreenEvent(.sessionLocked, reason: "session-locked")
             if lockScreenOnlyMode {

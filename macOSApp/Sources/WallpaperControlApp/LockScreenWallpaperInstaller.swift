@@ -216,6 +216,22 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
         }
     }
 
+    func installForDesktopAgent(videoURL: URL) async throws {
+        if modernIsUsable {
+            // AuraWallpaperAgent owns the visible Desktop. Install the native
+            // route without replacing macOS's Desktop/Linked selections.
+            try await legacy.install(videoURL: videoURL)
+            do {
+                try await modern.installForDesktopAgent(videoURL: videoURL)
+            } catch {
+                try? legacy.uninstall()
+                throw error
+            }
+        } else {
+            try await install(videoURL: videoURL)
+        }
+    }
+
     func installLockScreenOnly(videoURL: URL) async throws {
         let canUseModern = modernIsUsable
         let modernAvailable = modern.capabilities.isAvailable

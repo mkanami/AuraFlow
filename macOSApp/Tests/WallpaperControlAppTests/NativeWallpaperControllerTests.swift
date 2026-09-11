@@ -228,6 +228,7 @@ private func launchReadyTestAgent(
 private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling {
     var requiresNativeBridge = false
     var supportsSecureLockScreen = true
+    var requiresSessionPromotion = false
 
     var capabilities: PlatformCapabilities {
         // Keep the recording adapter independent from the private framework.
@@ -246,6 +247,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         )
     }
     private(set) var installedVideoURL: URL?
+    private(set) var desktopAgentInstallCallCount = 0
     private(set) var installedLockScreenOnlyVideoURL: URL?
     private(set) var sourceAtInstall: URL?
     var sourceProviderAtInstall: (() -> URL?)?
@@ -277,6 +279,11 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         installedVideoURL = videoURL
     }
 
+    func installForDesktopAgent(videoURL: URL) throws {
+        desktopAgentInstallCallCount += 1
+        try install(videoURL: videoURL)
+    }
+
     func installLockScreenOnly(videoURL: URL) throws {
         sourceAtInstall = sourceProviderAtInstall?()
         onInstallLockScreenOnly?()
@@ -295,11 +302,16 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     }
 
     func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
+        runtimeAliveDuringUninstall = runtimeAliveProbe?()
         if let uninstallError {
             throw uninstallError
         }
         preservingUninstallCallCount += 1
         uninstallCallCount += 1
+    }
+
+    var requiresLockScreenSessionPromotion: Bool {
+        requiresSessionPromotion
     }
 
     func updatePlaybackSpeed(
@@ -1076,6 +1088,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     defer { fixture.cleanup() }
 
     let installer = RecordingLockScreenSaverInstaller()
+    installer.requiresNativeBridge = true
+    installer.requiresSessionPromotion = true
     let controller = try NativeWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
@@ -1111,6 +1125,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
 
     let installer = RecordingLockScreenSaverInstaller()
     installer.requiresNativeBridge = true
+    installer.requiresSessionPromotion = true
     installer.runtimeAliveProbe = {
         guard let pid = fixture.store.loadPID() else { return false }
         return fixture.store.processIsAlive(pid: pid)
@@ -1126,10 +1141,12 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         speed: 1.0
     )
     #expect(fixture.store.processIsAlive(pid: started.pid))
+    #expect(installer.desktopAgentInstallCallCount == 1)
 
     _ = try await controller.clearWallpaper()
 
     #expect(installer.runtimeAliveDuringUninstall == true)
+    #expect(installer.preservingUninstallCallCount == 1)
     #expect(fixture.store.loadPID() == nil)
     #expect(fixture.store.loadConfig().show_on_lock_screen == false)
 }

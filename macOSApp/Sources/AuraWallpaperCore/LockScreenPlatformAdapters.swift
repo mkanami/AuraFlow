@@ -38,6 +38,11 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
         try await install(videoURL)
     }
 
+    public func installForDesktopAgent(videoURL: URL) async throws {
+        try requireAvailability()
+        try await installer.installForDesktopAgent(videoURL: videoURL)
+    }
+
     public func installLockScreenOnly(videoURL: URL) async throws {
         try requireAvailability()
         try await installer.installLockScreenOnly(videoURL: videoURL)

@@ -1026,6 +1026,11 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             || store.loadLockScreenOnlySource() != nil
         let runtimeWasRunning = daemonProcessManager.isRunning
         let runtimeWasPaused = store.isPaused()
+        let nativeDesktopStoreIsIsolated =
+            !removingLockScreenOnly
+            && lockScreenPlatform.capabilities
+                .usesPrivateWallpaperFramework
+            && lockScreenPlatform.requiresLockScreenSessionPromotion
         // Shared native Start owns the visible Desktop while the Aerial
         // transaction restores the user's last route. Do not tear down that
         // cover first: the safe pre-Start provider would otherwise become
@@ -1059,7 +1064,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         do {
             if currentConfig.show_on_lock_screen == true
                 || lockScreenPlatform.isInstalled {
-                if removingLockScreenOnly {
+                if removingLockScreenOnly || nativeDesktopStoreIsIsolated {
                     try await lockScreenPlatform
                         .uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
                 } else {
@@ -1103,6 +1108,12 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                     "The wallpaper agent did not stop, so its desktop window could not be removed."
                 )
             }
+            // `send(.terminate)` recreates command.json after the early
+            // cleanup above. Once the covered runtime has exited, remove that
+            // one-shot command so Monitoring and the next Start cannot read a
+            // stale termination request.
+            store.removeCommand()
+            store.removeHealth()
         }
         store.clearLockScreenOnlySource()
         store.markLockScreenOnlyAgent(false)
@@ -1118,11 +1129,10 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             store.markWallpaperRestorePending(false)
             restoreStatus = .notNeeded
         } else if hadNativeSharedWallpaperRoute {
-            // The native Aerial transaction already restored the complete
-            // journal, including the current user image. Never replay the
-            // older one-image backup after removing the cover: that backup is
-            // the wallpaper from before Start and would recreate the exact
-            // one-second flash this path is designed to avoid.
+            // Modern Start either preserved Desktop/Linked for its entire
+            // lifetime or restored the complete journal under Aura's cover.
+            // Replaying the legacy one-image backup here would flatten Spaces
+            // and reintroduce the Golden Gate transition.
             WallpaperDesktopPlatform.discardWallpaperBackupFiles(
                 appSupportPath: store.appSupportURL.path
             )
@@ -1823,7 +1833,9 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             if lockScreenOnly {
                 try await lockScreenPlatform.installLockScreenOnly(videoURL: videoURL)
             } else {
-                try await lockScreenPlatform.install(videoURL: videoURL)
+                try await lockScreenPlatform.installForDesktopAgent(
+                    videoURL: videoURL
+                )
             }
         }
 

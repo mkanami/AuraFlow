@@ -255,7 +255,14 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     public var isLockScreenOnlyInstallation: Bool {
         guard let marker = loadMarker() else { return false }
         return marker.completed == true
-            && (marker.lockScreenOnly == true || marker.desktopIncluded == false)
+            && markerUsesDedicatedLockOnlyRuntime(marker)
+    }
+
+    private var isDesktopAgentIsolatedInstallation: Bool {
+        guard let marker = loadMarker() else { return false }
+        return marker.completed == true
+            && marker.lockScreenOnly == false
+            && marker.desktopIncluded == false
     }
 
     /// macOS resolves the active Aerial choice when loginwindow starts the
@@ -295,7 +302,13 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 )
             guard storeIsCorrect else { return false }
             if usesCanonicalWallpaperStore {
-                guard systemWallpaperURLMatches(assetID: marker.assetID)
+                let systemURLMatches = markerUsesDedicatedLockOnlyRuntime(marker)
+                    ? systemWallpaperURLMatches(assetID: marker.assetID)
+                    : systemWallpaperURLMatchesInstalledState(
+                        assetID: marker.assetID,
+                        marker: marker
+                    )
+                guard systemURLMatches
                 else { return false }
             }
             return true
@@ -320,8 +333,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     ) -> LockScreenOnlyGenerationStatus {
         guard let marker = loadMarker(),
               marker.completed == true,
-              (marker.lockScreenOnly == true
-                || marker.desktopIncluded == false)
+              markerUsesDedicatedLockOnlyRuntime(marker)
         else {
             return LockScreenOnlyGenerationStatus()
         }
@@ -487,6 +499,26 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         }
     }
 
+    public func installForDesktopAgent(videoURL: URL) async throws {
+        try await withMutationCoordinator {
+            try await withCrossProcessLockAsync {
+                _ = try await installLocked(
+                    videoURL: videoURL,
+                    forceRefresh: false,
+                    refreshAction: rearmSystem,
+                    // AuraWallpaperAgent owns the visible Desktop. Apple's
+                    // store only needs the Idle route for loginwindow, so the
+                    // user's Desktop/Linked choices remain the source of truth.
+                    scope: .lockScreenOnly,
+                    lockScreenOnlyRoute: false,
+                    restoreUserSystemWallpaperURLAfterInstall: true,
+                    rollbackAction: refreshSystem,
+                    shouldProceed: { true }
+                )
+            }
+        }
+    }
+
     public func installLockScreenOnly(videoURL: URL) async throws {
         try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
@@ -561,19 +593,23 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     return false
                 }
 
-                let lockScreenOnlyRoute = marker.lockScreenOnly == true
-                    || marker.desktopIncluded == false
+                let lockScreenOnlyRoute = markerUsesDedicatedLockOnlyRuntime(
+                    marker
+                )
+                let isolatedDesktopStore = marker.desktopIncluded == false
                 return try await installLocked(
                     videoURL: videoURL,
                     playbackSpeed: normalizedSpeed,
                     forceRefresh: true,
                     refreshAction: rearmSystem,
-                    scope: lockScreenOnlyRoute
+                    scope: isolatedDesktopStore
                         ? .lockScreenOnly
                         : .sharedWallpaper,
                     lockScreenOnlyRoute: lockScreenOnlyRoute,
                     avoidProviderRestartOnExistingLockOnlySourceChange:
-                        lockScreenOnlyRoute,
+                        isolatedDesktopStore,
+                    restoreUserSystemWallpaperURLAfterInstall:
+                        isolatedDesktopStore && !lockScreenOnlyRoute,
                     rollbackAction: refreshSystem,
                     shouldProceed: { true }
                 )
@@ -618,8 +654,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         }
         guard let marker = loadMarker(),
               marker.completed == true,
-              (marker.lockScreenOnly == true
-                || marker.desktopIncluded == false)
+              markerUsesDedicatedLockOnlyRuntime(marker)
         else {
             return false
         }
@@ -863,14 +898,21 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     ) async throws -> Bool {
         try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
-                try await installLocked(
+                let dedicatedLockOnly = isLockScreenOnlyInstallation
+                let isolatedDesktopAgent =
+                    isDesktopAgentIsolatedInstallation
+                return try await installLocked(
                     videoURL: videoURL,
                     forceRefresh: false,
                     refreshAction: rearmSystem,
-                    scope: isLockScreenOnlyInstallation
+                    scope: dedicatedLockOnly || isolatedDesktopAgent
                         ? .lockScreenOnly
                         : currentWallpaperStoreScope(),
-                    lockScreenOnlyRoute: isLockScreenOnlyInstallation,
+                    lockScreenOnlyRoute: dedicatedLockOnly,
+                    avoidProviderRestartOnExistingLockOnlySourceChange:
+                        dedicatedLockOnly || isolatedDesktopAgent,
+                    restoreUserSystemWallpaperURLAfterInstall:
+                        isolatedDesktopAgent,
                     rollbackAction: refreshSystem,
                     shouldProceed: shouldProceed
                 )
@@ -885,17 +927,24 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     ) async throws -> Bool {
         try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
-                try await installLocked(
+                let dedicatedLockOnly = isLockScreenOnlyInstallation
+                let isolatedDesktopAgent =
+                    isDesktopAgentIsolatedInstallation
+                return try await installLocked(
                     videoURL: videoURL,
                     forceRefresh: true,
                     refreshAction: rearmSystem,
-                    scope: isLockScreenOnlyInstallation
+                    scope: dedicatedLockOnly || isolatedDesktopAgent
                         ? .lockScreenOnly
                         : currentWallpaperStoreScope(),
                     currentInstallationRefreshAction: usesCanonicalWallpaperStore
                         ? AerialProviderController.prewarmLockScreenProvider
                         : rearmSystem,
-                    lockScreenOnlyRoute: isLockScreenOnlyInstallation,
+                    lockScreenOnlyRoute: dedicatedLockOnly,
+                    avoidProviderRestartOnExistingLockOnlySourceChange:
+                        dedicatedLockOnly || isolatedDesktopAgent,
+                    restoreUserSystemWallpaperURLAfterInstall:
+                        isolatedDesktopAgent,
                     rollbackAction: refreshSystem,
                     shouldProceed: shouldProceed
                 )
@@ -1012,8 +1061,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     ) async throws -> Bool {
         guard let marker = loadMarker(),
               marker.completed == true,
-              marker.lockScreenOnly != true,
-              marker.desktopIncluded != false,
+              !markerUsesDedicatedLockOnlyRuntime(marker),
               URL(fileURLWithPath: marker.videoPath).standardizedFileURL
                 == videoURL.standardizedFileURL,
               fileManager.fileExists(atPath: videoURL.path),
@@ -1030,8 +1078,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
 
         guard let currentMarker = loadMarker(),
               currentMarker.completed == true,
-              currentMarker.lockScreenOnly != true,
-              currentMarker.desktopIncluded != false,
+              !markerUsesDedicatedLockOnlyRuntime(currentMarker),
               URL(fileURLWithPath: currentMarker.videoPath)
                 .standardizedFileURL == videoURL.standardizedFileURL
         else {
@@ -1084,6 +1131,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         currentInstallationRefreshAction: ConditionalSystemAction? = nil,
         lockScreenOnlyRoute: Bool = false,
         avoidProviderRestartOnExistingLockOnlySourceChange: Bool = false,
+        restoreUserSystemWallpaperURLAfterInstall: Bool = false,
         rollbackAction: ConditionalSystemAction,
         shouldProceed: @escaping () -> Bool
     ) async throws -> Bool {
@@ -1235,16 +1283,30 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             )
         }
 
-        // In lock-only mode, the live Index is the sole source of truth for
-        // Desktop. Session snapshots are recovery data for Remove and must
-        // never select a wallpaper for a later Apply.
+        // For a newly isolated route, the live Index is the sole source of
+        // truth for Desktop. When migrating an older shared Start marker, its
+        // live Desktop can still be Aura's Aerial route; merge the serialized
+        // latest-user journal with the original backup exactly once instead.
         let updateBaseStoreData: Data
-        if lockScreenOnlyRoute {
-            updateBaseStoreData = currentStoreDataForAttempt
+        if !scope.includesDesktop {
+            if let existingMarker,
+               existingMarker.completed == true,
+               markerStoreIncludesDesktop(existingMarker) {
+                updateBaseStoreData = try wallpaperStoreTransaction
+                    .captureLatestUserWallpaperStoreData(
+                        from: currentStoreDataForAttempt,
+                        fallbackData: originalStoreData,
+                        managedAssetID: assetID,
+                        propagateGlobalDesktopChanges: true,
+                        userSystemWallpaperURL: currentUserSystemWallpaperURL()
+                    )
+            } else {
+                updateBaseStoreData = currentStoreDataForAttempt
+            }
         } else {
             updateBaseStoreData = originalStoreData
         }
-        if lockScreenOnlyRoute {
+        if !scope.includesDesktop {
             guard let currentRoot = try wallpaperStoreTransaction
                 .propertyListDictionary(from: updateBaseStoreData),
             !wallpaperStoreTransaction.normalizedDesktopRoutesForComparison(
@@ -1265,7 +1327,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 scope: scope
             )
         let desktopRoutesBeforeAttempt: [String: Data]
-        if lockScreenOnlyRoute,
+        if !scope.includesDesktop,
            let updateBaseRoot = try wallpaperStoreTransaction
                .propertyListDictionary(from: updateBaseStoreData) {
             desktopRoutesBeforeAttempt = wallpaperStoreTransaction
@@ -1343,7 +1405,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             guard shouldProceed() else {
                 throw AerialLockScreenOperationAbort.sessionChanged
             }
-            if lockScreenOnlyRoute,
+            if !scope.includesDesktop,
                try Data(contentsOf: wallpaperStoreURL) != storeBeforeAttempt {
                 // System Settings may have committed a newer Desktop while
                 // media was being prepared. Abort before touching Index.plist
@@ -1428,7 +1490,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 throw AerialLockScreenInstallerError
                     .wallpaperStoreUpdateFailed
             }
-            if lockScreenOnlyRoute {
+            if !scope.includesDesktop {
                 guard let observedRoot = try wallpaperStoreTransaction
                     .propertyListDictionary(from: Data(contentsOf: wallpaperStoreURL)),
                 wallpaperStoreTransaction.normalizedDesktopRoutesForComparison(
@@ -1443,10 +1505,32 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 }
             }
             var completedMarker = marker
+            if restoreUserSystemWallpaperURLAfterInstall,
+               marker.systemWallpaperURLWasCaptured == true {
+                // Registering the native provider requires its Aerial URL,
+                // but leaving that URL selected while unlocked makes System
+                // Settings identify the user's Desktop as Golden Gate. The
+                // lock-session promotion restores Aerial only for the actual
+                // secure transition.
+                guard applyRestoredSystemWallpaperURL(
+                    from: updatedStoreData,
+                    marker: marker
+                ) else {
+                    throw AerialLockScreenInstallerError
+                        .wallpaperStoreUpdateFailed
+                }
+                // The previous shared marker can contain Aura's Aerial URL.
+                // Persist the value that was actually restored so later
+                // health checks and Remove never compare against stale state.
+                completedMarker.originalSystemWallpaperURL =
+                    currentSystemWallpaperURL()
+            }
             completedMarker.completed = true
             completedMarker.desiredMode = lockScreenOnlyRoute
                 ? "lockOnly"
-                : "shared"
+                : scope.includesDesktop
+                    ? "shared"
+                    : "desktopAgentIsolated"
             completedMarker.lastValidatedStoreHash = signature(
                 of: try Data(contentsOf: wallpaperStoreURL)
             )
@@ -2978,7 +3062,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 ? "image"
                 : "video",
             generation: journal.loadSlotState()?.generation,
-            desiredMode: lockScreenOnlyRoute ? "lockOnly" : "shared",
+            desiredMode: lockScreenOnlyRoute
+                ? "lockOnly"
+                : scope.includesDesktop
+                    ? "shared"
+                    : "desktopAgentIsolated",
             lastValidatedStoreHash: nil,
             lastProviderRefreshGeneration: nil,
             lastAssetRepairGeneration: nil,
@@ -2999,6 +3087,19 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         _ marker: AerialLockScreenMarker
     ) -> Bool {
         marker.desktopIncluded ?? (marker.lockScreenOnly != true)
+    }
+
+    private func markerUsesDedicatedLockOnlyRuntime(
+        _ marker: AerialLockScreenMarker
+    ) -> Bool {
+        if marker.lockScreenOnly == true {
+            return true
+        }
+        // Journals created before the explicit runtime bit used only
+        // `desktopIncluded=false` for Lock-only. New isolated Start journals
+        // persist `lockScreenOnly=false`, so they remain Desktop-agent routes.
+        return marker.lockScreenOnly == nil
+            && marker.desktopIncluded == false
     }
 
     private func loadMarker() -> AerialLockScreenMarker? {

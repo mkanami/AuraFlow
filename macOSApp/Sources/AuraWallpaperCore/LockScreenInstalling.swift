@@ -154,6 +154,9 @@ public protocol LockScreenPlatformOperating: LockScreenPlatform {
     var installationConfirmed: Bool { get }
 
     func install(videoURL: URL) async throws
+    /// Installs the native Lock Screen companion used by the Desktop agent
+    /// without replacing the user's system Desktop/Linked routes.
+    func installForDesktopAgent(videoURL: URL) async throws
     func installLockScreenOnly(videoURL: URL) async throws
     /// Installs the compatibility screen saver without routing through a
     /// modern provider. Platform adapters may use the optional previous
@@ -324,6 +327,10 @@ public extension LockScreenSaverInstalling {
     }
 
     func installLockScreenOnly(videoURL: URL) async throws {
+        try await install(videoURL: videoURL)
+    }
+
+    func installForDesktopAgent(videoURL: URL) async throws {
         try await install(videoURL: videoURL)
     }
 
