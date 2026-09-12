@@ -1625,36 +1625,34 @@ struct WallpaperCatalogDetailView: View {
                     .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
                     .lineLimit(isCompactLayout ? 2 : 3)
 
-                Divider()
-                    .overlay(adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.10))
-
                 metadataRow(label: "Category", value: wallpaper.category)
                 metadataRow(label: "Source", value: wallpaper.attribution)
 
-                Divider()
-                    .overlay(adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.08))
-                    .padding(.vertical, 2)
-
-                Button {
-                    viewModel.applyCatalogWallpaper(wallpaper)
-                } label: {
-                    if viewModel.isDownloading(wallpaper) {
-                        Label("Downloading…", systemImage: "arrow.down.circle")
-                    } else {
-                        Label("Download to Preview", systemImage: "arrow.down.circle")
-                    }
-                }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
-                .disabled(!viewModel.canDownloadCatalogWallpaper)
-
-                if let sourceURL = wallpaper.sourcePageURL {
+                HStack(spacing: 8) {
                     Button {
-                        NSWorkspace.shared.open(sourceURL)
+                        viewModel.applyCatalogWallpaper(wallpaper)
                     } label: {
-                        Label("Open Source", systemImage: "link")
+                        if viewModel.isDownloading(wallpaper) {
+                            Label("Downloading…", systemImage: "arrow.down.circle")
+                        } else {
+                            Label("Download to Preview", systemImage: "arrow.down.circle")
+                        }
                     }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
+                    .disabled(!viewModel.canDownloadCatalogWallpaper)
+
+                    if let sourceURL = wallpaper.sourcePageURL {
+                        Button {
+                            NSWorkspace.shared.open(sourceURL)
+                        } label: {
+                            Image(systemName: "link")
+                        }
+                        .accessibilityLabel("Open Source")
+                        .help("Open Source")
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
+                    }
                 }
+                .padding(.top, isCompactLayout ? 4 : 8)
             }
             .padding(.vertical, isCompactLayout ? 6 : 8)
             .frame(width: isCompactLayout ? 240 : 270)
