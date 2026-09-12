@@ -64,6 +64,17 @@ private extension AdaptiveTextTone {
         }
     }
 
+    /// Disabled controls should read as quiet, inactive glass instead of
+    /// catching a bright system highlight over light wallpaper.
+    var disabledControlSurfaceColor: Color {
+        switch self {
+        case .dark:
+            return Color.black.opacity(0.08)
+        case .light:
+            return Color.black.opacity(0.20)
+        }
+    }
+
     var textShadowColor: Color {
         switch self {
         case .dark:
@@ -2166,23 +2177,23 @@ private struct AuraPanelButton: View {
             .background {
                 ZStack {
                     #if compiler(>=6.2)
-                    if #available(macOS 26.0, *) {
+                    if !isEnabled {
+                        shape.fill(textTone.disabledControlSurfaceColor)
+                    } else if #available(macOS 26.0, *) {
                         shape
                             .fill(Color.clear)
                             .glassEffect(.clear.interactive(), in: shape)
                         shape.fill(
                             textTone.contrastSurfaceColor.opacity(
-                                isEnabled
-                                    ? min(
-                                        0.34,
-                                        0.035
-                                            + boundedAdaptiveSurfaceProtectionOpacity(
-                                                adaptiveGlassAppearance.bottomButtonProtectionOpacity
-                                            )
-                                            + (configuration.isPressed ? 0.025 : 0.0)
-                                            + (selected ? 0.018 : (emphasized ? 0.010 : 0.0))
+                                min(
+                                    0.34,
+                                    0.035
+                                        + boundedAdaptiveSurfaceProtectionOpacity(
+                                            adaptiveGlassAppearance.bottomButtonProtectionOpacity
+                                        )
+                                        + (configuration.isPressed ? 0.025 : 0.0)
+                                        + (selected ? 0.018 : (emphasized ? 0.010 : 0.0))
                                     )
-                                    : 0.012
                             )
                         )
                     } else {
@@ -2200,18 +2211,22 @@ private struct AuraPanelButton: View {
                         .clipShape(shape)
                     }
                     #else
-                    shape.fill(textTone.contrastSurfaceColor.opacity(protectionOpacity))
-                    shape.fill(textTone.contrastHighlightColor.opacity(baseSurfaceOpacity))
-                    LinearGradient(
-                        colors: [
-                            textTone.contrastHighlightColor.opacity(topHighlightOpacity),
-                            textTone.contrastHighlightColor.opacity(isEnabled ? 0.045 : 0.018),
-                            textTone.contrastSurfaceColor.opacity(isEnabled ? 0.035 : 0.06),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .clipShape(shape)
+                    if !isEnabled {
+                        shape.fill(textTone.disabledControlSurfaceColor)
+                    } else {
+                        shape.fill(textTone.contrastSurfaceColor.opacity(protectionOpacity))
+                        shape.fill(textTone.contrastHighlightColor.opacity(baseSurfaceOpacity))
+                        LinearGradient(
+                            colors: [
+                                textTone.contrastHighlightColor.opacity(topHighlightOpacity),
+                                textTone.contrastHighlightColor.opacity(0.045),
+                                textTone.contrastSurfaceColor.opacity(0.035),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .clipShape(shape)
+                    }
                     #endif
                 }
             }
@@ -2378,22 +2393,22 @@ private struct AuraGlassButton: View {
             .background {
                 ZStack {
                     #if compiler(>=6.2)
-                    if #available(macOS 26.0, *) {
+                    if !isEnabled {
+                        shape.fill(adaptiveGlassAppearance.centerTextTone.disabledControlSurfaceColor)
+                    } else if #available(macOS 26.0, *) {
                         shape
                             .fill(Color.clear)
                             .glassEffect(.clear.interactive(), in: shape)
                         shape.fill(
                             adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(
-                                isEnabled
-                                    ? min(
-                                        0.34,
-                                        0.045
-                                            + (boundedAdaptiveSurfaceProtectionOpacity(
-                                                adaptiveGlassAppearance.centerProtectionOverlayOpacity
-                                            ) * 0.80)
-                                            + (configuration.isPressed ? 0.025 : 0.0)
+                                min(
+                                    0.34,
+                                    0.045
+                                        + (boundedAdaptiveSurfaceProtectionOpacity(
+                                            adaptiveGlassAppearance.centerProtectionOverlayOpacity
+                                        ) * 0.80)
+                                        + (configuration.isPressed ? 0.025 : 0.0)
                                     )
-                                    : 0.016
                             )
                         )
                     } else {
@@ -2413,20 +2428,26 @@ private struct AuraGlassButton: View {
                         .clipShape(shape)
                     }
                     #else
-                    shape.fill(backdropColor)
-                    shape.fill(baseTint.opacity(tintOpacity))
-                    LinearGradient(
-                        colors: [
-                            adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.12),
-                            adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.04),
-                            adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(0.025),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .clipShape(shape)
+                    if !isEnabled {
+                        shape.fill(adaptiveGlassAppearance.centerTextTone.disabledControlSurfaceColor)
+                    } else {
+                        shape.fill(backdropColor)
+                        shape.fill(baseTint.opacity(tintOpacity))
+                        LinearGradient(
+                            colors: [
+                                adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.12),
+                                adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.04),
+                                adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(0.025),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .clipShape(shape)
+                    }
                     #endif
-                    shape.fill(pressedOverlayColor)
+                    if isEnabled {
+                        shape.fill(pressedOverlayColor)
+                    }
                 }
                 .clipShape(shape)
             }
