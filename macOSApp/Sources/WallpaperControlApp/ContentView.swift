@@ -1712,17 +1712,6 @@ private struct CatalogDetailMediaPreview: View {
                 VideoPreview(player: player, videoGravity: .resizeAspectFill)
                     .opacity(model.isVideoVisible ? 1 : 0)
             }
-
-            if model.isVideoVisible {
-                Label("Live Preview", systemImage: "play.fill")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.vertical, 5)
-                    .padding(.horizontal, 8)
-                    .background(.black.opacity(0.46), in: Capsule())
-                    .padding(9)
-                    .transition(.opacity)
-            }
         }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
