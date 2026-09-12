@@ -1588,24 +1588,28 @@ struct WallpaperCatalogDetailView: View {
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            CatalogPreviewImage(
-                url: wallpaper.previewImageURL,
-                title: wallpaper.title,
-                referer: wallpaper.sourcePageURL
-            )
-                .frame(height: 150)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-            Text(wallpaper.title)
-                .font(.headline)
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-
-            Text("Category: \(wallpaper.category) • Source: \(wallpaper.attribution)")
-                .font(.caption)
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                Label(
+                    isStaticImage ? "Image Wallpaper" : "Live Wallpaper",
+                    systemImage: isStaticImage ? "photo" : "play.rectangle.fill"
+                )
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
 
-            HStack(spacing: 10) {
+                Text(wallpaper.title)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                    .lineLimit(3)
+
+                Divider()
+                    .overlay(adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.10))
+
+                metadataRow(label: "Category", value: wallpaper.category)
+                metadataRow(label: "Source", value: wallpaper.attribution)
+
+                Spacer(minLength: 2)
+
                 Button {
                     viewModel.applyCatalogWallpaper(wallpaper)
                 } label: {
@@ -1615,7 +1619,7 @@ struct WallpaperCatalogDetailView: View {
                         Label("Download to Preview", systemImage: "arrow.down.circle")
                     }
                 }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
                 .disabled(!viewModel.canDownloadCatalogWallpaper)
 
                 if let sourceURL = wallpaper.sourcePageURL {
@@ -1624,11 +1628,81 @@ struct WallpaperCatalogDetailView: View {
                     } label: {
                         Label("Open Source", systemImage: "link")
                     }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
                 }
-
-                Spacer()
             }
+            .padding(.vertical, 4)
+            .frame(width: 290)
+            .frame(maxHeight: .infinity, alignment: .topLeading)
+
+            CatalogDetailMediaPreview(wallpaper: wallpaper)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, minHeight: 210, maxHeight: 220)
+    }
+
+    private var isStaticImage: Bool {
+        wallpaper.sources.contains { source in
+            WallpaperMediaKind.forURL(source.url).isStaticImage
+        }
+    }
+
+    private func metadataRow(label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+            Spacer(minLength: 8)
+            Text(value)
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                .lineLimit(1)
+        }
+        .font(.caption)
+    }
+}
+
+private struct CatalogDetailMediaPreview: View {
+    let wallpaper: CatalogWallpaper
+    @StateObject private var model = CatalogDetailMediaPreviewModel()
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Color.black.opacity(0.72)
+
+            CatalogPreviewImage(
+                url: model.imageURL ?? wallpaper.previewImageURL,
+                title: wallpaper.title,
+                referer: wallpaper.sourcePageURL,
+                contentMode: .fit
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if let player = model.player {
+                VideoPreview(player: player, videoGravity: .resizeAspect)
+                    .opacity(model.isVideoVisible ? 1 : 0)
+            }
+
+            if model.isVideoVisible {
+                Label("Live Preview", systemImage: "play.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.vertical, 5)
+                    .padding(.horizontal, 8)
+                    .background(.black.opacity(0.46), in: Capsule())
+                    .padding(9)
+                    .transition(.opacity)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.14), lineWidth: 1)
+        )
+        .task(id: wallpaper.id) {
+            await model.load(wallpaper)
+        }
+        .onDisappear {
+            model.stop()
         }
     }
 }
@@ -1637,6 +1711,7 @@ struct CatalogPreviewImage: View {
     let url: URL?
     let title: String
     let referer: URL?
+    var contentMode: ContentMode = .fill
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @StateObject private var loader = CatalogPreviewImageLoader()
 
@@ -1645,7 +1720,7 @@ struct CatalogPreviewImage: View {
             if let image = loader.image {
                 Image(nsImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .aspectRatio(contentMode: contentMode)
             } else {
                 previewFallback
             }

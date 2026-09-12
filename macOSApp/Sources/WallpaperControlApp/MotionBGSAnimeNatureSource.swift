@@ -266,6 +266,38 @@ enum MotionBGSParser {
         )
     }
 
+    static func previewVideoURL(html: String, baseURL: URL) -> URL? {
+        let normalized = decodeHTMLEntities(html)
+        let value = firstMatch(
+            in: normalized,
+            pattern: #"<meta[^>]+content=[\"']?([^\"' >]+)[\"']?[^>]+property=[\"']?og:video[\"']?"#
+        ) ?? firstMatch(
+            in: normalized,
+            pattern: #"<meta[^>]+property=[\"']?og:video[\"']?[^>]+content=[\"']?([^\"' >]+)[\"']?"#
+        ) ?? firstMatch(
+            in: normalized,
+            pattern: #"<source[^>]+src=[\"']?([^\"' >]+\.mp4)[\"']?"#
+        )
+        return value.flatMap { absoluteURL(from: $0, baseURL: baseURL) }
+    }
+
+    static func fullResolutionPreviewURL(from previewURL: URL?) -> URL? {
+        guard let previewURL,
+              previewURL.host?.localizedCaseInsensitiveContains("motionbgs.com") == true,
+              var components = URLComponents(url: previewURL, resolvingAgainstBaseURL: false) else {
+            return previewURL
+        }
+
+        let fullResolutionPath = components.path.replacingOccurrences(
+            of: #"^/i/c/\d+x\d+/"#,
+            with: "/",
+            options: .regularExpression
+        )
+        guard fullResolutionPath != components.path else { return previewURL }
+        components.path = fullResolutionPath
+        return components.url ?? previewURL
+    }
+
     private static func firstMatch(in text: String, pattern: String) -> String? {
         regexMatches(pattern: pattern, in: text).first.flatMap { match in
             match.count > 1 ? match[1] : nil

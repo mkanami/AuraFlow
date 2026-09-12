@@ -111,6 +111,30 @@ import Testing
     #expect(MotionBGSSearchURLProtocol.requestedQuery == "mIkU")
 }
 
+@Test func motionBGSDetailPreviewUsesFullResolutionImageAndLiveVideo() {
+    let thumbnailURL = URL(
+        string: "https://motionbgs.com/i/c/364x205/media/9806/miku-nakano.3840x2160.jpg"
+    )!
+    let html = """
+    <meta content=https://motionbgs.com/media/9806/miku-nakano.960x540.mp4 property=og:video>
+    """
+
+    let imageURL = MotionBGSParser.fullResolutionPreviewURL(from: thumbnailURL)
+    let videoURL = MotionBGSParser.previewVideoURL(
+        html: html,
+        baseURL: URL(string: "https://motionbgs.com/")!
+    )
+
+    #expect(
+        imageURL?.absoluteString ==
+            "https://motionbgs.com/media/9806/miku-nakano.3840x2160.jpg"
+    )
+    #expect(
+        videoURL?.absoluteString ==
+            "https://motionbgs.com/media/9806/miku-nakano.960x540.mp4"
+    )
+}
+
 private final class MotionBGSSearchURLProtocol: URLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
     private static var responseData = Data()
