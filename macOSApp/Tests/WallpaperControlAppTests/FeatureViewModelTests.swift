@@ -33,7 +33,7 @@ func catalogViewModelOwnsFilteringAndGroupSelection() {
     #expect(viewModel.filteredWallpapers.map(\.id) == ["anime-1"])
 
     viewModel.searchText = "spirt"
-    #expect(viewModel.filteredWallpapers.map(\.id) == ["anime-1"])
+    #expect(viewModel.filteredWallpapers.isEmpty)
 
     viewModel.searchText = ""
     viewModel.toggleGroup(.scenic)
@@ -43,7 +43,7 @@ func catalogViewModelOwnsFilteringAndGroupSelection() {
 }
 
 @Test @MainActor
-func catalogSearchMatchesCasePartialWordsAndSmallTypos() {
+func catalogSearchMatchesCaseAndPartialWordsWithoutFuzzyResults() {
     let viewModel = CatalogViewModel()
     viewModel.wallpapers = [
         CatalogWallpaper(
@@ -64,11 +64,25 @@ func catalogSearchMatchesCasePartialWordsAndSmallTypos() {
             sourcePageURL: nil,
             sources: []
         ),
+        CatalogWallpaper(
+            id: "moewalls-rem-fallen-maid",
+            title: "Rem Fallen Maid Rezero Live Wallpaper",
+            category: "Anime",
+            attribution: "MoeWalls",
+            previewImageURL: nil,
+            sourcePageURL: nil,
+            sources: []
+        ),
     ]
 
-    for query in ["rei", "REI", "ayana", "rie", "evanglion"] {
+    for query in ["rei", "REI", "ayana", "Evangelion"] {
         viewModel.searchText = query
         #expect(viewModel.filteredWallpapers.map(\.id) == ["moewalls-rei-ayanami-blue-sky"])
+    }
+
+    for query in ["rie", "evanglion"] {
+        viewModel.searchText = query
+        #expect(viewModel.filteredWallpapers.isEmpty)
     }
 }
 
