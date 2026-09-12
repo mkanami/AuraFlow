@@ -1374,7 +1374,7 @@ struct WallpaperCatalogView: View {
                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                 .keyboardShortcut(.escape, modifiers: [])
 
-                Text(viewModel.selectedCatalogWallpaper?.title ?? "Wallpaper Catalog")
+                Text(isDetailOpened ? "Wallpaper Preview" : "Wallpaper Catalog")
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
 
@@ -1413,7 +1413,11 @@ struct WallpaperCatalogView: View {
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 18)
-        .frame(maxWidth: .infinity, maxHeight: 320, alignment: .topLeading)
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: isDetailOpened ? 400 : 320,
+            alignment: .topLeading
+        )
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 14,
@@ -1589,6 +1593,11 @@ struct WallpaperCatalogDetailView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
+            CatalogDetailMediaPreview(wallpaper: wallpaper)
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .layoutPriority(1)
+
             VStack(alignment: .leading, spacing: 10) {
                 Label(
                     isStaticImage ? "Image Wallpaper" : "Live Wallpaper",
@@ -1608,7 +1617,9 @@ struct WallpaperCatalogDetailView: View {
                 metadataRow(label: "Category", value: wallpaper.category)
                 metadataRow(label: "Source", value: wallpaper.attribution)
 
-                Spacer(minLength: 2)
+                Divider()
+                    .overlay(adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.08))
+                    .padding(.vertical, 2)
 
                 Button {
                     viewModel.applyCatalogWallpaper(wallpaper)
@@ -1631,14 +1642,11 @@ struct WallpaperCatalogDetailView: View {
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
                 }
             }
-            .padding(.vertical, 4)
-            .frame(width: 290)
-            .frame(maxHeight: .infinity, alignment: .topLeading)
-
-            CatalogDetailMediaPreview(wallpaper: wallpaper)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.vertical, 8)
+            .frame(width: 270)
+            .frame(maxHeight: .infinity, alignment: .center)
         }
-        .frame(maxWidth: .infinity, minHeight: 210, maxHeight: 220)
+        .frame(maxWidth: .infinity, minHeight: 260, maxHeight: 320)
     }
 
     private var isStaticImage: Bool {
@@ -1678,7 +1686,7 @@ private struct CatalogDetailMediaPreview: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if let player = model.player {
-                VideoPreview(player: player, videoGravity: .resizeAspect)
+                VideoPreview(player: player, videoGravity: .resizeAspectFill)
                     .opacity(model.isVideoVisible ? 1 : 0)
             }
 
