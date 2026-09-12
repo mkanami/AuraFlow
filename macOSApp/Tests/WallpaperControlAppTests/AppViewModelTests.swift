@@ -1233,6 +1233,46 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func catalogPaginationCoalescesRapidBottomAppearances() async throws {
+    let first = CatalogWallpaper(
+        id: "anime-first",
+        title: "First",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: []
+    )
+    let second = CatalogWallpaper(
+        id: "anime-second",
+        title: "Second",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: []
+    )
+    let provider = SlowPagedCatalogProvider(initial: [first], next: [second])
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        catalogProvider: provider
+    )
+    viewModel.catalogWallpapers = [first]
+
+    viewModel.loadMoreCatalogIfNeeded(after: first.id)
+    viewModel.loadMoreCatalogIfNeeded(after: first.id)
+    viewModel.loadMoreCatalogIfNeeded(after: first.id)
+
+    for _ in 0..<40 {
+        if viewModel.catalogWallpapers.count == 2 { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    #expect(viewModel.catalogWallpapers.map(\.id) == [first.id, second.id])
+    #expect(await provider.pageRequestCount == 1)
+}
+
+@MainActor
 @Test func downloadedPreviewStartsOnlyAfterExplicitStart() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.start-preview")!
@@ -2184,6 +2224,30 @@ actor MockCatalogProvider: WallpaperCatalogProviding {
 
     func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
         wallpaper.sources.first?.url ?? URL(string: "https://example.com/fallback.mp4")!
+    }
+}
+
+actor SlowPagedCatalogProvider: WallpaperCatalogProviding, WallpaperCatalogPaging {
+    let initial: [CatalogWallpaper]
+    let next: [CatalogWallpaper]
+    private(set) var pageRequestCount = 0
+
+    init(initial: [CatalogWallpaper], next: [CatalogWallpaper]) {
+        self.initial = initial
+        self.next = next
+    }
+
+    func loadCachedCatalog() async -> [CatalogWallpaper]? { initial }
+    func fetchCatalog() async throws -> [CatalogWallpaper] { initial }
+
+    func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
+        URL(string: "https://example.com/fallback.mp4")!
+    }
+
+    func fetchNextCatalogPage() async throws -> CatalogPage {
+        pageRequestCount += 1
+        try await Task.sleep(nanoseconds: 50_000_000)
+        return CatalogPage(wallpapers: next, hasMore: true)
     }
 }
 

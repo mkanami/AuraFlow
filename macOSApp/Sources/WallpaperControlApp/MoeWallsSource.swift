@@ -78,10 +78,11 @@ struct MoeWallsTaxonomyTerm: Decodable, Sendable {
     let slug: String
 }
 
-actor MoeWallsSource: WallpaperCatalogProviding {
+actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
     private let baseURL = URL(string: "https://moewalls.com/")!
     private let client: MoeWallsHTTPClient
     private let probeService: MoeWallsProbeService
+    private let catalogDirectoryURL: URL?
     private let restPageSize = 100
     private let archiveDetailFetchLimit = 20
     // Archive pages are the compatibility fallback when the REST API is
@@ -95,16 +96,26 @@ actor MoeWallsSource: WallpaperCatalogProviding {
     private var probeResult: MoeWallsProbeResult?
     private var detailCache: [String: MoeWallsWallpaper] = [:]
     private var detailCacheOrder: [String] = []
+    private var loadedCatalog: [MoeWallsWallpaper] = []
+    private var nextArchiveCatalogPage = 1
+    private var hasMoreArchiveCatalogPages = true
 
-    init(client: MoeWallsHTTPClient = MoeWallsHTTPClient()) {
+    init(
+        client: MoeWallsHTTPClient = MoeWallsHTTPClient(),
+        catalogDirectoryURL: URL? = nil
+    ) {
         self.client = client
         self.probeService = MoeWallsProbeService(client: client)
+        self.catalogDirectoryURL = catalogDirectoryURL
     }
 
     func clearCache() async {
         detailCache.removeAll()
         detailCacheOrder.removeAll()
         probeResult = nil
+        loadedCatalog.removeAll()
+        nextArchiveCatalogPage = 1
+        hasMoreArchiveCatalogPages = true
         if let cacheURL = try? catalogCacheURL() {
             try? FileManager.default.removeItem(at: cacheURL)
         }
@@ -116,6 +127,9 @@ actor MoeWallsSource: WallpaperCatalogProviding {
               let envelope = try? JSONDecoder().decode(MoeWallsCatalogCacheEnvelope.self, from: data) else {
             return nil
         }
+        loadedCatalog = envelope.wallpapers
+        nextArchiveCatalogPage = envelope.nextArchivePage ?? (archiveCatalogPageLimit + 1)
+        hasMoreArchiveCatalogPages = envelope.hasMoreArchivePages ?? true
         return envelope.wallpapers.isEmpty ? nil : envelope.wallpapers.map(\.asCatalogWallpaper)
     }
 
@@ -137,6 +151,30 @@ actor MoeWallsSource: WallpaperCatalogProviding {
         }
         try persistCatalog(wallpapers)
         return wallpapers.map(\.asCatalogWallpaper)
+    }
+
+    func fetchNextCatalogPage() async throws -> CatalogPage {
+        guard hasMoreArchiveCatalogPages else {
+            return CatalogPage(wallpapers: [], hasMore: false)
+        }
+
+        let page = nextArchiveCatalogPage
+        let fetched = try await fetchArchive(path: archivePath(categorySlug: "anime", page: page))
+        guard !fetched.isEmpty else {
+            hasMoreArchiveCatalogPages = false
+            try persistCatalog(loadedCatalog)
+            return CatalogPage(wallpapers: [], hasMore: false)
+        }
+
+        let knownIDs = Set(loadedCatalog.map(\.id))
+        let additions = fetched.filter { !knownIDs.contains($0.id) }
+        loadedCatalog = deduplicate(loadedCatalog + fetched)
+        nextArchiveCatalogPage = page + 1
+        try persistCatalog(loadedCatalog)
+        return CatalogPage(
+            wallpapers: additions.map(\.asCatalogWallpaper),
+            hasMore: true
+        )
     }
 
     func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
@@ -398,12 +436,17 @@ actor MoeWallsSource: WallpaperCatalogProviding {
     ) async throws -> [MoeWallsWallpaper] {
         let restWallpapers = (try? await fetchCatalogViaREST(progress: progress)) ?? []
         if !restWallpapers.isEmpty {
-            return restWallpapers
+            loadedCatalog = deduplicate(restWallpapers)
+            hasMoreArchiveCatalogPages = false
+            return loadedCatalog
         }
 
         let archiveWallpapers = (try? await fetchCatalogViaArchive(progress: progress)) ?? []
         if !archiveWallpapers.isEmpty {
-            return archiveWallpapers
+            loadedCatalog = deduplicate(archiveWallpapers)
+            nextArchiveCatalogPage = archiveCatalogPageLimit + 1
+            hasMoreArchiveCatalogPages = true
+            return loadedCatalog
         }
 
         return []
@@ -625,6 +668,13 @@ actor MoeWallsSource: WallpaperCatalogProviding {
     }
 
     private func catalogSupportDirectory() throws -> URL {
+        if let catalogDirectoryURL {
+            try FileManager.default.createDirectory(
+                at: catalogDirectoryURL,
+                withIntermediateDirectories: true
+            )
+            return catalogDirectoryURL
+        }
         let base = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -639,7 +689,12 @@ actor MoeWallsSource: WallpaperCatalogProviding {
     }
 
     private func persistCatalog(_ wallpapers: [MoeWallsWallpaper]) throws {
-        let envelope = MoeWallsCatalogCacheEnvelope(updatedAt: Date(), wallpapers: wallpapers)
+        let envelope = MoeWallsCatalogCacheEnvelope(
+            updatedAt: Date(),
+            wallpapers: wallpapers,
+            nextArchivePage: nextArchiveCatalogPage,
+            hasMoreArchivePages: hasMoreArchiveCatalogPages
+        )
         let data = try JSONEncoder().encode(envelope)
         try data.write(to: try catalogCacheURL(), options: .atomic)
     }
@@ -653,4 +708,6 @@ actor MoeWallsSource: WallpaperCatalogProviding {
 private struct MoeWallsCatalogCacheEnvelope: Codable, Sendable {
     let updatedAt: Date
     let wallpapers: [MoeWallsWallpaper]
+    let nextArchivePage: Int?
+    let hasMoreArchivePages: Bool?
 }

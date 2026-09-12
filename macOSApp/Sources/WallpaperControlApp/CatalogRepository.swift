@@ -70,6 +70,12 @@ final class CatalogRepository: @unchecked Sendable {
         let persistenceStatus: CatalogPersistenceStatus
     }
 
+    struct CatalogPageResult: Sendable {
+        let wallpapers: [CatalogWallpaper]
+        let hasMore: Bool
+        let persistenceStatus: CatalogPersistenceStatus
+    }
+
     struct DownloadedWallpapersLoadResult: Sendable {
         let wallpapers: [DownloadedCatalogWallpaper]
         let persistenceStatus: CatalogPersistenceStatus
@@ -157,6 +163,29 @@ final class CatalogRepository: @unchecked Sendable {
             : persistUnifiedCatalogCache(wallpapers)
         return CatalogRefreshResult(
             wallpapers: wallpapers,
+            persistenceStatus: persistenceStatus
+        )
+    }
+
+    func loadNextCatalogPage(existing: [CatalogWallpaper]) async throws -> CatalogPageResult {
+        guard let pagedProvider = provider as? any WallpaperCatalogPaging else {
+            return CatalogPageResult(
+                wallpapers: existing,
+                hasMore: false,
+                persistenceStatus: .notAttempted
+            )
+        }
+
+        let page = try await pagedProvider.fetchNextCatalogPage()
+        var seen = Set(existing.map(\.id))
+        let additions = page.wallpapers.filter { seen.insert($0.id).inserted }
+        let merged = existing + additions
+        let persistenceStatus = additions.isEmpty
+            ? .notAttempted
+            : persistUnifiedCatalogCache(merged)
+        return CatalogPageResult(
+            wallpapers: merged,
+            hasMore: page.hasMore,
             persistenceStatus: persistenceStatus
         )
     }

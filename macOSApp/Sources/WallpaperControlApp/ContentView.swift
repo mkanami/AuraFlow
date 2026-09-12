@@ -1336,13 +1336,17 @@ struct WallpaperCatalogView: View {
         let filteredCount = viewModel.filteredCatalogWallpapers.count
         if let selectedGroup = viewModel.selectedCatalogGroup {
             let groupCount = viewModel.catalogWallpaperCount(in: selectedGroup)
-            guard filteredCount != groupCount else { return "\(groupCount) \(selectedGroup.title)" }
-            return "\(filteredCount)/\(groupCount) \(selectedGroup.title)"
+            let moreSuffix = selectedGroup == .anime && viewModel.catalogHasMoreWallpapers ? "+" : ""
+            guard filteredCount != groupCount else {
+                return "\(groupCount)\(moreSuffix) \(selectedGroup.title)"
+            }
+            return "\(filteredCount)/\(groupCount)\(moreSuffix) \(selectedGroup.title)"
         }
 
         let totalCount = viewModel.catalogWallpapers.count
-        guard filteredCount != totalCount else { return "\(totalCount)" }
-        return "\(filteredCount)/\(totalCount)"
+        let moreSuffix = viewModel.catalogHasMoreWallpapers ? "+" : ""
+        guard filteredCount != totalCount else { return "\(totalCount)\(moreSuffix)" }
+        return "\(filteredCount)/\(totalCount)\(moreSuffix)"
     }
 
     var body: some View {
@@ -1543,6 +1547,15 @@ struct WallpaperCatalogGridView: View {
                         }
                         .buttonStyle(AuraPlainPressButtonStyle())
                         .id(wallpaper.id)
+                        .onAppear {
+                            viewModel.loadMoreCatalogIfNeeded(after: wallpaper.id)
+                        }
+                    }
+
+                    if viewModel.catalogIsLoadingMore {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity, minHeight: 40)
                     }
                 }
                 .padding(.vertical, 2)

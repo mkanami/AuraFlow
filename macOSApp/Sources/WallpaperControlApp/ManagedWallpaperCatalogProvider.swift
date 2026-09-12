@@ -4,7 +4,7 @@ protocol CatalogCacheClearing: Sendable {
     func clearCache() async
 }
 
-actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing {
+actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPaging {
     private let animeProvider: WallpaperCatalogProviding
     private let animeNatureProvider: WallpaperCatalogProviding
     private let scenicProvider: WallpaperCatalogProviding
@@ -113,6 +113,13 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         case .scenic:
             return try await scenicProvider.resolveDownloadURL(for: wallpaper)
         }
+    }
+
+    func fetchNextCatalogPage() async throws -> CatalogPage {
+        guard let pagedAnimeProvider = animeProvider as? any WallpaperCatalogPaging else {
+            return CatalogPage(wallpapers: [], hasMore: false)
+        }
+        return try await pagedAnimeProvider.fetchNextCatalogPage()
     }
 
     func clearCache() async {

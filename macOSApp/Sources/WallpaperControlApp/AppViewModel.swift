@@ -2022,6 +2022,16 @@ final class AppViewModel: ObservableObject {
         set { catalogViewModel.isRefreshing = newValue }
     }
 
+    var catalogIsLoadingMore: Bool {
+        get { catalogViewModel.isLoadingMore }
+        set { catalogViewModel.isLoadingMore = newValue }
+    }
+
+    var catalogHasMoreWallpapers: Bool {
+        get { catalogViewModel.hasMoreWallpapers }
+        set { catalogViewModel.hasMoreWallpapers = newValue }
+    }
+
     var downloadedCatalogWallpapers: [DownloadedCatalogWallpaper] {
         get { catalogViewModel.downloadedWallpapers }
         set { catalogViewModel.downloadedWallpapers = newValue }
@@ -2051,6 +2061,7 @@ final class AppViewModel: ObservableObject {
     private var terminationObserver: ObserverToken?
     private var isShuttingDown = false
     private var catalogRefreshTask: Task<Void, Never>?
+    private var catalogLoadMoreTask: Task<Void, Never>?
     private var catalogDownloadTask: Task<Void, Never>?
     private var localWallpaperImportTask: Task<Void, Never>?
     private var localWallpaperImportGeneration = 0
@@ -2409,6 +2420,7 @@ final class AppViewModel: ObservableObject {
         healthMonitorTask?.cancel()
         monitoringTask?.cancel()
         catalogRefreshTask?.cancel()
+        catalogLoadMoreTask?.cancel()
         catalogDownloadTask?.cancel()
         localWallpaperImportTask?.cancel()
         controllerBootstrapTask?.cancel()
@@ -2968,6 +2980,19 @@ final class AppViewModel: ObservableObject {
         catalogViewModel.count(in: group)
     }
 
+    func loadMoreCatalogIfNeeded(after wallpaperID: String) {
+        guard catalogHasMoreWallpapers,
+              !catalogIsRefreshing,
+              catalogLoadMoreTask == nil,
+              selectedCatalogGroup == nil || selectedCatalogGroup == .anime else {
+            return
+        }
+
+        let triggerIDs = Set(filteredCatalogWallpapers.suffix(12).map(\.id))
+        guard triggerIDs.contains(wallpaperID) else { return }
+        loadNextCatalogPage()
+    }
+
     func applyCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
         guard canDownloadCatalogWallpaper else { return }
         catalogDownloadID = wallpaper.id
@@ -3425,11 +3450,14 @@ final class AppViewModel: ObservableObject {
             do {
                 cacheGeneration &+= 1
                 catalogRefreshTask?.cancel()
+                catalogLoadMoreTask?.cancel()
                 catalogDownloadTask?.cancel()
                 catalogDownloadID = nil
                 let refreshTask = catalogRefreshTask
+                let loadMoreTask = catalogLoadMoreTask
                 let downloadTask = catalogDownloadTask
                 await refreshTask?.value
+                await loadMoreTask?.value
                 await downloadTask?.value
 
                 let appliedVideoIsManaged = appliedVideoURL.map(isManagedCacheURL) ?? false
@@ -3469,6 +3497,7 @@ final class AppViewModel: ObservableObject {
                 downloadedCatalogWallpapers = []
 
                 catalogWallpapers = []
+                catalogHasMoreWallpapers = true
                 selectedCatalogWallpaper = nil
                 lastCatalogRefreshAt = nil
                 statusMessage = "Cache and downloaded wallpapers cleared."
@@ -3907,6 +3936,7 @@ final class AppViewModel: ObservableObject {
                     return
                 }
                 catalogWallpapers = fetched
+                catalogHasMoreWallpapers = true
                 if let selectedCatalogWallpaper {
                     self.selectedCatalogWallpaper = fetched.first(where: { $0.id == selectedCatalogWallpaper.id })
                 }
@@ -3919,6 +3949,35 @@ final class AppViewModel: ObservableObject {
                     selectedCatalogWallpaper = nil
                 }
                 statusMessage = "Wallpaper catalog unavailable: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func loadNextCatalogPage() {
+        catalogLoadMoreTask = Task { [weak self] in
+            guard let self else { return }
+            catalogIsLoadingMore = true
+            defer {
+                catalogIsLoadingMore = false
+                catalogLoadMoreTask = nil
+            }
+
+            do {
+                let result = try await catalogRepository.loadNextCatalogPage(
+                    existing: catalogWallpapers
+                )
+                guard !Task.isCancelled else { return }
+                catalogWallpapers = result.wallpapers
+                catalogHasMoreWallpapers = result.hasMore
+                if let warningMessage = result.persistenceStatus.warningMessage {
+                    statusMessage = warningMessage
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                // A transient page failure must not discard already loaded
+                // cards or permanently close pagination. The next scroll can
+                // retry the same source page.
+                statusMessage = "More wallpapers could not be loaded: \(error.localizedDescription)"
             }
         }
     }

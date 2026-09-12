@@ -17,6 +17,8 @@ final class CatalogViewModel: ObservableObject {
     @Published var downloadID: String?
     @Published var wallpapers: [CatalogWallpaper] = []
     @Published var isRefreshing = false
+    @Published var isLoadingMore = false
+    @Published var hasMoreWallpapers = true
     @Published var downloadedWallpapers: [DownloadedCatalogWallpaper] = []
 
     var filteredWallpapers: [CatalogWallpaper] {
