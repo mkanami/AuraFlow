@@ -120,10 +120,12 @@ struct ContentView: View {
             let availableHeight = max(proxy.size.height - 48, 0)
             let controlPanelMaxWidth: CGFloat = 1440
             let controlPanelWidth = min(availableWidth, controlPanelMaxWidth)
-            let catalogMaxWidth: CGFloat = 1040
-            let overlayWidth = viewModel.isCatalogOpen ? min(availableWidth, catalogMaxWidth) : controlPanelWidth
             let isCompactBySize = controlPanelWidth < 1080 || availableHeight < 620
             let isVeryCompactByHeight = availableHeight < 560
+            let catalogMaxWidth: CGFloat = 1040
+            let overlayWidth = viewModel.isCatalogOpen
+                ? min(availableWidth, catalogMaxWidth)
+                : controlPanelWidth
             let topOverlayPadding = resolvedTopOverlayPadding()
             let bottomOverlayPadding = resolvedBottomOverlayPadding()
 
@@ -308,7 +310,10 @@ struct ContentView: View {
                 }
 
                 if viewModel.isCatalogOpen {
-                    WallpaperCatalogView(viewModel: viewModel)
+                    WallpaperCatalogView(
+                        viewModel: viewModel,
+                        isCompactLayout: isCompactBySize
+                    )
                 } else {
                     ControlPanel(
                         viewModel: viewModel,
@@ -1336,6 +1341,7 @@ struct ControlButtons: View {
 
 struct WallpaperCatalogView: View {
     @ObservedObject var viewModel: AppViewModel
+    let isCompactLayout: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
@@ -1371,11 +1377,15 @@ struct WallpaperCatalogView: View {
                         systemImage: isDetailOpened ? "chevron.left" : "xmark"
                     )
                 }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
                 .keyboardShortcut(.escape, modifiers: [])
 
                 Text(isDetailOpened ? "Wallpaper Preview" : "Wallpaper Catalog")
-                    .font(.headline.weight(.semibold))
+                    .font(
+                        isDetailOpened && isCompactLayout
+                            ? .subheadline.weight(.semibold)
+                            : .headline.weight(.semibold)
+                    )
                     .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
 
                 Spacer()
@@ -1404,18 +1414,22 @@ struct WallpaperCatalogView: View {
             }
 
             if let wallpaper = viewModel.selectedCatalogWallpaper {
-                WallpaperCatalogDetailView(viewModel: viewModel, wallpaper: wallpaper)
+                WallpaperCatalogDetailView(
+                    viewModel: viewModel,
+                    wallpaper: wallpaper,
+                    isCompactLayout: isCompactLayout
+                )
                     .zIndex(0)
             } else {
                 WallpaperCatalogGridView(viewModel: viewModel)
                     .zIndex(0)
             }
         }
-        .padding(.vertical, 14)
-        .padding(.horizontal, 18)
+        .padding(.vertical, isDetailOpened && isCompactLayout ? 12 : 14)
+        .padding(.horizontal, isDetailOpened && isCompactLayout ? 16 : 18)
         .frame(
             maxWidth: .infinity,
-            maxHeight: isDetailOpened ? 400 : 320,
+            maxHeight: isDetailOpened ? (isCompactLayout ? 350 : 400) : 320,
             alignment: .topLeading
         )
         .background(
@@ -1588,12 +1602,13 @@ struct WallpaperCatalogGridView: View {
 struct WallpaperCatalogDetailView: View {
     @ObservedObject var viewModel: AppViewModel
     let wallpaper: CatalogWallpaper
+    let isCompactLayout: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 10) {
+        HStack(alignment: .top, spacing: isCompactLayout ? 12 : 14) {
+            VStack(alignment: .leading, spacing: isCompactLayout ? 8 : 10) {
                 Label(
                     isStaticImage ? "Image Wallpaper" : "Live Wallpaper",
                     systemImage: isStaticImage ? "photo" : "play.rectangle.fill"
@@ -1602,9 +1617,13 @@ struct WallpaperCatalogDetailView: View {
                 .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
 
                 Text(wallpaper.title)
-                    .font(.headline.weight(.semibold))
+                    .font(
+                        isCompactLayout
+                            ? .subheadline.weight(.semibold)
+                            : .headline.weight(.semibold)
+                    )
                     .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-                    .lineLimit(3)
+                    .lineLimit(isCompactLayout ? 2 : 3)
 
                 Divider()
                     .overlay(adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.10))
@@ -1625,7 +1644,7 @@ struct WallpaperCatalogDetailView: View {
                         Label("Download to Preview", systemImage: "arrow.down.circle")
                     }
                 }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
                 .disabled(!viewModel.canDownloadCatalogWallpaper)
 
                 if let sourceURL = wallpaper.sourcePageURL {
@@ -1634,11 +1653,11 @@ struct WallpaperCatalogDetailView: View {
                     } label: {
                         Label("Open Source", systemImage: "link")
                     }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
                 }
             }
-            .padding(.vertical, 8)
-            .frame(width: 270)
+            .padding(.vertical, isCompactLayout ? 6 : 8)
+            .frame(width: isCompactLayout ? 240 : 270)
             .frame(maxHeight: .infinity, alignment: .center)
 
             CatalogDetailMediaPreview(wallpaper: wallpaper)
@@ -1646,7 +1665,11 @@ struct WallpaperCatalogDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
                 .layoutPriority(1)
         }
-        .frame(maxWidth: .infinity, minHeight: 260, maxHeight: 320)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: isCompactLayout ? 230 : 260,
+            maxHeight: isCompactLayout ? 280 : 320
+        )
     }
 
     private var isStaticImage: Bool {
@@ -2355,6 +2378,7 @@ struct AuraGlassButtonStyle: ButtonStyle {
 
     var tone: Tone = .secondary
     var fillWidth = true
+    var compact = false
 
     func makeBody(configuration: Configuration) -> some View {
         // A separate live glass surface for every button multiplies the number of
@@ -2363,7 +2387,8 @@ struct AuraGlassButtonStyle: ButtonStyle {
         AuraGlassButton(
             configuration: configuration,
             tone: tone,
-            fillWidth: fillWidth
+            fillWidth: fillWidth,
+            compact: compact
         )
     }
 }
@@ -2378,6 +2403,7 @@ private struct AuraGlassButton: View {
     let configuration: ButtonStyle.Configuration
     let tone: AuraGlassButtonStyle.Tone
     let fillWidth: Bool
+    let compact: Bool
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.colorScheme) private var colorScheme
@@ -2463,7 +2489,7 @@ private struct AuraGlassButton: View {
 
     var body: some View {
         labelContent
-            .font(.body.weight(.semibold))
+            .font(compact ? .subheadline.weight(.semibold) : .body.weight(.semibold))
             .foregroundStyle(foregroundColor)
             .shadow(
                 color: adaptiveGlassAppearance.centerTextTone.textShadowColor.opacity(tone == .secondary ? 0.55 : 0.80),
@@ -2471,8 +2497,8 @@ private struct AuraGlassButton: View {
                 x: 0,
                 y: 1
             )
-            .padding(.vertical, 3)
-            .padding(.horizontal, 12)
+            .padding(.vertical, compact ? 2 : 3)
+            .padding(.horizontal, compact ? 10 : 12)
             .background {
                 ZStack {
                     #if compiler(>=6.2)
