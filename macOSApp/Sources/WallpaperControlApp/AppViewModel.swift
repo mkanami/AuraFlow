@@ -1999,7 +1999,10 @@ final class AppViewModel: ObservableObject {
 
     var catalogSearchText: String {
         get { catalogViewModel.searchText }
-        set { catalogViewModel.searchText = newValue }
+        set {
+            catalogViewModel.searchText = newValue
+            scheduleCatalogSearch(for: newValue)
+        }
     }
 
     var selectedCatalogGroup: CatalogWallpaperGroup? {
@@ -2025,6 +2028,11 @@ final class AppViewModel: ObservableObject {
     var catalogIsLoadingMore: Bool {
         get { catalogViewModel.isLoadingMore }
         set { catalogViewModel.isLoadingMore = newValue }
+    }
+
+    var catalogIsSearching: Bool {
+        get { catalogViewModel.isSearching }
+        set { catalogViewModel.isSearching = newValue }
     }
 
     var catalogHasMoreWallpapers: Bool {
@@ -2062,6 +2070,8 @@ final class AppViewModel: ObservableObject {
     private var isShuttingDown = false
     private var catalogRefreshTask: Task<Void, Never>?
     private var catalogLoadMoreTask: Task<Void, Never>?
+    private var catalogSearchTask: Task<Void, Never>?
+    private var catalogSearchGeneration = 0
     private var catalogDownloadTask: Task<Void, Never>?
     private var localWallpaperImportTask: Task<Void, Never>?
     private var localWallpaperImportGeneration = 0
@@ -2421,6 +2431,7 @@ final class AppViewModel: ObservableObject {
         monitoringTask?.cancel()
         catalogRefreshTask?.cancel()
         catalogLoadMoreTask?.cancel()
+        catalogSearchTask?.cancel()
         catalogDownloadTask?.cancel()
         localWallpaperImportTask?.cancel()
         controllerBootstrapTask?.cancel()
@@ -2984,6 +2995,7 @@ final class AppViewModel: ObservableObject {
         guard catalogHasMoreWallpapers,
               !catalogIsRefreshing,
               catalogLoadMoreTask == nil,
+              catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               selectedCatalogGroup == nil || selectedCatalogGroup == .anime else {
             return
         }
@@ -3451,13 +3463,16 @@ final class AppViewModel: ObservableObject {
                 cacheGeneration &+= 1
                 catalogRefreshTask?.cancel()
                 catalogLoadMoreTask?.cancel()
+                catalogSearchTask?.cancel()
                 catalogDownloadTask?.cancel()
                 catalogDownloadID = nil
                 let refreshTask = catalogRefreshTask
                 let loadMoreTask = catalogLoadMoreTask
+                let searchTask = catalogSearchTask
                 let downloadTask = catalogDownloadTask
                 await refreshTask?.value
                 await loadMoreTask?.value
+                await searchTask?.value
                 await downloadTask?.value
 
                 let appliedVideoIsManaged = appliedVideoURL.map(isManagedCacheURL) ?? false
@@ -3980,6 +3995,92 @@ final class AppViewModel: ObservableObject {
                 statusMessage = "More wallpapers could not be loaded: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func scheduleCatalogSearch(for rawQuery: String) {
+        catalogSearchGeneration &+= 1
+        let generation = catalogSearchGeneration
+        catalogSearchTask?.cancel()
+
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count >= 2 else {
+            catalogIsSearching = false
+            catalogSearchTask = nil
+            return
+        }
+
+        mergeDownloadedCatalogSearchMatches(for: query)
+
+        catalogSearchTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 220_000_000)
+                guard let self, !Task.isCancelled,
+                      generation == catalogSearchGeneration else { return }
+                catalogIsSearching = true
+                defer {
+                    if generation == catalogSearchGeneration {
+                        catalogIsSearching = false
+                        catalogSearchTask = nil
+                    }
+                }
+
+                let refreshTask = catalogRefreshTask
+                await refreshTask?.value
+                guard !Task.isCancelled,
+                      generation == catalogSearchGeneration else { return }
+
+                let result = try await catalogRepository.searchCatalog(
+                    query: query,
+                    existing: catalogWallpapers
+                )
+                guard !Task.isCancelled,
+                      generation == catalogSearchGeneration,
+                      catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .localizedCaseInsensitiveCompare(query) == .orderedSame else {
+                    return
+                }
+                catalogWallpapers = result.wallpapers
+                if let warningMessage = result.persistenceStatus.warningMessage {
+                    statusMessage = warningMessage
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, generation == self.catalogSearchGeneration else { return }
+                // Local case-insensitive and fuzzy matches remain available if
+                // the remote source is temporarily unreachable.
+            }
+        }
+    }
+
+    private func mergeDownloadedCatalogSearchMatches(for query: String) {
+        var seen = Set(catalogWallpapers.map(\.id))
+        let additions = downloadedCatalogWallpapers.compactMap { wallpaper -> CatalogWallpaper? in
+            guard WallpaperSearchMatcher.matches(
+                query: query,
+                fields: [
+                    wallpaper.title,
+                    wallpaper.category,
+                    wallpaper.attribution,
+                    wallpaper.wallpaperID,
+                    wallpaper.localURL.lastPathComponent,
+                    wallpaper.sourcePageURL?.absoluteString ?? "",
+                ]
+            ), seen.insert(wallpaper.wallpaperID).inserted else {
+                return nil
+            }
+            return CatalogWallpaper(
+                id: wallpaper.wallpaperID,
+                title: wallpaper.title,
+                category: wallpaper.category,
+                attribution: wallpaper.attribution,
+                previewImageURL: wallpaper.effectivePreviewURL,
+                sourcePageURL: wallpaper.sourcePageURL,
+                sources: [CatalogVideoSource(url: wallpaper.localURL, width: 0, height: 0)]
+            )
+        }
+        guard !additions.isEmpty else { return }
+        catalogWallpapers.append(contentsOf: additions)
     }
 
     private func downloadCatalogVideo(for wallpaper: CatalogWallpaper) async throws -> URL {

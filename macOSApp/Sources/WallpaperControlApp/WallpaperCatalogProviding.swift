@@ -19,6 +19,12 @@ protocol WallpaperCatalogPaging: Sendable {
     func fetchNextCatalogPage() async throws -> CatalogPage
 }
 
+/// Optional targeted search for catalogs that are intentionally loaded in
+/// pages. This lets search find older entries without downloading every card.
+protocol WallpaperCatalogSearching: Sendable {
+    func searchCatalog(query: String) async throws -> [CatalogWallpaper]
+}
+
 extension WallpaperCatalogProviding {
     func fetchCatalog(progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
         let wallpapers = try await fetchCatalog()

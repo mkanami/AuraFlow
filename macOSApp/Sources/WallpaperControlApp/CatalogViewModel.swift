@@ -18,6 +18,7 @@ final class CatalogViewModel: ObservableObject {
     @Published var wallpapers: [CatalogWallpaper] = []
     @Published var isRefreshing = false
     @Published var isLoadingMore = false
+    @Published var isSearching = false
     @Published var hasMoreWallpapers = true
     @Published var downloadedWallpapers: [DownloadedCatalogWallpaper] = []
 
@@ -29,8 +30,17 @@ final class CatalogViewModel: ObservableObject {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return groupFiltered }
         return groupFiltered.filter { wallpaper in
-            wallpaper.title.localizedCaseInsensitiveContains(query)
-                || wallpaper.category.localizedCaseInsensitiveContains(query)
+            WallpaperSearchMatcher.matches(
+                query: query,
+                fields: [
+                    wallpaper.title,
+                    wallpaper.category,
+                    wallpaper.attribution,
+                    wallpaper.id,
+                    wallpaper.sourcePageURL?.absoluteString ?? "",
+                    wallpaper.previewImageURL?.absoluteString ?? "",
+                ]
+            )
         }
     }
 

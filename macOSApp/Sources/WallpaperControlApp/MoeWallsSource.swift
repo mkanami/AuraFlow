@@ -258,6 +258,10 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
         }
     }
 
+    func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
+        try await search(query: query, page: 1).map(\.asCatalogWallpaper)
+    }
+
     func fetchDetails(pageURL: URL) async throws -> MoeWallsWallpaper {
         let cacheKey = pageURL.absoluteString
         if let cached = detailCache[cacheKey] {

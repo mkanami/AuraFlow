@@ -1273,6 +1273,47 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func catalogSearchFetchesMatchesOutsideLoadedPages() async throws {
+    let first = CatalogWallpaper(
+        id: "first",
+        title: "First Wallpaper",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: []
+    )
+    let rei = CatalogWallpaper(
+        id: "rei",
+        title: "Rei Ayanami Blue Sky Neon Genesis Evangelion Live Wallpaper",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://moewalls.com/anime/rei-ayanami-blue-sky/"),
+        sources: []
+    )
+    let provider = SearchableCatalogProvider(initial: [first], searchResults: [rei])
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        catalogProvider: provider
+    )
+
+    for _ in 0..<40 {
+        if viewModel.catalogWallpapers.contains(where: { $0.id == first.id }) { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    viewModel.catalogSearchText = "rEi"
+    for _ in 0..<80 {
+        if viewModel.filteredCatalogWallpapers.map(\.id) == [rei.id] { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    #expect(viewModel.filteredCatalogWallpapers.map(\.id) == [rei.id])
+    #expect(await provider.queries == ["rEi"])
+}
+
+@MainActor
 @Test func downloadedPreviewStartsOnlyAfterExplicitStart() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.start-preview")!
@@ -2248,6 +2289,29 @@ actor SlowPagedCatalogProvider: WallpaperCatalogProviding, WallpaperCatalogPagin
         pageRequestCount += 1
         try await Task.sleep(nanoseconds: 50_000_000)
         return CatalogPage(wallpapers: next, hasMore: true)
+    }
+}
+
+actor SearchableCatalogProvider: WallpaperCatalogProviding, WallpaperCatalogSearching {
+    let initial: [CatalogWallpaper]
+    let searchResults: [CatalogWallpaper]
+    private(set) var queries: [String] = []
+
+    init(initial: [CatalogWallpaper], searchResults: [CatalogWallpaper]) {
+        self.initial = initial
+        self.searchResults = searchResults
+    }
+
+    func loadCachedCatalog() async -> [CatalogWallpaper]? { initial }
+    func fetchCatalog() async throws -> [CatalogWallpaper] { initial }
+
+    func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
+        URL(string: "https://example.com/fallback.mp4")!
+    }
+
+    func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
+        queries.append(query)
+        return searchResults
     }
 }
 

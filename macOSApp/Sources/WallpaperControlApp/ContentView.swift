@@ -1381,7 +1381,7 @@ struct WallpaperCatalogView: View {
                 Spacer()
 
                 if viewModel.selectedCatalogWallpaper == nil {
-                    if viewModel.catalogIsRefreshing {
+                    if viewModel.catalogIsRefreshing || viewModel.catalogIsSearching {
                         ProgressView()
                             .controlSize(.small)
                     }

@@ -29,11 +29,47 @@ func catalogViewModelOwnsFilteringAndGroupSelection() {
     viewModel.searchText = "forest"
     #expect(viewModel.filteredWallpapers.map(\.id) == ["anime-1"])
 
+    viewModel.searchText = "FOREST"
+    #expect(viewModel.filteredWallpapers.map(\.id) == ["anime-1"])
+
+    viewModel.searchText = "spirt"
+    #expect(viewModel.filteredWallpapers.map(\.id) == ["anime-1"])
+
     viewModel.searchText = ""
     viewModel.toggleGroup(.scenic)
     #expect(viewModel.filteredWallpapers.map(\.id) == ["scenic-1"])
     #expect(viewModel.count(in: .anime) == 1)
     #expect(viewModel.scrollTargetID == "scenic-1")
+}
+
+@Test @MainActor
+func catalogSearchMatchesCasePartialWordsAndSmallTypos() {
+    let viewModel = CatalogViewModel()
+    viewModel.wallpapers = [
+        CatalogWallpaper(
+            id: "moewalls-rei-ayanami-blue-sky",
+            title: "Rei Ayanami Blue Sky Neon Genesis Evangelion Live Wallpaper",
+            category: "Anime",
+            attribution: "MoeWalls",
+            previewImageURL: nil,
+            sourcePageURL: URL(string: "https://moewalls.com/anime/rei-ayanami-blue-sky/"),
+            sources: []
+        ),
+        CatalogWallpaper(
+            id: "quiet-lake",
+            title: "Quiet Lake",
+            category: "Scenic",
+            attribution: "AuraFlow",
+            previewImageURL: nil,
+            sourcePageURL: nil,
+            sources: []
+        ),
+    ]
+
+    for query in ["rei", "REI", "ayana", "rie", "evanglion"] {
+        viewModel.searchText = query
+        #expect(viewModel.filteredWallpapers.map(\.id) == ["moewalls-rei-ayanami-blue-sky"])
+    }
 }
 
 @Test @MainActor

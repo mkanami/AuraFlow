@@ -190,6 +190,27 @@ final class CatalogRepository: @unchecked Sendable {
         )
     }
 
+    func searchCatalog(
+        query: String,
+        existing: [CatalogWallpaper]
+    ) async throws -> CatalogRefreshResult {
+        guard let searchableProvider = provider as? any WallpaperCatalogSearching else {
+            return CatalogRefreshResult(
+                wallpapers: existing,
+                persistenceStatus: .notAttempted
+            )
+        }
+
+        let matches = try await searchableProvider.searchCatalog(query: query)
+        var seen = Set(existing.map(\.id))
+        let additions = matches.filter { seen.insert($0.id).inserted }
+        let merged = existing + additions
+        return CatalogRefreshResult(
+            wallpapers: merged,
+            persistenceStatus: .notAttempted
+        )
+    }
+
     // MARK: Downloaded manifest
 
     func loadDownloadedWallpapers(

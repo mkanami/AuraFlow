@@ -4,7 +4,7 @@ protocol CatalogCacheClearing: Sendable {
     func clearCache() async
 }
 
-actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPaging {
+actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPaging, WallpaperCatalogSearching {
     private let animeProvider: WallpaperCatalogProviding
     private let animeNatureProvider: WallpaperCatalogProviding
     private let scenicProvider: WallpaperCatalogProviding
@@ -122,6 +122,13 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         return try await pagedAnimeProvider.fetchNextCatalogPage()
     }
 
+    func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
+        guard let searchableAnimeProvider = animeProvider as? any WallpaperCatalogSearching else {
+            return []
+        }
+        return try await searchableAnimeProvider.searchCatalog(query: query)
+    }
+
     func clearCache() async {
         if let cacheClearingProvider = animeProvider as? CatalogCacheClearing {
             await cacheClearingProvider.clearCache()
@@ -178,6 +185,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
 }
 
 extension MoeWallsSource: CatalogCacheClearing {}
+extension MoeWallsSource: WallpaperCatalogSearching {}
 
 private struct ProviderCatalogFetchResult: Sendable {
     let wallpapers: [CatalogWallpaper]
