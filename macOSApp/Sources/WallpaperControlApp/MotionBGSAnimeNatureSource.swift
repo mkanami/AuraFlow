@@ -1,6 +1,6 @@
 import Foundation
 
-actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearing {
+actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogSearching {
     private let baseURL = URL(string: "https://motionbgs.com/")!
     private let startPath = "tag:anime-nature/"
     private let session: URLSession
@@ -65,6 +65,34 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
             throw URLError(.fileDoesNotExist)
         }
         return source.url
+    }
+
+    func searchCatalog(query rawQuery: String) async throws -> [CatalogWallpaper] {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+
+        var components = URLComponents(
+            url: baseURL.appending(path: "search"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "q", value: query)]
+        guard let searchURL = components?.url else {
+            throw URLError(.badURL)
+        }
+
+        let data = try await fetchData(searchURL)
+        guard let html = String(data: data, encoding: .utf8) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+
+        let page = MotionBGSParser.parseListingPage(html: html, baseURL: baseURL)
+        let exactMatches = page.items.filter { item in
+            WallpaperSearchMatcher.matches(
+                query: query,
+                fields: [item.title, item.pageURL.lastPathComponent.replacingOccurrences(of: "-", with: " ")]
+            )
+        }
+        return Self.placeholderWallpapers(from: exactMatches)
     }
 
     private func fetchListingItems(

@@ -1178,6 +1178,53 @@ private func pngData(for image: CGImage) -> Data {
     #expect(catalog.map(\.id) == ["curated-wallpaper"])
 }
 
+@Test func managedCatalogSearchCombinesSearchableSourcesAndRemovesTitleDuplicates() async throws {
+    let animeResult = CatalogWallpaper(
+        id: "moewalls-miku",
+        title: "Hatsune Miku Live Wallpaper",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://moewalls.com/miku"),
+        sources: []
+    )
+    let duplicateMotionResult = CatalogWallpaper(
+        id: "motionbgs-miku",
+        title: "Hatsune Miku",
+        category: "Anime Nature",
+        attribution: "MotionBGS",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://motionbgs.com/miku"),
+        sources: []
+    )
+    let secondMotionResult = CatalogWallpaper(
+        id: "motionbgs-miku-stars",
+        title: "Hatsune Miku Star Eyes",
+        category: "Anime Nature",
+        attribution: "MotionBGS",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://motionbgs.com/miku-stars"),
+        sources: []
+    )
+    let animeProvider = SearchableCatalogProvider(initial: [], searchResults: [animeResult])
+    let animeNatureProvider = SearchableCatalogProvider(
+        initial: [],
+        searchResults: [duplicateMotionResult, secondMotionResult]
+    )
+    let provider = ManagedWallpaperCatalogProvider(
+        animeProvider: animeProvider,
+        animeNatureProvider: animeNatureProvider,
+        scenicProvider: MockCatalogProvider(wallpapers: []),
+        curatedCatalog: []
+    )
+
+    let results = try await provider.searchCatalog(query: "miku")
+
+    #expect(results.map(\.id) == ["moewalls-miku", "motionbgs-miku-stars"])
+    #expect(await animeProvider.queries == ["miku"])
+    #expect(await animeNatureProvider.queries == ["miku"])
+}
+
 @Test func defaultCatalogDoesNotBundleThirdPartyWallpapers() {
     #expect(CatalogWallpaper.defaultCatalog.isEmpty)
 }

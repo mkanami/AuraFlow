@@ -74,3 +74,93 @@ import Testing
         "https://motionbgs.com/dl/hd/9472",
     ])
 }
+
+@Test func motionBGSSearchReturnsEveryExactCaseInsensitiveMatch() async throws {
+    MotionBGSSearchURLProtocol.configure(html: """
+    <div class=tmb>
+      <a title="Hatsune Miku Star Eyes live wallpaper" href=/hatsune-miku-star-eyes>
+        <img src=/miku-star-eyes.jpg>
+        <span class=ttl>Hatsune Miku Star Eyes</span>
+      </a>
+      <a title="Miku's Aqua Melody live wallpaper" href=/mikus-aqua-melody>
+        <img src=/miku-aqua.jpg>
+        <span class=ttl>Miku's Aqua Melody</span>
+      </a>
+      <a title="Miko Shrine live wallpaper" href=/miko-shrine>
+        <img src=/miko.jpg>
+        <span class=ttl>Miko Shrine</span>
+      </a>
+      <a title="Mikasa Ackerman live wallpaper" href=/mikasa-ackerman>
+        <img src=/mikasa.jpg>
+        <span class=ttl>Mikasa Ackerman</span>
+      </a>
+    </div>
+    """)
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MotionBGSSearchURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+    let source = MotionBGSAnimeNatureSource(session: session)
+
+    let results = try await source.searchCatalog(query: "mIkU")
+
+    #expect(results.map(\.title) == [
+        "Hatsune Miku Star Eyes",
+        "Miku's Aqua Melody",
+    ])
+    #expect(MotionBGSSearchURLProtocol.requestedQuery == "mIkU")
+}
+
+private final class MotionBGSSearchURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var responseData = Data()
+    private static var query: String?
+
+    static var requestedQuery: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return query
+    }
+
+    static func configure(html: String) {
+        lock.lock()
+        responseData = Data(html.utf8)
+        query = nil
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "motionbgs.com"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+
+        Self.lock.lock()
+        Self.query = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first(where: { $0.name == "q" })?
+            .value
+        let data = Self.responseData
+        Self.lock.unlock()
+
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/html"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}

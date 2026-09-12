@@ -123,10 +123,11 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
     }
 
     func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
-        guard let searchableAnimeProvider = animeProvider as? any WallpaperCatalogSearching else {
-            return []
-        }
-        return try await searchableAnimeProvider.searchCatalog(query: query)
+        async let animeResults = Self.searchProvider(animeProvider, query: query)
+        async let animeNatureResults = Self.searchProvider(animeNatureProvider, query: query)
+        async let scenicResults = Self.searchProvider(scenicProvider, query: query)
+        let results = await (animeResults, animeNatureResults, scenicResults)
+        return Self.mergeSearchResults([results.0, results.1, results.2])
     }
 
     func clearCache() async {
@@ -181,6 +182,44 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
                 failureMessage: error.localizedDescription
             )
         }
+    }
+
+    private static func searchProvider(
+        _ provider: WallpaperCatalogProviding,
+        query: String
+    ) async -> [CatalogWallpaper] {
+        guard let searchableProvider = provider as? any WallpaperCatalogSearching else {
+            return []
+        }
+        return (try? await searchableProvider.searchCatalog(query: query)) ?? []
+    }
+
+    private static func mergeSearchResults(_ catalogs: [[CatalogWallpaper]]) -> [CatalogWallpaper] {
+        var seenIDs = Set<String>()
+        var seenTitles = Set<String>()
+        var merged: [CatalogWallpaper] = []
+        let maxCount = catalogs.map(\.count).max() ?? 0
+
+        for index in 0..<maxCount {
+            for catalog in catalogs where index < catalog.count {
+                let wallpaper = catalog[index]
+                let titleKey = wallpaper.title
+                    .folding(
+                        options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                        locale: Locale(identifier: "en_US_POSIX")
+                    )
+                    .lowercased()
+                    .replacingOccurrences(of: " live wallpaper", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard seenIDs.insert(wallpaper.id).inserted,
+                      seenTitles.insert(titleKey).inserted else {
+                    continue
+                }
+                merged.append(wallpaper)
+            }
+        }
+
+        return merged
     }
 }
 

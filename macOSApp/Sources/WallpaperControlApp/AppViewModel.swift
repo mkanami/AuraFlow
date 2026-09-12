@@ -4047,7 +4047,7 @@ final class AppViewModel: ObservableObject {
                 return
             } catch {
                 guard let self, generation == self.catalogSearchGeneration else { return }
-                // Local case-insensitive and fuzzy matches remain available if
+                // Local case-insensitive substring matches remain available if
                 // the remote source is temporarily unreachable.
             }
         }
