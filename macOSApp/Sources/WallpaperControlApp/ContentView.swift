@@ -1377,7 +1377,7 @@ struct WallpaperCatalogView: View {
                         systemImage: isDetailOpened ? "chevron.left" : "xmark"
                     )
                 }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                 .keyboardShortcut(.escape, modifiers: [])
 
                 Text(isDetailOpened ? "Wallpaper Preview" : "Wallpaper Catalog")
