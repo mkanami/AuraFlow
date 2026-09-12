@@ -1593,11 +1593,6 @@ struct WallpaperCatalogDetailView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            CatalogDetailMediaPreview(wallpaper: wallpaper)
-                .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .layoutPriority(1)
-
             VStack(alignment: .leading, spacing: 10) {
                 Label(
                     isStaticImage ? "Image Wallpaper" : "Live Wallpaper",
@@ -1645,6 +1640,11 @@ struct WallpaperCatalogDetailView: View {
             .padding(.vertical, 8)
             .frame(width: 270)
             .frame(maxHeight: .infinity, alignment: .center)
+
+            CatalogDetailMediaPreview(wallpaper: wallpaper)
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                .layoutPriority(1)
         }
         .frame(maxWidth: .infinity, minHeight: 260, maxHeight: 320)
     }
