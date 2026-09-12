@@ -1,0 +1,20 @@
+// swift-interface-format-version: 1.0
+// swift-compiler-version: Apple Swift version 6.2.3 effective-5.10 (swiftlang-6.2.3.3.21 clang-1700.6.3.2)
+// swift-module-flags: -target arm64-apple-macos13.0 -enable-objc-interop -enable-library-evolution -module-name Wallpaper
+import Foundation
+import QuartzCore
+import WallpaperTypes
+
+public struct WallpaperDisplayAttributes : Swift.Hashable {
+  public static var screenSaver: Wallpaper.WallpaperDisplayAttributes { get }
+}
+
+public final class WallpaperDisplayAssertion {
+  public var layer: QuartzCore.CALayer { get }
+  public init(displayID: Swift.UInt32, attributes: Wallpaper.WallpaperDisplayAttributes) async throws
+}
+
+public final class WallpaperPresentationModeAssertion {
+  public static func takeLockedAssertion(displayAssertion: Wallpaper.WallpaperDisplayAssertion) async throws -> Self
+  public static func takeIdleAssertion(displayAssertion: Wallpaper.WallpaperDisplayAssertion) async throws -> Self
+}

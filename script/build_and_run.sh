@@ -18,9 +18,20 @@ APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_PLUGINS="$APP_CONTENTS/PlugIns"
 APP_BINARY="$APP_MACOS/$PROCESS_NAME"
 HELPER_NAME="AuraWallpaperAgent"
+NATIVE_BRIDGE_NAME="AuraWallpaperNativeBridge"
+if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+  SIGNING_IDENTITY="$CODESIGN_IDENTITY"
+else
+  SIGNING_IDENTITY="$(/usr/bin/security find-identity -v -p codesigning 2>/dev/null | awk -F'\"' '/Apple Development:/ {print $2; exit}')"
+  SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
+fi
+APP_ENTITLEMENTS="$SWIFT_DIR/Sources/WallpaperControlApp/WallpaperControlApp.entitlements"
 
 SWIFT_BIN="${AURAFLOW_SWIFT_BIN:-swift}"
 SWIFT_ARGS=()
+if [[ "${AURAFLOW_DISABLE_SANDBOX:-0}" == "1" ]]; then
+  SWIFT_ARGS+=(--disable-sandbox)
+fi
 XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 if [[ -x "$XCODE_DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift" ]]; then
   export DEVELOPER_DIR="$XCODE_DEVELOPER_DIR"
@@ -39,7 +50,8 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES" "$APP_PLUGINS"
 cp "$BUILD_DIR/$PROCESS_NAME" "$APP_BINARY"
 cp "$BUILD_DIR/$HELPER_NAME" "$APP_MACOS/$HELPER_NAME"
-chmod +x "$APP_BINARY" "$APP_MACOS/$HELPER_NAME"
+cp "$BUILD_DIR/$NATIVE_BRIDGE_NAME" "$APP_MACOS/$NATIVE_BRIDGE_NAME"
+chmod +x "$APP_BINARY" "$APP_MACOS/$HELPER_NAME" "$APP_MACOS/$NATIVE_BRIDGE_NAME"
 
 RESOURCE_BUNDLE="$BUILD_DIR/${PROCESS_NAME}_${PROCESS_NAME}.bundle"
 if [[ -d "$RESOURCE_BUNDLE" ]]; then
@@ -63,6 +75,8 @@ cat >"$APP_CONTENTS/Info.plist" <<PLIST
   <string>$PROCESS_NAME</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>AuraFlow saves your current wallpaper so Remove can restore it.</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
   <key>CFBundleDisplayName</key>
@@ -83,10 +97,18 @@ cat >"$APP_CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --sign - "$APP_MACOS/$HELPER_NAME"
-codesign --force --sign - "$APP_BINARY"
-codesign --force --sign - "$APP_BUNDLE"
+codesign --force --sign "$SIGNING_IDENTITY" "$APP_MACOS/$HELPER_NAME"
+codesign --force --sign "$SIGNING_IDENTITY" "$APP_MACOS/$NATIVE_BRIDGE_NAME"
+codesign --force --sign "$SIGNING_IDENTITY" "$APP_BINARY"
+codesign --force --options runtime --timestamp=none \
+  --entitlements "$APP_ENTITLEMENTS" \
+  --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
+
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$LSREGISTER" ]]; then
+  "$LSREGISTER" -f -R -trusted "$APP_BUNDLE"
+fi
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"

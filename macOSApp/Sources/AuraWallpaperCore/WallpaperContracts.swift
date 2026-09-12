@@ -1,7 +1,7 @@
 import AVFoundation
 import Foundation
 
-public struct ControlConfig: Codable, Equatable {
+public struct ControlConfig: Codable, Equatable, Sendable {
     public var video_path: String
     public var playback_speed: Double
     public var volume: Double?
@@ -9,7 +9,6 @@ public struct ControlConfig: Codable, Equatable {
     public var blend_interpolation: Bool?
     public var pause_on_fullscreen: Bool?
     public var show_on_lock_screen: Bool?
-    public var lock_screen_preference_configured: Bool?
     public var scale_mode: String?
 
     public init(
@@ -20,7 +19,6 @@ public struct ControlConfig: Codable, Equatable {
         blend_interpolation: Bool? = false,
         pause_on_fullscreen: Bool? = true,
         show_on_lock_screen: Bool? = false,
-        lock_screen_preference_configured: Bool? = false,
         scale_mode: String? = WallpaperScaleMode.fill.rawValue
     ) {
         self.video_path = video_path
@@ -30,20 +28,41 @@ public struct ControlConfig: Codable, Equatable {
         self.blend_interpolation = blend_interpolation
         self.pause_on_fullscreen = pause_on_fullscreen
         self.show_on_lock_screen = show_on_lock_screen
-        self.lock_screen_preference_configured =
-            lock_screen_preference_configured
         self.scale_mode = scale_mode
     }
 
     public static let defaultConfig = ControlConfig(
         video_path: "",
         playback_speed: 1.0,
-        show_on_lock_screen: true,
-        lock_screen_preference_configured: false
+        show_on_lock_screen: false
     )
 }
 
-public struct ControlStatus: Codable, Equatable {
+public enum WallpaperRestoreStatus: String, Codable, Equatable, Sendable {
+    case restored
+    case notNeeded
+    case failed
+}
+
+/// Media classification retained for the catalog's static-image playback path.
+/// Lock Screen still follows the v1.3.1 video/screen-saver contract.
+public enum WallpaperMediaKind: String, Codable, Equatable, Sendable {
+    case motion
+    case image
+
+    public static func forURL(_ url: URL) -> WallpaperMediaKind {
+        switch url.pathExtension.lowercased() {
+        case "png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "bmp", "webp":
+            return .image
+        default:
+            return .motion
+        }
+    }
+
+    public var isStaticImage: Bool { self == .image }
+}
+
+public struct ControlStatus: Codable, Equatable, Sendable {
     public var contract_version: Int?
     public var running: Bool
     public var config: ControlConfig
@@ -51,8 +70,13 @@ public struct ControlStatus: Codable, Equatable {
     public var autostart: Bool?
     public var paused: Bool?
     public var wallpaper_restored: Bool?
+    public var wallpaper_restore_status: WallpaperRestoreStatus?
     public var wallpaper: String?
     public var health: DaemonHealth?
+    public var lock_screen_only: Bool?
+    public var autostart_plist_exists: Bool?
+    public var autostart_service_loaded: Bool?
+    public var autostart_service_running: Bool?
 
     public init(
         contract_version: Int? = AuraWallpaperContract.statusVersion,
@@ -62,8 +86,13 @@ public struct ControlStatus: Codable, Equatable {
         autostart: Bool? = nil,
         paused: Bool? = nil,
         wallpaper_restored: Bool? = nil,
+        wallpaper_restore_status: WallpaperRestoreStatus? = nil,
         wallpaper: String? = nil,
-        health: DaemonHealth? = nil
+        health: DaemonHealth? = nil,
+        lock_screen_only: Bool? = nil,
+        autostart_plist_exists: Bool? = nil,
+        autostart_service_loaded: Bool? = nil,
+        autostart_service_running: Bool? = nil
     ) {
         self.contract_version = contract_version
         self.running = running
@@ -72,12 +101,17 @@ public struct ControlStatus: Codable, Equatable {
         self.autostart = autostart
         self.paused = paused
         self.wallpaper_restored = wallpaper_restored
+        self.wallpaper_restore_status = wallpaper_restore_status
         self.wallpaper = wallpaper
         self.health = health
+        self.lock_screen_only = lock_screen_only
+        self.autostart_plist_exists = autostart_plist_exists
+        self.autostart_service_loaded = autostart_service_loaded
+        self.autostart_service_running = autostart_service_running
     }
 }
 
-public struct DaemonHealth: Codable, Equatable {
+public struct DaemonHealth: Codable, Equatable, Sendable {
     public var contract_version: Int?
     public var available: Bool?
     public var fresh: Bool?
@@ -107,6 +141,13 @@ public struct DaemonHealth: Codable, Equatable {
     public var blend_interpolation_enabled: Bool?
     public var blend_interpolation_active: Bool?
     public var scale_mode: String?
+    // Optional lifecycle diagnostics. Older agents and status files remain
+    // decodable because these fields are not required for the core contract.
+    public var visible_desktop_windows: Int?
+    public var native_lock_state: String?
+    public var active_source_signature: String?
+    public var applied_operation_id: UInt64?
+    public var active_generation: UInt64?
 
     public init(
         contract_version: Int? = AuraWallpaperContract.statusVersion,
@@ -137,7 +178,12 @@ public struct DaemonHealth: Codable, Equatable {
         last_lock_transition_ms: Double? = nil,
         blend_interpolation_enabled: Bool? = nil,
         blend_interpolation_active: Bool? = nil,
-        scale_mode: String? = nil
+        scale_mode: String? = nil,
+        visible_desktop_windows: Int? = nil,
+        native_lock_state: String? = nil,
+        active_source_signature: String? = nil,
+        applied_operation_id: UInt64? = nil,
+        active_generation: UInt64? = nil
     ) {
         self.contract_version = contract_version
         self.available = available
@@ -168,10 +214,15 @@ public struct DaemonHealth: Codable, Equatable {
         self.blend_interpolation_enabled = blend_interpolation_enabled
         self.blend_interpolation_active = blend_interpolation_active
         self.scale_mode = scale_mode
+        self.visible_desktop_windows = visible_desktop_windows
+        self.native_lock_state = native_lock_state
+        self.active_source_signature = active_source_signature
+        self.applied_operation_id = applied_operation_id
+        self.active_generation = active_generation
     }
 }
 
-public enum WallpaperScaleMode: String, Codable, CaseIterable, Identifiable {
+public enum WallpaperScaleMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case fill
     case fit
     case stretch
@@ -203,7 +254,7 @@ public enum WallpaperScaleMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-public struct DaemonMetrics: Codable, Equatable {
+public struct DaemonMetrics: Codable, Equatable, Sendable {
     public var contract_version: Int?
     public var updated_at: Double?
     public var running: Bool

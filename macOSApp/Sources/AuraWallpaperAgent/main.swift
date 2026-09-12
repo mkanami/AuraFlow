@@ -2,7 +2,14 @@ import AppKit
 import AuraWallpaperCore
 import AVFoundation
 import Foundation
+import notify
+import OSLog
 import QuartzCore
+
+private let wallpaperAgentLifecycleLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "LockScreenLifecycle"
+)
 
 private final class WallpaperLayerView: NSView {
     override var isOpaque: Bool { true }
@@ -12,19 +19,303 @@ private final class WallpaperLayerView: NSView {
     }
 }
 
-private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
-    private struct LockScreenRearmToken: Equatable {
-        let sessionGeneration: UInt64
-        let wallpaperRevision: UInt64
-        let videoPath: String
+private actor LockScreenRepairGate {
+    private var isHeld = false
+
+    func acquire() async throws {
+        while isHeld {
+            try Task.checkCancellation()
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        try Task.checkCancellation()
+        isHeld = true
     }
 
+    func release() {
+        isHeld = false
+    }
+}
+
+private struct LockScreenRearmToken: Equatable, Sendable {
+    let sessionGeneration: UInt64
+    let wallpaperRevision: UInt64
+    let videoPath: String
+}
+
+private struct WallpaperAgentRearmGuardState: Sendable {
+    var sessionGeneration: UInt64 = 0
+    var wallpaperRevision: UInt64 = 0
+    var sessionInactive = false
+    var showOnLockScreen = false
+    var terminating = false
+    var lastSessionTransitionUptime = -Double.infinity
+}
+
+/// Synchronous, lock-protected state used by platform callbacks that may run
+/// off the main actor. The agent publishes snapshots on Main Actor; callbacks
+/// only read this value and never reach into AppKit or the delegate itself.
+private final class WallpaperAgentRearmGuard: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state = WallpaperAgentRearmGuardState()
+
+    func update(_ newState: WallpaperAgentRearmGuardState) {
+        lock.lock()
+        state = newState
+        lock.unlock()
+    }
+
+    func snapshot() -> WallpaperAgentRearmGuardState {
+        lock.lock()
+        let snapshot = state
+        lock.unlock()
+        return snapshot
+    }
+
+    func canProceed(
+        token: LockScreenRearmToken,
+        videoURL: URL,
+        allowRecentTransition: Bool
+    ) -> Bool {
+        let snapshot = self.snapshot()
+        guard !snapshot.terminating,
+              snapshot.sessionGeneration == token.sessionGeneration,
+              snapshot.wallpaperRevision == token.wallpaperRevision,
+              !snapshot.sessionInactive,
+              snapshot.showOnLockScreen,
+              videoURL.path == token.videoPath,
+              agentSystemSessionIsLocked() == false
+        else {
+            return false
+        }
+        return allowRecentTransition
+            || ProcessInfo.processInfo.systemUptime
+                - snapshot.lastSessionTransitionUptime > 1.0
+    }
+
+    func canProceed(
+        token: LockScreenRearmToken,
+        videoURL: URL
+    ) -> Bool {
+        let snapshot = self.snapshot()
+        return !snapshot.terminating
+            && snapshot.sessionGeneration == token.sessionGeneration
+            && snapshot.wallpaperRevision == token.wallpaperRevision
+            && !snapshot.sessionInactive
+            && snapshot.showOnLockScreen
+            && videoURL.path == token.videoPath
+            && agentSystemSessionIsLocked() == false
+    }
+
+    func canRestoreDesktop(sessionGeneration: UInt64) -> Bool {
+        let snapshot = self.snapshot()
+        return !snapshot.terminating
+            && snapshot.sessionGeneration == sessionGeneration
+            && !snapshot.sessionInactive
+            && snapshot.showOnLockScreen
+            && agentSystemSessionIsLocked() == false
+    }
+}
+
+private final class WallpaperAgentLifecycleGuard: @unchecked Sendable {
+    private let lock = NSLock()
+    private var operationID: UInt64?
+    private var terminating = false
+
+    func update(operationID: UInt64?, terminating: Bool) {
+        lock.lock()
+        self.operationID = operationID
+        self.terminating = terminating
+        lock.unlock()
+    }
+
+    func markTerminating() {
+        lock.lock()
+        terminating = true
+        lock.unlock()
+    }
+
+    func isCurrent(_ operationID: UInt64) -> Bool {
+        lock.lock()
+        let result = !terminating && self.operationID == operationID
+        lock.unlock()
+        return result
+    }
+}
+
+/// Keeps the platform existential behind an explicit compatibility boundary.
+/// Platform adapters predate Swift concurrency and are deliberately not
+/// declared Sendable themselves; asynchronous provider mutations use the
+/// executor below while AppKit-facing reads stay on Main Actor.
+private final class LockScreenPlatformBox: @unchecked Sendable {
+    let platform: LockScreenPlatformOperating
+
+    init(platform: LockScreenPlatformOperating) {
+        self.platform = platform
+    }
+
+    func repairLockScreenOnlyGeneration(
+        videoURL: URL,
+        shouldProceed: @escaping @Sendable () -> Bool
+    ) async throws -> Bool {
+        try await platform.repairLockScreenOnlyGeneration(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
+    }
+
+    func repair(
+        videoURL: URL,
+        shouldProceed: @escaping @Sendable () -> Bool
+    ) async throws -> Bool {
+        try await platform.repair(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
+    }
+
+    func rearmForNextLock(
+        videoURL: URL,
+        shouldProceed: @escaping @Sendable () -> Bool
+    ) async throws -> Bool {
+        try await platform.rearmForNextLock(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
+    }
+
+    func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try await platform.pauseLockScreenOnlyPlayback(videoURL: videoURL)
+    }
+
+    func resumeLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try await platform.resumeLockScreenOnlyPlayback(videoURL: videoURL)
+    }
+
+}
+
+/// Owns the compatibility wrapper behind an actor boundary. The delegate
+/// remains Main Actor-isolated while long-running provider work can suspend
+/// away from it without transferring the platform existential itself.
+private actor LockScreenPlatformExecutor {
+    private let platformBox: LockScreenPlatformBox
+    private let operationGate = LockScreenRepairGate()
+
+    init(platformBox: LockScreenPlatformBox) {
+        self.platformBox = platformBox
+    }
+
+    func repairLockScreenOnlyGeneration(
+        videoURL: URL,
+        shouldProceed: @escaping @Sendable () -> Bool
+    ) async throws -> Bool {
+        try await withExclusivePlatformOperation {
+            try await platformBox.repairLockScreenOnlyGeneration(
+                videoURL: videoURL,
+                shouldProceed: shouldProceed
+            )
+        }
+    }
+
+    func repair(
+        videoURL: URL,
+        shouldProceed: @escaping @Sendable () -> Bool
+    ) async throws -> Bool {
+        try await withExclusivePlatformOperation {
+            try await platformBox.repair(
+                videoURL: videoURL,
+                shouldProceed: shouldProceed
+            )
+        }
+    }
+
+    func rearmForNextLock(
+        videoURL: URL,
+        shouldProceed: @escaping @Sendable () -> Bool
+    ) async throws -> Bool {
+        try await withExclusivePlatformOperation {
+            try await platformBox.rearmForNextLock(
+                videoURL: videoURL,
+                shouldProceed: shouldProceed
+            )
+        }
+    }
+
+    func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try await withExclusivePlatformOperation {
+            try await platformBox.pauseLockScreenOnlyPlayback(
+                videoURL: videoURL
+            )
+        }
+    }
+
+    func resumeLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try await withExclusivePlatformOperation {
+            try await platformBox.resumeLockScreenOnlyPlayback(
+                videoURL: videoURL
+            )
+        }
+    }
+
+    func activateLockScreenForCurrentSession() async throws -> Bool {
+        try await withExclusivePlatformOperation {
+            try platformBox.platform.activateLockScreenForCurrentSession()
+        }
+    }
+
+    func restoreDesktopAfterLockScreenSession(
+        shouldProceed: @escaping @Sendable () -> Bool
+    ) async throws -> Bool {
+        try await withExclusivePlatformOperation {
+            guard shouldProceed() else { return false }
+            return try await platformBox.platform
+                .restoreDesktopAfterLockScreenSessionAsync()
+        }
+    }
+
+    private func withExclusivePlatformOperation<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        try await operationGate.acquire()
+        do {
+            let result = try await operation()
+            await operationGate.release()
+            return result
+        } catch {
+            await operationGate.release()
+            throw error
+        }
+    }
+}
+
+private func agentSystemSessionIsLocked() -> Bool? {
+    guard let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+    else {
+        return nil
+    }
+    if let value = session["CGSSessionScreenIsLocked"] as? NSNumber {
+        return value.boolValue
+    }
+
+    let onConsole =
+        (session["kCGSSessionOnConsoleKey"] as? NSNumber)?.boolValue
+    let loginDone =
+        (session["kCGSessionLoginDoneKey"] as? NSNumber)?.boolValue
+    if onConsole == true, loginDone == true {
+        return false
+    }
+    return nil
+}
+
+@MainActor
+private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let store = WallpaperRuntimeStore()
-    private let lockScreenInstaller = AerialLockScreenInstaller()
-    private let lockScreenRepairQueue = DispatchQueue(
-        label: "com.auraflow.lock-screen-repair",
-        qos: .utility
-    )
+    private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
+    private let lockScreenPlatform: LockScreenPlatformOperating
+    private let nativeLockScreenBridge: NativeLockScreenWallpaperBridge
+    private let lockScreenRepairGate = LockScreenRepairGate()
+    private let lockScreenPlatformExecutor: LockScreenPlatformExecutor
+    private let rearmGuard = WallpaperAgentRearmGuard()
+    private let lifecycleGuard = WallpaperAgentLifecycleGuard()
     private var config: ControlConfig
     private var windows: [NSWindow] = []
     private var playerLayers: [AVPlayerLayer] = []
@@ -35,9 +326,19 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var commandTimer: Timer?
     private var healthTimer: Timer?
     private var fullscreenTimer: Timer?
+    private let lockShieldQueue = DispatchQueue(
+        label: "com.auraflow.lock-shield",
+        qos: .userInitiated
+    )
+    private var lockShieldNotificationTokens: [Int32] = []
+    private var lockConfirmationTask: Task<Void, Never>?
+    private var earlyLockScreenHandoffArmed = false
     private var lastCommandID: String?
+    private var lastCommandOperationID: UInt64?
     private var manualPaused = false
     private var sleeping = false
+    private var displaySleepRestorePending = false
+    private var displaySleepLockObserved = false
     private var sessionInactive = false
     private var autoPausedForFullscreen = false
     private var fullscreenAppDetected = false
@@ -59,40 +360,179 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var stallEvents = 0
     private var recoveryEvents = 0
     private var lockScreenRepairInProgress = false
+    private var lockScreenLifecycleCoordinator = LockScreenLifecycleCoordinator()
+    private var lockScreenOnlyRepairInProgress = false
+    private var lockScreenPlaybackMutationTask: Task<Void, Never>?
+    // Keep the operation object alongside its ID so a stale repair completion
+    // can immediately re-run the currently desired operation after clearing
+    // the shared repair gate. Without this, a superseded repair could leave
+    // the gate permanently set and make later Lock requests no-ops.
+    private var currentLockScreenLifecycleOperation: LockScreenLifecycleOperation?
+    private var lastAppliedLockScreenLifecycleOperationID: UInt64?
+    private var lastLockScreenOnlyStatus = LockScreenOnlyGenerationStatus()
     private var isTerminating = false
+    private var terminationHealthReason: String?
 
     private let spaceTransitionGracePeriod: TimeInterval = 0.75
     private let fullscreenConfirmationSamples = 2
     private let stallRecoveryThreshold = 2
 
     override init() {
+        let nativeBridgeURL = Self.nativeBridgeURLFromArguments()
+        let platform = LockScreenPlatformFactory.makeAgentPlatform(
+            nativeBridgeURL: nativeBridgeURL
+        )
+        self.lockScreenPlatform = platform
+        let platformBox = LockScreenPlatformBox(platform: platform)
+        self.lockScreenPlatformExecutor = LockScreenPlatformExecutor(
+            platformBox: platformBox
+        )
         self.config = store.loadConfig()
         self.lockScreenState = LockScreenStateMachine(
             isEnabled: self.config.show_on_lock_screen ?? false
         )
+        self.nativeLockScreenBridge = NativeLockScreenWallpaperBridge(
+            executableURL: nativeBridgeURL
+        )
         super.init()
+        self.nativeLockScreenBridge.onFailure = { [weak self] reason in
+            Task { @MainActor [weak self] in
+                self?.handleNativeLockScreenBridgeFailure(reason: reason)
+            }
+        }
+    }
+
+    private static func nativeBridgeURLFromArguments() -> URL? {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--native-bridge-path"),
+              arguments.indices.contains(index + 1)
+        else {
+            return nil
+        }
+        return URL(fileURLWithPath: arguments[index + 1])
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ProcessInfo.processInfo.disableAutomaticTermination(
+            "AuraFlow wallpaper agent is active"
+        )
         NSApp.setActivationPolicy(.accessory)
-        try? store.savePID()
-        store.markPaused(false)
+        // Claim the runtime before any startup cleanup. This lets the same
+        // ownership check protect the legacy fallback path below when an old
+        // helper is terminating during LaunchAgent migration.
+        do {
+            try store.savePID()
+        } catch {
+            // An agent without durable PID/identity metadata cannot safely
+            // touch the shared wallpaper state. In particular, do not leave
+            // a second helper alive when the app's runtime directory is full.
+            terminationHealthReason = "runtime-identity-persistence-failed"
+            isTerminating = true
+            NSApp.terminate(nil)
+            return
+        }
+        if lockScreenOnlyMode,
+           !lockScreenPlatform.capabilities.supportsLockScreenOnly {
+            // The legacy screen saver is managed by the main app. An old
+            // launch command must not keep a native-only agent alive after a
+            // downgrade or removal of the macOS 26 provider.
+            terminateLockScreenOnlyAgent(
+                reason: "lock-screen-agent-disabled-for-platform",
+                notifyController: true
+            )
+            return
+        }
+        publishRearmGuardState()
+        // Stop is persistent across a helper restart. Clearing the marker here
+        // would let a newly launched lock-only agent resume the Aerial provider
+        // before the user explicitly presses Resume.
+        let persistedManualPause = store.isPaused()
+        manualPaused = persistedManualPause
+        if !persistedManualPause {
+            store.markPaused(false)
+        }
         installSignalHandlers()
-        rebuildPlayback(from: config, keepPaused: false)
+        if !lockScreenOnlyMode {
+            rebuildPlayback(from: config, keepPaused: false)
+        } else {
+            store.markLockScreenAgentReady(false)
+        }
         startTimers()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            [weak self] in
+        if lockScreenOnlyMode {
+            // This marker only means that the agent process is initialized
+            // and can accept lifecycle work. The separate ready marker is
+            // reserved for the validated generation and native bridge.
+            store.markLockScreenAgentStarted(true)
+            // Recover the user's Desktop first, then pre-arm WallpaperAgent's
+            // next assertion without leaving the Aerial route in Index.plist.
+            // This can touch the system store, so it deliberately happens
+            // after the startup marker and never delays process discovery.
+            restoreDesktopStoreAfterSessionSynchronously()
+            // Do this before advertising the agent as ready. The Apply button
+            // waits for this handshake so an immediate direct-lock cannot
+            // arrive while the first provider rearm is still in flight.
+            if persistedManualPause {
+                // A previous Stop may have been followed by an agent restart.
+                // Freeze the independent Apple provider again before it gets
+                // a chance to replay the animated asset.
+                freezeLockScreenOnlyPlayback()
+            } else {
+                requestLockScreenLifecycle(
+                    .healthCheck,
+                    reason: "startup"
+                )
+            }
+        } else if config.show_on_lock_screen == true,
+                  lockScreenPlatform.capabilities.supportsSecureLockScreen,
+                  lockScreenPlatform.isInstalled {
+            // Start owns both surfaces. Prepare the native bridge in advance
+            // so Stop can freeze the Lock Screen layer without installing or
+            // removing anything at the time of the click.
+            prepareNativeLockScreenBridgeForStart()
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
             self?.reconcileSystemSessionState()
-            self?.rearmModernLockScreenForNextSession()
+            if self?.lockScreenOnlyMode == false {
+                self?.rearmModernLockScreenForNextSession()
+            }
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // LaunchAgent migration can replace one helper process with another.
+        // Only the process that still owns the persisted PID may clear shared
+        // runtime state; an old termination callback must never erase the
+        // replacement agent's PID or lock-only marker.
+        let ownsRuntimePID = store.ownsRuntimeProcess()
         isTerminating = true
+        lockConfirmationTask?.cancel()
+        lockConfirmationTask = nil
+        lifecycleGuard.markTerminating()
+        let preserveCurrentDesktop =
+            store.loadCommand()?.action == .terminatePreservingDesktop
+        if ownsRuntimePID, lockScreenOnlyMode, !preserveCurrentDesktop {
+            // NSApplicationDelegate termination is synchronous. At this point
+            // the lifecycle guard is already closed, so no new provider
+            // repair can start and this final owned cleanup can complete
+            // before the process exits.
+            restoreDesktopStoreAfterSessionSynchronously()
+        }
+        if lockScreenOnlyMode {
+            nativeLockScreenBridge.shutdown()
+        }
+        lockScreenPlaybackMutationTask?.cancel()
+        lockScreenPlaybackMutationTask = nil
         transitionGeneration += 1
         lockSessionGeneration &+= 1
+        if ownsRuntimePID {
+            publishRearmGuardState()
+        }
         pendingRearmToken = nil
-        writeHealth(reason: "terminating")
+        if ownsRuntimePID {
+            writeHealth(reason: terminationHealthReason ?? "terminating")
+        }
         DistributedNotificationCenter.default().removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
@@ -106,9 +546,26 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             source.cancel()
         }
         signalSources.removeAll()
+        for token in lockShieldNotificationTokens {
+            notify_cancel(token)
+        }
+        lockShieldNotificationTokens.removeAll()
+        if lockScreenOnlyMode, ownsRuntimePID {
+            store.markLockScreenAgentReady(false)
+            store.markLockScreenAgentStarted(false)
+        }
+        lockScreenLifecycleCoordinator.invalidate()
         tearDownPlayback()
-        store.removePID()
-        store.markPaused(false)
+        if ownsRuntimePID {
+            store.removePID()
+            store.markPaused(false)
+            if lockScreenOnlyMode {
+                store.markLockScreenOnlyAgent(false)
+            }
+        }
+        ProcessInfo.processInfo.enableAutomaticTermination(
+            "AuraFlow wallpaper agent is active"
+        )
     }
 
     private func installSignalHandlers() {
@@ -116,7 +573,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             signal(sig, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
             source.setEventHandler {
-                NSApp.terminate(nil)
+                Task { @MainActor in
+                    NSApp.terminate(nil)
+                }
             }
             source.resume()
             signalSources.append(source)
@@ -145,19 +604,42 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             suspensionBehavior: .deliverImmediately
         )
+        // loginwindow raises the secure shield before WallpaperAgent resolves
+        // the wallpaper for the lock surface. This notification is earlier
+        // than screenIsLocked and is the only reliable hand-off point for the
+        // temporary Aerial route on current macOS versions.
+        for name in [
+            Notification.Name("com.apple.shieldWindowRaised"),
+            Notification.Name("com.apple.sessionagent.shieldWindowRaised"),
+        ] {
+            DistributedNotificationCenter.default().addObserver(
+                self,
+                selector: #selector(lockShieldDidRaise),
+                name: name,
+                object: nil,
+                suspensionBehavior: .deliverImmediately
+            )
+        }
+        registerLockShieldDarwinNotifications()
 
         // Cross-process notifications handle the normal fast path. This low-frequency
         // timer is only a safety net for a notification missed during process startup.
         commandTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.pollCommand()
+            Task { @MainActor [weak self] in
+                self?.pollCommand()
+            }
         }
         commandTimer?.tolerance = 0.20
         healthTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.samplePlaybackHealth()
+            Task { @MainActor [weak self] in
+                self?.samplePlaybackHealth()
+            }
         }
         healthTimer?.tolerance = 0.30
         fullscreenTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.applyFullscreenPolicy()
+            Task { @MainActor [weak self] in
+                self?.applyFullscreenPolicy()
+            }
         }
         fullscreenTimer?.tolerance = 0.15
         NotificationCenter.default.addObserver(
@@ -198,6 +680,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         )
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
+            selector: #selector(screensWillSleep),
+            name: NSWorkspace.screensDidSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
             selector: #selector(screensDidWake),
             name: NSWorkspace.screensDidWakeNotification,
             object: nil
@@ -211,12 +699,21 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func screensChanged() {
         guard !isTerminating else { return }
-        rebuildWindows()
+        if !lockScreenOnlyMode {
+            rebuildWindows()
+        }
         writeHealth(reason: "screen-change")
     }
 
     @objc private func activeSpaceDidChange() {
         guard !isTerminating else { return }
+        if lockScreenOnlyMode {
+            requestLockScreenLifecycle(
+                .activeSpaceChanged,
+                reason: "space-change"
+            )
+            return
+        }
         lastSpaceChangeUptime = ProcessInfo.processInfo.systemUptime
         consecutiveFullscreenSamples = 0
         consecutiveWindowedSamples = 0
@@ -226,7 +723,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         // WindowServer can briefly detach desktop-level windows while the
         // Spaces animation is finishing. Reassert them on the next run-loop
         // pass as well, without rebuilding the player or its layers.
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self,
                   !self.isTerminating,
                   self.transitionGeneration == generation
@@ -238,6 +735,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func sessionDidResignActive() {
+        // NSWorkspace can emit resign-active while the helper/app is merely
+        // restarting. Starting the screen saver before CGSession confirms a
+        // real lock would lock the Mac as a side effect of launching AuraFlow.
+        if systemSessionIsLocked() == true {
+            requestLockScreenLifecycle(
+                .shieldRaised,
+                reason: "session-resign-active"
+            )
+        }
         handleSessionNotification(expectedLocked: true)
     }
 
@@ -245,19 +751,87 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         handleSessionNotification(expectedLocked: false)
     }
 
+    @objc private func lockShieldDidRaise(_ notification: Notification) {
+        guard !isTerminating else { return }
+        beginEarlyLockScreenHandoff(reason: "shield-raised")
+        if isConfirmedLockScreenSession() {
+            requestLockScreenLifecycle(
+                .shieldRaised,
+                reason: "shield-raised"
+            )
+        } else {
+            // A shield notification can be delivered before CGSession is
+            // updated. Keep the intent alive and confirm the session instead
+            // of dropping the only hand-off event.
+            scheduleLockConfirmation(reason: "shield-raised")
+        }
+    }
+
+    private func registerLockShieldDarwinNotifications() {
+        for name in [
+            "com.apple.shieldWindowRaised",
+            "com.apple.sessionagent.shieldWindowRaised",
+        ] {
+            var token: Int32 = 0
+            let status = name.withCString { namePointer in
+                notify_register_dispatch(
+                    namePointer,
+                    &token,
+                    lockShieldQueue
+                ) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        guard let self, !self.isTerminating else { return }
+                        self.beginEarlyLockScreenHandoff(
+                            reason: "darwin-shield-raised"
+                        )
+                        if self.isConfirmedLockScreenSession() {
+                            self.requestLockScreenLifecycle(
+                                .shieldRaised,
+                                reason: "darwin-shield-raised"
+                            )
+                        } else {
+                            self.scheduleLockConfirmation(
+                                reason: "darwin-shield-raised"
+                            )
+                        }
+                    }
+                }
+            }
+            if status == NOTIFY_STATUS_OK {
+                lockShieldNotificationTokens.append(token)
+            }
+        }
+    }
+
     private func handleSessionNotification(expectedLocked: Bool) {
         guard !isTerminating else { return }
         let actualLocked = systemSessionIsLocked()
-        if actualLocked == nil || actualLocked == expectedLocked {
-            applySystemSessionState(locked: expectedLocked)
+        if expectedLocked {
+            if actualLocked == true {
+                applySystemSessionState(locked: true)
+            } else if actualLocked == nil {
+                // An inactive-session notification is not proof of a real
+                // Lock Screen transition. CGSession can be temporarily
+                // unavailable while the helper starts or restarts; treating
+                // nil as locked can trigger a false handoff and gray surface.
+                // Keep the bounded confirmation poll and wait for an explicit
+                // locked value.
+                scheduleLockConfirmation(reason: "session-notification")
+            } else {
+                scheduleLockConfirmation(reason: "session-notification")
+            }
+        } else if actualLocked == nil || actualLocked == false {
+            applySystemSessionState(locked: false)
         }
 
         // CGSession can lag either notification center by a run-loop turn.
         // Reconcile again instead of permanently dropping a valid transition.
         for delay in [0.10, 0.35, 1.0] {
-            DispatchQueue.main.asyncAfter(
-                deadline: .now() + delay
-            ) { [weak self] in
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(
+                    nanoseconds: UInt64(delay * 1_000_000_000)
+                )
+                guard !Task.isCancelled else { return }
                 self?.reconcileSystemSessionState()
             }
         }
@@ -272,7 +846,135 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         applySystemSessionState(locked: locked)
     }
 
+    /// `shieldWindowRaised` can arrive one or more run-loop turns before
+    /// CoreGraphics publishes `CGSessionScreenIsLocked`. The old one-shot
+    /// check dropped that transition permanently, leaving the installed
+    /// Lock-only route invisible. Poll briefly on Main Actor so the session
+    /// confirmation and AppKit hand-off remain ordered, while keeping a
+    /// bounded timeout for stale or unrelated shield notifications. Shared
+    /// Start needs the same confirmation window because its native bridge is
+    /// presented at the shield edge before the isolated Aerial route is
+    /// promoted for the confirmed session.
+    private func scheduleLockConfirmation(reason: String) {
+        guard !isTerminating else { return }
+        if !lockScreenOnlyMode {
+            guard config.show_on_lock_screen == true,
+                  lockScreenPlatform.capabilities.supportsSecureLockScreen,
+                  lockScreenPlatform.requiresLockScreenSessionPromotion
+            else {
+                return
+            }
+        }
+        guard lockConfirmationTask == nil else { return }
+
+        lockConfirmationTask = Task { @MainActor [weak self] in
+            for attempt in 0..<30 {
+                guard let self,
+                      !self.isTerminating,
+                      !Task.isCancelled
+                else {
+                    return
+                }
+
+                if self.systemSessionIsLocked() == true {
+                    self.lockConfirmationTask = nil
+                    self.applySystemSessionState(locked: true)
+                    self.requestLockScreenLifecycle(
+                        .shieldRaised,
+                        reason: "confirmed-" + reason
+                    )
+                    return
+                }
+
+                if attempt < 29 {
+                    do {
+                        try await Task.sleep(nanoseconds: 100_000_000)
+                    } catch {
+                        return
+                    }
+                }
+            }
+
+            guard let self, !self.isTerminating, !Task.isCancelled else {
+                return
+            }
+            self.lockConfirmationTask = nil
+            self.cancelEarlyLockScreenHandoff()
+            self.writeHealth(reason: "lock-shield-unconfirmed")
+        }
+    }
+
+    /// `shieldWindowRaised` is the last event delivered before loginwindow
+    /// resolves its first secure frame. Lock-only pre-presents only an already
+    /// prepared, validated generation here. Shared Start may queue this show
+    /// behind its startup preparation, but it still never mutates the system
+    /// store until CGSession confirms a real lock. Taking the locked Wallpaper
+    /// assertion does not initiate a screen lock.
+    private func beginEarlyLockScreenHandoff(reason: String) {
+        guard !isTerminating, !earlyLockScreenHandoffArmed else { return }
+
+        if lockScreenOnlyMode {
+            guard lockScreenPlatform.capabilities.supportsLockScreenOnly,
+                  store.isLockScreenAgentReady(),
+                  nativeLockScreenBridge.isReady,
+                  isLockScreenGenerationReady(lastLockScreenOnlyStatus)
+            else {
+                return
+            }
+
+            // Refresh the cheap signature/store contract at the hand-off edge.
+            // This never repairs or starts a provider, but prevents a cached-ready
+            // generation from being shown after macOS replaced its Aerial asset.
+            guard let videoURL = effectiveLockScreenVideoURL() else { return }
+            let liveStatus = lockScreenPlatform.lockScreenOnlyStatus(
+                videoURL: videoURL
+            )
+            guard isLockScreenGenerationReady(liveStatus),
+                  liveStatus.generation == lastLockScreenOnlyStatus.generation
+            else {
+                lastLockScreenOnlyStatus = liveStatus
+                return
+            }
+            lastLockScreenOnlyStatus = liveStatus
+        } else {
+            guard config.show_on_lock_screen == true,
+                  lockScreenPlatform.capabilities.supportsSecureLockScreen,
+                  lockScreenPlatform.requiresLockScreenSessionPromotion
+            else {
+                return
+            }
+        }
+
+        earlyLockScreenHandoffArmed = true
+        nativeLockScreenBridge.showForLockTransition { [weak self] shown in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      !self.isTerminating,
+                      self.earlyLockScreenHandoffArmed
+                else {
+                    return
+                }
+                guard shown else {
+                    self.earlyLockScreenHandoffArmed = false
+                    if self.lockScreenOnlyMode {
+                        self.store.markLockScreenAgentReady(false)
+                    }
+                    self.writeHealth(reason: "early-lock-handoff-failed")
+                    return
+                }
+                self.writeHealth(reason: "early-lock-handoff-ready: " + reason)
+            }
+        }
+    }
+
+    private func cancelEarlyLockScreenHandoff() {
+        earlyLockScreenHandoffArmed = false
+        nativeLockScreenBridge.hideAfterUnlock()
+    }
+
     private func applySystemSessionState(locked: Bool) {
+        lockConfirmationTask?.cancel()
+        lockConfirmationTask = nil
         if locked {
             guard !sessionInactive else { return }
             lockSessionGeneration &+= 1
@@ -280,29 +982,226 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             sessionInactive = true
             lastSessionTransitionUptime =
                 ProcessInfo.processInfo.systemUptime
+            displaySleepLockObserved = true
+            publishRearmGuardState()
+            if !lockScreenOnlyMode,
+               config.show_on_lock_screen == true,
+               lockScreenPlatform.requiresLockScreenSessionPromotion {
+                do {
+                    _ = try lockScreenPlatform
+                        .activateLockScreenForCurrentSession()
+                } catch {
+                    writeHealth(
+                        reason:
+                            "lock-session-promotion-failed: "
+                            + error.localizedDescription
+                    )
+                }
+            }
             syncLockScreenSetting(reason: "lock-setting")
             handleLockScreenEvent(.sessionLocked, reason: "session-locked")
+            if lockScreenOnlyMode {
+                requestLockScreenLifecycle(
+                    .sessionLocked,
+                    reason: "session-locked"
+                )
+            } else if lockScreenPlatform.capabilities.supportsSecureLockScreen,
+                      !earlyLockScreenHandoffArmed {
+                nativeLockScreenBridge.showForLockTransition()
+            }
             writeHealth(reason: "session-inactive")
             return
         }
 
+        // Hide immediately, even if CGSession never reached the locked state.
+        // This cancels an early shield handoff after a quick unlock and keeps
+        // the next Lock on the already-warm bridge instead of timing out it.
+        let hadEarlyLockScreenHandoff = earlyLockScreenHandoffArmed
+        if hadEarlyLockScreenHandoff {
+            cancelEarlyLockScreenHandoff()
+        }
         guard sessionInactive else { return }
         lockSessionGeneration &+= 1
         sessionInactive = false
         lastSessionTransitionUptime =
             ProcessInfo.processInfo.systemUptime
+        publishRearmGuardState()
+        restoreDesktopStoreAfterSession()
+        if lockScreenOnlyMode,
+           !store.isLockScreenAgentReady() {
+            // The app can be relaunched while the Mac is already locked. The
+            // initial preparation is intentionally skipped in that state, so
+            // complete the provider warm-up as soon as the first unlock
+            // arrives before advertising the next Lock transition as ready.
+            requestLockScreenLifecycle(
+                .healthCheck,
+                reason: "unlock-preparation"
+            )
+        }
         handleLockScreenEvent(.sessionUnlocked, reason: "session-unlocked")
-        showWindows(forceOrder: true)
-        applyPlaybackRate()
+        if lockScreenOnlyMode {
+            requestLockScreenLifecycle(
+                .sessionUnlocked,
+                reason: "session-unlocked"
+            )
+        } else {
+            if lockScreenPlatform.capabilities.supportsSecureLockScreen,
+               !hadEarlyLockScreenHandoff {
+                nativeLockScreenBridge.hideAfterUnlock()
+            }
+            showWindows(forceOrder: true)
+            applyPlaybackRate()
+        }
         writeHealth(reason: "session-active")
+        scheduleDesktopStoreRestoration()
         rearmModernLockScreenForNextSession()
+    }
+
+    private func restoreDesktopStoreAfterSession() {
+        guard ownsRuntimeState(),
+              config.show_on_lock_screen == true,
+              lockScreenPlatform.requiresLockScreenSessionPromotion
+        else {
+            return
+        }
+        let sessionGeneration = lockSessionGeneration
+        let rearmGuard = self.rearmGuard
+        let platformExecutor = lockScreenPlatformExecutor
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await platformExecutor.restoreDesktopAfterLockScreenSession(
+                    shouldProceed: {
+                        rearmGuard.canRestoreDesktop(
+                            sessionGeneration: sessionGeneration
+                        )
+                    }
+                )
+                guard rearmGuard.canRestoreDesktop(
+                    sessionGeneration: sessionGeneration
+                ) else {
+                    return
+                }
+                self.displaySleepRestorePending = false
+                self.displaySleepLockObserved = false
+            } catch {
+                self.writeHealth(
+                    reason:
+                        "desktop-store-restoration-failed: "
+                        + error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func restoreDesktopStoreAfterSessionSynchronously() {
+        guard ownsRuntimeState(),
+              config.show_on_lock_screen == true,
+              lockScreenPlatform.requiresLockScreenSessionPromotion
+        else {
+            return
+        }
+        do {
+            _ = try lockScreenPlatform.restoreDesktopAfterLockScreenSession()
+            displaySleepRestorePending = false
+            displaySleepLockObserved = false
+        } catch {
+            writeHealth(
+                reason:
+                    "desktop-store-restoration-failed: "
+                    + error.localizedDescription
+            )
+        }
+    }
+
+    private func promoteModernLockScreenForCurrentSession() {
+        guard !isTerminating,
+              lockScreenOnlyMode,
+              config.show_on_lock_screen == true,
+              lockScreenPlatform.requiresLockScreenSessionPromotion
+        else {
+            return
+        }
+        let platformExecutor = lockScreenPlatformExecutor
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await platformExecutor
+                    .activateLockScreenForCurrentSession()
+            } catch {
+                self.writeHealth(
+                    reason:
+                        "lock-session-promotion-failed: "
+                        + error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func scheduleDesktopStoreRestoration() {
+        guard config.show_on_lock_screen == true,
+              lockScreenPlatform.requiresLockScreenSessionPromotion
+        else {
+            return
+        }
+        for delay in [0.15, 0.5] {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(
+                    nanoseconds: UInt64(delay * 1_000_000_000)
+                )
+                guard !Task.isCancelled else { return }
+                guard let self,
+                      !self.isTerminating,
+                      !self.sessionInactive,
+                      self.systemSessionIsLocked() == false
+                else {
+                    return
+                }
+                self.restoreDesktopStoreAfterSession()
+            }
+        }
     }
 
     @objc private func systemWillSleep() {
         guard !isTerminating, !sleeping else { return }
+        if lockScreenOnlyMode {
+            // On a display-sleep lock, macOS sends willSleep before it raises
+            // the secure Lock Screen. Keep the prewarmed player running so
+            // the first visible frame is already available when the display
+            // wakes to the password surface.
+            displaySleepRestorePending = true
+            let lockConfirmed = isConfirmedLockScreenSession()
+            displaySleepLockObserved = lockConfirmed
+            if lockConfirmed {
+                requestLockScreenLifecycle(
+                    .shieldRaised,
+                    reason: "display-sleep-before-lock"
+                )
+                writeHealth(reason: "display-sleep-before-lock")
+            } else {
+                writeHealth(reason: "display-sleep-without-lock")
+            }
+            return
+        }
         sleeping = true
         player?.pause()
         writeHealth(reason: "sleeping")
+    }
+
+    @objc private func screensWillSleep() {
+        guard !isTerminating, lockScreenOnlyMode else { return }
+        displaySleepRestorePending = true
+        let lockConfirmed = isConfirmedLockScreenSession()
+        displaySleepLockObserved = lockConfirmed
+        if lockConfirmed {
+            requestLockScreenLifecycle(
+                .shieldRaised,
+                reason: "screens-sleep-before-lock"
+            )
+            writeHealth(reason: "screens-sleep-before-lock")
+        } else {
+            writeHealth(reason: "screens-sleep-without-lock")
+        }
     }
 
     @objc private func systemDidWake() {
@@ -316,17 +1215,83 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func recoverAfterWake(reason: String) {
         guard !isTerminating else { return }
         sleeping = false
-        showWindows(forceOrder: true)
-        applyPlaybackRate()
+        if lockScreenOnlyMode {
+            // A display-sleep lock can reset SystemWallpaperURL while the
+            // password surface is waking. Reassert the dedicated Aerial
+            // route after wake, while the secure session still owns the
+            // screen; otherwise loginwindow falls back to the user's static
+            // Lock Screen background even though Index.plist is correct.
+            if sessionInactive || systemSessionIsLocked() == true {
+                requestLockScreenLifecycle(
+                    .wake,
+                    reason: "wake-while-locked"
+                )
+            }
+            scheduleDesktopRestoreAfterDisplayWake()
+            requestLockScreenLifecycle(.wake, reason: reason)
+        } else {
+            showWindows(forceOrder: true)
+            applyPlaybackRate()
+        }
         writeHealth(reason: reason)
+    }
+
+    private func scheduleDesktopRestoreAfterDisplayWake() {
+        guard lockScreenOnlyMode, displaySleepRestorePending else {
+            return
+        }
+        // A display-sleep lock does not reliably emit screenIsUnlocked. Poll
+        // the session state after wake instead, but never restore while the
+        // secure Lock Screen still owns the session.
+        pollDesktopRestoreAfterDisplayWake()
+    }
+
+    private func pollDesktopRestoreAfterDisplayWake() {
+        guard !isTerminating, displaySleepRestorePending else {
+            return
+        }
+        if !displaySleepLockObserved,
+           !sessionInactive,
+           systemSessionIsLocked() == false {
+            displaySleepRestorePending = false
+            return
+        }
+        guard displaySleepLockObserved,
+              !sessionInactive,
+              systemSessionIsLocked() == false
+        else {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard !Task.isCancelled else { return }
+                self?.pollDesktopRestoreAfterDisplayWake()
+            }
+            return
+        }
+        restoreDesktopStoreAfterSession()
     }
 
     private func pollCommand() {
         guard !isTerminating else { return }
+        guard ownsRuntimeState() else {
+            terminationHealthReason = "runtime-ownership-lost"
+            isTerminating = true
+            lifecycleGuard.markTerminating()
+            NSApp.terminate(nil)
+            return
+        }
         guard let command = store.loadCommand(), command.id != lastCommandID else { return }
+        if let operationID = command.operationID,
+           let lastCommandOperationID,
+           operationID <= lastCommandOperationID {
+            return
+        }
         lastCommandID = command.id
+        if let operationID = command.operationID {
+            lastCommandOperationID = operationID
+        }
         if let newConfig = command.config {
             config = store.normalized(newConfig)
+            publishRearmGuardState()
         }
         let wallpaperReloaded =
             command.action == .reload && !config.video_path.isEmpty
@@ -335,6 +1300,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // generation. Every reload gets a new revision so even replacing
             // a file in-place cannot let an older provider completion win.
             wallpaperRevision &+= 1
+            publishRearmGuardState()
             pendingRearmToken = nil
             lastRearmedToken = nil
         }
@@ -346,20 +1312,62 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             )
             manualPaused = false
             store.markPaused(false)
-            rebuildPlayback(from: config, keepPaused: false)
-            if wallpaperReloaded, config.show_on_lock_screen == true {
+            nativeLockScreenBridge.resumeAfterPause()
+            if lockScreenOnlyMode {
+                restoreDesktopStoreAfterSession()
+            } else {
+                rebuildPlayback(from: config, keepPaused: false)
+            }
+            if lockScreenOnlyMode {
+                // Lock-only media lives in its dedicated source marker, so
+                // config.video_path is intentionally empty. Do not use
+                // wallpaperReloaded as the readiness gate: applying a new
+                // Lock Screen source sends reload with an empty video_path,
+                // and otherwise the agent stays permanently not-ready.
+                store.markLockScreenAgentReady(false)
+                if config.show_on_lock_screen == true {
+                    prepareLockScreenOnlyAgent()
+                }
+            } else if wallpaperReloaded, config.show_on_lock_screen == true {
                 repairModernLockScreenIfNeeded(force: true)
                 rearmModernLockScreenForNextSession()
             }
         case .update:
             applyRuntimeSettings()
+            if lockScreenOnlyMode {
+                restoreDesktopStoreAfterSession()
+            }
         case .resume:
-            showWindows()
+            nativeLockScreenBridge.resumeAfterPause()
+            if !lockScreenOnlyMode {
+                showWindows()
+            }
             manualPaused = false
             store.markPaused(false)
-            applyPlaybackRate()
+            if !lockScreenOnlyMode {
+                applyPlaybackRate()
+                if config.show_on_lock_screen == true,
+                   lockScreenPlatform.capabilities.supportsSecureLockScreen,
+                   lockScreenPlatform.isInstalled {
+                    restoreLockScreenOnlyPlaybackAfterResume()
+                }
+            } else {
+                restoreLockScreenOnlyPlaybackAfterResume()
+            }
         case .pause:
-            pauseAndCommitStillFrame()
+            nativeLockScreenBridge.pause()
+            if lockScreenOnlyMode {
+                manualPaused = true
+                store.markPaused(true)
+                freezeLockScreenOnlyPlayback()
+            } else {
+                pauseAndCommitStillFrame()
+                if config.show_on_lock_screen == true,
+                   lockScreenPlatform.capabilities.supportsSecureLockScreen,
+                   lockScreenPlatform.isInstalled {
+                    freezeLockScreenOnlyPlayback()
+                }
+            }
         case .previewLock:
             syncLockScreenSetting(reason: "lock-setting")
             handleLockScreenEvent(.beginPreview, reason: "lock-preview")
@@ -369,25 +1377,515 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             rearmModernLockScreenForNextSession()
         case .terminate:
             NSApp.terminate(nil)
+        case .terminatePreservingDesktop:
+            NSApp.terminate(nil)
         }
 
         writeHealth(reason: "ok")
     }
 
-    private func rebuildPlayback(from config: ControlConfig, keepPaused: Bool) {
-        tearDownPlayback()
-        guard !config.video_path.isEmpty else {
-            writeHealth(reason: "missing-video")
+    private func freezeLockScreenOnlyPlayback() {
+        lockScreenPlaybackMutationTask?.cancel()
+        guard let videoURL = effectiveLockScreenVideoURL() else {
+            writeHealth(reason: "paused-source-missing")
+            return
+        }
+        let platformExecutor = lockScreenPlatformExecutor
+        lockScreenPlaybackMutationTask = Task { @MainActor [weak self] in
+            do {
+                _ = try await platformExecutor.pauseLockScreenOnlyPlayback(
+                    videoURL: videoURL
+                )
+                guard let self, !self.isTerminating else { return }
+                self.writeHealth(reason: "paused")
+            } catch is CancellationError {
+                return
+            } catch {
+                // The portable pause marker and the legacy saver remain valid
+                // even if a native still asset cannot be written (for example,
+                // on a full disk). Keep the failure visible in diagnostics;
+                // do not turn Stop into a blocking UI operation.
+                self?.writeHealth(
+                    reason: "lock-screen-freeze-failed: "
+                        + error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func restoreLockScreenOnlyPlaybackAfterResume() {
+        lockScreenPlaybackMutationTask?.cancel()
+        guard let videoURL = effectiveLockScreenVideoURL() else {
+            writeHealth(reason: "resume-source-missing")
+            return
+        }
+        let platformExecutor = lockScreenPlatformExecutor
+        lockScreenPlaybackMutationTask = Task { @MainActor [weak self] in
+            do {
+                _ = try await platformExecutor.resumeLockScreenOnlyPlayback(
+                    videoURL: videoURL
+                )
+                guard let self, !self.isTerminating else { return }
+                self.writeHealth(reason: "resumed")
+            } catch is CancellationError {
+                return
+            } catch {
+                self?.writeHealth(
+                    reason: "lock-screen-resume-failed: "
+                        + error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func prepareNativeLockScreenBridgeForStart() {
+        guard !lockScreenOnlyMode,
+              lockScreenPlatform.capabilities.supportsSecureLockScreen
+        else { return }
+        nativeLockScreenBridge.prepare { [weak self] succeeded in
+            Task { @MainActor [weak self] in
+                guard let self, !self.isTerminating else { return }
+                self.writeHealth(
+                    reason: succeeded
+                        ? "native-lock-bridge-ready"
+                        : "native-lock-bridge-not-ready"
+                )
+            }
+        }
+    }
+
+    private func handleNativeLockScreenBridgeFailure(reason: String) {
+        guard ownsRuntimeState(), !isTerminating else { return }
+        let healthReason = "native-lock-bridge-unavailable: " + reason
+        writeHealth(reason: healthReason)
+        if lockScreenOnlyMode {
+            terminateLockScreenOnlyAgent(
+                reason: healthReason,
+                notifyController: true
+            )
+        } else {
+            // Desktop playback can continue, but the controller must get an
+            // immediate chance to retry the native route and refresh UI state.
+            DistributedNotificationCenter.default().post(
+                name: WallpaperRuntimeNotifications
+                    .lockScreenProviderBecameUnavailable,
+                object: nil,
+                userInfo: [
+                    WallpaperRuntimeNotifications.lockScreenFallbackReasonKey:
+                        healthReason
+                ]
+            )
+        }
+    }
+
+    private func requestLockScreenLifecycle(
+        _ event: LockScreenLifecycleEvent,
+        reason: String
+    ) {
+        guard lockScreenOnlyMode,
+              !isTerminating,
+              ownsRuntimeState(),
+              !manualPaused,
+              !store.isPaused()
+        else { return }
+        if event == .shieldRaised || event == .sessionLocked,
+           !isConfirmedLockScreenSession() {
+            return
+        }
+        guard lockScreenPlatform.capabilities.supportsLockScreenOnly else {
+            terminateLockScreenOnlyAgent(
+                reason: "lock-screen-provider-unavailable",
+                notifyController: true
+            )
+            return
+        }
+        guard let operation = lockScreenLifecycleCoordinator.enqueue(event)
+        else {
+            return
+        }
+        setCurrentLockScreenLifecycleOperation(operation.operationID)
+        currentLockScreenLifecycleOperation = operation
+        reconcileLockScreenLifecycle(operation, reason: reason)
+    }
+
+    private func isConfirmedLockScreenSession() -> Bool {
+        sessionInactive || systemSessionIsLocked() == true
+    }
+
+    private func reconcileLockScreenLifecycle(
+        _ operation: LockScreenLifecycleOperation,
+        reason: String
+    ) {
+        guard lockScreenOnlyMode,
+              !isTerminating,
+              isCurrentLockScreenLifecycleOperation(operation.operationID)
+        else {
             return
         }
 
-        let url = URL(fileURLWithPath: config.video_path)
+        // A queued shield/wake operation can outlive the session transition
+        // that created it. Never call into the native bridge unless the
+        // secure session is still confirmed locked.
+        guard !operation.expectedLocked || isConfirmedLockScreenSession()
+        else {
+            lockScreenLifecycleCoordinator.markSessionUnlocked()
+            nativeLockScreenBridge.hideAfterUnlock()
+            store.markLockScreenAgentReady(false)
+            finishLockScreenLifecycle(operation, reason: "unconfirmed-lock")
+            return
+        }
+
+        guard let videoURL = effectiveLockScreenVideoURL() else {
+            lastLockScreenOnlyStatus = LockScreenOnlyGenerationStatus()
+            terminateLockScreenOnlyAgent(
+                reason: "lock-screen-source-missing",
+                notifyController: true
+            )
+            return
+        }
+
+        let status = lockScreenPlatform.lockScreenOnlyStatus(
+            videoURL: videoURL
+        )
+        lastLockScreenOnlyStatus = status
+        guard status.providerAvailable else {
+            terminateLockScreenOnlyAgent(
+                reason: "lock-screen-provider-unavailable",
+                notifyController: true
+            )
+            return
+        }
+        let generationReady = isLockScreenGenerationReady(status)
+        if !operation.expectedLocked {
+            nativeLockScreenBridge.hideAfterUnlock()
+        }
+
+        // A locked transition is shown exactly once, from
+        // completeReadyLockScreenLifecycle(), after the bridge preparation
+        // callback has completed. Calling show here as well races the second
+        // async assertion and can publish the ready marker before the secure
+        // surface is actually ready, producing a gray/blank first frame.
+        guard !generationReady else {
+            completeReadyLockScreenLifecycle(
+                operation,
+                status: status,
+                reason: reason
+            )
+            return
+        }
+
+        guard !lockScreenOnlyRepairInProgress else { return }
+        lockScreenOnlyRepairInProgress = true
+        let startedAt = CACurrentMediaTime()
+        let lifecycleGuard = self.lifecycleGuard
+        let platformExecutor = self.lockScreenPlatformExecutor
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.lockScreenRepairGate.acquire()
+            } catch {
+                self.lockScreenOnlyRepairInProgress = false
+                return
+            }
+            var repairError: Error?
+            do {
+                _ = try await platformExecutor
+                    .repairLockScreenOnlyGeneration(
+                        videoURL: videoURL,
+                        shouldProceed: {
+                            lifecycleGuard.isCurrent(operation.operationID)
+                        }
+                    )
+            } catch {
+                repairError = error
+            }
+            await self.lockScreenRepairGate.release()
+            self.lockScreenOnlyRepairInProgress = false
+
+            if let installerError = repairError
+                as? AerialLockScreenInstallerError,
+               case .aerialAssetReplacedBySystem = installerError {
+                self.terminateLockScreenOnlyAgent(
+                    reason: "lock-screen-asset-replaced-by-system",
+                    notifyController: true
+                )
+                return
+            }
+
+            guard self.isCurrentLockScreenLifecycleOperation(
+                operation.operationID
+            ) else {
+                // The repair finished after a newer lifecycle operation
+                // superseded it. The result is stale, but the gate must
+                // still be released and the latest operation must get a
+                // chance to validate or repair its own generation.
+                if let currentOperation = self.currentLockScreenLifecycleOperation {
+                    self.reconcileLockScreenLifecycle(
+                        currentOperation,
+                        reason: "stale-repair-completed"
+                    )
+                }
+                return
+            }
+            let repairedStatus = self.lockScreenPlatform
+                .lockScreenOnlyStatus(videoURL: videoURL)
+            self.lastLockScreenOnlyStatus = repairedStatus
+            guard repairedStatus.providerAvailable else {
+                self.terminateLockScreenOnlyAgent(
+                    reason: "lock-screen-provider-unavailable",
+                    notifyController: true
+                )
+                return
+            }
+            self.store.markLockScreenAgentReady(
+                self.isLockScreenGenerationReady(repairedStatus)
+            )
+            let duration = (CACurrentMediaTime() - startedAt) * 1_000
+            if let repairError {
+                self.writeHealth(
+                    reason:
+                        "lock-screen-repair-failed: "
+                        + repairError.localizedDescription
+                )
+            } else {
+                self.writeHealth(
+                    reason:
+                        self.isLockScreenGenerationReady(repairedStatus)
+                        ? "lock-screen-repaired"
+                        : "lock-screen-repair-pending"
+                )
+            }
+            self.logLockScreenLifecycle(
+                reason: reason,
+                operation: operation,
+                status: repairedStatus,
+                durationMilliseconds: duration,
+                repairError: repairError
+            )
+            self.completeReadyLockScreenLifecycle(
+                operation,
+                status: repairedStatus,
+                reason: reason
+            )
+        }
+    }
+
+    private func completeReadyLockScreenLifecycle(
+        _ operation: LockScreenLifecycleOperation,
+        status: LockScreenOnlyGenerationStatus,
+        reason: String
+    ) {
+        nativeLockScreenBridge.prepare { [weak self] prepared in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.isCurrentLockScreenLifecycleOperation(
+                          operation.operationID
+                      )
+                else {
+                    return
+                }
+                guard prepared else {
+                    self.store.markLockScreenAgentReady(false)
+                    self.writeHealth(reason: "lock-screen-bridge-not-ready")
+                    self.finishLockScreenLifecycle(operation, reason: reason)
+                    return
+                }
+                guard operation.expectedLocked else {
+                    self.nativeLockScreenBridge.hideAfterUnlock()
+                    self.store.markLockScreenAgentReady(
+                        self.isLockScreenGenerationReady(status)
+                    )
+                    self.finishLockScreenLifecycle(operation, reason: reason)
+                    return
+                }
+
+                guard self.isConfirmedLockScreenSession() else {
+                    self.lockScreenLifecycleCoordinator.markSessionUnlocked()
+                    self.nativeLockScreenBridge.hideAfterUnlock()
+                    self.store.markLockScreenAgentReady(false)
+                    self.finishLockScreenLifecycle(
+                        operation,
+                        reason: "unconfirmed-lock"
+                    )
+                    return
+                }
+
+                self.nativeLockScreenBridge.showForLockTransition { [weak self] shown in
+                    Task { @MainActor [weak self] in
+                        guard let self,
+                              self.isCurrentLockScreenLifecycleOperation(
+                                  operation.operationID
+                              )
+                        else {
+                            return
+                        }
+                        self.store.markLockScreenAgentReady(
+                            self.isLockScreenGenerationReady(status) && shown
+                        )
+                        self.writeHealth(
+                            reason: self.isLockScreenGenerationReady(status) && shown
+                                ? "lock-screen-presented"
+                                : "lock-screen-fallback-active"
+                        )
+                        self.finishLockScreenLifecycle(
+                            operation,
+                            reason: reason
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func finishLockScreenLifecycle(
+        _ operation: LockScreenLifecycleOperation,
+        reason: String
+    ) {
+        guard let next = lockScreenLifecycleCoordinator.finish(
+            operationID: operation.operationID
+        ) else {
+            lastAppliedLockScreenLifecycleOperationID = operation.operationID
+            setCurrentLockScreenLifecycleOperation(nil)
+            currentLockScreenLifecycleOperation = nil
+            return
+        }
+        lastAppliedLockScreenLifecycleOperationID = operation.operationID
+        setCurrentLockScreenLifecycleOperation(next.operationID)
+        currentLockScreenLifecycleOperation = next
+        Task { @MainActor [weak self] in
+            self?.reconcileLockScreenLifecycle(
+                next,
+                reason: "coalesced-" + reason
+            )
+        }
+    }
+
+    private func terminateLockScreenOnlyAgent(
+        reason: String,
+        notifyController: Bool = true
+    ) {
+        guard lockScreenOnlyMode,
+              ownsRuntimeState(),
+              !isTerminating
+        else { return }
+        terminationHealthReason = reason
+        isTerminating = true
+        lifecycleGuard.markTerminating()
+        store.markLockScreenAgentReady(false)
+        writeHealth(reason: reason)
+        if notifyController {
+            DistributedNotificationCenter.default().post(
+                name: WallpaperRuntimeNotifications
+                    .lockScreenProviderBecameUnavailable,
+                object: nil,
+                userInfo: [
+                    WallpaperRuntimeNotifications.lockScreenFallbackReasonKey: reason
+                ]
+            )
+        }
+        NSApp.terminate(nil)
+    }
+
+    private func ownsRuntimeState() -> Bool {
+        store.ownsRuntimeProcess()
+    }
+
+    private func setCurrentLockScreenLifecycleOperation(
+        _ operationID: UInt64?
+    ) {
+        lifecycleGuard.update(
+            operationID: operationID,
+            terminating: isTerminating
+        )
+    }
+
+    private func isCurrentLockScreenLifecycleOperation(
+        _ operationID: UInt64
+    ) -> Bool {
+        lifecycleGuard.isCurrent(operationID)
+    }
+
+    private func isLockScreenGenerationReady(
+        _ status: LockScreenOnlyGenerationStatus
+    ) -> Bool {
+        // A valid marker/store is not enough for an immediate Lock. The
+        // provider must be alive as well; otherwise loginwindow can resolve
+        // the route before WallpaperAerialsExtension owns the generation and
+        // silently display the system wallpaper.
+        status.isReady && status.providerRunning
+    }
+
+    private func logLockScreenLifecycle(
+        reason: String,
+        operation: LockScreenLifecycleOperation,
+        status: LockScreenOnlyGenerationStatus,
+        durationMilliseconds: Double,
+        repairError: Error?
+    ) {
+        let outcome = repairError == nil
+            ? (isLockScreenGenerationReady(status) ? "ready" : "degraded")
+            : "failed"
+        let event = String(describing: operation.event)
+        let operationID = String(operation.operationID)
+        let generation = String(status.generation ?? 0)
+        let duration = String(durationMilliseconds)
+        let fallback = String(!isLockScreenGenerationReady(status))
+        let message = "Lock Screen lifecycle event="
+            + event
+            + " reason=" + reason
+            + " operation=" + operationID
+            + " generation=" + generation
+            + " duration_ms=" + duration
+            + " outcome=" + outcome
+            + " fallback=" + fallback
+            + " source_hash=" + (status.sourceSignature ?? "none")
+            + " route_valid=" + String(status.wallpaperStoreValid)
+            + " asset_valid=" + String(status.assetValid)
+            + " provider_available=" + String(status.providerAvailable)
+            + " provider_running=" + String(status.providerRunning)
+            + " saver_selected=" + String(status.screenSaverSelected)
+        wallpaperAgentLifecycleLogger.notice("\(message, privacy: .public)")
+    }
+
+    private func prepareLockScreenOnlyAgent() {
+        requestLockScreenLifecycle(
+            .healthCheck,
+            reason: "lock-screen-preparation"
+        )
+    }
+
+    private func rebuildPlayback(from config: ControlConfig, keepPaused: Bool) {
+        tearDownPlayback()
+        let url: URL
+        if lockScreenOnlyMode {
+            guard let lockScreenURL = effectiveLockScreenVideoURL() else {
+                writeHealth(reason: "missing-lock-screen-video")
+                return
+            }
+            url = lockScreenURL
+        } else {
+            guard !config.video_path.isEmpty else {
+                writeHealth(reason: "missing-video")
+                return
+            }
+            url = URL(fileURLWithPath: config.video_path)
+        }
         guard FileManager.default.fileExists(atPath: url.path) else {
             writeHealth(reason: "missing-video")
             return
         }
 
         prepareFallbackImage(from: url)
+        if WallpaperMediaKind.forURL(url).isStaticImage {
+            rebuildWindows()
+            if keepPaused || manualPaused {
+                showWindows()
+            }
+            lastPlaybackProgressUptime = nil
+            writeHealth(reason: "ok")
+            return
+        }
+
         let item = AVPlayerItem(url: url)
         let player = AVQueuePlayer(items: [])
         player.actionAtItemEnd = .none
@@ -400,8 +1898,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
             queue: .main
         ) { [weak self] _ in
-            self?.lastPlaybackProgressUptime =
-                ProcessInfo.processInfo.systemUptime
+            Task { @MainActor [weak self] in
+                self?.lastPlaybackProgressUptime =
+                    ProcessInfo.processInfo.systemUptime
+            }
         }
         rebuildWindows()
 
@@ -420,7 +1920,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         windows.removeAll()
         playerLayers.removeAll()
 
-        guard let existingPlayer else { return }
+        guard existingPlayer != nil || fallbackImage != nil else { return }
         let behavior: NSWindow.CollectionBehavior = [
             .canJoinAllSpaces,
             .stationary,
@@ -456,12 +1956,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             content.layer?.contentsGravity = fallbackContentsGravity(
                 for: config.scale_mode
             )
-            let playerLayer = AVPlayerLayer(player: existingPlayer)
-            playerLayer.frame = content.bounds
-            playerLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-            playerLayer.videoGravity = videoGravity(for: config.scale_mode)
-            content.layer?.addSublayer(playerLayer)
-            playerLayers.append(playerLayer)
+            if let existingPlayer {
+                let playerLayer = AVPlayerLayer(player: existingPlayer)
+                playerLayer.frame = content.bounds
+                playerLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+                playerLayer.videoGravity = videoGravity(for: config.scale_mode)
+                content.layer?.addSublayer(playerLayer)
+                playerLayers.append(playerLayer)
+            }
             window.contentView = content
 
             windows.append(window)
@@ -551,6 +2053,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         _ window: NSWindow,
         as mode: WallpaperPresentationMode
     ) {
+        // The secure Lock Screen is rendered by macOS's Aerial/legacy saver
+        // route. An app-owned .screenSaver window is not composited reliably
+        // by loginwindow and can cover the real wallpaper with black. Keep
+        // the app window available for the in-app preview, but never place it
+        // above the actual authentication surface.
+        guard lockScreenState.sessionState != .locked else {
+            window.orderOut(nil)
+            return
+        }
         window.level = windowLevel(for: mode)
         switch mode {
         case .desktop:
@@ -591,8 +2102,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func prepareFallbackImage(from videoURL: URL) {
-        guard let frameURL = try? store.captureStillFrame(from: videoURL),
-              let image = NSImage(contentsOf: frameURL),
+        let image: NSImage?
+        if WallpaperMediaKind.forURL(videoURL).isStaticImage {
+            image = NSImage(contentsOf: videoURL)
+        } else if let frameURL = try? store.captureStillFrame(from: videoURL) {
+            image = NSImage(contentsOf: frameURL)
+        } else {
+            image = nil
+        }
+        guard let image,
               let cgImage = image.cgImage(
                   forProposedRect: nil,
                   context: nil,
@@ -635,6 +2153,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyFullscreenPolicy() {
+        guard !lockScreenOnlyMode else { return }
+        if WallpaperMediaKind.forURL(URL(fileURLWithPath: config.video_path)).isStaticImage {
+            fullscreenAppDetected = false
+            consecutiveFullscreenSamples = 0
+            consecutiveWindowedSamples = 0
+            writeHealth(reason: "ok")
+            return
+        }
+
         if lockScreenState.presentationMode == .lockScreen {
             fullscreenAppDetected = false
             consecutiveFullscreenSamples = 0
@@ -774,15 +2301,72 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             last_lock_transition_ms: lastLockTransitionMilliseconds,
             blend_interpolation_enabled: config.blend_interpolation ?? false,
             blend_interpolation_active: false,
-            scale_mode: config.scale_mode
+            scale_mode: config.scale_mode,
+            visible_desktop_windows: windows.filter(\.isVisible).count,
+            native_lock_state: lockScreenOnlyMode
+                ? (sessionInactive ? "locked" : (paused ? "paused" : "idle"))
+                : nil,
+            active_source_signature: lockScreenOnlyMode
+                ? lastLockScreenOnlyStatus.sourceSignature
+                : nil,
+            applied_operation_id: lockScreenOnlyMode
+                ? lastAppliedLockScreenLifecycleOperationID
+                : nil,
+            active_generation: lockScreenOnlyMode
+                ? lastLockScreenOnlyStatus.generation
+                : nil
         )
         try? store.saveHealth(health)
     }
 
     private func samplePlaybackHealth() {
         reconcileSystemSessionState()
+
+        guard ownsRuntimeState() else {
+            terminationHealthReason = "runtime-ownership-lost"
+            isTerminating = true
+            lifecycleGuard.markTerminating()
+            NSApp.terminate(nil)
+            return
+        }
+
+        if lockScreenOnlyMode {
+            // Stop is a manual pause for the native Lock Screen route too.
+            // Do not let the periodic generation health-check repair/rearm
+            // the provider while paused: that can recreate the secure layer
+            // and make the video continue after the user pressed Stop.
+            if manualPaused || store.isPaused() {
+                manualPaused = true
+                writeHealth(reason: "paused")
+                return
+            }
+            requestLockScreenLifecycle(
+                .healthCheck,
+                reason: "health-check"
+            )
+            return
+        }
+
+        // Stop writes its marker before the .pause command arrives here. Do
+        // not repair or rearm the independent Lock Screen provider while the
+        // session is paused: those operations can restart playback even when
+        // the Desktop player is already frozen.
+        if manualPaused || store.isPaused() {
+            manualPaused = true
+            lastPlaybackProgressUptime = nil
+            consecutiveStallPolls = 0
+            writeHealth(reason: "paused")
+            return
+        }
+
         repairModernLockScreenIfNeeded()
         rearmModernLockScreenForNextSession()
+
+        if WallpaperMediaKind.forURL(URL(fileURLWithPath: config.video_path)).isStaticImage {
+            consecutiveStallPolls = 0
+            writeHealth(reason: "ok")
+            return
+        }
 
         guard !manualPaused,
               !sleeping,
@@ -837,9 +2421,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func repairModernLockScreenIfNeeded(force: Bool = false) {
-        guard config.show_on_lock_screen == true,
-              !config.video_path.isEmpty,
-              lockScreenInstaller.isAvailable,
+        guard !lockScreenOnlyMode,
+              !manualPaused,
+              !store.isPaused(),
+              config.show_on_lock_screen == true,
+              let videoURL = effectiveLockScreenVideoURL(),
+              lockScreenPlatform.isInstalled,
               !lockScreenRepairInProgress,
               !sessionInactive,
               lockScreenState.sessionState == .unlocked,
@@ -850,66 +2437,64 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         else {
             return
         }
-        let videoURL = URL(fileURLWithPath: config.video_path)
-        guard FileManager.default.fileExists(atPath: videoURL.path) else {
-            return
-        }
 
         let token = currentRearmToken()
         lockScreenRepairInProgress = true
-        lockScreenRepairQueue.async { [weak self] in
+        let rearmGuard = self.rearmGuard
+        let platformExecutor = self.lockScreenPlatformExecutor
+        Task { @MainActor [weak self] in
             guard let self else { return }
+            do {
+                try await self.lockScreenRepairGate.acquire()
+            } catch {
+                self.lockScreenRepairInProgress = false
+                return
+            }
             let repairError: Error?
             do {
-                _ = try self.lockScreenInstaller.repair(
+                _ = try await platformExecutor.repair(
                     videoURL: videoURL,
-                    shouldProceed: { [weak self] in
-                        guard let self else { return false }
-                        return DispatchQueue.main.sync {
-                            self.repairCanProceed(
-                                token: token,
-                                videoURL: videoURL,
-                                allowRecentTransition: force
-                            )
-                        }
+                    shouldProceed: {
+                        rearmGuard.canProceed(
+                            token: token,
+                            videoURL: videoURL,
+                            allowRecentTransition: force
+                        )
                     }
                 )
                 repairError = nil
             } catch {
                 repairError = error
             }
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.lockScreenRepairInProgress = false
-                if let repairError {
-                    self.writeHealth(
-                        reason:
-                            "lock-screen-repair-failed: "
-                            + repairError.localizedDescription
-                    )
-                }
-                if let pendingToken = self.pendingRearmToken,
-                   pendingToken == self.currentRearmToken() {
-                    self.pendingRearmToken = nil
-                    self.rearmModernLockScreenForNextSession()
-                }
+            await self.lockScreenRepairGate.release()
+            self.lockScreenRepairInProgress = false
+            if let repairError {
+                self.writeHealth(
+                    reason:
+                        "lock-screen-repair-failed: "
+                        + repairError.localizedDescription
+                )
+            }
+            if let pendingToken = self.pendingRearmToken,
+               pendingToken == self.currentRearmToken() {
+                self.pendingRearmToken = nil
+                self.rearmModernLockScreenForNextSession()
             }
         }
     }
 
     private func rearmModernLockScreenForNextSession() {
-        guard config.show_on_lock_screen == true,
-              !config.video_path.isEmpty,
-              lockScreenInstaller.isAvailable,
+        guard !lockScreenOnlyMode,
+              !manualPaused,
+              !store.isPaused(),
+              config.show_on_lock_screen == true,
+              let videoURL = effectiveLockScreenVideoURL(),
+              lockScreenPlatform.isInstalled,
               !sessionInactive,
               lockScreenState.sessionState == .unlocked,
               lockScreenState.previewState == .inactive,
               systemSessionIsLocked() == false
         else {
-            return
-        }
-        let videoURL = URL(fileURLWithPath: config.video_path)
-        guard FileManager.default.fileExists(atPath: videoURL.path) else {
             return
         }
         let token = currentRearmToken()
@@ -924,21 +2509,29 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
         pendingRearmToken = token
         lockScreenRepairInProgress = true
-        lockScreenRepairQueue.async { [weak self] in
+        let rearmGuard = self.rearmGuard
+        let platformExecutor = self.lockScreenPlatformExecutor
+        Task { @MainActor [weak self] in
             guard let self else { return }
+            do {
+                try await self.lockScreenRepairGate.acquire()
+            } catch {
+                self.lockScreenRepairInProgress = false
+                if self.pendingRearmToken == token {
+                    self.pendingRearmToken = nil
+                }
+                return
+            }
             let didRearm: Bool
             let rearmError: Error?
             do {
-                didRearm = try self.lockScreenInstaller.rearmForNextLock(
+                didRearm = try await platformExecutor.rearmForNextLock(
                     videoURL: videoURL,
-                    shouldProceed: { [weak self] in
-                        guard let self else { return false }
-                        return DispatchQueue.main.sync {
-                            self.rearmCanProceed(
-                                token: token,
-                                videoURL: videoURL
-                            )
-                        }
+                    shouldProceed: {
+                        rearmGuard.canProceed(
+                            token: token,
+                            videoURL: videoURL
+                        )
                     }
                 )
                 rearmError = nil
@@ -946,29 +2539,47 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 didRearm = false
                 rearmError = error
             }
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.lockScreenRepairInProgress = false
-                if self.pendingRearmToken == token {
-                    self.pendingRearmToken = nil
-                }
-                if didRearm,
-                   self.currentRearmToken() == token,
-                   !self.sessionInactive {
-                    self.lastRearmedToken = token
-                }
-                if let rearmError {
+            await self.lockScreenRepairGate.release()
+            self.lockScreenRepairInProgress = false
+            if self.pendingRearmToken == token {
+                self.pendingRearmToken = nil
+            }
+            if didRearm,
+               self.currentRearmToken() == token,
+               !self.sessionInactive {
+                self.lastRearmedToken = token
+            }
+            if self.lockScreenPlatform.requiresLockScreenSessionPromotion,
+               !self.sessionInactive,
+               self.systemSessionIsLocked() == false {
+                do {
+                    _ = try await platformExecutor
+                        .restoreDesktopAfterLockScreenSession(
+                            shouldProceed: {
+                                rearmGuard.canRestoreDesktop(
+                                    sessionGeneration: token.sessionGeneration
+                                )
+                            }
+                        )
+                } catch {
                     self.writeHealth(
                         reason:
-                            "lock-screen-rearm-failed: "
-                            + rearmError.localizedDescription
+                            "desktop-store-restoration-failed: "
+                            + error.localizedDescription
                     )
                 }
-                if let pendingToken = self.pendingRearmToken,
-                   pendingToken == self.currentRearmToken() {
-                    self.pendingRearmToken = nil
-                    self.rearmModernLockScreenForNextSession()
-                }
+            }
+            if let rearmError {
+                self.writeHealth(
+                    reason:
+                        "lock-screen-rearm-failed: "
+                        + rearmError.localizedDescription
+                )
+            }
+            if let pendingToken = self.pendingRearmToken,
+               pendingToken == self.currentRearmToken() {
+                self.pendingRearmToken = nil
+                self.rearmModernLockScreenForNextSession()
             }
         }
     }
@@ -977,67 +2588,57 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         LockScreenRearmToken(
             sessionGeneration: lockSessionGeneration,
             wallpaperRevision: wallpaperRevision,
-            videoPath: config.video_path
+            videoPath: effectiveLockScreenVideoURL()?.path ?? ""
         )
     }
 
-    private func repairCanProceed(
+    private func effectiveLockScreenVideoURL() -> URL? {
+        guard let sourceURL = store.effectiveLockScreenSourceURL(for: config),
+              FileManager.default.fileExists(atPath: sourceURL.path)
+        else {
+            return nil
+        }
+        return sourceURL
+    }
+
+    private func publishRearmGuardState() {
+        rearmGuard.update(
+            WallpaperAgentRearmGuardState(
+            sessionGeneration: lockSessionGeneration,
+            wallpaperRevision: wallpaperRevision,
+            sessionInactive: sessionInactive,
+            showOnLockScreen: config.show_on_lock_screen == true,
+            terminating: isTerminating,
+            lastSessionTransitionUptime: lastSessionTransitionUptime
+            )
+        )
+    }
+
+    private func currentRearmGuardState() -> WallpaperAgentRearmGuardState {
+        rearmGuard.snapshot()
+    }
+
+    private func backgroundRepairCanProceed(
         token: LockScreenRearmToken,
         videoURL: URL,
         allowRecentTransition: Bool
     ) -> Bool {
-        !isTerminating
-            && currentRearmToken() == token
-            && !sessionInactive
-            && lockScreenState.sessionState == .unlocked
-            && lockScreenState.previewState == .inactive
-            && config.show_on_lock_screen == true
-            && config.video_path == videoURL.path
-            && systemSessionIsLocked() == false
-            && (
-                allowRecentTransition
-                    || ProcessInfo.processInfo.systemUptime
-                        - lastSessionTransitionUptime > 1.0
-            )
+        rearmGuard.canProceed(
+            token: token,
+            videoURL: videoURL,
+            allowRecentTransition: allowRecentTransition
+        )
     }
 
-    private func rearmCanProceed(
+    private func backgroundRearmCanProceed(
         token: LockScreenRearmToken,
         videoURL: URL
     ) -> Bool {
-        !isTerminating
-            && pendingRearmToken == token
-            && currentRearmToken() == token
-            && !sessionInactive
-            && lockScreenState.sessionState == .unlocked
-            && lockScreenState.previewState == .inactive
-            && config.show_on_lock_screen == true
-            && config.video_path == videoURL.path
-            && systemSessionIsLocked() == false
+        rearmGuard.canProceed(token: token, videoURL: videoURL)
     }
 
     private func systemSessionIsLocked() -> Bool? {
-        guard let session =
-            CGSessionCopyCurrentDictionary() as? [String: Any]
-        else {
-            return nil
-        }
-        if let value =
-            session["CGSSessionScreenIsLocked"] as? NSNumber {
-            return value.boolValue
-        }
-
-        // On an unlocked console macOS omits the lock key instead of storing
-        // `false`. Treat that omission as unlocked only when the same snapshot
-        // confirms this is the active, fully logged-in console session.
-        let onConsole =
-            (session["kCGSSessionOnConsoleKey"] as? NSNumber)?.boolValue
-        let loginDone =
-            (session["kCGSessionLoginDoneKey"] as? NSNumber)?.boolValue
-        if onConsole == true, loginDone == true {
-            return false
-        }
-        return nil
+        agentSystemSessionIsLocked()
     }
 
     private func videoGravity(for rawMode: String?) -> AVLayerVideoGravity {
@@ -1052,7 +2653,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-let app = NSApplication.shared
-private let delegate = WallpaperAgentDelegate()
-app.delegate = delegate
-app.run()
+MainActor.assumeIsolated {
+    let app = NSApplication.shared
+    let delegate = WallpaperAgentDelegate()
+    app.delegate = delegate
+    app.run()
+}

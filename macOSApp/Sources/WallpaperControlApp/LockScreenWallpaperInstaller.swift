@@ -1,33 +1,316 @@
 import AuraWallpaperCore
 import Foundation
+import OSLog
 
-/// Chooses the modern secure-lock path on systems that provide Apple's Aerial
-/// wallpaper engine. Older systems retain the legacy screen saver fallback.
-final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
-    private let modern: AerialLockScreenInstaller
-    private let legacy: LockScreenSaverInstalling
+private let lockScreenFallbackLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "LockScreenFallback"
+)
+
+/// Legacy implementation boundary. The screen-saver installer is kept in the
+/// application target because it also owns the bundled screen-saver component;
+/// the rest of the app sees only `LockScreenPlatformOperating`.
+final class LegacyMacOSAdapter: LockScreenSaverInstalling {
+    private let installer: LockScreenSaverInstalling
+    private let platformAvailable: Bool
 
     init(
-        modern: AerialLockScreenInstaller = AerialLockScreenInstaller(),
-        legacy: LockScreenSaverInstalling = LockScreenSaverInstaller()
+        installer: LockScreenSaverInstalling = LockScreenSaverInstaller(),
+        isAvailable: Bool = ProcessInfo.processInfo.operatingSystemVersion
+            .majorVersion >= 13
+    ) {
+        self.installer = installer
+        self.platformAvailable = isAvailable
+    }
+
+    var capabilities: PlatformCapabilities {
+        platformAvailable ? .legacyMacOS : .unsupported
+    }
+    var isInstalled: Bool { installer.isInstalled }
+    var installationConfirmed: Bool {
+        capabilities.isAvailable && installer.installationConfirmed
+    }
+
+    func install(_ media: URL) async throws {
+        try await install(videoURL: media)
+    }
+
+    func install(videoURL: URL) async throws {
+        try requireAvailability()
+        try await installer.install(videoURL: videoURL)
+    }
+
+    func installLockScreenOnly(videoURL: URL) async throws {
+        try requireAvailability()
+        // The legacy screen saver is a separate Lock Screen/idle route and
+        // does not modify the Desktop wallpaper. Its default protocol
+        // implementation intentionally reuses the normal bundle install.
+        try await installer.install(videoURL: videoURL)
+    }
+
+    func refreshInstalledCompatibilityComponentIfNeeded() {
+        installer.refreshInstalledCompatibilityComponentIfNeeded()
+    }
+
+    func installLegacyLockScreenFallback(
+        videoURL: URL,
+        restoringLockScreenOnlyVideoURL: URL?
+    ) async throws {
+        try await install(videoURL: videoURL)
+    }
+
+    func prepareLockScreenMedia(videoURL: URL) async throws {
+        try requireAvailability()
+        try await installer.prepareLockScreenMedia(videoURL: videoURL)
+    }
+
+    func lockScreenOnlyStatus(
+        videoURL: URL?
+    ) -> LockScreenOnlyGenerationStatus {
+        guard capabilities.isAvailable else {
+            return LockScreenOnlyGenerationStatus()
+        }
+        return installer.lockScreenOnlyStatus(videoURL: videoURL)
+    }
+
+    @discardableResult
+    func repairLockScreenOnlyGeneration(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) async throws -> Bool {
+        try requireAvailability()
+        return try await installer.repairLockScreenOnlyGeneration(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
+    }
+
+    func uninstall() throws {
+        try installer.uninstall()
+    }
+
+    func uninstallAsync() async throws {
+        try await installer.uninstallAsync()
+    }
+
+    func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
+        try installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    }
+
+    func uninstallLockScreenOnlyPreservingCurrentDesktopAsync() async throws {
+        try await installer
+            .uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
+    }
+
+    func status() -> LockScreenStatus {
+        let detailedStatus = lockScreenOnlyStatus(videoURL: nil)
+        let confirmed = capabilities.isAvailable && installer.installationConfirmed
+        return LockScreenStatus(
+            available: capabilities.isAvailable,
+            installed: installer.isInstalled,
+            confirmed: confirmed,
+            needsRepair: installer.isInstalled && !confirmed,
+            generation: detailedStatus.generation,
+            message: capabilities.availabilityMessage
+        )
+    }
+
+    private func requireAvailability() throws {
+        guard capabilities.isAvailable else {
+            throw LockScreenPlatformError.unsupported(
+                capabilities.availabilityMessage
+                    ?? "Lock Screen is unavailable on this macOS version."
+            )
+        }
+    }
+}
+
+/// Selects one platform implementation and keeps the legacy screen saver as
+/// the compatibility companion for the modern Aerial route. This preserves the
+/// existing all-surfaces and Lock Screen-only transactions while making the
+/// platform decision explicit and testable.
+final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
+    private let modern: ModernMacOS26Adapter
+    private let legacy: LegacyMacOSAdapter
+    private let unsupported: UnsupportedAdapter
+    private let nativeBridgeCapabilities: NativeLockScreenBridgeCapabilities
+    private var nativeBridgeRuntimeFailureMessage: String?
+
+    init(
+        modern: ModernMacOS26Adapter = ModernMacOS26Adapter(),
+        legacy: LegacyMacOSAdapter = LegacyMacOSAdapter(),
+        unsupported: UnsupportedAdapter = UnsupportedAdapter(),
+        nativeBridgeCapabilities: NativeLockScreenBridgeCapabilities =
+            NativeLockScreenBridgeCapabilities(
+                availability: .available
+            )
     ) {
         self.modern = modern
         self.legacy = legacy
+        self.unsupported = unsupported
+        self.nativeBridgeCapabilities = nativeBridgeCapabilities
+    }
+
+    var capabilities: PlatformCapabilities {
+        let selected = selectedPlatform
+        guard selected === legacy,
+              let unavailableMessage = nativeBridgeRuntimeFailureMessage
+                ?? (!nativeBridgeCapabilities.isAvailable
+                    ? nativeBridgeCapabilities.message
+                    : nil)
+        else {
+            return selected.capabilities
+        }
+
+        let legacyCapabilities = selected.capabilities
+        return PlatformCapabilities(
+            platformName: legacyCapabilities.platformName,
+            minimumMajorOSVersion: legacyCapabilities.minimumMajorOSVersion,
+            supportsLockScreen: legacyCapabilities.supportsLockScreen,
+            supportsLockScreenOnly: legacyCapabilities.supportsLockScreenOnly,
+            supportsSecureLockScreen: legacyCapabilities.supportsSecureLockScreen,
+            supportsAnimatedMedia: legacyCapabilities.supportsAnimatedMedia,
+            usesPrivateWallpaperFramework: false,
+            availabilityMessage: unavailableMessage
+        )
     }
 
     var isInstalled: Bool {
         modern.isInstalled || legacy.isInstalled
     }
 
-    func install(videoURL: URL) throws {
-        if modern.isAvailable {
-            if legacy.isInstalled {
-                try legacy.uninstall()
-            }
-            try modern.install(videoURL: videoURL)
-        } else {
-            try legacy.install(videoURL: videoURL)
+    var installationConfirmed: Bool {
+        if modernIsUsable, modern.isInstalled {
+            return modern.installationConfirmed && legacy.installationConfirmed
         }
+        if legacy.isInstalled {
+            return legacy.installationConfirmed
+        }
+        return selectedPlatform.installationConfirmed
+    }
+
+    func markNativeBridgeUnavailable(reason: String) {
+        nativeBridgeRuntimeFailureMessage = NativeLockScreenBridgeAvailability
+            .runtimeFailure(reason: reason)
+            .message
+    }
+
+    func install(_ media: URL) async throws {
+        try await install(videoURL: media)
+    }
+
+    func install(videoURL: URL) async throws {
+        if modernIsUsable {
+            try await installModernAndLegacy(videoURL: videoURL, lockScreenOnly: false)
+        } else if legacy.capabilities.isAvailable {
+            if modern.isInstalled {
+                try await installLegacyLockScreenFallback(
+                    videoURL: videoURL,
+                    restoringLockScreenOnlyVideoURL: nil
+                )
+            } else {
+                try await legacy.install(videoURL: videoURL)
+            }
+        } else {
+            try await unsupported.install(videoURL: videoURL)
+        }
+    }
+
+    func installForDesktopAgent(videoURL: URL) async throws {
+        if modernIsUsable {
+            // AuraWallpaperAgent owns the visible Desktop. Install the native
+            // route without replacing macOS's Desktop/Linked selections.
+            try await legacy.install(videoURL: videoURL)
+            do {
+                try await modern.installForDesktopAgent(videoURL: videoURL)
+            } catch {
+                try? legacy.uninstall()
+                throw error
+            }
+        } else {
+            try await install(videoURL: videoURL)
+        }
+    }
+
+    func installLockScreenOnly(videoURL: URL) async throws {
+        let canUseModern = modernIsUsable
+        let modernAvailable = modern.capabilities.isAvailable
+        let bridgeAvailable = nativeBridgeCapabilities.isAvailable
+        let legacyAvailable = legacy.capabilities.isAvailable
+        lockScreenFallbackLogger.notice(
+            "Lock Screen adapter install modernUsable=\(canUseModern, privacy: .public) modernAvailable=\(modernAvailable, privacy: .public) nativeBridge=\(bridgeAvailable, privacy: .public) legacyAvailable=\(legacyAvailable, privacy: .public)"
+        )
+        if canUseModern {
+            try await installModernAndLegacy(videoURL: videoURL, lockScreenOnly: true)
+        } else if legacy.capabilities.isAvailable {
+            try await legacy.installLockScreenOnly(videoURL: videoURL)
+        } else {
+            try await unsupported.installLockScreenOnly(videoURL: videoURL)
+        }
+    }
+
+    func refreshInstalledCompatibilityComponentIfNeeded() {
+        legacy.refreshInstalledCompatibilityComponentIfNeeded()
+    }
+
+    func installLegacyLockScreenFallback(
+        videoURL: URL,
+        restoringLockScreenOnlyVideoURL: URL?
+    ) async throws {
+        let removedModernRoute = modern.isInstalled
+        do {
+            // This is an explicit downgrade transaction. Remove only the
+            // modern lock-only route so the user's Desktop routes survive;
+            // leave the existing legacy saver in place until its own atomic
+            // install has succeeded.
+            if removedModernRoute {
+                try await modern
+                    .uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
+            }
+            try await legacy.install(videoURL: videoURL)
+        } catch let installError {
+            // Recover the previous native route when this operation removed
+            // one. If recovery also fails, surface both failures so the UI
+            // and diagnostics do not mistake a partial downgrade for a
+            // complete rollback.
+            if removedModernRoute, let restoringLockScreenOnlyVideoURL {
+                do {
+                    try await modern.installLockScreenOnly(
+                        videoURL: restoringLockScreenOnlyVideoURL
+                    )
+                } catch let rollbackError {
+                    lockScreenFallbackLogger.error(
+                        "Legacy fallback failed and modern Lock Screen rollback failed. install=\(installError.localizedDescription, privacy: .public) rollback=\(rollbackError.localizedDescription, privacy: .public)"
+                    )
+                    throw LockScreenPlatformError.fallbackRollbackFailed(
+                        installError: installError.localizedDescription,
+                        rollbackError: rollbackError.localizedDescription
+                    )
+                }
+            }
+            throw installError
+        }
+    }
+
+    func prepareLockScreenMedia(videoURL: URL) async throws {
+        try await selectedPlatform.prepareLockScreenMedia(videoURL: videoURL)
+    }
+
+    func lockScreenOnlyStatus(
+        videoURL: URL?
+    ) -> LockScreenOnlyGenerationStatus {
+        selectedPlatform.lockScreenOnlyStatus(videoURL: videoURL)
+    }
+
+    @discardableResult
+    func repairLockScreenOnlyGeneration(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) async throws -> Bool {
+        try await selectedPlatform.repairLockScreenOnlyGeneration(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
     }
 
     func uninstall() throws {
@@ -36,4 +319,135 @@ final class LockScreenWallpaperInstaller: LockScreenSaverInstalling {
         }
         try legacy.uninstall()
     }
+
+    func uninstallAsync() async throws {
+        if modern.isInstalled {
+            try await modern.uninstallAsync()
+        }
+        try await legacy.uninstallAsync()
+    }
+
+    func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
+        if modern.isInstalled {
+            try modern.uninstallLockScreenOnlyPreservingCurrentDesktop()
+        }
+        try legacy.uninstall()
+    }
+
+    func uninstallLockScreenOnlyPreservingCurrentDesktopAsync() async throws {
+        if modern.isInstalled {
+            try await modern
+                .uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
+        }
+        try await legacy.uninstallAsync()
+    }
+
+    func status() -> LockScreenStatus {
+        let selected = capabilities
+        guard selected.isAvailable else {
+            return unsupported.status()
+        }
+        let confirmed = installationConfirmed
+        let detailedStatus = lockScreenOnlyStatus(videoURL: nil)
+        return LockScreenStatus(
+            available: true,
+            installed: isInstalled,
+            confirmed: confirmed,
+            needsRepair: isInstalled && !confirmed,
+            generation: detailedStatus.generation,
+            message: selected.availabilityMessage
+        )
+    }
+
+    var requiresLockScreenSessionPromotion: Bool {
+        guard modernIsUsable else { return false }
+        return modern.requiresLockScreenSessionPromotion
+    }
+
+    @discardableResult
+    func activateLockScreenForCurrentSession() throws -> Bool {
+        guard selectedPlatform === modern else { return false }
+        return try selectedPlatform.activateLockScreenForCurrentSession()
+    }
+
+    @discardableResult
+    func restoreDesktopAfterLockScreenSession() throws -> Bool {
+        guard selectedPlatform === modern else { return false }
+        return try selectedPlatform.restoreDesktopAfterLockScreenSession()
+    }
+
+    @discardableResult
+    func restoreDesktopAfterLockScreenSessionAsync() async throws -> Bool {
+        guard selectedPlatform === modern else { return false }
+        return try await selectedPlatform
+            .restoreDesktopAfterLockScreenSessionAsync()
+    }
+
+    @discardableResult
+    func applyCurrentDesktopFallback() -> Bool {
+        guard selectedPlatform === modern else { return false }
+        return selectedPlatform.applyCurrentDesktopFallback()
+    }
+
+    @discardableResult
+    func repair(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) async throws -> Bool {
+        try await selectedPlatform.repair(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
+    }
+
+    @discardableResult
+    func rearmForNextLock(
+        videoURL: URL,
+        shouldProceed: @escaping () -> Bool
+    ) async throws -> Bool {
+        try await selectedPlatform.rearmForNextLock(
+            videoURL: videoURL,
+            shouldProceed: shouldProceed
+        )
+    }
+
+    private var selectedPlatform: LockScreenPlatformOperating {
+        if modernIsUsable {
+            return modern
+        }
+        if legacy.capabilities.isAvailable {
+            return legacy
+        }
+        return unsupported
+    }
+
+    private var modernIsUsable: Bool {
+        modern.capabilities.isAvailable
+            && nativeBridgeCapabilities.isAvailable
+            && nativeBridgeRuntimeFailureMessage == nil
+    }
+
+    private func installModernAndLegacy(
+        videoURL: URL,
+        lockScreenOnly: Bool
+    ) async throws {
+        // The legacy saver is the compatibility companion for the native
+        // shared and Lock Screen-only routes.
+        try await legacy.install(videoURL: videoURL)
+
+        do {
+            if lockScreenOnly {
+                try await modern.installLockScreenOnly(videoURL: videoURL)
+            } else {
+                try await modern.install(videoURL: videoURL)
+            }
+        } catch {
+            try? legacy.uninstall()
+            throw error
+        }
+    }
 }
+
+/// Source compatibility for integrations that used the old name before the
+/// platform boundary was introduced.
+typealias LockScreenWallpaperInstaller = WallpaperPlatformAdapter

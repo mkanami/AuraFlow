@@ -1,8 +1,11 @@
 import AppKit
 
+@MainActor
 let auraFlowMainWindowIdentifier = NSUserInterfaceItemIdentifier("AuraFlowMainWindow")
+@MainActor
 private var auraFlowStoredWindowFrames: [ObjectIdentifier: NSRect] = [:]
 
+@MainActor
 private final class AuraFlowMainWindowDelegate: NSObject, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
@@ -10,8 +13,10 @@ private final class AuraFlowMainWindowDelegate: NSObject, NSWindowDelegate {
     }
 }
 
+@MainActor
 private let auraFlowMainWindowDelegate = AuraFlowMainWindowDelegate()
 
+@MainActor
 func configureWindowForClientDecorations(_ window: NSWindow) {
     window.identifier = auraFlowMainWindowIdentifier
     window.isReleasedWhenClosed = false
@@ -33,6 +38,7 @@ func configureWindowForClientDecorations(_ window: NSWindow) {
     applyStandardWindowButtonAppearance(for: window)
 }
 
+@MainActor
 func applyStandardWindowButtonAppearance(for window: NSWindow) {
     let buttonColors: [(NSWindow.ButtonType, NSColor)] = [
         (.closeButton, NSColor(srgbRed: 1.0, green: 95.0 / 255.0, blue: 87.0 / 255.0, alpha: 1.0)),
@@ -61,12 +67,14 @@ func applyStandardWindowButtonAppearance(for window: NSWindow) {
     }
 }
 
+@MainActor
 func mainScreenAspectRatio() -> CGFloat {
     let frame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
     guard frame.height != 0 else { return 16.0 / 9.0 }
     return frame.width / frame.height
 }
 
+@MainActor
 func preferredWindowSize() -> CGSize {
     let frame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
     let aspect = mainScreenAspectRatio()
@@ -76,6 +84,7 @@ func preferredWindowSize() -> CGSize {
 }
 
 @discardableResult
+@MainActor
 func bringMainWindowToFront() -> Bool {
     NSApp.activate(ignoringOtherApps: true)
 
@@ -97,6 +106,7 @@ func bringMainWindowToFront() -> Bool {
     return true
 }
 
+@MainActor
 func removeDuplicateMainWindows(keeping targetWindow: NSWindow) {
     for window in NSApp.windows where window.identifier == auraFlowMainWindowIdentifier && window !== targetWindow {
         window.delegate = nil
@@ -104,12 +114,14 @@ func removeDuplicateMainWindows(keeping targetWindow: NSWindow) {
     }
 }
 
+@MainActor
 func hasVisibleAuraFlowMainWindow() -> Bool {
     NSApp.windows.contains { window in
         window.identifier == auraFlowMainWindowIdentifier && window.isVisible
     }
 }
 
+@MainActor
 func ensureWindowIsVisibleOnScreen(_ window: NSWindow) {
     let currentFrame = window.frame
     let screens = NSScreen.screens
@@ -136,6 +148,7 @@ func ensureWindowIsVisibleOnScreen(_ window: NSWindow) {
     window.setFrame(targetFrame, display: false)
 }
 
+@MainActor
 func toggleFastWindowZoom(_ window: NSWindow) {
     let windowID = ObjectIdentifier(window)
     let targetFrame: NSRect

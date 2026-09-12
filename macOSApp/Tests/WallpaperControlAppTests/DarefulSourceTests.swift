@@ -66,6 +66,70 @@ import Testing
     #expect(wallpaper?.sources.first?.height == 2160)
 }
 
+@Test func darefulDownloadResolutionIgnoresUnrelatedBlockedPageTags() {
+    let html = """
+    <html>
+      <body>
+        <mux-player
+          metadata-video-title="Las Vegas Strip Sunset 4k"
+          playback-id="yEnOBy3oVkXppC8GAG2x5SWLy7lzud701Njc39IOiN1o">
+        </mux-player>
+        <a rel="tag">city</a>
+        <a rel="tag">Las Vegas</a>
+        <a rel="tag">sunset</a>
+        Resolution &mdash; 1920 x 1080
+      </body>
+    </html>
+    """
+
+    let wallpaper = DarefulParser.parseDetailPage(
+        html: html,
+        postID: 52,
+        fallbackTitle: "Las Vegas Strip Sunset 4k",
+        pageURL: URL(string: "https://dareful.com/free-4k-time-lapse-stock-video-las-vegas-strip-sunset/")!,
+        enforceScenicFilter: false
+    )
+
+    #expect(wallpaper?.id == "dareful-52")
+    #expect(wallpaper?.sources.first?.url.absoluteString == "https://stream.mux.com/yEnOBy3oVkXppC8GAG2x5SWLy7lzud701Njc39IOiN1o/high.mp4")
+}
+
+@Test func darefulSourceResolvesCachedLasVegasCardFromItsCurrentDetailPage() async throws {
+    DarefulDetailURLProtocol.configure(html: """
+    <html>
+      <body>
+        <mux-player
+          metadata-video-title="Las Vegas Strip Sunset 4k"
+          playback-id="yEnOBy3oVkXppC8GAG2x5SWLy7lzud701Njc39IOiN1o">
+        </mux-player>
+        <a rel="tag">city</a>
+        <a rel="tag">Las Vegas</a>
+        <a rel="tag">sunset</a>
+        Resolution &mdash; 1920 x 1080
+      </body>
+    </html>
+    """)
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [DarefulDetailURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+
+    let wallpaper = CatalogWallpaper(
+        id: "dareful-52",
+        title: "Las Vegas Strip Sunset 4k",
+        category: "Scenic",
+        attribution: "Dareful",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://dareful.test/las-vegas-strip-sunset/")!,
+        sources: []
+    )
+
+    let resolvedURL = try await DarefulSource(session: session).resolveDownloadURL(for: wallpaper)
+
+    #expect(resolvedURL.absoluteString == "https://stream.mux.com/yEnOBy3oVkXppC8GAG2x5SWLy7lzud701Njc39IOiN1o/high.mp4")
+}
+
 @Test func darefulParserRejectsPeopleTextLogoAndVerticalVideos() {
     #expect(darefulWallpaper(title: "Person Walking Near Waterfall", tags: ["nature"]) == nil)
     #expect(darefulWallpaper(title: "Nature Text Overlay", tags: ["forest"]) == nil)
@@ -125,4 +189,46 @@ private func darefulPost(id: Int, tags: [Int], title: String) -> DarefulPost {
         tags: tags,
         featuredMedia: nil
     )
+}
+
+private final class DarefulDetailURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var responseData = Data()
+
+    static func configure(html: String) {
+        lock.lock()
+        responseData = Data(html.utf8)
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "dareful.test"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.lock.lock()
+        let body = Self.responseData
+        Self.lock.unlock()
+
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                  url: url,
+                  statusCode: 200,
+                  httpVersion: "HTTP/1.1",
+                  headerFields: ["Content-Type": "text/html; charset=utf-8"]
+              ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

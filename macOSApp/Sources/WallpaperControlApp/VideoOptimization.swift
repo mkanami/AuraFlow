@@ -6,7 +6,7 @@ import Foundation
 import ImageIO
 import VideoToolbox
 
-enum OptimizationProfile: String, CaseIterable, Codable, Identifiable {
+enum OptimizationProfile: String, CaseIterable, Codable, Identifiable, Sendable {
     case quality
     case balanced
 
@@ -22,7 +22,7 @@ enum OptimizationProfile: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-struct VideoOptimizationSettings: Codable {
+struct VideoOptimizationSettings: Codable, Sendable {
     var enabled: Bool
     var allowAV1PassthroughOnHardwareDecode: Bool
     var transcodeH264ToHEVC: Bool
@@ -72,12 +72,12 @@ struct VideoOptimizationSettings: Codable {
     }
 }
 
-enum VideoOptimizationDecision {
+enum VideoOptimizationDecision: Sendable {
     case passthrough(reason: String)
     case transcode(reason: String)
 }
 
-struct VideoOptimizationResult {
+struct VideoOptimizationResult: Sendable {
     let outputURL: URL
     let decision: VideoOptimizationDecision
     let fromCache: Bool
@@ -154,6 +154,7 @@ final class VideoOptimizationStore {
     }
 }
 
+@MainActor
 final class VideoOptimizer {
     private let applicationSupportName = "AuraFlow"
     private let optimizedDirectoryName = "OptimizedVideos"
@@ -190,6 +191,20 @@ final class VideoOptimizer {
                 progress: progress
             )
             return VideoOptimizationResult(outputURL: outputURL, decision: decision, fromCache: false)
+        }
+
+        // AVFoundation cannot reliably inspect WebM/MKV on macOS and emits
+        // -11828 before the compatibility path can run. These containers are
+        // already known to require ffmpeg, so go straight to the cached MP4
+        // conversion instead of probing them repeatedly through AVAsset.
+        if isCompatibilityFFmpegCandidate(inputURL) {
+            return try await transcodeToCompatibilityUsingFFmpeg(
+                inputURL: inputURL,
+                settings: settings,
+                codecType: 0,
+                reason: "Web container converted for macOS wallpaper compatibility.",
+                progress: progress
+            )
         }
 
         let asset = AVURLAsset(url: inputURL)
@@ -268,7 +283,7 @@ final class VideoOptimizer {
                 return VideoOptimizationResult(outputURL: outputURL, decision: decision, fromCache: true)
             }
 
-            let preset = exportPreset(for: asset, settings: settings)
+            let preset = await exportPreset(for: asset, settings: settings)
             guard let exportSession = AVAssetExportSession(asset: asset, presetName: preset) else {
                 if isCompatibilityFFmpegCandidate(inputURL) {
                     return try await transcodeToCompatibilityUsingFFmpeg(
@@ -375,9 +390,10 @@ final class VideoOptimizer {
             return VideoOptimizationResult(outputURL: outputURL, decision: decision, fromCache: true)
         }
 
-        let duration = try? await AVURLAsset(url: inputURL).load(.duration)
-        let seconds = duration.map(CMTimeGetSeconds)
-        let durationSeconds = (seconds?.isFinite == true) ? seconds : nil
+        // Do not ask AVFoundation for WebM/MKV duration here. Those
+        // containers are the compatibility cases this method handles and
+        // probing them recreates the same -11828 error we just avoided.
+        let durationSeconds: Double? = nil
 
         try await transcodeToH264Compatibility(
             ffmpegExecutable: ffmpeg,
@@ -407,8 +423,10 @@ final class VideoOptimizer {
         return settings.forceSoftwareAV1Encode && supportsHardwareAV1Decode()
     }
 
-    private func exportPreset(for asset: AVAsset, settings: VideoOptimizationSettings) -> String {
-        let available = AVAssetExportSession.exportPresets(compatibleWith: asset)
+    private func exportPreset(
+        for asset: AVAsset,
+        settings: VideoOptimizationSettings
+    ) async -> String {
         let preferred: [String]
         switch settings.profile {
         case .quality:
@@ -420,8 +438,14 @@ final class VideoOptimizer {
                 AVAssetExportPresetHighestQuality,
             ]
         }
-        for candidate in preferred where available.contains(candidate) {
-            return candidate
+        for candidate in preferred {
+            if await AVAssetExportSession.compatibility(
+                ofExportPreset: candidate,
+                with: asset,
+                outputFileType: .mp4
+            ) {
+                return candidate
+            }
         }
         return AVAssetExportPresetHighestQuality
     }
@@ -431,7 +455,7 @@ final class VideoOptimizer {
         progress: @escaping @Sendable (Double) -> Void
     ) async throws {
         progress(0.0)
-        let progressTask = Task.detached(priority: .utility) {
+        let progressTask = Task { @MainActor [session] in
             while !Task.isCancelled {
                 let status = session.status
                 progress(Double(session.progress))
@@ -535,7 +559,10 @@ final class VideoOptimizer {
         progress: @escaping @Sendable (Double) -> Void
     ) async throws {
         let safeDuration = max(durationSeconds ?? 0, 0)
-        final class StderrBufferState {
+        // Foundation invokes readability callbacks on its I/O queue, while
+        // termination can race the last callback. The lock protects all
+        // mutable state captured by the Sendable callback.
+        final class StderrBufferState: @unchecked Sendable {
             let lock = NSLock()
             var data = Data()
         }
@@ -892,7 +919,7 @@ final class VideoOptimizer {
         }
     }
 
-    private static func convertGIFToMP4Sync(
+    private nonisolated static func convertGIFToMP4Sync(
         inputURL: URL,
         outputURL: URL,
         settings: VideoOptimizationSettings,
@@ -1001,7 +1028,7 @@ final class VideoOptimizer {
         progress(1.0)
     }
 
-    private static func gifFrameDuration(source: CGImageSource, index: Int) -> Double {
+    private nonisolated static func gifFrameDuration(source: CGImageSource, index: Int) -> Double {
         guard
             let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
             let gif = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any]
@@ -1018,7 +1045,7 @@ final class VideoOptimizer {
         return max(0.02, min(duration, 0.5))
     }
 
-    private static func makePixelBuffer(
+    private nonisolated static func makePixelBuffer(
         from image: CGImage,
         width: Int,
         height: Int,
@@ -1062,7 +1089,7 @@ final class VideoOptimizer {
         return buffer
     }
 
-    private static func gifBitrate(width: Int, height: Int, profile: OptimizationProfile) -> Int {
+    private nonisolated static func gifBitrate(width: Int, height: Int, profile: OptimizationProfile) -> Int {
         let pixelCount = max(width * height, 1)
         switch profile {
         case .quality:
@@ -1072,7 +1099,7 @@ final class VideoOptimizer {
         }
     }
 
-    private static func evenDimension(_ value: Int) -> Int {
+    private nonisolated static func evenDimension(_ value: Int) -> Int {
         let clamped = max(value, 2)
         return clamped.isMultiple(of: 2) ? clamped : clamped - 1
     }

@@ -1,5 +1,6 @@
 import Testing
 import AVFoundation
+import AppKit
 @testable import WallpaperControlApp
 
 private func writeTinyGIF(to url: URL) throws {
@@ -34,6 +35,112 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
     )!
     return context.makeImage()!
+}
+
+private func horizontalSplitImage(
+    width: Int,
+    height: Int,
+    topValue: UInt8,
+    bottomValue: UInt8
+) -> CGImage {
+    let bytesPerPixel = 4
+    let bytesPerRow = width * bytesPerPixel
+    var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+
+    for y in 0..<height {
+        let value = y < height / 2 ? bottomValue : topValue
+        for x in 0..<width {
+            let offset = ((y * width) + x) * bytesPerPixel
+            pixels[offset] = value
+            pixels[offset + 1] = value
+            pixels[offset + 2] = value
+            pixels[offset + 3] = 255
+        }
+    }
+
+    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+    let context = CGContext(
+        data: &pixels,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: bytesPerRow,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    return context.makeImage()!
+}
+
+private func solidColorImage(
+    width: Int,
+    height: Int,
+    red: UInt8,
+    green: UInt8,
+    blue: UInt8
+) -> CGImage {
+    let bytesPerPixel = 4
+    let bytesPerRow = width * bytesPerPixel
+    var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+
+    for y in 0..<height {
+        for x in 0..<width {
+            let offset = ((y * width) + x) * bytesPerPixel
+            pixels[offset] = red
+            pixels[offset + 1] = green
+            pixels[offset + 2] = blue
+            pixels[offset + 3] = 255
+        }
+    }
+
+    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+    let context = CGContext(
+        data: &pixels,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: bytesPerRow,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    return context.makeImage()!
+}
+
+private func patternedImage(
+    width: Int,
+    height: Int,
+    colorAt: (Int, Int) -> (UInt8, UInt8, UInt8)
+) -> CGImage {
+    let bytesPerPixel = 4
+    let bytesPerRow = width * bytesPerPixel
+    var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+
+    for y in 0..<height {
+        for x in 0..<width {
+            let (red, green, blue) = colorAt(x, y)
+            let offset = ((y * width) + x) * bytesPerPixel
+            pixels[offset] = red
+            pixels[offset + 1] = green
+            pixels[offset + 2] = blue
+            pixels[offset + 3] = 255
+        }
+    }
+
+    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+    let context = CGContext(
+        data: &pixels,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: bytesPerRow,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    return context.makeImage()!
+}
+
+private func pngData(for image: CGImage) -> Data {
+    NSBitmapImageRep(cgImage: image)
+        .representation(using: .png, properties: [:])!
 }
 
 @Test func catalogOriginHeaderValueIncludesSchemeAndHost() {
@@ -77,6 +184,50 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
+@Test func removeCancelsBackgroundLockScreenMediaWarmUp() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.prepareLockScreenMediaDelay = 30_000_000_000
+    let viewModel = AppViewModel(controller: controller)
+    let sourceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("remove-cancels-lock-warm-up-\(UUID().uuidString).png")
+    FileManager.default.createFile(
+        atPath: sourceURL.path,
+        contents: Data([0])
+    )
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+    for _ in 0..<40 {
+        if controller.prepareLockScreenMediaCallCount == 1 { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    #expect(controller.prepareLockScreenMediaCallCount == 1)
+
+    let removalStartedAt = Date()
+    viewModel.clearWallpaper()
+    for _ in 0..<40 {
+        if controller.clearCallCount == 1,
+           !viewModel.isLifecycleBusy {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    #expect(controller.clearCallCount == 1)
+    #expect(controller.prepareLockScreenMediaCancellationCount == 1)
+    #expect(Date().timeIntervalSince(removalStartedAt) < 1.0)
+}
+
+@MainActor
+@Test func defaultTestAppSupportDoesNotUseTheUserProfile() {
+    let viewModel = AppViewModel(controller: MockNativeWallpaperController())
+    let userAppSupport = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/AuraFlow", isDirectory: true)
+
+    #expect(viewModel.appSupportDirectoryURLForTesting != userAppSupport)
+}
+
+@MainActor
 @Test func localVideoSelectionStaysInPreviewUntilStart() throws {
     let controller = MockNativeWallpaperController()
     let viewModel = AppViewModel(controller: controller)
@@ -97,7 +248,198 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
-@Test func localPreviewVideoStartsAfterStopAndStart() async throws {
+@Test func lockScreenToggleCanBeEnabledFromPreviewBeforeStart() throws {
+    let controller = MockNativeWallpaperController()
+    let viewModel = AppViewModel(controller: controller)
+    let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("lock-screen-preview-toggle.mp4")
+    FileManager.default.createFile(
+        atPath: tempURL.path,
+        contents: Data(),
+        attributes: nil
+    )
+    defer { try? FileManager.default.removeItem(at: tempURL) }
+
+    #expect(viewModel.canToggleShowOnLockScreen)
+    viewModel.selectLocalVideoForPreview(tempURL)
+
+    #expect(viewModel.canToggleShowOnLockScreen)
+    #expect(viewModel.canPreviewLockScreen == false)
+}
+
+@MainActor
+@Test func lockScreenApplySkipsOptionalOptimizationForNativeVideo() async throws {
+    let controller = MockNativeWallpaperController()
+    let suiteName = "AppViewModelTests.lock-screen-skips-optimization"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    let optimizationStore = VideoOptimizationStore(defaults: defaults)
+    optimizationStore.save(
+        VideoOptimizationSettings(
+            enabled: true,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: true,
+            forceSoftwareAV1Encode: false,
+            profile: .quality
+        )
+    )
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let viewModel = AppViewModel(
+        controller: controller,
+        optimizationStore: optimizationStore
+    )
+    let sourceURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lock-screen-native-source-(UUID().uuidString).mp4")
+    FileManager.default.createFile(
+        atPath: sourceURL.path,
+        contents: Data(),
+        attributes: nil
+    )
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+    viewModel.applyLockScreenOnly()
+
+    for _ in 0..<40 {
+        if controller.lockCallCount == 1 { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.lockCallCount == 1)
+    #expect(viewModel.alertMessage == nil)
+}
+
+@MainActor
+@Test func lastWallpaperPreviewSurvivesRestartAndRemove() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("preview-state-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let videoURL = root.appendingPathComponent("last-wallpaper.mp4")
+    FileManager.default.createFile(atPath: videoURL.path, contents: Data([1, 2, 3]))
+    let previewStateURL = root.appendingPathComponent("last_preview.json")
+
+    let firstViewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        appSupportDirectoryURL: root,
+        previewStateURL: previewStateURL
+    )
+    firstViewModel.selectLocalVideoForPreview(videoURL)
+
+    let restartedController = MockNativeWallpaperController()
+    let restartedViewModel = AppViewModel(
+        controller: restartedController,
+        appSupportDirectoryURL: root,
+        previewStateURL: previewStateURL
+    )
+
+    #expect(restartedViewModel.currentVideoURL == videoURL.standardizedFileURL)
+    #expect(restartedViewModel.previewPlayer?.currentItem != nil)
+
+    restartedViewModel.clearWallpaper()
+    for _ in 0..<20 {
+        if restartedController.clearCallCount == 1 && !restartedViewModel.isBusy {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(restartedController.clearCallCount == 1)
+    #expect(restartedViewModel.currentVideoURL == videoURL.standardizedFileURL)
+    #expect(restartedViewModel.previewPlayer?.currentItem != nil)
+}
+
+@MainActor
+@Test func firstLaunchWithoutWallpaperKeepsPreviewEmpty() {
+    let previewStateURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("missing-preview-\(UUID().uuidString).json")
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        appSupportDirectoryURL: previewStateURL.deletingLastPathComponent(),
+        previewStateURL: previewStateURL
+    )
+
+    #expect(viewModel.currentVideoURL == nil)
+    #expect(viewModel.previewPlayer == nil)
+}
+
+@MainActor
+@Test func lockOnlyStatusReloadsPreviewChangedByAnotherAppInstance() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("lock-only-preview-refresh-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let firstURL = root.appendingPathComponent("first.mp4")
+    let latestURL = root.appendingPathComponent("latest.mp4")
+    FileManager.default.createFile(atPath: firstURL.path, contents: Data([1]), attributes: nil)
+    FileManager.default.createFile(atPath: latestURL.path, contents: Data([2]), attributes: nil)
+    let previewStateURL = root.appendingPathComponent("last_preview.json")
+
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        appSupportDirectoryURL: root,
+        previewStateURL: previewStateURL
+    )
+    viewModel.selectLocalVideoForPreview(firstURL)
+
+    let controller = MockNativeWallpaperController()
+    controller.statusRunning = false
+    controller.statusPaused = false
+    controller.statusLockScreenOnly = true
+    controller.statusHealth = DaemonHealth(
+        available: true,
+        fresh: true,
+        suspicious: false,
+        reason: "lock-screen-only"
+    )
+    let refreshedViewModel = AppViewModel(
+        controller: controller,
+        appSupportDirectoryURL: root,
+        previewStateURL: previewStateURL
+    )
+    #expect(refreshedViewModel.currentVideoURL == firstURL.standardizedFileURL)
+
+    let externalPreview = """
+    {"video_path":\(String(reflecting: latestURL.path)),"playback_speed":1.0,"scale_mode":"fill"}
+    """
+    try #require(externalPreview.data(using: .utf8))
+        .write(to: previewStateURL, options: .atomic)
+
+    await refreshedViewModel.loadStatus()
+
+    #expect(refreshedViewModel.currentVideoURL == latestURL.standardizedFileURL)
+    let playerAsset = try #require(refreshedViewModel.previewPlayer?.currentItem?.asset as? AVURLAsset)
+    #expect(playerAsset.url.standardizedFileURL == latestURL.standardizedFileURL)
+}
+
+@MainActor
+@Test func loadStatusAppliesStatusAfterLockScreenSync() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("status-after-lock-sync-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let beforeURL = root.appendingPathComponent("before.mp4")
+    let afterURL = root.appendingPathComponent("after.mp4")
+    FileManager.default.createFile(atPath: beforeURL.path, contents: Data([1]), attributes: nil)
+    FileManager.default.createFile(atPath: afterURL.path, contents: Data([2]), attributes: nil)
+
+    let controller = MockNativeWallpaperController()
+    controller.configuredVideoURL = beforeURL
+    controller.statusAfterSyncVideoURL = afterURL
+    let viewModel = AppViewModel(controller: controller)
+
+    await viewModel.loadStatus()
+
+    #expect(controller.syncLockScreenCallCount == 1)
+    #expect(viewModel.currentVideoURL == afterURL.standardizedFileURL)
+}
+
+@MainActor
+@Test func localVideoSelectionRequiresRemoveWhileWallpaperRuns() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.local-preview-start")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.local-preview-start")
@@ -139,33 +481,77 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(viewModel.previewPlayer === firstPreviewPlayer)
 
     viewModel.selectLocalVideoForPreview(secondURL)
-    #expect(viewModel.previewPlayer === firstPreviewPlayer)
-    #expect(controller.lastConfiguredVideoURL == firstURL)
 
-    viewModel.stop()
-    for _ in 0..<20 {
-        if viewModel.isRunning == false {
-            break
-        }
-        try? await Task.sleep(nanoseconds: 25_000_000)
-    }
+    #expect(controller.lastConfiguredVideoURL == firstURL)
+    #expect(controller.startCallCount == 1)
+    #expect(viewModel.isRunning)
+    #expect(viewModel.currentVideoURL == secondURL.standardizedFileURL)
+    #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly == false)
 
     viewModel.start()
-    for _ in 0..<20 {
-        if controller.lastConfiguredVideoURL == secondURL && controller.startCallCount == 2 && viewModel.isRunning {
-            break
-        }
-        try? await Task.sleep(nanoseconds: 25_000_000)
-    }
+    try? await Task.sleep(nanoseconds: 100_000_000)
 
-    #expect(controller.lastConfiguredVideoURL == secondURL)
-    #expect(controller.startCallCount == 2)
-    #expect(viewModel.isRunning)
-    #expect(viewModel.previewPlayer === firstPreviewPlayer)
+    #expect(controller.lastConfiguredVideoURL == firstURL)
+    #expect(controller.startCallCount == 1)
 }
 
 @MainActor
-@Test func pausedWallpaperStartResumesWithoutReloading() async throws {
+@Test func localWallpaperSelectionStoresSeparateCopyAndKeepsOriginal() async throws {
+    let controller = MockNativeWallpaperController()
+    let viewModel = AppViewModel(controller: controller)
+    let sourceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("local-import-\(UUID().uuidString).mp4")
+    FileManager.default.createFile(
+        atPath: sourceURL.path,
+        contents: Data("original-wallpaper".utf8),
+        attributes: nil
+    )
+
+    var importedWallpaper: DownloadedCatalogWallpaper?
+    defer {
+        try? FileManager.default.removeItem(at: sourceURL)
+        if let importedWallpaper {
+            try? FileManager.default.removeItem(at: importedWallpaper.localURL)
+            if let previewURL = importedWallpaper.localPreviewURL {
+                try? FileManager.default.removeItem(at: previewURL)
+            }
+        }
+
+        let manifestURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/AuraFlow/Catalog/downloaded-catalog.json")
+        if let data = try? Data(contentsOf: manifestURL),
+           var entries = try? JSONDecoder().decode([DownloadedCatalogWallpaper].self, from: data) {
+            entries.removeAll {
+                $0.sourcePageURL?.standardizedFileURL.path == sourceURL.standardizedFileURL.path
+            }
+            if let updatedData = try? JSONEncoder().encode(entries) {
+                try? updatedData.write(to: manifestURL, options: .atomic)
+            }
+        }
+    }
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+
+    for _ in 0..<80 {
+        importedWallpaper = viewModel.downloadedCatalogWallpapers.first {
+            $0.sourcePageURL?.standardizedFileURL.path == sourceURL.standardizedFileURL.path
+        }
+        if importedWallpaper != nil {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    let imported = try #require(importedWallpaper)
+    #expect(imported.localURL.standardizedFileURL.path != sourceURL.standardizedFileURL.path)
+    #expect(FileManager.default.fileExists(atPath: sourceURL.path))
+    #expect(FileManager.default.fileExists(atPath: imported.localURL.path))
+    #expect(imported.attribution == "This Mac")
+}
+
+@MainActor
+@Test func pausedWallpaperCanResumeOnlyThroughPlay() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.paused-start-resume")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.paused-start-resume")
@@ -206,6 +592,14 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     }
 
     viewModel.start()
+    try? await Task.sleep(nanoseconds: 100_000_000)
+
+    #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly == false)
+    #expect(controller.resumeCallCount == 0)
+    #expect(viewModel.isPlaybackPaused)
+
+    viewModel.togglePlayback()
     for _ in 0..<20 {
         if controller.resumeCallCount == 1 && viewModel.isPlaybackActive {
             break
@@ -247,7 +641,10 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(controller.lastConfiguredVideoURL == nil)
     #expect(controller.startCallCount == 0)
     #expect(viewModel.isRunning == false)
-    #expect(viewModel.statusMessage == "Wallpaper downloaded. Press Start to apply.")
+    #expect(
+        viewModel.statusMessage
+            == "Wallpaper downloaded to preview. Press Start or Lock to apply."
+    )
 }
 
 @MainActor
@@ -327,7 +724,11 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 
     #expect(appearance.topGlassAlpha == 1.0)
     #expect(appearance.bottomGlassAlpha == 1.0)
+    #expect(appearance.centerGlassAlpha == 1.0)
     #expect(appearance.bottomButtonProtectionOpacity == 0.0)
+    #expect(appearance.topTextTone == .light)
+    #expect(appearance.bottomTextTone == .light)
+    #expect(appearance.centerTextTone == .light)
 }
 
 @Test func adaptiveGlassAppearanceProtectsBrightFlatWallpaper() {
@@ -336,12 +737,239 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 
     #expect(appearance.topGlassAlpha < 0.97)
     #expect(appearance.bottomGlassAlpha < 0.95)
+    #expect(appearance.centerGlassAlpha < 0.95)
     #expect(appearance.bottomButtonProtectionOpacity > 0.005)
     #expect(appearance.bottomButtonHighlightOpacity < 0.04)
+    #expect(appearance.topTextTone == .dark)
+    #expect(appearance.bottomTextTone == .dark)
+    #expect(appearance.centerTextTone == .dark)
+}
+
+@Test func adaptiveGlassAppearanceUsesOneToneEverywhere() {
+    let image = horizontalSplitImage(
+        width: 120,
+        height: 68,
+        topValue: 248,
+        bottomValue: 36
+    )
+    let appearance = AppViewModel.adaptiveGlassAppearance(for: image)
+
+    #expect(appearance.textTone == appearance.topTextTone)
+    #expect(appearance.textTone == appearance.bottomTextTone)
+    #expect(appearance.textTone == appearance.centerTextTone)
+    #expect(appearance.centerProtectionOverlayOpacity >= 0.0)
+}
+
+@Test func adaptiveGlassAppearanceUsesDarkGlassWhenNoWallpaperIsAvailable() {
+    let appearance = AdaptiveGlassAppearance.emptyState
+
+    #expect(appearance.textTone == .light)
+    #expect(appearance.topTextTone == .light)
+    #expect(appearance.centerTextTone == .light)
+    #expect(appearance.bottomTextTone == .light)
+    #expect(appearance.topProtectionOverlayOpacity < 0.20)
+    #expect(appearance.centerProtectionOverlayOpacity < 0.20)
+    #expect(appearance.bottomProtectionOverlayOpacity < 0.20)
+    #expect(appearance.bottomButtonProtectionOpacity < 0.20)
+}
+
+@Test func adaptiveGlassAppearanceUsesLowBackingDuringPreviewTransition() {
+    let appearance = AdaptiveGlassAppearance.previewTransitionFallback
+
+    #expect(appearance.textTone == .dark)
+    #expect(appearance.topProtectionOverlayOpacity < 0.20)
+    #expect(appearance.centerProtectionOverlayOpacity < 0.20)
+    #expect(appearance.bottomProtectionOverlayOpacity < 0.20)
+    #expect(appearance.bottomButtonProtectionOpacity < 0.20)
+}
+
+@Test func adaptiveGlassAppearanceChoosesBlackForLightPastelWallpaper() {
+    let image = solidColorImage(
+        width: 144,
+        height: 90,
+        red: 255,
+        green: 218,
+        blue: 226
+    )
+    let appearance = AppViewModel.adaptiveGlassAppearance(for: image)
+
+    #expect(appearance.textTone == .dark)
+    #expect(appearance.topTextTone == .dark)
+    #expect(appearance.centerTextTone == .dark)
+    #expect(appearance.bottomTextTone == .dark)
+    #expect(appearance.bottomButtonProtectionOpacity > 0.005)
+}
+
+@Test func adaptiveGlassAppearanceIncludesBlackBarsFromAspectFit() {
+    let portrait = solidImage(width: 60, height: 120, value: 248)
+
+    let fitAppearance = AdaptiveContrastAnalyzer.appearance(
+        for: portrait,
+        scaleMode: .fit
+    )
+    let fillAppearance = AdaptiveContrastAnalyzer.appearance(
+        for: portrait,
+        scaleMode: .fill
+    )
+
+    #expect(fitAppearance.textTone == .light)
+    #expect(fillAppearance.textTone == .dark)
+}
+
+@Test func adaptiveGlassAppearanceAggregatesBrightAndDarkVideoFrames() {
+    let bright = solidImage(width: 144, height: 90, value: 248)
+    let dark = solidImage(width: 144, height: 90, value: 28)
+    let appearance = AdaptiveContrastAnalyzer.appearance(for: [bright, dark])
+
+    #expect(appearance.textTone == .dark)
+    #expect(appearance.textTone == appearance.topTextTone)
+    #expect(appearance.textTone == appearance.centerTextTone)
+    #expect(appearance.textTone == appearance.bottomTextTone)
+    #expect(appearance.centerProtectionOverlayOpacity >= 0.0)
+}
+
+@Test func adaptiveContrastAnalyzerHandlesWhiteGradientAndCheckerboard() {
+    let white = solidColorImage(width: 144, height: 90, red: 255, green: 255, blue: 255)
+    let gradient = patternedImage(width: 144, height: 90) { x, _ in
+        let value = UInt8((Double(x) / 143.0 * 255.0).rounded())
+        return (value, value, value)
+    }
+    let checkerboard = patternedImage(width: 144, height: 90) { x, y in
+        let value: UInt8 = ((x / 12) + (y / 12)).isMultiple(of: 2) ? 245 : 24
+        return (value, value, value)
+    }
+
+    let appearances = [
+        AdaptiveContrastAnalyzer.appearance(for: white),
+        AdaptiveContrastAnalyzer.appearance(for: gradient),
+        AdaptiveContrastAnalyzer.appearance(for: checkerboard),
+    ]
+
+    #expect(appearances[0].textTone == .dark)
+    for appearance in appearances {
+        #expect(appearance.textTone == appearance.topTextTone)
+        #expect(appearance.textTone == appearance.centerTextTone)
+        #expect(appearance.textTone == appearance.bottomTextTone)
+        #expect(appearance.topProtectionOverlayOpacity >= 0.0)
+        #expect(appearance.topProtectionOverlayOpacity <= 0.68)
+        #expect(appearance.centerProtectionOverlayOpacity >= 0.0)
+        #expect(appearance.centerProtectionOverlayOpacity <= 0.68)
+        #expect(appearance.bottomProtectionOverlayOpacity >= 0.0)
+        #expect(appearance.bottomProtectionOverlayOpacity <= 0.68)
+    }
+}
+
+@Test func adaptiveContrastAnalyzerCachesAndInvalidatesByContentSignature() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("adaptive-contrast-cache-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let imageURL = root.appendingPathComponent("wallpaper.png")
+    try pngData(for: solidColorImage(
+        width: 144,
+        height: 90,
+        red: 255,
+        green: 218,
+        blue: 226
+    )).write(to: imageURL, options: .atomic)
+
+    AdaptiveContrastAnalyzer.clearCache()
+    let first = await AdaptiveContrastAnalyzer.analyze(url: imageURL, scaleMode: .fill)
+    let second = await AdaptiveContrastAnalyzer.analyze(url: imageURL, scaleMode: .fill)
+    #expect(first?.cacheHit == false)
+    #expect(second?.cacheHit == true)
+    #expect(first?.sourceSignature == second?.sourceSignature)
+
+    try pngData(for: solidImage(width: 144, height: 90, value: 28))
+        .write(to: imageURL, options: .atomic)
+    let third = await AdaptiveContrastAnalyzer.analyze(url: imageURL, scaleMode: .fill)
+
+    #expect(third?.cacheHit == false)
+    #expect(third?.sourceSignature != first?.sourceSignature)
+    #expect(third?.appearance.textTone == .light)
 }
 
 @MainActor
-@Test func downloadedWallpaperAppliesImmediately() async throws {
+@Test func adaptiveGlassAppearanceDoesNotInheritToneFromPreviousWallpaper() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("adaptive-contrast-switch-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let darkURL = root.appendingPathComponent("dark.png")
+    let brightURL = root.appendingPathComponent("bright.png")
+    try pngData(for: solidImage(width: 144, height: 90, value: 28))
+        .write(to: darkURL, options: .atomic)
+    try pngData(for: solidImage(width: 144, height: 90, value: 248))
+        .write(to: brightURL, options: .atomic)
+
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        appSupportDirectoryURL: root
+    )
+
+    viewModel.selectLocalVideoForPreview(darkURL)
+    for _ in 0..<100 {
+        if viewModel.adaptiveGlassAppearance.textTone == .light { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    #expect(viewModel.adaptiveGlassAppearance.textTone == .light)
+
+    viewModel.selectLocalVideoForPreview(brightURL)
+
+    // The new source must start from the deterministic fallback immediately;
+    // it must not display the previous dark-wallpaper profile while analysis
+    // is still running.
+    #expect(viewModel.adaptiveGlassAppearance.textTone == .dark)
+
+    for _ in 0..<100 {
+        if viewModel.adaptiveGlassAppearance.textTone == .dark { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    #expect(viewModel.adaptiveGlassAppearance.textTone == .dark)
+}
+
+@Test func adaptiveContrastAnalyzerUsesSafeFallbackForUnreadableSource() async throws {
+    let url = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("adaptive-contrast-invalid-\(UUID().uuidString).mp4")
+    try Data("not a video".utf8).write(to: url, options: .atomic)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    #expect(await AdaptiveContrastAnalyzer.analyze(url: url, scaleMode: .fill) == nil)
+    let fallback = AppViewModel.adaptiveGlassAppearance(for: url, scaleMode: .fill)
+    #expect(fallback.textTone == .dark)
+    #expect(fallback.bottomProtectionOverlayOpacity > 0.5)
+}
+
+@Test func adaptiveAnalysisAcceptsThePreparedFileActuallyShownByPreview() {
+    let sourceURL = URL(fileURLWithPath: "/tmp/catalog-source.webm")
+    let preparedURL = URL(fileURLWithPath: "/tmp/prepared-preview.mp4")
+
+    #expect(AppViewModel.shouldAcceptAdaptiveGlassAnalysis(
+        requestedURL: preparedURL,
+        displayedPreviewURL: preparedURL,
+        selectedURL: sourceURL,
+        appliedURL: nil,
+        pendingURL: sourceURL
+    ))
+}
+
+@Test func adaptiveAnalysisRejectsAStaleSourceAfterPlayerReplacement() {
+    let oldURL = URL(fileURLWithPath: "/tmp/old-preview.mp4")
+    let newURL = URL(fileURLWithPath: "/tmp/new-preview.mp4")
+
+    #expect(!AppViewModel.shouldAcceptAdaptiveGlassAnalysis(
+        requestedURL: oldURL,
+        displayedPreviewURL: newURL,
+        selectedURL: oldURL,
+        appliedURL: oldURL,
+        pendingURL: nil
+    ))
+}
+
+@MainActor
+@Test func downloadedWallpaperStagesPreviewUntilExplicitStart() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.downloaded-immediate")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.downloaded-immediate")
@@ -378,8 +1006,21 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 
     viewModel.applyDownloadedCatalogWallpaper(wallpaper)
 
+    for _ in 0..<20 {
+        if viewModel.currentVideoURL == tempURL.standardizedFileURL {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(viewModel.currentVideoURL == tempURL.standardizedFileURL)
+    #expect(controller.lastConfiguredVideoURL == nil)
+    #expect(controller.startCallCount == 0)
+    #expect(!viewModel.isRunning)
+
+    viewModel.start()
     for _ in 0..<60 {
-        if controller.lastConfiguredVideoURL != nil && controller.startCallCount > 0 && viewModel.isRunning {
+        if controller.startCallCount == 1 && viewModel.isRunning {
             break
         }
         try? await Task.sleep(nanoseconds: 25_000_000)
@@ -388,6 +1029,42 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(controller.lastConfiguredVideoURL != nil)
     #expect(controller.startCallCount == 1)
     #expect(viewModel.isRunning)
+}
+
+@MainActor
+@Test func downloadedCatalogImageUsesCachedFileWithoutRedownload() async throws {
+    let controller = MockNativeWallpaperController()
+    let viewModel = AppViewModel(controller: controller)
+    let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("downloaded-catalog-image.jpg")
+    try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: tempURL, options: .atomic)
+    defer { try? FileManager.default.removeItem(at: tempURL) }
+
+    let wallpaper = DownloadedCatalogWallpaper(
+        id: "downloaded-catalog-image",
+        wallpaperID: "downloaded-catalog-image",
+        title: "Catalog Image Test",
+        category: "Scenic",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        localPreviewPath: nil,
+        sourcePageURL: nil,
+        localPath: tempURL.path,
+        downloadedAt: Date()
+    )
+
+    viewModel.applyDownloadedCatalogWallpaper(wallpaper)
+
+    for _ in 0..<20 {
+        if viewModel.currentVideoURL == tempURL.standardizedFileURL {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.startCallCount == 0)
+    #expect(controller.lastConfiguredVideoURL == nil)
+    #expect(viewModel.currentVideoURL == tempURL.standardizedFileURL)
 }
 
 @MainActor
@@ -556,7 +1233,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
-@Test func startIgnoresRequestsWhileWallpaperIsAlreadyRunning() async throws {
+@Test func downloadedPreviewStartsOnlyAfterExplicitStart() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.start-preview")!
     defaults.removePersistentDomain(forName: "AppViewModelTests.start-preview")
@@ -593,15 +1270,23 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 
     viewModel.applyDownloadedCatalogWallpaper(wallpaper)
 
-    for _ in 0..<60 {
-        if controller.lastConfiguredVideoURL != nil && controller.startCallCount == 1 && viewModel.isRunning {
+    for _ in 0..<20 {
+        if viewModel.currentVideoURL == tempURL.standardizedFileURL {
             break
         }
         try? await Task.sleep(nanoseconds: 25_000_000)
     }
 
+    #expect(controller.lastConfiguredVideoURL == nil)
+    #expect(controller.startCallCount == 0)
+
     viewModel.start()
-    try? await Task.sleep(nanoseconds: 100_000_000)
+    for _ in 0..<60 {
+        if controller.startCallCount == 1 && viewModel.isRunning {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
 
     #expect(controller.lastConfiguredVideoURL != nil)
     #expect(controller.startCallCount == 1)
@@ -638,6 +1323,7 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(viewModel.canStop == false)
 
     viewModel.start()
+    #expect(viewModel.canApplyLockScreenOnly == false)
     for _ in 0..<20 {
         if viewModel.isRunning {
             break
@@ -650,11 +1336,14 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(viewModel.isStartButtonHighlighted == false)
     #expect(viewModel.isStopButtonHighlighted == false)
     #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly == false)
     #expect(viewModel.canStop)
 
     viewModel.stop()
     for _ in 0..<20 {
-        if viewModel.isPlaybackPaused && viewModel.isRunning == false {
+        if viewModel.isPlaybackPaused,
+           viewModel.isRunning == false,
+           !viewModel.isLifecycleBusy {
             break
         }
         try? await Task.sleep(nanoseconds: 25_000_000)
@@ -664,8 +1353,326 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(viewModel.isPlaybackPaused)
     #expect(viewModel.isStartButtonHighlighted == false)
     #expect(viewModel.isStopButtonHighlighted)
-    #expect(viewModel.canStart)
+    #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly == false)
     #expect(viewModel.canStop == false)
+    #expect(viewModel.canTogglePlayback)
+    #expect(viewModel.playbackButtonTitle == "Play")
+    #expect(viewModel.playbackButtonSystemImage == "play.fill")
+
+    viewModel.togglePlayback()
+    for _ in 0..<20 {
+        if controller.resumeCallCount == 1,
+           viewModel.isPlaybackActive,
+           viewModel.canTogglePlayback {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.resumeCallCount == 1)
+    #expect(viewModel.isPlaybackPaused == false)
+    #expect(viewModel.isPlaybackActive)
+    #expect(viewModel.playbackButtonTitle == "Stop")
+    #expect(viewModel.playbackButtonSystemImage == "stop.circle")
+    #expect(viewModel.canTogglePlayback)
+}
+
+@MainActor
+@Test func playbackToggleKeepsPlayStateWhenResumeFails() async throws {
+    let controller = MockNativeWallpaperController()
+    let suiteName = "AppViewModelTests.toggle-resume-failure"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    let optimizationStore = VideoOptimizationStore(defaults: defaults)
+    optimizationStore.save(
+        VideoOptimizationSettings(
+            enabled: false,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: true,
+            forceSoftwareAV1Encode: false,
+            profile: .quality
+        )
+    )
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let viewModel = AppViewModel(
+        controller: controller,
+        optimizationStore: optimizationStore
+    )
+    let videoURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("toggle-resume-failure.mp4")
+    FileManager.default.createFile(atPath: videoURL.path, contents: Data(), attributes: nil)
+    defer { try? FileManager.default.removeItem(at: videoURL) }
+
+    viewModel.selectLocalVideoForPreview(videoURL)
+    viewModel.start()
+    for _ in 0..<80 {
+        if viewModel.isPlaybackActive && viewModel.canTogglePlayback { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+    viewModel.stop()
+    for _ in 0..<80 {
+        if viewModel.isPlaybackPaused && viewModel.canTogglePlayback { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    controller.resumeError = MockNativeWallpaperControllerError.resumeFailed
+    viewModel.togglePlayback()
+    for _ in 0..<80 {
+        if controller.resumeCallCount == 1 && !viewModel.isLifecycleBusy { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.resumeCallCount == 1)
+    #expect(viewModel.isPlaybackPaused)
+    #expect(viewModel.playbackButtonTitle == "Play")
+    #expect(viewModel.playbackButtonSystemImage == "play.fill")
+}
+
+@MainActor
+@Test func playbackToggleCoalescesRepeatedClicks() async throws {
+    let controller = MockNativeWallpaperController()
+    let suiteName = "AppViewModelTests.toggle-repeated-clicks"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    let optimizationStore = VideoOptimizationStore(defaults: defaults)
+    optimizationStore.save(
+        VideoOptimizationSettings(
+            enabled: false,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: true,
+            forceSoftwareAV1Encode: false,
+            profile: .quality
+        )
+    )
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let viewModel = AppViewModel(
+        controller: controller,
+        optimizationStore: optimizationStore
+    )
+    let videoURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("toggle-repeated-clicks.mp4")
+    FileManager.default.createFile(atPath: videoURL.path, contents: Data(), attributes: nil)
+    defer { try? FileManager.default.removeItem(at: videoURL) }
+
+    viewModel.selectLocalVideoForPreview(videoURL)
+    viewModel.start()
+    for _ in 0..<80 {
+        if viewModel.isPlaybackActive && viewModel.canTogglePlayback { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    viewModel.togglePlayback()
+    viewModel.togglePlayback()
+    for _ in 0..<80 {
+        if viewModel.isPlaybackPaused && viewModel.canTogglePlayback { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.stopCallCount == 1)
+    #expect(viewModel.isPlaybackPaused)
+}
+
+@MainActor
+@Test func lockScreenOnlyPlaybackToggleUsesPlayAfterStop() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.configuredVideoURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("lock-only-toggle.mp4")
+    controller.statusRunning = false
+    controller.statusPaused = true
+    controller.statusLockScreenOnly = true
+    controller.statusShowOnLockScreen = true
+    let viewModel = AppViewModel(controller: controller)
+
+    await viewModel.loadStatus()
+
+    #expect(viewModel.isLockScreenOnlyActive)
+    #expect(viewModel.isPlaybackPaused)
+    #expect(viewModel.playbackButtonTitle == "Play")
+    #expect(viewModel.playbackButtonSystemImage == "play.fill")
+    #expect(viewModel.canTogglePlayback)
+
+    viewModel.togglePlayback()
+    for _ in 0..<20 {
+        if controller.resumeCallCount == 1 && !viewModel.isPlaybackPaused {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.resumeCallCount == 1)
+    #expect(viewModel.isPlaybackPaused == false)
+    #expect(viewModel.playbackButtonTitle == "Stop")
+    #expect(viewModel.playbackButtonSystemImage == "stop.circle")
+}
+
+@MainActor
+@Test func staticWallpaperDoesNotEnablePlaybackToggle() async throws {
+    let controller = MockNativeWallpaperController()
+    let imageURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("toggle-static-wallpaper.png")
+    FileManager.default.createFile(atPath: imageURL.path, contents: Data(), attributes: nil)
+    defer { try? FileManager.default.removeItem(at: imageURL) }
+    controller.configuredVideoURL = imageURL
+    controller.statusRunning = true
+    controller.statusPaused = false
+
+    let viewModel = AppViewModel(controller: controller)
+    await viewModel.loadStatus()
+
+    #expect(viewModel.isPlaybackPaused == false)
+    #expect(viewModel.canTogglePlayback == false)
+    #expect(viewModel.playbackButtonTitle == "Stop")
+    #expect(viewModel.playbackButtonSystemImage == "stop.circle")
+}
+
+@MainActor
+@Test func lockButtonIsDisabledWhileDesktopWallpaperRunsOrLockScreenOnlyIsActive() async throws {
+    let controller = MockNativeWallpaperController()
+    let suiteName = "AppViewModelTests.mutually-exclusive-buttons"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    let optimizationStore = VideoOptimizationStore(defaults: defaults)
+    optimizationStore.save(
+        VideoOptimizationSettings(
+            enabled: false,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: true,
+            forceSoftwareAV1Encode: false,
+            profile: .quality
+        )
+    )
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let viewModel = AppViewModel(
+        controller: controller,
+        optimizationStore: optimizationStore
+    )
+    let sourceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("mutually-exclusive-buttons-\(UUID().uuidString).mp4")
+    FileManager.default.createFile(atPath: sourceURL.path, contents: Data(), attributes: nil)
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+    #expect(viewModel.canStart)
+    #expect(viewModel.canApplyLockScreenOnly)
+
+    viewModel.start()
+    for _ in 0..<40 {
+        if viewModel.isRunning { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(viewModel.isRunning)
+    #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly == false)
+
+    viewModel.stop()
+    for _ in 0..<40 {
+        if viewModel.isPlaybackPaused { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(viewModel.isPlaybackPaused)
+    #expect(viewModel.canStart == false)
+    #expect(viewModel.canApplyLockScreenOnly == false)
+
+    viewModel.applyLockScreenOnly()
+    try? await Task.sleep(nanoseconds: 100_000_000)
+
+    #expect(viewModel.isLockScreenOnlyActive == false)
+
+    viewModel.clearWallpaper()
+    for _ in 0..<40 {
+        if !viewModel.isPlaybackPaused,
+           !viewModel.isRunning,
+           !viewModel.isLifecycleBusy {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(viewModel.canStart)
+    #expect(viewModel.canApplyLockScreenOnly)
+}
+
+@MainActor
+@Test func lifecycleActionsPublishDistinctSuccessNotifications() async throws {
+    let controller = MockNativeWallpaperController()
+    let suiteName = "AppViewModelTests.lifecycle-success-notifications"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    let optimizationStore = VideoOptimizationStore(defaults: defaults)
+    optimizationStore.save(
+        VideoOptimizationSettings(
+            enabled: false,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: true,
+            forceSoftwareAV1Encode: false,
+            profile: .quality
+        )
+    )
+    let appSupportURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(
+            "lifecycle-success-app-support-\(UUID().uuidString)",
+            isDirectory: true
+        )
+    try FileManager.default.createDirectory(
+        at: appSupportURL,
+        withIntermediateDirectories: true
+    )
+    let viewModel = AppViewModel(
+        controller: controller,
+        optimizationStore: optimizationStore,
+        appSupportDirectoryURL: appSupportURL
+    )
+    let sourceURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(
+            "lifecycle-success-notifications-\(UUID().uuidString).mp4"
+        )
+    FileManager.default.createFile(
+        atPath: sourceURL.path,
+        contents: Data([0, 0, 0, 0])
+    )
+    defer {
+        try? FileManager.default.removeItem(at: sourceURL)
+        try? FileManager.default.removeItem(at: appSupportURL)
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+    viewModel.start()
+    for _ in 0..<40 {
+        if viewModel.successBannerMessage == "Wallpaper started." { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+    #expect(viewModel.successBannerMessage == "Wallpaper started.")
+
+    viewModel.stop()
+    for _ in 0..<40 {
+        if viewModel.successBannerMessage == "Wallpaper stopped." { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+    #expect(viewModel.successBannerMessage == "Wallpaper stopped.")
+
+    viewModel.clearWallpaper()
+    for _ in 0..<40 {
+        if viewModel.successBannerMessage == "Wallpaper removed." { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+    #expect(viewModel.successBannerMessage == "Wallpaper removed.")
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+    viewModel.applyLockScreenOnly()
+    for _ in 0..<40 {
+        if viewModel.successBannerMessage
+            == "Wallpaper started on Lock Screen." { break }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+    #expect(
+        viewModel.successBannerMessage
+            == "Wallpaper started on Lock Screen."
+    )
 }
 
 @MainActor
@@ -720,16 +1727,171 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
 }
 
 @MainActor
-@Test func enabledLockPreferenceWithoutVideoDoesNotSyncOnLoad() async {
+@Test func autostartWarningIsShownWhenLaunchAgentIsNotLoaded() async throws {
     let controller = MockNativeWallpaperController()
-    controller.statusShowOnLockScreen = true
+    controller.statusConfigAutostart = true
+    controller.statusAutostart = false
+    controller.statusAutostartPlistExists = true
+    controller.statusAutostartServiceLoaded = false
+    controller.statusAutostartServiceRunning = false
     let viewModel = AppViewModel(controller: controller)
 
     await viewModel.loadStatus()
 
-    #expect(controller.syncLockScreenCallCount == 0)
+    #expect(viewModel.autostartEnabled == false)
+    #expect(
+        viewModel.alertMessage
+            == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not loaded."
+    )
+}
+
+@MainActor
+@Test func autostartWarningIsShownWhenLaunchAgentIsNotRunning() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.statusConfigAutostart = true
+    controller.statusAutostart = false
+    controller.statusAutostartPlistExists = true
+    controller.statusAutostartServiceLoaded = true
+    controller.statusAutostartServiceRunning = false
+    let viewModel = AppViewModel(controller: controller)
+
+    await viewModel.loadStatus()
+
+    #expect(
+        viewModel.alertMessage
+            == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
+    )
+}
+
+@MainActor
+@Test func toggleAutostartDoesNotHideLaunchAgentWarning() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("autostart-warning-toggle-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let videoURL = root.appendingPathComponent("wallpaper.mp4")
+    try Data([1, 2, 3]).write(to: videoURL, options: .atomic)
+    let controller = MockNativeWallpaperController()
+    controller.statusConfigAutostart = true
+    controller.statusAutostart = false
+    controller.statusAutostartPlistExists = true
+    controller.statusAutostartServiceLoaded = true
+    controller.statusAutostartServiceRunning = false
+    let viewModel = AppViewModel(
+        controller: controller,
+        appSupportDirectoryURL: root,
+        previewStateURL: root.appendingPathComponent("preview.json")
+    )
+    viewModel.selectLocalVideoForPreview(videoURL)
+    viewModel.toggleAutostart(true)
+
+    for _ in 0..<40 {
+        if !viewModel.isBusy,
+           viewModel.alertMessage ==
+                "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
+        {
+            break
+        }
+        try await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(
+        viewModel.alertMessage
+            == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
+    )
+    #expect(
+        viewModel.statusMessage
+            == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
+    )
+}
+
+@MainActor
+@Test func activeLockScreenOnlyWallpaperKeepsStopAvailable() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.statusRunning = false
+    controller.statusPaused = false
+    controller.statusLockScreenOnly = true
+    controller.statusHealth = DaemonHealth(
+        available: true,
+        fresh: true,
+        suspicious: false,
+        reason: "ok"
+    )
+    let viewModel = AppViewModel(controller: controller)
+
+    await viewModel.loadStatus()
+
+    #expect(viewModel.isLockScreenOnlyActive)
+    #expect(viewModel.canStop)
+
+    viewModel.stop()
+    for _ in 0..<20 {
+        if controller.stopCallCount == 1,
+           viewModel.lifecycleState == .paused,
+           viewModel.statusMessage == "Lock Screen wallpaper paused." {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.stopCallCount == 1)
+    #expect(viewModel.isLockScreenOnlyActive)
+    #expect(viewModel.lifecycleState == .paused)
+    #expect(viewModel.statusMessage == "Lock Screen wallpaper paused.")
+}
+
+@MainActor
+@Test func lifecycleLatestRemoveWinsOverInFlightLock() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.lockDelay = 0.15
+    let defaults = UserDefaults(
+        suiteName: "AppViewModelTests.lifecycle-latest-remove"
+    )!
+    defaults.removePersistentDomain(
+        forName: "AppViewModelTests.lifecycle-latest-remove"
+    )
+    let optimizationStore = VideoOptimizationStore(defaults: defaults)
+    optimizationStore.save(
+        VideoOptimizationSettings(
+            enabled: false,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: true,
+            forceSoftwareAV1Encode: false,
+            profile: .quality
+        )
+    )
+    let viewModel = AppViewModel(
+        controller: controller,
+        optimizationStore: optimizationStore
+    )
+    let sourceURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lifecycle-latest-remove.mp4")
+    FileManager.default.createFile(
+        atPath: sourceURL.path,
+        contents: Data([0, 0, 0, 0])
+    )
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+    viewModel.applyLockScreenOnly()
+    try? await Task.sleep(nanoseconds: 25_000_000)
+    viewModel.clearWallpaper()
+
+    for _ in 0..<80 {
+        if controller.clearCallCount == 1,
+           viewModel.lifecycleState == .idle,
+           !viewModel.isLifecycleBusy {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(controller.lockCallCount <= 1)
+    #expect(controller.clearCallCount == 1)
+    #expect(controller.statusLockScreenOnly == false)
+    #expect(viewModel.lifecycleState == .idle)
     #expect(viewModel.alertMessage == nil)
-    #expect(viewModel.showOnLockScreenEnabled)
 }
 
 @MainActor
@@ -809,17 +1971,38 @@ private func solidImage(width: Int, height: Int, value: UInt8) -> CGImage {
     #expect(viewModel.canStop)
 }
 
-final class MockNativeWallpaperController: WallpaperControlling {
+private enum MockNativeWallpaperControllerError: Error {
+    case resumeFailed
+}
+
+final class MockNativeWallpaperController: WallpaperControlling, @unchecked Sendable {
+    var lockScreenCapabilities: PlatformCapabilities =
+        .modernMacOS26(isAvailable: true)
     var configuredVideoURL: URL?
     var lastConfiguredVideoURL: URL?
     var startCallCount = 0
+    var clearCallCount = 0
     var resumeCallCount = 0
+    var stopCallCount = 0
+    var resumeError: Error?
     var statusRunning = false
     var statusPaused: Bool?
     var statusHealth: DaemonHealth?
     var statusShowOnLockScreen = false
+    var statusLockScreenOnly = false
+    var statusConfigAutostart: Bool? = false
+    var statusAutostart: Bool? = false
+    var statusAutostartPlistExists: Bool?
+    var statusAutostartServiceLoaded: Bool?
+    var statusAutostartServiceRunning: Bool?
     var syncLockScreenCallCount = 0
+    var statusAfterSyncVideoURL: URL?
     var setVideoStatusOverride: ControlStatus?
+    var lockCallCount = 0
+    var lockDelay: TimeInterval = 0
+    var prepareLockScreenMediaCallCount = 0
+    var prepareLockScreenMediaCancellationCount = 0
+    var prepareLockScreenMediaDelay: UInt64 = 0
 
     func status() throws -> ControlStatus {
         statusPayload(running: statusRunning, paused: statusPaused, health: statusHealth)
@@ -833,12 +2016,17 @@ final class MockNativeWallpaperController: WallpaperControlling {
         }
         statusRunning = true
         statusPaused = false
+        statusLockScreenOnly = false
+        statusShowOnLockScreen = true
         statusHealth = nil
         return statusPayload(running: true, paused: false, health: nil)
     }
 
     func resume() throws -> ControlStatus {
         resumeCallCount += 1
+        if let resumeError {
+            throw resumeError
+        }
         statusRunning = true
         statusPaused = false
         statusHealth = nil
@@ -846,19 +2034,55 @@ final class MockNativeWallpaperController: WallpaperControlling {
     }
 
     func stop() throws -> ControlStatus {
+        stopCallCount += 1
         statusRunning = false
         statusPaused = true
         statusHealth = nil
         return statusPayload(running: false, paused: true, health: nil)
     }
 
-    func clearWallpaper() throws -> ControlStatus {
+    func clearWallpaper() async throws -> ControlStatus {
+        clearCallCount += 1
         statusRunning = false
         statusPaused = false
         configuredVideoURL = nil
         lastConfiguredVideoURL = nil
         statusHealth = nil
+        statusLockScreenOnly = false
         return statusPayload(running: false, paused: false, health: nil)
+    }
+
+    func installLockScreenOnly(videoURL: URL) throws -> ControlStatus {
+        lockCallCount += 1
+        if lockDelay > 0 {
+            Thread.sleep(forTimeInterval: lockDelay)
+        }
+        statusRunning = false
+        statusPaused = false
+        statusLockScreenOnly = true
+        configuredVideoURL = nil
+        statusHealth = DaemonHealth(
+            available: true,
+            fresh: true,
+            suspicious: false,
+            reason: "lock-screen-only"
+        )
+        return statusPayload(
+            running: false,
+            paused: false,
+            health: statusHealth
+        )
+    }
+
+    func prepareLockScreenMedia(videoURL: URL) async throws {
+        prepareLockScreenMediaCallCount += 1
+        guard prepareLockScreenMediaDelay > 0 else { return }
+        do {
+            try await Task.sleep(nanoseconds: prepareLockScreenMediaDelay)
+        } catch {
+            prepareLockScreenMediaCancellationCount += 1
+            throw error
+        }
     }
 
     func setVideo(_ url: URL) throws -> ControlStatus {
@@ -873,7 +2097,7 @@ final class MockNativeWallpaperController: WallpaperControlling {
         return statusPayload(running: false, paused: true, health: nil)
     }
 
-    func setSpeed(_ speed: Double) throws -> ControlStatus {
+    func setSpeed(_ speed: Double) async throws -> ControlStatus {
         try status()
     }
 
@@ -885,12 +2109,16 @@ final class MockNativeWallpaperController: WallpaperControlling {
         try status()
     }
 
-    func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus {
-        try status()
+    func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus {
+        statusShowOnLockScreen = enabled
+        return try status()
     }
 
     func syncLockScreenSaver() throws {
         syncLockScreenCallCount += 1
+        if let statusAfterSyncVideoURL {
+            configuredVideoURL = statusAfterSyncVideoURL
+        }
     }
 
     func beginLockScreenPreview() throws -> ControlStatus {
@@ -924,13 +2152,17 @@ final class MockNativeWallpaperController: WallpaperControlling {
                 video_path: configuredVideoURL?.path ?? "",
                 playback_speed: 1.0,
                 volume: 0.0,
-                autostart: false,
+                autostart: statusConfigAutostart,
                 show_on_lock_screen: statusShowOnLockScreen
             ),
             pid: running ? 1234 : nil,
-            autostart: false,
+            autostart: statusAutostart,
             paused: paused ?? !running,
-            health: health
+            health: health,
+            lock_screen_only: statusLockScreenOnly,
+            autostart_plist_exists: statusAutostartPlistExists,
+            autostart_service_loaded: statusAutostartServiceLoaded,
+            autostart_service_running: statusAutostartServiceRunning
         )
     }
 }

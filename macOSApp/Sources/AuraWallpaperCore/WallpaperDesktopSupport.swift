@@ -1,8 +1,18 @@
 import AppKit
+import CoreFoundation
 import Foundation
+
+internal struct DesktopImageTransitionOperations {
+    var applyToCurrentScreens: (URL) -> Bool
+    var currentScreensMatch: (URL) -> Bool
+    var readWallpaperStore: () -> Data?
+    var pause: (TimeInterval) -> Void
+    var setSystemWallpaperURL: ((URL) -> Bool)? = nil
+}
 
 public enum WallpaperDesktopSupport {
     private static let backupNames = ["wallpaper_backup.json", "wallpaper_backup_original.json"]
+    private static let lockScreenBackupName = "lock_screen_desktop_backup.json"
 
     @discardableResult
     public static func captureCurrentDesktopWallpaperBackup(
@@ -24,6 +34,71 @@ public enum WallpaperDesktopSupport {
             appSupportPath: appSupportPath,
             wallpapers: wallpapers
         )
+    }
+
+    /// Captures the Desktop image that must remain visible while the modern
+    /// shared Aerial route is active for Lock Screen only. This backup is
+    /// separate from the Start/Remove backup and is refreshed per install.
+    @discardableResult
+    public static func captureLockScreenDesktopWallpaperBackup(
+        appSupportPath: String
+    ) -> Bool {
+        let managedPath = managedWallpaperPath(appSupportPath: appSupportPath)
+        let aerialPath = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(
+                "Library/Application Support/com.apple.wallpaper/aerials",
+                isDirectory: true
+            )
+            .standardizedFileURL.path
+        var wallpapers: [String: String] = [:]
+
+        for screen in NSScreen.screens {
+            guard let url = NSWorkspace.shared.desktopImageURL(for: screen) else {
+                continue
+            }
+            let standardized = url.standardizedFileURL.path
+            guard !standardized.isEmpty,
+                  standardized != managedPath,
+                  !standardized.hasPrefix(aerialPath + "/")
+            else {
+                continue
+            }
+            wallpapers[screenIdentifier(screen)] = standardized
+        }
+
+        guard !wallpapers.isEmpty else { return false }
+        return saveWallpaperBackup(
+            appSupportPath: appSupportPath,
+            wallpapers: wallpapers,
+            fileNames: [lockScreenBackupName],
+            overwriteExisting: true
+        )
+    }
+
+    /// Returns one captured Desktop image for the lock-only runtime cover.
+    /// The cover is only used while the user is unlocked; it hides the
+    /// temporary shared Aerial Desktop choice that keeps repeated Lock Screen
+    /// sessions reliable.
+    public static func desktopBackupImageURL(
+        appSupportPath: String
+    ) -> URL? {
+        for fileNames in [[lockScreenBackupName], backupNames] {
+            guard let wallpapers = loadWallpaperBackup(
+                appSupportPath: appSupportPath,
+                fileNames: fileNames
+            ) else {
+                continue
+            }
+            let imageURLs = wallpapers.values.map { value in
+                URL(fileURLWithPath: value).standardizedFileURL
+            }
+            if let imageURL = imageURLs.first(where: { url in
+                FileManager.default.fileExists(atPath: url.path)
+            }) {
+                return imageURL
+            }
+        }
+        return nil
     }
 
     @discardableResult
@@ -88,11 +163,6 @@ public enum WallpaperDesktopSupport {
         let workspace = NSWorkspace.shared
         var appliedAny = false
         for screen in NSScreen.screens {
-            if workspace.desktopImageURL(for: screen)?
-                .standardizedFileURL.path == url.path {
-                appliedAny = true
-                continue
-            }
             if (try? workspace.setDesktopImageURL(
                 url,
                 for: screen,
@@ -104,10 +174,474 @@ public enum WallpaperDesktopSupport {
         return appliedAny
     }
 
+    /// Forces a real image-provider transition after the shared Aerial route
+    /// has been removed. Writing the target URL to Index.plist before calling
+    /// NSWorkspace can make the public setter a no-op, leaving WallpaperAgent
+    /// on its previously exported Aerial fallback. A temporary URL guarantees
+    /// that the final target is a distinct, system-owned transition.
     @discardableResult
-    public static func restoreFromBackupFiles(
-        appSupportPath: String
+    internal static func reactivateCurrentScreensAfterSharedRemove(
+        imagePath: String,
+        appSupportPath: String,
+        managedAssetID: String,
+        wallpaperStoreURL: URL,
+        operations suppliedOperations: DesktopImageTransitionOperations? = nil,
+        temporaryTransitionTimeout: TimeInterval = 0.35
     ) -> Bool {
+        let fileManager = FileManager.default
+        let targetURL = URL(fileURLWithPath: imagePath).standardizedFileURL
+        guard fileManager.fileExists(atPath: targetURL.path) else {
+            return false
+        }
+
+        let transitionDirectoryURL = URL(
+            fileURLWithPath: appSupportPath,
+            isDirectory: true
+        ).appendingPathComponent(
+            ".desktop-restore-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        do {
+            try fileManager.createDirectory(
+                at: transitionDirectoryURL,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            return false
+        }
+        var temporaryTransitionAttempted = false
+        var finalTransitionConfirmed = false
+        defer {
+            // Once macOS may have accepted the temporary route, its backing
+            // file has to survive every failed attempt. The install journal
+            // and the temporary image then remain available for recovery.
+            if !temporaryTransitionAttempted || finalTransitionConfirmed {
+                try? fileManager.removeItem(at: transitionDirectoryURL)
+            }
+        }
+
+        let fileExtension = targetURL.pathExtension
+        let temporaryName = fileExtension.isEmpty
+            ? "wallpaper-transition"
+            : "wallpaper-transition.\(fileExtension)"
+        let temporaryURL = transitionDirectoryURL
+            .appendingPathComponent(temporaryName)
+        do {
+            // A hard link has a different path but the same inode. Wallpaper
+            // Agent can deduplicate that as the already-selected image and
+            // skip the provider transition. A real copy gives it a distinct
+            // file identity as well as a distinct URL.
+            try fileManager.copyItem(at: targetURL, to: temporaryURL)
+        } catch {
+            return false
+        }
+
+        let operations = suppliedOperations ?? productionTransitionOperations(
+            wallpaperStoreURL: wallpaperStoreURL
+        )
+        let restorationURL: URL
+        if suppliedOperations == nil {
+            guard let durableURL = durableRestorationURL(
+                for: targetURL,
+                appSupportPath: appSupportPath
+            ) else {
+                return false
+            }
+            restorationURL = durableURL
+            guard operations.setSystemWallpaperURL?(restorationURL) ?? true
+            else {
+                return false
+            }
+        } else {
+            restorationURL = targetURL
+        }
+        guard let storeBeforeTemporary = operations.readWallpaperStore()
+        else {
+            return false
+        }
+        temporaryTransitionAttempted = true
+        guard operations.applyToCurrentScreens(temporaryURL) else {
+            return false
+        }
+        waitForTemporaryDesktopImageTransition(
+            to: temporaryURL,
+            after: storeBeforeTemporary,
+            operations: operations,
+            timeout: temporaryTransitionTimeout
+        )
+
+        // A delayed temporary export must never prevent the real target from
+        // being sent. The full journal commit performed by the installer is
+        // the persistent source of truth; this transition only establishes a
+        // live image provider for the active Desktop.
+        guard let storeBeforeTarget = operations.readWallpaperStore(),
+              operations.applyToCurrentScreens(restorationURL)
+        else {
+            return false
+        }
+        finalTransitionConfirmed = waitForDesktopImageTransition(
+            to: restorationURL,
+            after: storeBeforeTarget,
+            managedAssetID: managedAssetID,
+            operations: operations
+        )
+        return finalTransitionConfirmed
+    }
+
+    private static func productionTransitionOperations(
+        wallpaperStoreURL: URL
+    ) -> DesktopImageTransitionOperations {
+        DesktopImageTransitionOperations(
+            applyToCurrentScreens: { url in
+                let screens = NSScreen.screens
+                guard !screens.isEmpty else { return false }
+                var appliedToEveryScreen = true
+                for screen in screens {
+                    do {
+                        try NSWorkspace.shared.setDesktopImageURL(
+                            url,
+                            for: screen,
+                            options: [:]
+                        )
+                    } catch {
+                        appliedToEveryScreen = false
+                    }
+                }
+                return appliedToEveryScreen
+            },
+            currentScreensMatch: { url in
+                currentScreensMatch(path: url.path)
+            },
+            readWallpaperStore: {
+                try? Data(contentsOf: wallpaperStoreURL)
+            },
+            pause: { interval in
+                Thread.sleep(forTimeInterval: interval)
+            },
+            setSystemWallpaperURL: { url in
+                setTransitionSystemWallpaperURL(url)
+            }
+        )
+    }
+
+    private static func durableRestorationURL(
+        for targetURL: URL,
+        appSupportPath: String
+    ) -> URL? {
+        let fileManager = FileManager.default
+        let auraFlowDirectoryURL = URL(
+            fileURLWithPath: appSupportPath,
+            isDirectory: true
+        ).deletingLastPathComponent().standardizedFileURL
+        let targetPath = targetURL.standardizedFileURL.path
+        let rootPath = auraFlowDirectoryURL.path
+        if targetPath == rootPath || targetPath.hasPrefix(rootPath + "/") {
+            // Catalog/imported wallpapers already live in an application-owned
+            // directory that WallpaperAgent can read without a Downloads or
+            // Desktop security scope.
+            return targetURL
+        }
+
+        let restoredDirectoryURL = auraFlowDirectoryURL
+            .appendingPathComponent("Restored Wallpapers", isDirectory: true)
+        do {
+            try fileManager.createDirectory(
+                at: restoredDirectoryURL,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            return nil
+        }
+
+        let resourceValues = try? targetURL.resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey]
+        )
+        let fingerprint = [
+            targetPath,
+            String(resourceValues?.fileSize ?? 0),
+            String(
+                resourceValues?.contentModificationDate?.timeIntervalSince1970
+                    ?? 0
+            ),
+        ].joined(separator: "|")
+        let token = stableRestoreToken(fingerprint)
+        let fileExtension = targetURL.pathExtension.lowercased()
+        let fileName = fileExtension.isEmpty
+            ? "desktop-\(token)"
+            : "desktop-\(token).\(fileExtension)"
+        let destinationURL = restoredDirectoryURL
+            .appendingPathComponent(fileName)
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            return destinationURL
+        }
+
+        let accessedSecurityScopedResource =
+            targetURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessedSecurityScopedResource {
+                targetURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        do {
+            try fileManager.copyItem(at: targetURL, to: destinationURL)
+            return destinationURL
+        } catch {
+            try? fileManager.removeItem(at: destinationURL)
+            return nil
+        }
+    }
+
+    private static func stableRestoreToken(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
+    }
+
+    private static func setTransitionSystemWallpaperURL(_ url: URL) -> Bool {
+        let applicationID = WallpaperPlatformConstants.wallpaperApplicationID
+            as CFString
+        let preferenceKey = WallpaperPlatformConstants.systemWallpaperURLKey
+            as CFString
+        let value = url.standardizedFileURL.absoluteString as CFPropertyList
+        CFPreferencesSetValue(
+            preferenceKey,
+            value,
+            applicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesAnyHost
+        )
+        CFPreferencesSetValue(
+            preferenceKey,
+            value,
+            applicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesCurrentHost
+        )
+        return CFPreferencesSynchronize(
+            applicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesAnyHost
+        ) && CFPreferencesSynchronize(
+            applicationID,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesCurrentHost
+        )
+    }
+
+    private static func waitForTemporaryDesktopImageTransition(
+        to expectedURL: URL,
+        after previousStoreData: Data,
+        operations: DesktopImageTransitionOperations,
+        timeout: TimeInterval
+    ) {
+        // The temporary URL only prevents WallpaperAgent from deduplicating
+        // the final selection. It is never the committed result, so waiting
+        // for the full final-route invariant here wastes four seconds on
+        // macOS versions that do not persist this short-lived route in
+        // Index.plist. A brief acknowledgement window is enough to keep the
+        // two NSWorkspace commands from being coalesced.
+        let pollInterval: TimeInterval = 0.05
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        repeat {
+            if operations.currentScreensMatch(expectedURL) {
+                return
+            }
+            if let storeData = operations.readWallpaperStore(),
+               storeData != previousStoreData,
+               latestDesktopImageTimestamp(
+                   in: storeData,
+                   matching: expectedURL
+               ) != nil {
+                return
+            }
+            operations.pause(pollInterval)
+        } while Date() < deadline
+    }
+
+    private static func waitForDesktopImageTransition(
+        to expectedURL: URL,
+        after previousStoreData: Data,
+        managedAssetID: String,
+        operations: DesktopImageTransitionOperations
+    ) -> Bool {
+        // WallpaperAgent exports an image asynchronously. Require a short
+        // stable window, then let the installer's complete Files-backed
+        // journal become the final persistent route without another restart.
+        let timeout: TimeInterval = 4.0
+        let pollInterval: TimeInterval = 0.1
+        let deadline = Date().addingTimeInterval(timeout)
+        var stableSamples = 0
+        let previousLastSet = latestDesktopImageTimestamp(
+            in: previousStoreData,
+            matching: expectedURL
+        )
+
+        repeat {
+            if let storeData = operations.readWallpaperStore(),
+               storeData != previousStoreData,
+               let currentLastSet = latestDesktopImageTimestamp(
+                   in: storeData,
+                   matching: expectedURL
+               ),
+               previousLastSet.map({ currentLastSet > $0 }) ?? true,
+               !wallpaperStoreContainsManagedDesktop(
+                   storeData,
+                   managedAssetID: managedAssetID
+               ),
+               operations.currentScreensMatch(expectedURL) {
+                stableSamples += 1
+                if stableSamples >= 3 {
+                    return true
+                }
+            } else {
+                stableSamples = 0
+            }
+            operations.pause(pollInterval)
+        } while Date() < deadline
+
+        return false
+    }
+
+    private static func latestDesktopImageTimestamp(
+        in data: Data,
+        matching expectedURL: URL
+    ) -> Date? {
+        guard let root = try? PropertyListSerialization.propertyList(
+            from: data,
+            options: [],
+            format: nil
+        ) else {
+            return nil
+        }
+        let expectedPath = expectedURL.standardizedFileURL.path
+        var latestTimestamp: Date?
+        _ = wallpaperStoreContainsMode(root) { mode in
+            guard let content = mode["Content"] as? [String: Any],
+                  let choices = content["Choices"] as? [[String: Any]]
+            else {
+                return false
+            }
+            let matches = choices.contains { choice in
+                guard choice["Provider"] as? String
+                        == WallpaperPlatformConstants.imageProviderID
+                else {
+                    return false
+                }
+                return wallpaperImageURLs(in: choice).contains {
+                    $0.standardizedFileURL.path == expectedPath
+                }
+            }
+            guard matches else { return false }
+            let timestamp = [mode["LastSet"], mode["LastUse"]]
+                .compactMap { $0 as? Date }
+                .max() ?? .distantPast
+            latestTimestamp = max(latestTimestamp ?? .distantPast, timestamp)
+            return true
+        }
+        return latestTimestamp
+    }
+
+    private static func wallpaperStoreContainsManagedDesktop(
+        _ data: Data,
+        managedAssetID: String
+    ) -> Bool {
+        guard let root = try? PropertyListSerialization.propertyList(
+            from: data,
+            options: [],
+            format: nil
+        ) else {
+            return true
+        }
+        return wallpaperStoreContainsMode(root) { mode in
+            containsManagedWallpaperReference(mode)
+                || wallpaperModeSelectsAerial(
+                    mode,
+                    assetID: managedAssetID
+                )
+        }
+    }
+
+    private static func wallpaperModeSelectsAerial(
+        _ mode: [String: Any],
+        assetID: String
+    ) -> Bool {
+        guard let content = mode["Content"] as? [String: Any],
+              let choices = content["Choices"] as? [[String: Any]]
+        else {
+            return false
+        }
+        return choices.contains { choice in
+            guard choice["Provider"] as? String
+                    == WallpaperPlatformConstants.aerialProviderID,
+                  let configurationData = choice["Configuration"] as? Data,
+                  let configuration = try? PropertyListSerialization
+                    .propertyList(
+                        from: configurationData,
+                        options: [],
+                        format: nil
+                    ) as? [String: Any]
+            else {
+                return false
+            }
+            return configuration["assetID"] as? String == assetID
+        }
+    }
+
+    private static func wallpaperStoreContainsMode(
+        _ value: Any,
+        matching predicate: ([String: Any]) -> Bool
+    ) -> Bool {
+        if let dictionary = value as? [String: Any] {
+            for key in ["Desktop", "Linked"] {
+                if let mode = dictionary[key] as? [String: Any],
+                   predicate(mode) {
+                    return true
+                }
+            }
+            return dictionary.values.contains {
+                wallpaperStoreContainsMode($0, matching: predicate)
+            }
+        }
+        if let array = value as? [Any] {
+            return array.contains {
+                wallpaperStoreContainsMode($0, matching: predicate)
+            }
+        }
+        return false
+    }
+
+    private static func wallpaperImageURLs(
+        in choice: [String: Any]
+    ) -> [URL] {
+        var values = (choice["Files"] as? [[String: Any]])?
+            .compactMap { $0["relative"] as? String } ?? []
+        if let configurationData = choice["Configuration"] as? Data,
+           let configuration = (
+               try? PropertyListSerialization.propertyList(
+                   from: configurationData,
+                   options: [],
+                   format: nil
+               )
+           ) as? [String: Any],
+           let url = configuration["url"] as? [String: Any],
+           let relative = url["relative"] as? String {
+            values.append(relative)
+        }
+        return values.compactMap { value in
+            if let url = URL(string: value), url.isFileURL {
+                return url
+            }
+            return URL(fileURLWithPath: value)
+        }
+    }
+
+    @discardableResult
+    public static func restoreFromBackupFilesResult(
+        appSupportPath: String
+    ) -> WallpaperRestoreStatus {
         // The modern lock-screen installer restores the exact binary
         // Index.plist, including distinct wallpapers per Space and display.
         // If that restoration is already clean, do not flatten it through the
@@ -116,10 +650,14 @@ public enum WallpaperDesktopSupport {
            wallpaperStoreHasNoManagedDesktopReferences(),
            !modernLockScreenRecoveryStateExists() {
             removeWallpaperBackupFiles(appSupportPath: appSupportPath)
-            return true
+            return .notNeeded
         }
 
-        guard let wallpapers = loadWallpaperBackup(appSupportPath: appSupportPath) else { return false }
+        guard let wallpapers = loadWallpaperBackup(appSupportPath: appSupportPath) else {
+            return hasWallpaperBackupFiles(appSupportPath: appSupportPath)
+                ? .failed
+                : .notNeeded
+        }
         let fallbackPath = wallpapers.values.first
         let workspace = NSWorkspace.shared
         var appliedAny = false
@@ -140,13 +678,13 @@ public enum WallpaperDesktopSupport {
         }
 
         guard appliedAny, let path = appliedPathForAllDesktops else {
-            return false
+            return .failed
         }
         guard applyToAllDesktops(imagePath: path) else {
-            return false
+            return .failed
         }
         guard repairWallpaperStoreForRestore(imagePath: path) else {
-            return false
+            return .failed
         }
 
         // On recent macOS versions WallpaperAgent may report the restored URL
@@ -165,7 +703,7 @@ public enum WallpaperDesktopSupport {
         // overwrite `Files` again, which makes WallpaperImageExtension render
         // black on its next launch.
         guard repairWallpaperStoreForRestore(imagePath: path) else {
-            return false
+            return .failed
         }
         refreshDesktopPresentation()
         Thread.sleep(forTimeInterval: 0.2)
@@ -173,10 +711,36 @@ public enum WallpaperDesktopSupport {
               wallpaperStoreHasNoManagedDesktopReferences(),
               wallpaperStoreImageDescriptorsAreValid()
         else {
-            return false
+            return .failed
         }
         removeWallpaperBackupFiles(appSupportPath: appSupportPath)
-        return true
+        return .restored
+    }
+
+    @discardableResult
+    public static func restoreFromBackupFiles(
+        appSupportPath: String
+    ) -> Bool {
+        restoreFromBackupFilesResult(appSupportPath: appSupportPath) != .failed
+    }
+
+    public static func hasWallpaperBackupFiles(appSupportPath: String) -> Bool {
+        backupNames.contains {
+            FileManager.default.fileExists(
+                atPath: URL(fileURLWithPath: appSupportPath)
+                    .appendingPathComponent($0)
+                    .path
+            )
+        }
+    }
+
+    /// Deletes legacy Desktop snapshots without applying them. Lock-screen-
+    /// only mode never owns the Desktop, so its Remove path must preserve the
+    /// user's current wallpaper instead of restoring a pre-Aura snapshot.
+    public static func discardWallpaperBackupFiles(
+        appSupportPath: String
+    ) {
+        removeWallpaperBackupFiles(appSupportPath: appSupportPath)
     }
 
     /// Recovers a wallpaper store left by an older or interrupted AuraFlow
@@ -226,12 +790,9 @@ public enum WallpaperDesktopSupport {
             }
         }
 
-        let storeURL = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Application Support/com.apple.wallpaper/Store",
-                isDirectory: true
-            )
-            .appendingPathComponent("Index.plist")
+        let storeURL = WallpaperPlatformConstants.wallpaperStoreURL(
+            homeURL: fileManager.homeDirectoryForCurrentUser
+        )
         if let data = try? Data(contentsOf: storeURL),
            let root = try? PropertyListSerialization.propertyList(
                 from: data,
@@ -314,9 +875,12 @@ public enum WallpaperDesktopSupport {
         return url
     }
 
-    private static func loadWallpaperBackup(appSupportPath: String) -> [String: String]? {
+    private static func loadWallpaperBackup(
+        appSupportPath: String,
+        fileNames: [String] = backupNames
+    ) -> [String: String]? {
         let managedPath = managedWallpaperPath(appSupportPath: appSupportPath)
-        for fileName in backupNames {
+        for fileName in fileNames {
             let path = (appSupportPath as NSString).appendingPathComponent(fileName)
             guard
                 let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
@@ -343,8 +907,29 @@ public enum WallpaperDesktopSupport {
     }
 
     @discardableResult
-    public static func saveWallpaperBackup(appSupportPath: String, wallpapers: [String: String]) -> Bool {
-        if loadWallpaperBackup(appSupportPath: appSupportPath) != nil {
+    public static func saveWallpaperBackup(
+        appSupportPath: String,
+        wallpapers: [String: String]
+    ) -> Bool {
+        saveWallpaperBackup(
+            appSupportPath: appSupportPath,
+            wallpapers: wallpapers,
+            fileNames: backupNames,
+            overwriteExisting: false
+        )
+    }
+
+    private static func saveWallpaperBackup(
+        appSupportPath: String,
+        wallpapers: [String: String],
+        fileNames: [String],
+        overwriteExisting: Bool
+    ) -> Bool {
+        if !overwriteExisting,
+           loadWallpaperBackup(
+               appSupportPath: appSupportPath,
+               fileNames: fileNames
+           ) != nil {
             return true
         }
         let managedPath = managedWallpaperPath(appSupportPath: appSupportPath)
@@ -362,7 +947,7 @@ public enum WallpaperDesktopSupport {
                 withIntermediateDirectories: true
             )
             let data = try JSONSerialization.data(withJSONObject: sanitized, options: [.prettyPrinted, .sortedKeys])
-            for fileName in backupNames {
+            for fileName in fileNames {
                 let path = (appSupportPath as NSString).appendingPathComponent(fileName)
                 try data.write(to: URL(fileURLWithPath: path), options: .atomic)
             }
@@ -441,12 +1026,9 @@ public enum WallpaperDesktopSupport {
         imagePath: String
     ) -> Bool {
         let fileManager = FileManager.default
-        let storeURL = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Application Support/com.apple.wallpaper/Store",
-                isDirectory: true
-            )
-            .appendingPathComponent("Index.plist")
+        let storeURL = WallpaperPlatformConstants.wallpaperStoreURL(
+            homeURL: fileManager.homeDirectoryForCurrentUser
+        )
         guard let data = try? Data(contentsOf: storeURL),
               var root = (
                 try? PropertyListSerialization.propertyList(
@@ -530,12 +1112,9 @@ public enum WallpaperDesktopSupport {
     }
 
     private static func wallpaperStoreHasNoManagedDesktopReferences() -> Bool {
-        let storeURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Application Support/com.apple.wallpaper/Store",
-                isDirectory: true
-            )
-            .appendingPathComponent("Index.plist")
+        let storeURL = WallpaperPlatformConstants.wallpaperStoreURL(
+            homeURL: FileManager.default.homeDirectoryForCurrentUser
+        )
         guard let data = try? Data(contentsOf: storeURL),
               let root = try? PropertyListSerialization.propertyList(
                 from: data,
@@ -570,12 +1149,9 @@ public enum WallpaperDesktopSupport {
     }
 
     private static func wallpaperStoreImageDescriptorsAreValid() -> Bool {
-        let storeURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Application Support/com.apple.wallpaper/Store",
-                isDirectory: true
-            )
-            .appendingPathComponent("Index.plist")
+        let storeURL = WallpaperPlatformConstants.wallpaperStoreURL(
+            homeURL: FileManager.default.homeDirectoryForCurrentUser
+        )
         guard let data = try? Data(contentsOf: storeURL),
               let root = try? PropertyListSerialization.propertyList(
                 from: data,
@@ -591,7 +1167,7 @@ public enum WallpaperDesktopSupport {
     private static func imageDescriptorsAreValid(in value: Any) -> Bool {
         if let dictionary = value as? [String: Any] {
             if dictionary["Provider"] as? String
-                == "com.apple.wallpaper.choice.image" {
+                == WallpaperPlatformConstants.imageProviderID {
                 guard let files = dictionary["Files"] as? [Any],
                       !files.isEmpty
                 else {
@@ -612,9 +1188,7 @@ public enum WallpaperDesktopSupport {
 
     private static func containsManagedWallpaperReference(_ value: Any) -> Bool {
         if let string = value as? String {
-            let lowered = string.lowercased()
-            return lowered.contains("auraflow")
-                || lowered.contains("last_frame")
+            return isManagedWallpaperReferencePath(string)
         }
         if let data = value as? Data,
            let propertyList = try? PropertyListSerialization.propertyList(
@@ -636,6 +1210,28 @@ public enum WallpaperDesktopSupport {
             )
         }
         return false
+    }
+
+    private static func isManagedWallpaperReferencePath(_ value: String) -> Bool {
+        let path: String
+        if let url = URL(string: value), url.isFileURL {
+            path = url.path
+        } else {
+            path = value
+        }
+        let components = URL(fileURLWithPath: path)
+            .standardizedFileURL
+            .path
+            .lowercased()
+            .split(separator: "/")
+            .map(String.init)
+        return components.contains { component in
+            component == "last_frame.png"
+                || component.hasPrefix("last_frame_")
+                    && component.hasSuffix(".png")
+                || component == "auraflowlockscreen"
+                || component == "auraflowlockscreen.saver"
+        }
     }
 
     private static func imageWallpaperStoreMode(
@@ -663,7 +1259,7 @@ public enum WallpaperDesktopSupport {
             "LastUse": date,
             "Content": [
                 "Choices": [[
-                    "Provider": "com.apple.wallpaper.choice.image",
+                    "Provider": WallpaperPlatformConstants.imageProviderID,
                     "Files": [encodedURL],
                     "Configuration": configurationData,
                 ]],
@@ -679,7 +1275,8 @@ public enum WallpaperDesktopSupport {
         let configuration: [String: Any] = [
             "module": [
                 "relative":
-                    "file:///System/Library/ExtensionKit/Extensions/Ventura.appex",
+                    URL(fileURLWithPath: WallpaperPlatformConstants.fallbackScreenSaverPath)
+                        .absoluteString,
             ],
         ]
         let configurationData = (
@@ -695,7 +1292,7 @@ public enum WallpaperDesktopSupport {
             "Content": [
                 "Choices": [[
                     "Provider":
-                        "com.apple.wallpaper.choice.screen-saver",
+                        WallpaperPlatformConstants.screenSaverProviderID,
                     "Files": [],
                     "Configuration": configurationData,
                 ]],
@@ -917,7 +1514,7 @@ public enum WallpaperDesktopSupport {
     private static func restartWallpaperAgent() {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-        process.arguments = ["WallpaperAgent"]
+        process.arguments = [WallpaperPlatformConstants.wallpaperAgentProcessName]
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         do {
@@ -931,7 +1528,7 @@ public enum WallpaperDesktopSupport {
     private static func removeWallpaperBackupFiles(
         appSupportPath: String
     ) {
-        for fileName in backupNames {
+        for fileName in backupNames + [lockScreenBackupName] {
             let url = URL(
                 fileURLWithPath: appSupportPath,
                 isDirectory: true

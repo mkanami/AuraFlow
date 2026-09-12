@@ -1,0 +1,491 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_live_catalog_smoke:
+        description: Run live catalog and browser download smoke tests
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  swift-test:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          selected_record="$({
+            for candidate in /Applications/Xcode*.app; do
+              developer_dir="$candidate/Contents/Developer"
+              [[ -d "$developer_dir" ]] || continue
+              testing_module="$developer_dir/Platforms/MacOSX.platform/Developer/Library/Frameworks/Testing.framework/Modules/Testing.swiftmodule"
+              if [[ -d "$testing_module" ]]; then
+                version="$(DEVELOPER_DIR="$developer_dir" xcodebuild -version | awk '/^Xcode / { print $2; exit }')"
+                printf '%s\t%s\n' "$version" "$candidate"
+              fi
+            done
+          } | sort -nr | head -n 1)"
+          selected_app="${selected_record#*$'\t'}"
+          if [[ -z "$selected_record" || ! -d "$selected_app/Contents/Developer" ]]; then
+            echo "::error::No installed Xcode toolchain provides the Swift Testing module" >&2
+            exit 1
+          fi
+          developer_dir="$selected_app/Contents/Developer"
+          echo "DEVELOPER_DIR=$developer_dir" >> "${GITHUB_ENV}"
+          DEVELOPER_DIR="$developer_dir" xcodebuild -version
+          DEVELOPER_DIR="$developer_dir" xcrun swift --version
+
+      - name: Run Swift tests
+        working-directory: macOSApp
+        run: swift test
+
+      - name: Build portable release targets
+        working-directory: macOSApp
+        run: |
+          swift build -c release --product WallpaperControlApp
+          swift build -c release --product AuraWallpaperAgent
+
+      - name: Resolve release binary path
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          bin_path="$(swift build -c release --show-bin-path)"
+          if [[ ! -x "$bin_path/WallpaperControlApp" ]]; then
+            app_binary="$(find .build -type f -path '*/release/WallpaperControlApp' -perm -111 -print -quit)"
+            test -n "$app_binary"
+            bin_path="$(dirname "$app_binary")"
+          fi
+          echo "AURAFLOW_RELEASE_BIN=$bin_path" >> "$GITHUB_ENV"
+
+      - name: Verify private framework isolation
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          python3 ../.github/scripts/verify_macos_targets.py \
+            --package-directory . \
+            --source-root Sources/AuraWallpaperCore \
+            --source-root Sources/WallpaperControlApp \
+            --source-root Sources/AuraWallpaperAgent \
+            --binary "WallpaperControlApp=$AURAFLOW_RELEASE_BIN/WallpaperControlApp" \
+            --binary "AuraWallpaperAgent=$AURAFLOW_RELEASE_BIN/AuraWallpaperAgent"
+
+      - name: Build native bridge when private framework is available
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+          if [[ "$macos_major" =~ ^[0-9]+$ && "$macos_major" -ge 26 \
+                && -e /System/Library/PrivateFrameworks/Wallpaper.framework/Wallpaper \
+                && -e /System/Library/PrivateFrameworks/WallpaperTypes.framework/WallpaperTypes ]]; then
+            swift build -c release --product AuraWallpaperNativeBridge
+            test -x "$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge"
+          else
+            echo "Skipping native bridge build: macOS 26 and both private frameworks are required."
+          fi
+
+      - name: Stage and ad-hoc sign release app bundle
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          bundle_path="$RUNNER_TEMP/AuraFlow.app"
+          mkdir -p "$bundle_path/Contents/MacOS" "$bundle_path/Contents/Resources"
+          cp "$AURAFLOW_RELEASE_BIN/WallpaperControlApp" "$bundle_path/Contents/MacOS/WallpaperControlApp"
+          cp "$AURAFLOW_RELEASE_BIN/AuraWallpaperAgent" "$bundle_path/Contents/MacOS/AuraWallpaperAgent"
+          if [[ -x "$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge" ]]; then
+            cp "$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge" "$bundle_path/Contents/MacOS/AuraWallpaperNativeBridge"
+          fi
+          cat > "$bundle_path/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>WallpaperControlApp</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.andrijvergeles.auraflow.ci</string>
+            <key>CFBundleName</key>
+            <string>AuraFlow</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>13.0</string>
+            <key>NSPrincipalClass</key>
+            <string>NSApplication</string>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$bundle_path/Contents/Info.plist"
+          find "$bundle_path/Contents/MacOS" -type f -perm -111 -exec codesign --force --sign - {} \;
+          codesign --force --sign - "$bundle_path"
+          codesign --verify --deep --strict "$bundle_path"
+
+
+  deployment-target-macos13:
+    name: Portable targets with macOS 13 deployment target
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          selected_app="$(ls -td /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+          if [[ -n "$selected_app" && -d "$selected_app/Contents/Developer" ]]; then
+            echo "DEVELOPER_DIR=$selected_app/Contents/Developer" >> "${GITHUB_ENV}"
+          fi
+          sw_vers -productVersion
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+
+      - name: Verify package minimum platform
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          package = json.loads(subprocess.check_output(["swift", "package", "dump-package"], text=True))
+          platforms = {
+              entry["platformName"]: entry["version"]
+              for entry in package.get("platforms", [])
+          }
+          assert platforms.get("macos") == "13.0", platforms
+          print(f"SwiftPM macOS platform: {platforms['macos']}")
+          PY
+
+      - name: Build portable production targets for macOS 13
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          swift build -c release --target AuraWallpaperCore
+          swift build -c release --product WallpaperControlApp
+          swift build -c release --product AuraWallpaperAgent
+
+      - name: Verify deployment target and private framework isolation
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          bin_path="$(swift build -c release --show-bin-path)"
+          test -x "$bin_path/WallpaperControlApp"
+          test -x "$bin_path/AuraWallpaperAgent"
+          python3 ../.github/scripts/verify_macos_targets.py \
+            --package-directory . \
+            --source-root Sources/AuraWallpaperCore \
+            --source-root Sources/WallpaperControlApp \
+            --source-root Sources/AuraWallpaperAgent \
+            --binary "WallpaperControlApp=$bin_path/WallpaperControlApp" \
+            --binary "AuraWallpaperAgent=$bin_path/AuraWallpaperAgent" \
+            --deployment-major 13
+
+      - name: Build and verify legacy Screen Saver for macOS 13
+        shell: bash
+        run: |
+          legacy_output="$RUNNER_TEMP/AuraFlow-legacy-screen-saver"
+          MACOSX_DEPLOYMENT_TARGET=13.0 \
+            BUILD_UNIVERSAL=0 \
+            REQUIRE_UNIVERSAL=0 \
+            ./scripts/build_screensaver.sh "$legacy_output"
+          legacy_binary="$legacy_output/AuraFlowLockScreen.saver/Contents/MacOS/AuraFlowLockScreen"
+          test -x "$legacy_binary"
+          python3 .github/scripts/verify_macos_targets.py \
+            --package-directory macOSApp \
+            --binary "AuraFlowLockScreen=$legacy_binary" \
+            --deployment-major 13
+
+
+  fallback-release-pre26-sdk:
+    name: Fallback release with macOS SDK below 26
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      BUILD_UNIVERSAL: "0"
+      REQUIRE_UNIVERSAL: "0"
+      BUILD_NATIVE_BRIDGE: "0"
+      REQUIRE_NATIVE_BRIDGE: "0"
+      FFMPEG_RUNTIME_BUNDLING: "0"
+      REQUIRE_FFMPEG_RUNTIME: "0"
+      CODESIGN_IDENTITY: ""
+      REQUIRE_CODESIGN: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select and verify an installed pre-26 SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          selected_xcode=""
+          selected_sdk=""
+          selected_version=""
+          selected_major=""
+
+          echo "Installed Xcode SDK candidates:"
+          for xcode in /Applications/Xcode*.app; do
+            [[ -d "$xcode/Contents/Developer" ]] || continue
+            sdk="$xcode/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+            settings="$sdk/SDKSettings.plist"
+            if [[ ! -f "$settings" ]]; then
+              echo "- $xcode: missing $settings"
+              continue
+            fi
+
+            version="$(plutil -extract Version raw "$settings" 2>/dev/null || true)"
+            major="${version%%.*}"
+            if [[ ! "$major" =~ ^[0-9]+$ ]]; then
+              echo "- $xcode: invalid SDK version '$version'"
+              continue
+            fi
+            echo "- $xcode: macOS SDK $version (major $major)"
+
+            if [[ "$major" -lt 26 && -z "$selected_xcode" ]]; then
+              selected_xcode="$xcode"
+              selected_sdk="$sdk"
+              selected_version="$version"
+              selected_major="$major"
+            fi
+          done
+
+          if [[ -z "$selected_xcode" ]]; then
+            echo "::error::No installed Xcode with a macOS SDK major below 26 was found." >&2
+            echo "The fallback-release job must exercise a real pre-26 SDK; refusing to run with the default SDK." >&2
+            echo "Xcode bundles visible on this runner:" >&2
+            find /Applications -maxdepth 1 -type d -name 'Xcode*.app' -print | sort >&2 || true
+            exit 1
+          fi
+
+          export DEVELOPER_DIR="$selected_xcode/Contents/Developer"
+          export SDKROOT="$selected_sdk"
+          resolved_version="$(xcrun --sdk macosx --show-sdk-version)"
+          resolved_path="$(xcrun --sdk macosx --show-sdk-path)"
+          resolved_major="${resolved_version%%.*}"
+
+          echo "Selected Xcode: $selected_xcode"
+          echo "Selected SDK: $resolved_version ($resolved_path)"
+          xcodebuild -version
+          xcode-select -p
+
+          selected_sdk_canonical="$(cd "$selected_sdk" && pwd -P)"
+          resolved_path_canonical="$(cd "$resolved_path" && pwd -P)"
+          [[ "$resolved_path_canonical" == "$selected_sdk_canonical" ]] || {
+            echo "::error::xcrun resolved an unexpected SDK path: $resolved_path (canonical: $resolved_path_canonical; expected: $selected_sdk (canonical: $selected_sdk_canonical))" >&2
+            exit 1
+          }
+          [[ "$resolved_version" == "$selected_version" ]] || {
+            echo "::error::xcrun resolved SDK $resolved_version, expected $selected_version" >&2
+            exit 1
+          }
+          [[ "$resolved_major" =~ ^[0-9]+$ && "$resolved_major" -lt 26 ]] || {
+            echo "::error::Selected SDK is not pre-26: $resolved_version" >&2
+            exit 1
+          }
+
+          {
+            echo "DEVELOPER_DIR=$DEVELOPER_DIR"
+            echo "SDKROOT=$SDKROOT"
+            echo "AURAFLOW_FALLBACK_SDK_VERSION=$resolved_version"
+            echo "AURAFLOW_FALLBACK_SDK_MAJOR=$resolved_major"
+          } >> "$GITHUB_ENV"
+
+      - name: Build complete fallback-only release
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${AURAFLOW_FALLBACK_SDK_MAJOR:-}" =~ ^[0-9]+$ ]] || {
+            echo "::error::Fallback SDK selection did not export a numeric SDK major." >&2
+            exit 1
+          }
+          (( AURAFLOW_FALLBACK_SDK_MAJOR < 26 )) || {
+            echo "::error::Refusing fallback-only release on SDK ${AURAFLOW_FALLBACK_SDK_VERSION:-unknown}." >&2
+            exit 1
+          }
+
+          echo "Building fallback-only release with macOS SDK $AURAFLOW_FALLBACK_SDK_VERSION"
+          ./scripts/build_release.sh
+
+      - name: Verify fallback release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="dist/AuraFlow.app"
+          app_binary="$bundle/Contents/MacOS/WallpaperControlApp"
+          agent_binary="$bundle/Contents/MacOS/AuraWallpaperAgent"
+          saver_binary="$bundle/Contents/PlugIns/AuraFlowLockScreen.saver/Contents/MacOS/AuraFlowLockScreen"
+          bridge_binary="$bundle/Contents/MacOS/AuraWallpaperNativeBridge"
+
+          test -d "$bundle"
+          test -x "$app_binary"
+          test -x "$agent_binary"
+          test -x "$saver_binary"
+          test -s "dist/AuraFlow.zip"
+          test -s "dist/AuraFlow.dmg"
+
+          if [[ -e "$bridge_binary" ]]; then
+            echo "::error::Fallback-only release unexpectedly contains AuraWallpaperNativeBridge." >&2
+            exit 1
+          fi
+
+          app_minimum="$(plutil -extract LSMinimumSystemVersion raw "$bundle/Contents/Info.plist")"
+          saver_minimum="$(plutil -extract LSMinimumSystemVersion raw "$bundle/Contents/PlugIns/AuraFlowLockScreen.saver/Contents/Info.plist")"
+          [[ "$app_minimum" == "13.0" ]] || {
+            echo "::error::App bundle minimum version is $app_minimum, expected 13.0." >&2
+            exit 1
+          }
+          [[ "$saver_minimum" == "13.0" ]] || {
+            echo "::error::Screen Saver minimum version is $saver_minimum, expected 13.0." >&2
+            exit 1
+          }
+
+          python3 .github/scripts/verify_macos_targets.py \
+            --package-directory macOSApp \
+            --source-root Sources/AuraWallpaperCore \
+            --source-root Sources/WallpaperControlApp \
+            --source-root Sources/AuraWallpaperAgent \
+            --binary "WallpaperControlApp=$app_binary" \
+            --binary "AuraWallpaperAgent=$agent_binary" \
+            --binary "AuraFlowLockScreen=$saver_binary" \
+            --deployment-major 13
+
+      - name: Upload fallback release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: auraflow-fallback-release-pre26-sdk
+          path: |
+            dist/AuraFlow.zip
+            dist/AuraFlow.dmg
+          if-no-files-found: error
+
+
+  swift6-strict-concurrency:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          selected_app="$(ls -td /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+          if [[ -n "$selected_app" && -d "$selected_app/Contents/Developer" ]]; then
+            echo "DEVELOPER_DIR=$selected_app/Contents/Developer" >> "${GITHUB_ENV}"
+          fi
+          xcodebuild -version
+
+      - name: Build production targets with Swift 6 strict concurrency
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          strict_flags=(
+            -Xswiftc -swift-version -Xswiftc 6
+            -Xswiftc -strict-concurrency=complete
+            -Xswiftc -warnings-as-errors
+          )
+          swift build --target AuraWallpaperCore "${strict_flags[@]}"
+          swift build --target WallpaperControlApp "${strict_flags[@]}"
+          swift build --target AuraWallpaperAgent "${strict_flags[@]}"
+          macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+          if [[ "$macos_major" =~ ^[0-9]+$ && "$macos_major" -ge 26 \
+                && -e /System/Library/PrivateFrameworks/Wallpaper.framework/Wallpaper \
+                && -e /System/Library/PrivateFrameworks/WallpaperTypes.framework/WallpaperTypes ]]; then
+            swift build --target AuraWallpaperNativeBridge "${strict_flags[@]}"
+          else
+            echo "Skipping strict native bridge build: macOS 26 and both private frameworks are required."
+          fi
+
+
+  native-bridge-smoke:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          selected_app="$(ls -td /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+          if [[ -n "$selected_app" && -d "$selected_app/Contents/Developer" ]]; then
+            echo "DEVELOPER_DIR=$selected_app/Contents/Developer" >> "${GITHUB_ENV}"
+          fi
+          xcodebuild -version
+
+      - name: Build native bridge
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+          if [[ ! "$macos_major" =~ ^[0-9]+$ || "$macos_major" -lt 26 \
+                || ! -e /System/Library/PrivateFrameworks/Wallpaper.framework/Wallpaper \
+                || ! -e /System/Library/PrivateFrameworks/WallpaperTypes.framework/WallpaperTypes ]]; then
+            echo "Skipping native bridge smoke: macOS 26 and both private frameworks are required."
+            exit 0
+          fi
+          swift build -c release --product AuraWallpaperNativeBridge
+
+      - name: Run native bridge JSON protocol smoke test
+        working-directory: macOSApp
+        shell: bash
+        run: |
+          macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+          if [[ ! "$macos_major" =~ ^[0-9]+$ || "$macos_major" -lt 26 \
+                || ! -e /System/Library/PrivateFrameworks/Wallpaper.framework/Wallpaper \
+                || ! -e /System/Library/PrivateFrameworks/WallpaperTypes.framework/WallpaperTypes ]]; then
+            echo "Skipping native bridge smoke: macOS 26 and both private frameworks are required."
+            exit 0
+          fi
+          bridge_path="$(find .build -type f -path '*/release/AuraWallpaperNativeBridge' -perm -111 -print -quit)"
+          test -n "$bridge_path"
+          if ! otool -L "$bridge_path" | grep -Eq '/Wallpaper\.framework'; then
+            echo "AuraWallpaperNativeBridge is missing Wallpaper.framework linkage: $bridge_path" >&2
+            exit 1
+          fi
+          if ! otool -L "$bridge_path" | grep -Eq '/WallpaperTypes\.framework'; then
+            echo "AuraWallpaperNativeBridge is missing WallpaperTypes.framework linkage: $bridge_path" >&2
+            exit 1
+          fi
+          python3 ../scripts/native_bridge_smoke.py "$bridge_path"
+
+  live-catalog-smoke:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live_catalog_smoke == true
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          selected_app="$(ls -td /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+          if [[ -n "$selected_app" && -d "$selected_app/Contents/Developer" ]]; then
+            echo "DEVELOPER_DIR=$selected_app/Contents/Developer" >> "${GITHUB_ENV}"
+          fi
+          xcodebuild -version
+
+      - name: Run opt-in live catalog smoke tests
+        working-directory: macOSApp
+        env:
+          AURAFLOW_LIVE_CATALOG_SMOKE: "1"
+          AURAFLOW_LIVE_CATALOG_SAMPLE: "3"
+          AURAFLOW_LIVE_BROWSER_DOWNLOAD_SMOKE: "1"
+        run: swift test --filter liveCatalogDownloadSmoke
+
+      - name: Run opt-in browser download smoke test
+        working-directory: macOSApp
+        env:
+          AURAFLOW_LIVE_BROWSER_DOWNLOAD_SMOKE: "1"
+        run: swift test --filter liveMoeWallsBrowserDownloadSmoke

@@ -15,6 +15,75 @@ extension EnvironmentValues {
     }
 }
 
+private extension AdaptiveTextTone {
+    /// A low-opacity tint that improves contrast without turning Liquid Glass
+    /// into an opaque panel. Dark text gets a light lift; light text gets a
+    /// dark lift. Every button and inset surface uses the same tone.
+    var contrastSurfaceColor: Color {
+        switch self {
+        case .dark:
+            return Color.white
+        case .light:
+            return Color.black
+        }
+    }
+
+    var contrastHighlightColor: Color {
+        switch self {
+        case .dark:
+            return Color.white
+        case .light:
+            return Color.white
+        }
+    }
+
+    var primaryTextColor: Color {
+        switch self {
+        case .dark:
+            return Color.black.opacity(0.92)
+        case .light:
+            return Color.white.opacity(0.98)
+        }
+    }
+
+    var secondaryTextColor: Color {
+        switch self {
+        case .dark:
+            return Color.black.opacity(0.72)
+        case .light:
+            return Color.white.opacity(0.90)
+        }
+    }
+
+    var disabledTextColor: Color {
+        switch self {
+        case .dark:
+            return Color.black.opacity(0.42)
+        case .light:
+            return Color.white.opacity(0.58)
+        }
+    }
+
+    var textShadowColor: Color {
+        switch self {
+        case .dark:
+            return Color.white.opacity(0.24)
+        case .light:
+            return Color.black.opacity(0.26)
+        }
+    }
+}
+
+// Adaptive protection is still useful for text contrast, but letting the
+// analyzer's strongest value reach the compositor makes a glass surface read
+// as a solid white or black panel. Keep the normal adaptive range intact and
+// only cap the extreme end at the rendering boundary.
+private let maximumAdaptiveSurfaceProtectionOpacity: CGFloat = 0.28
+
+private func boundedAdaptiveSurfaceProtectionOpacity(_ value: CGFloat) -> CGFloat {
+    min(max(value, 0.0), maximumAdaptiveSurfaceProtectionOpacity)
+}
+
 private func speedOverlayPillWidth(for availableWidth: CGFloat) -> CGFloat {
     min(max(availableWidth * 0.46, 420), 720)
 }
@@ -26,7 +95,8 @@ struct ContentView: View {
 
     private var aspectRatio: CGFloat { mainScreenAspectRatio() }
     private let topOverlayTopPadding: CGFloat = 18
-    private let zoomedTopOverlayPadding: CGFloat = 48
+    private let zoomedTopOverlayPadding: CGFloat = 38
+    private let fullScreenTopOverlayPadding: CGFloat = 38
     private let dragTitlebarTopOffset: CGFloat = -40
     private var dragTitlebarHeight: CGFloat {
         topOverlayTopPadding - dragTitlebarTopOffset
@@ -77,6 +147,7 @@ struct ContentView: View {
                 }
             }
         }
+        .ignoresSafeArea()
         .frame(minWidth: 760, minHeight: 480)
         .background(Color.clear)
         .overlay(
@@ -91,6 +162,9 @@ struct ContentView: View {
             await viewModel.loadStatus()
         }
         .environment(\.adaptiveGlassAppearance, viewModel.adaptiveGlassAppearance)
+        // Keep every text-bearing control on the same adaptive polarity. The
+        // individual surfaces still choose their own backing strength below.
+        .foregroundStyle(viewModel.adaptiveGlassAppearance.textTone.primaryTextColor)
     }
 
     @ViewBuilder
@@ -110,6 +184,7 @@ struct ContentView: View {
 
             PreviewLayer(
                 player: viewModel.previewPlayer,
+                wallpaperURL: viewModel.currentVideoURL ?? viewModel.appliedVideoURL,
                 aspectRatio: aspectRatio,
                 scaleMode: viewModel.scaleMode
             )
@@ -213,6 +288,10 @@ struct ContentView: View {
         }
         .overlay(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 12) {
+                if let success = viewModel.successBannerMessage {
+                    SuccessBanner(text: success)
+                }
+
                 if let alert = viewModel.alertMessage {
                     ErrorBanner(text: alert)
                 }
@@ -322,14 +401,27 @@ final class TitlebarInteractionNSView: NSView {
 
 struct PreviewLayer: View {
     let player: AVPlayer?
+    let wallpaperURL: URL?
     let aspectRatio: CGFloat
     let scaleMode: WallpaperScaleMode
 
     var body: some View {
-        VideoPreview(player: player, videoGravity: scaleMode.previewGravity)
-            .aspectRatio(aspectRatio, contentMode: .fill)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipped()
+        Group {
+            if let wallpaperURL,
+               WallpaperMediaKind.forURL(wallpaperURL).isStaticImage,
+               let image = NSImage(contentsOf: wallpaperURL) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(
+                        contentMode: scaleMode == .fit ? .fit : .fill
+                    )
+            } else {
+                VideoPreview(player: player, videoGravity: scaleMode.previewGravity)
+                    .aspectRatio(aspectRatio, contentMode: .fill)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 }
 
@@ -418,7 +510,7 @@ struct ControlPanel: View {
     }
 
     private var controlButtonsRowWidth: CGFloat {
-        (primaryButtonWidth * 2) + removeButtonWidth + (primarySpacing * 2)
+        (primaryButtonWidth * 3) + removeButtonWidth + (primarySpacing * 3)
     }
 
     private var actionButtonsRowWidth: CGFloat {
@@ -504,8 +596,8 @@ struct ControlPanel: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if showsStatusMessage, let message = viewModel.statusMessage {
-                Text(message)
-                    .foregroundColor(.secondary)
+                Text(UserFacingMessageFormatter.format(message))
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -515,9 +607,9 @@ struct ControlPanel: View {
             if viewModel.optimizationInProgress && showsOptimizationProgress {
                 VStack(alignment: .leading, spacing: 6) {
                     if let label = viewModel.optimizationLabel {
-                        Text(label)
+                        Text(UserFacingMessageFormatter.format(label))
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
@@ -535,7 +627,8 @@ struct ControlPanel: View {
                 cornerRadius: 14,
                 material: .clear,
                 alphaMultiplier: adaptiveGlassAppearance.bottomGlassAlpha,
-                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity
+                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.bottomTextTone.contrastSurfaceColor
             )
         )
         .overlay(
@@ -625,10 +718,10 @@ struct ControlPanel: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Video")
                 .font(.headline.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(0.96))
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
             Text(viewModel.selectedVideoName)
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.76))
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
@@ -639,20 +732,27 @@ struct ControlPanel: View {
 struct SettingsPopupOverlay: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(colorScheme == .dark ? 0.42 : 0.28)
-                .ignoresSafeArea()
-                .onTapGesture {
-                    viewModel.closeSettings()
-                }
+        GeometryReader { proxy in
+            ZStack {
+                Color.black.opacity(colorScheme == .dark ? 0.42 : 0.28)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        viewModel.closeSettings()
+                    }
 
-            SettingsPopupCard(viewModel: viewModel)
-                .frame(maxWidth: 620)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 24)
-                .transition(.asymmetric(insertion: .scale(scale: 0.94).combined(with: .opacity), removal: .opacity))
+                SettingsPopupCard(viewModel: viewModel)
+                    .frame(
+                        maxWidth: min(620, max(proxy.size.width - 48, 1)),
+                        maxHeight: max(proxy.size.height - 48, 1)
+                    )
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 24)
+                    .transition(.asymmetric(insertion: .scale(scale: 0.94).combined(with: .opacity), removal: .opacity))
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.86), value: viewModel.isSettingsOpen)
         .zIndex(50)
@@ -661,28 +761,28 @@ struct SettingsPopupOverlay: View {
 
 struct SettingsPopupCard: View {
     @ObservedObject var viewModel: AppViewModel
-    @Environment(\.colorScheme) private var colorScheme
-
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     var body: some View {
-        ViewThatFits(in: .vertical) {
+        ScrollView(.vertical) {
             settingsContents
-                .fixedSize(horizontal: false, vertical: true)
-
-            ScrollView(.vertical) {
-                settingsContents
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 18,
-                material: .clear
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.centerGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.centerProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor
             )
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
         .environment(\.colorScheme, .dark)
     }
@@ -703,15 +803,6 @@ struct SettingsPopupCard: View {
             }
 
             Divider()
-
-            Toggle(isOn: Binding(
-                get: { viewModel.autostartEnabled },
-                set: { newValue in viewModel.toggleAutostart(newValue) }
-            )) {
-                Label("Launch at Login", systemImage: "power")
-            }
-            .toggleStyle(.switch)
-            .disabled(!viewModel.canToggleAutostart)
 
             Toggle(isOn: Binding(
                 get: { viewModel.pauseOnFullscreenEnabled },
@@ -754,11 +845,6 @@ struct SettingsPopupCard: View {
                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             }
 
-            Text("AuraFlow uses macOS's Aerial engine for the real lock screen and restores the reserved system asset when disabled. This integration is experimental because Apple does not publish its wallpaper extension API.")
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
             Toggle(isOn: Binding(
                 get: { viewModel.blendInterpolationEnabled },
                 set: { newValue in viewModel.toggleBlendInterpolation(newValue) }
@@ -786,7 +872,7 @@ struct SettingsPopupCard: View {
 
             Text("Video Optimization")
                 .font(.subheadline.weight(.semibold))
-                .foregroundColor(.secondary)
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
 
             Toggle(isOn: Binding(
                 get: { viewModel.optimizationEnabled },
@@ -845,13 +931,17 @@ struct SettingsPopupCard: View {
             .disabled(!viewModel.optimizationEnabled || !viewModel.canChangeOptimizationSettings)
 
             if viewModel.optimizationHardwareAV1DecodeAvailable {
-                Text("AV1 hardware encode is unavailable on Mac. Force AV1 uses software ffmpeg and can be CPU intensive.")
+                Text(UserFacingMessageFormatter.format(
+                    "AV1 hardware encode is unavailable on Mac. Force AV1 uses software ffmpeg and can be CPU intensive."
+                ))
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             } else {
-                Text("Force AV1 encode is disabled because this Mac has no hardware AV1 decode.")
+                Text(UserFacingMessageFormatter.format(
+                    "Force AV1 encode is disabled because this Mac has no hardware AV1 decode."
+                ))
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             }
 
             Divider().padding(.vertical, 4)
@@ -867,9 +957,9 @@ struct SettingsPopupCard: View {
             if viewModel.optimizationInProgress {
                 VStack(alignment: .leading, spacing: 6) {
                     if let label = viewModel.optimizationLabel {
-                        Text(label)
+                        Text(UserFacingMessageFormatter.format(label))
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                     }
                     ProgressView(value: viewModel.optimizationProgress)
                         .progressViewStyle(.linear)
@@ -907,6 +997,7 @@ struct MonitoringPopupOverlay: View {
 struct MonitoringPopupCard: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -926,47 +1017,47 @@ struct MonitoringPopupCard: View {
             Divider()
 
             if let metrics = viewModel.monitoringSnapshot {
-                let cpu = metrics.cpu_percent ?? 0
-                let memory = metrics.memory_mb ?? 0
-                let virtualMemory = metrics.virtual_memory_mb ?? 0
-                let threads = metrics.thread_count ?? 0
+                let cpu = metrics.cpu_percent.map { String(format: "%.1f%%", $0) } ?? "n/a"
+                let memory = metrics.memory_mb.map { String(format: "%.1f MB", $0) } ?? "n/a"
+                let virtualMemory = metrics.virtual_memory_mb.map { String(format: "%.1f MB", $0) } ?? "n/a"
+                let threads = metrics.thread_count.map(String.init) ?? "n/a"
                 let processCount = metrics.process_count ?? metrics.daemon_pids?.count ?? (metrics.pid == nil ? 0 : 1)
-                let screens = metrics.health?.screens ?? 0
-                let windows = metrics.health?.windows ?? 0
-                let rate = metrics.health?.player_rate ?? 0
+                let screens = metrics.health?.screens.map(String.init) ?? "n/a"
+                let windows = metrics.health?.windows.map(String.init) ?? "n/a"
+                let rate = metrics.health?.player_rate.map { String(format: "%.2fx", $0) } ?? "n/a"
 
                 MonitoringRow(label: "Daemon PID", value: metrics.pid.map(String.init) ?? "n/a")
                 MonitoringRow(label: "Daemon Processes", value: "\(processCount)")
                 MonitoringRow(label: "Running", value: metrics.running ? "Yes" : "No")
-                MonitoringRow(label: "CPU", value: String(format: "%.1f%%", cpu))
-                MonitoringRow(label: "Memory", value: String(format: "%.1f MB", memory))
-                MonitoringRow(label: "Virtual Memory", value: String(format: "%.1f MB", virtualMemory))
-                MonitoringRow(label: "Threads", value: "\(threads)")
+                MonitoringRow(label: "CPU", value: cpu)
+                MonitoringRow(label: "Memory", value: memory)
+                MonitoringRow(label: "Virtual Memory", value: virtualMemory)
+                MonitoringRow(label: "Threads", value: threads)
                 MonitoringRow(label: "Screens/Windows", value: "\(screens)/\(windows)")
-                MonitoringRow(label: "Player Rate", value: String(format: "%.2fx", rate))
+                MonitoringRow(label: "Player Rate", value: rate)
 
                 if let pids = metrics.daemon_pids, !pids.isEmpty {
                     let rendered = pids.prefix(4).map(String.init).joined(separator: ", ")
                     let suffix = pids.count > 4 ? ", ..." : ""
                     Text("PIDs: \(rendered)\(suffix)")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 }
 
                 if let reason = metrics.health?.reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("Health: \(reason)")
+                    Text(UserFacingMessageFormatter.format("Health: \(reason)"))
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                         .padding(.top, 4)
                 }
             } else {
                 Text("Collecting daemon metrics...")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             }
 
             if let error = viewModel.monitoringErrorMessage {
-                Text(error)
+                Text(UserFacingMessageFormatter.format(error))
                     .font(.caption)
                     .foregroundColor(.red)
             }
@@ -989,10 +1080,14 @@ struct MonitoringPopupCard: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
+        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 18,
-                material: .clear
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.centerGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.centerProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor
             )
         )
         .overlay(
@@ -1007,12 +1102,13 @@ struct MonitoringPopupCard: View {
 struct MonitoringRow: View {
     let label: String
     let value: String
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         HStack {
             Text(label)
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             Spacer()
             Text(value)
                 .font(.caption.weight(.semibold))
@@ -1051,6 +1147,7 @@ struct DownloadedWallpapersOverlay: View {
 struct DownloadedWallpapersCard: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1060,7 +1157,7 @@ struct DownloadedWallpapersCard: View {
                 Spacer()
                 Text("\(viewModel.downloadedCatalogWallpapers.count)")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 Button {
                     viewModel.closeDownloadedWallpapers()
                 } label: {
@@ -1073,9 +1170,11 @@ struct DownloadedWallpapersCard: View {
             Divider()
 
             if viewModel.downloadedCatalogWallpapers.isEmpty {
-                Text("No downloaded wallpapers yet. Use Download & Apply in the catalog.")
+                Text(UserFacingMessageFormatter.format(
+                    "No downloaded wallpapers yet. Use Download to Preview in the catalog."
+                ))
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
@@ -1095,10 +1194,10 @@ struct DownloadedWallpapersCard: View {
                                         .lineLimit(1)
                                     Text("\(wallpaper.category) • \(wallpaper.attribution)")
                                         .font(.caption)
-                                        .foregroundColor(.secondary)
+                                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                                     Text(wallpaper.localURL.lastPathComponent)
                                         .font(.caption2)
-                                        .foregroundColor(.secondary)
+                                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                 }
@@ -1108,7 +1207,7 @@ struct DownloadedWallpapersCard: View {
                                 Button {
                                     viewModel.applyDownloadedCatalogWallpaper(wallpaper)
                                 } label: {
-                                    Label("Apply", systemImage: "checkmark.circle")
+                                    Label("Preview", systemImage: "play.rectangle")
                                 }
                                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                             }
@@ -1122,10 +1221,14 @@ struct DownloadedWallpapersCard: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
+        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 18,
-                material: .clear
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.centerGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.centerProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor
             )
         )
         .overlay(
@@ -1146,6 +1249,8 @@ struct ControlButtons: View {
     var body: some View {
         HStack(spacing: spacing) {
             startButton
+                .frame(width: primaryButtonWidth)
+            lockScreenOnlyButton
                 .frame(width: primaryButtonWidth)
             stopButton
                 .frame(width: primaryButtonWidth)
@@ -1168,18 +1273,39 @@ struct ControlButtons: View {
         .disabled(!viewModel.canStart)
     }
 
-    private var stopButton: some View {
-        Button(role: .destructive) {
-            viewModel.stop()
+    private var lockScreenOnlyButton: some View {
+        Button {
+            viewModel.applyLockScreenOnly()
         } label: {
-            Label("Stop", systemImage: "stop.circle")
+            Label("Lock", systemImage: "lock.display")
                 .lineLimit(1)
                 .minimumScaleFactor(0.95)
                 .allowsTightening(true)
                 .frame(maxWidth: .infinity)
         }
+        .accessibilityLabel("Apply wallpaper to Lock Screen only")
+        .help("Apply wallpaper to Lock Screen only")
         .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canStop)
+        .disabled(!viewModel.canApplyLockScreenOnly)
+    }
+
+    private var stopButton: some View {
+        Button(role: viewModel.isPlaybackPaused ? nil : .destructive) {
+            viewModel.togglePlayback()
+        } label: {
+            Label(
+                viewModel.playbackButtonTitle,
+                systemImage: viewModel.playbackButtonSystemImage
+            )
+                .lineLimit(1)
+                .minimumScaleFactor(0.95)
+                .allowsTightening(true)
+                .frame(maxWidth: .infinity)
+        }
+        .accessibilityLabel(viewModel.playbackButtonTitle)
+        .help(viewModel.isPlaybackPaused ? "Resume wallpaper" : "Stop wallpaper")
+        .buttonStyle(AuraPanelButtonStyle())
+        .disabled(!viewModel.canTogglePlayback)
     }
 
     private var clearButton: some View {
@@ -1200,6 +1326,7 @@ struct ControlButtons: View {
 struct WallpaperCatalogView: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     private var isDetailOpened: Bool {
         viewModel.selectedCatalogWallpaper != nil
@@ -1234,7 +1361,7 @@ struct WallpaperCatalogView: View {
 
                 Text(viewModel.selectedCatalogWallpaper?.title ?? "Wallpaper Catalog")
                     .font(.headline.weight(.semibold))
-                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.96) : Color.black.opacity(0.86))
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
 
                 Spacer()
 
@@ -1245,37 +1372,18 @@ struct WallpaperCatalogView: View {
                     }
                     Text(catalogCountText)
                         .font(.caption2)
-                        .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.78) : Color.black.opacity(0.64))
+                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                 }
             }
             .zIndex(10)
 
             if viewModel.selectedCatalogWallpaper == nil {
                 HStack(spacing: 10) {
-                    ForEach(CatalogWallpaperGroup.allCases) { group in
-                        CatalogGroupFilterButton(
-                            group: group,
-                            count: viewModel.catalogWallpaperCount(in: group),
-                            isSelected: viewModel.selectedCatalogGroup == group
-                        ) {
-                            viewModel.toggleCatalogGroup(group)
-                        }
-                    }
+                    catalogGroupFilterButtons
 
                     Spacer(minLength: 8)
 
-                    TextField("Search catalog", text: $viewModel.catalogSearchText)
-                        .textFieldStyle(.plain)
-                        .font(.body.weight(.medium))
-                        .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.94) : Color.black.opacity(0.84))
-                        .padding(.vertical, 9)
-                        .padding(.horizontal, 12)
-                        .background(AuraGlassInsetCard(emphasized: true))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(Color.white.opacity(0.12), lineWidth: 0.9)
-                        )
-                        .frame(maxWidth: 260)
+                    catalogSearchField
                 }
                 .zIndex(9)
             }
@@ -1294,7 +1402,10 @@ struct WallpaperCatalogView: View {
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 14,
-                material: .clear
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.bottomGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.bottomTextTone.contrastSurfaceColor
             )
         )
         .overlay(
@@ -1305,6 +1416,54 @@ struct WallpaperCatalogView: View {
         .shadow(color: Color.black.opacity(0.26), radius: 12, x: 0, y: 7)
         .environment(\.colorScheme, .dark)
     }
+
+    private var catalogSearchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+
+            ZStack(alignment: .leading) {
+                TextField("", text: $viewModel.catalogSearchText)
+                    .textFieldStyle(.plain)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+
+                if viewModel.catalogSearchText.isEmpty {
+                    Text("Search catalog")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+        .padding(.vertical, 9)
+        .padding(.horizontal, 12)
+        .background(AuraGlassInsetCard(emphasized: true))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(
+                    adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.12),
+                    lineWidth: 0.9
+                )
+        )
+        .frame(maxWidth: 260)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Search catalog")
+    }
+
+    @ViewBuilder
+    private var catalogGroupFilterButtons: some View {
+        ForEach(CatalogWallpaperGroup.allCases) { group in
+            CatalogGroupFilterButton(
+                group: group,
+                count: viewModel.catalogWallpaperCount(in: group),
+                isSelected: viewModel.selectedCatalogGroup == group
+            ) {
+                viewModel.toggleCatalogGroup(group)
+            }
+        }
+    }
 }
 
 struct CatalogGroupFilterButton: View {
@@ -1312,8 +1471,6 @@ struct CatalogGroupFilterButton: View {
     let count: Int
     let isSelected: Bool
     let action: () -> Void
-
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Button(action: action) {
@@ -1324,19 +1481,14 @@ struct CatalogGroupFilterButton: View {
                     .lineLimit(1)
             }
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.82))
-            .padding(.vertical, 6)
-            .padding(.horizontal, 9)
-            .background(AuraGlassInsetCard(cornerRadius: 9, emphasized: isSelected))
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(
-                        isSelected ? Color.accentColor.opacity(0.55) : Color.white.opacity(0.10),
-                        lineWidth: isSelected ? 1.1 : 0.9
-                    )
-            )
         }
-        .buttonStyle(AuraPlainPressButtonStyle())
+        .buttonStyle(
+            AuraPanelButtonStyle(
+                fillWidth: false,
+                emphasized: isSelected,
+                selected: isSelected
+            )
+        )
         .accessibilityLabel("\(group.title) wallpapers")
         .accessibilityValue(isSelected ? "Selected, \(count)" : "\(count)")
     }
@@ -1345,6 +1497,7 @@ struct CatalogGroupFilterButton: View {
 struct WallpaperCatalogGridView: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     private let columns = [GridItem(.adaptive(minimum: 220), spacing: 12)]
 
@@ -1378,11 +1531,11 @@ struct WallpaperCatalogGridView: View {
 
                                 Text(wallpaper.title)
                                     .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.96) : Color.black.opacity(0.86))
+                                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
                                     .lineLimit(1)
                                 Text(wallpaper.category)
                                     .font(.caption)
-                                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.78) : Color.black.opacity(0.64))
+                                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(10)
@@ -1408,6 +1561,7 @@ struct WallpaperCatalogDetailView: View {
     @ObservedObject var viewModel: AppViewModel
     let wallpaper: CatalogWallpaper
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1421,11 +1575,11 @@ struct WallpaperCatalogDetailView: View {
 
             Text(wallpaper.title)
                 .font(.headline)
-                .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.96) : Color.black.opacity(0.86))
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
 
             Text("Category: \(wallpaper.category) • Source: \(wallpaper.attribution)")
                 .font(.caption)
-                .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.80) : Color.black.opacity(0.66))
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
 
             HStack(spacing: 10) {
                 Button {
@@ -1434,11 +1588,11 @@ struct WallpaperCatalogDetailView: View {
                     if viewModel.isDownloading(wallpaper) {
                         Label("Downloading…", systemImage: "arrow.down.circle")
                     } else {
-                        Label("Download & Apply", systemImage: "arrow.down.circle")
+                        Label("Download to Preview", systemImage: "arrow.down.circle")
                     }
                 }
                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .disabled(!viewModel.canApplyCatalogWallpaper)
+                .disabled(!viewModel.canDownloadCatalogWallpaper)
 
                 if let sourceURL = wallpaper.sourcePageURL {
                     Button {
@@ -1459,6 +1613,7 @@ struct CatalogPreviewImage: View {
     let url: URL?
     let title: String
     let referer: URL?
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @StateObject private var loader = CatalogPreviewImageLoader()
 
     var body: some View {
@@ -1495,7 +1650,7 @@ struct CatalogPreviewImage: View {
             )
             Text(title)
                 .font(.caption.weight(.semibold))
-                .foregroundColor(.white)
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
                 .padding(8)
                 .lineLimit(2)
         }
@@ -1627,10 +1782,11 @@ struct SpeedOverlay: View {
     }
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 4) {
             Label("Speed", systemImage: "speedometer")
                 .labelStyle(.titleAndIcon)
-                .foregroundStyle(Color.white.opacity(0.94))
+                .font(.body.weight(.semibold))
+                .foregroundStyle(adaptiveGlassAppearance.topTextTone.primaryTextColor)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
 
@@ -1651,10 +1807,11 @@ struct SpeedOverlay: View {
             .frame(maxWidth: .infinity)
 
             Text(String(format: "%.2fx", viewModel.playbackSpeed))
+                .font(.body.weight(.semibold))
                 .monospacedDigit()
-                .foregroundStyle(Color.white.opacity(0.78))
+                .foregroundStyle(adaptiveGlassAppearance.topTextTone.secondaryTextColor)
                 .lineLimit(1)
-                .frame(minWidth: 64, alignment: .trailing)
+                .frame(minWidth: 32, alignment: .trailing)
         }
         .controlSize(compactControlSize)
         .padding(.vertical, 10)
@@ -1664,7 +1821,8 @@ struct SpeedOverlay: View {
             AuraGlassCapsuleSurface(
                 material: .clear,
                 alphaMultiplier: adaptiveGlassAppearance.topGlassAlpha,
-                protectionOverlayOpacity: adaptiveGlassAppearance.topProtectionOverlayOpacity
+                protectionOverlayOpacity: adaptiveGlassAppearance.topProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.topTextTone.contrastSurfaceColor
             )
         )
         .overlay(
@@ -1673,6 +1831,7 @@ struct SpeedOverlay: View {
         .shadow(color: Color.black.opacity(0.16), radius: 4, x: 0, y: 2)
         .environment(\.colorScheme, .dark)
     }
+
 }
 
 private struct AuraLegacySpeedSlider: View {
@@ -1682,6 +1841,7 @@ private struct AuraLegacySpeedSlider: View {
     let onValueChanged: (Double) -> Void
     let onEditingChanged: (Bool) -> Void
 
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @State private var isDragging = false
 
     private var normalizedValue: CGFloat {
@@ -1694,14 +1854,11 @@ private struct AuraLegacySpeedSlider: View {
         GeometryReader { proxy in
             let trackHeight: CGFloat = 4
             let knobSize = CGSize(width: 10, height: 24)
+            let knobShape = RoundedRectangle(cornerRadius: knobSize.width * 0.5, style: .continuous)
             let usableWidth = max(proxy.size.width - knobSize.width, 1)
             let knobX = normalizedValue * usableWidth
 
             ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.white.opacity(0.10))
-                    .frame(height: trackHeight)
-
                 AuraLegacySliderDashes()
                     .mask(
                         Capsule()
@@ -1709,13 +1866,31 @@ private struct AuraLegacySpeedSlider: View {
                     )
                     .frame(height: trackHeight)
 
-                RoundedRectangle(cornerRadius: knobSize.width * 0.5, style: .continuous)
-                    .fill(Color.white.opacity(0.78))
+                Group {
+                    #if compiler(>=6.2)
+                    if #available(macOS 26.0, *) {
+                        knobShape
+                            .fill(Color.clear)
+                            .glassEffect(.clear.interactive(), in: knobShape)
+                    } else {
+                        knobShape
+                            .fill(Color.white.opacity(0.78))
+                    }
+                    #else
+                    knobShape
+                        .fill(Color.white.opacity(0.78))
+                    #endif
+                }
                     .frame(width: knobSize.width, height: knobSize.height)
                     .shadow(color: Color.black.opacity(0.20), radius: 2, x: 0, y: 1)
                     .overlay(
-                        RoundedRectangle(cornerRadius: knobSize.width * 0.5, style: .continuous)
-                            .stroke(Color.white.opacity(0.26), lineWidth: 0.8)
+                        knobShape
+                            .stroke(
+                                adaptiveGlassAppearance.topTextTone.primaryTextColor.opacity(
+                                    isDragging ? 0.34 : 0.24
+                                ),
+                                lineWidth: 0.8
+                            )
                     )
                     .offset(x: knobX, y: 0)
             }
@@ -1754,18 +1929,19 @@ private struct AuraLegacySpeedSlider: View {
 }
 
 private struct AuraLegacySliderDashes: View {
-    private let dashCount = 38
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         GeometryReader { proxy in
             let dashWidth: CGFloat = 1
+            let dashCount = max(38, Int(proxy.size.width / 4.2))
             let dashHeight = max(proxy.size.height + 4, 8)
             let spacing = max((proxy.size.width - (CGFloat(dashCount) * dashWidth)) / CGFloat(max(dashCount - 1, 1)), 1)
 
             HStack(spacing: spacing) {
                 ForEach(0..<dashCount, id: \.self) { _ in
                     Capsule()
-                        .fill(Color.white.opacity(0.22))
+                        .fill(adaptiveGlassAppearance.topTextTone.primaryTextColor.opacity(0.28))
                         .frame(width: dashWidth, height: dashHeight)
                 }
             }
@@ -1857,6 +2033,8 @@ struct VisualEffectView: NSViewRepresentable {
 }
 
 struct DisabledOverlay: View {
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+
     var body: some View {
         RoundedRectangle(cornerRadius: 22, style: .continuous)
             .fill(Color.black.opacity(0.5))
@@ -1866,7 +2044,7 @@ struct DisabledOverlay: View {
                         .font(.title3.weight(.semibold))
                     Text("Native wallpaper runtime unavailable")
                         .font(.callout)
-                        .foregroundColor(.white.opacity(0.92))
+                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
                 }
                 .padding(14)
             )
@@ -1874,13 +2052,25 @@ struct DisabledOverlay: View {
 }
 
 struct AuraPanelButtonStyle: ButtonStyle {
+    var fillWidth = true
+    var emphasized = false
+    var selected = false
+
     func makeBody(configuration: Configuration) -> some View {
-        AuraPanelButton(configuration: configuration)
+        AuraPanelButton(
+            configuration: configuration,
+            fillWidth: fillWidth,
+            emphasized: emphasized,
+            selected: selected
+        )
     }
 }
 
 private struct AuraPanelButton: View {
     let configuration: ButtonStyle.Configuration
+    let fillWidth: Bool
+    let emphasized: Bool
+    let selected: Bool
 
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @Environment(\.isEnabled) private var isEnabled
@@ -1909,7 +2099,9 @@ private struct AuraPanelButton: View {
     }
 
     private var protectionOpacity: CGFloat {
-        let adaptive = adaptiveGlassAppearance.bottomButtonProtectionOpacity
+        let adaptive = boundedAdaptiveSurfaceProtectionOpacity(
+            adaptiveGlassAppearance.bottomButtonProtectionOpacity
+        )
         return (usesNativeLiquidGlass ? 0.035 : 0.10) + adaptive
     }
 
@@ -1920,51 +2112,116 @@ private struct AuraPanelButton: View {
     }
 
     private var labelColor: Color {
-        guard isEnabled else { return Color.white.opacity(0.50) }
-        return Color.white.opacity(configuration.isPressed ? 0.90 : 0.97)
+        let tone = adaptiveGlassAppearance.bottomTextTone
+        guard isEnabled else { return tone.disabledTextColor }
+        if !fillWidth {
+            let crispColor: Color = tone == .dark ? .black : .white
+            return crispColor.opacity(configuration.isPressed ? 0.94 : 1.0)
+        }
+        return tone.primaryTextColor.opacity(configuration.isPressed ? 0.96 : 1.0)
+    }
+
+    private var textTone: AdaptiveTextTone {
+        adaptiveGlassAppearance.bottomTextTone
+    }
+
+    @ViewBuilder
+    private var labelContent: some View {
+        if fillWidth {
+            configuration.label
+                .frame(maxWidth: .infinity, alignment: .center)
+        } else {
+            configuration.label
+                .fixedSize(horizontal: true, vertical: false)
+        }
     }
 
     var body: some View {
-        configuration.label
-            .font(.body.weight(.semibold))
+        labelContent
+            .font(fillWidth ? .body.weight(.semibold) : .caption2.weight(.semibold))
             .foregroundStyle(labelColor)
-            .shadow(color: Color.black.opacity(isEnabled ? 0.18 : 0.06), radius: 1, x: 0, y: 1)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 3)
-            .padding(.horizontal, 12)
+            .shadow(
+                color: adaptiveGlassAppearance.bottomTextTone.textShadowColor.opacity(
+                    fillWidth && isEnabled ? 1.0 : 0.0
+                ),
+                radius: fillWidth ? 1 : 0,
+                x: 0,
+                y: 1
+            )
+            .padding(.vertical, fillWidth ? 3 : 6)
+            .padding(.horizontal, fillWidth ? 12 : 9)
             .background {
                 ZStack {
-                    shape.fill(Color.black.opacity(protectionOpacity))
-                    shape.fill(Color.white.opacity(baseSurfaceOpacity))
+                    #if compiler(>=6.2)
+                    if #available(macOS 26.0, *) {
+                        shape
+                            .fill(Color.clear)
+                            .glassEffect(.clear.interactive(), in: shape)
+                        shape.fill(
+                            textTone.contrastSurfaceColor.opacity(
+                                isEnabled
+                                    ? min(
+                                        0.34,
+                                        0.035
+                                            + boundedAdaptiveSurfaceProtectionOpacity(
+                                                adaptiveGlassAppearance.bottomButtonProtectionOpacity
+                                            )
+                                            + (configuration.isPressed ? 0.025 : 0.0)
+                                            + (selected ? 0.018 : (emphasized ? 0.010 : 0.0))
+                                    )
+                                    : 0.012
+                            )
+                        )
+                    } else {
+                        shape.fill(textTone.contrastSurfaceColor.opacity(protectionOpacity))
+                        shape.fill(textTone.contrastHighlightColor.opacity(baseSurfaceOpacity))
+                        LinearGradient(
+                            colors: [
+                                textTone.contrastHighlightColor.opacity(topHighlightOpacity),
+                                textTone.contrastHighlightColor.opacity(isEnabled ? 0.045 : 0.018),
+                                textTone.contrastSurfaceColor.opacity(isEnabled ? 0.035 : 0.06),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .clipShape(shape)
+                    }
+                    #else
+                    shape.fill(textTone.contrastSurfaceColor.opacity(protectionOpacity))
+                    shape.fill(textTone.contrastHighlightColor.opacity(baseSurfaceOpacity))
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(topHighlightOpacity),
-                            Color.white.opacity(isEnabled ? 0.045 : 0.018),
-                            Color.black.opacity(isEnabled ? 0.035 : 0.06),
+                            textTone.contrastHighlightColor.opacity(topHighlightOpacity),
+                            textTone.contrastHighlightColor.opacity(isEnabled ? 0.045 : 0.018),
+                            textTone.contrastSurfaceColor.opacity(isEnabled ? 0.035 : 0.06),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                     .clipShape(shape)
+                    #endif
                 }
             }
             .overlay {
-                shape.strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(isEnabled ? (isHovering ? 0.34 : 0.26) : 0.10),
-                            Color.white.opacity(isEnabled ? 0.10 : 0.055),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.8
-                )
-            }
-            .overlay {
-                shape
-                    .inset(by: 1.1)
-                    .stroke(Color.white.opacity(isEnabled ? 0.055 : 0.02), lineWidth: 0.5)
+                if #available(macOS 26.0, *) {
+                    shape.strokeBorder(
+                        adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(
+                            isEnabled
+                                ? (selected
+                                    ? 0.28
+                                    : (emphasized ? 0.22 : (isHovering ? 0.24 : 0.16)))
+                                : 0.08
+                        ),
+                        lineWidth: 0.8
+                    )
+                } else {
+                    shape.strokeBorder(
+                        textTone.primaryTextColor.opacity(
+                            isEnabled ? (isHovering ? 0.24 : 0.17) : 0.08
+                        ),
+                        lineWidth: 0.8
+                    )
+                }
             }
             .contentShape(shape)
             .clipShape(shape)
@@ -1992,7 +2249,11 @@ struct AuraGlassButtonStyle: ButtonStyle {
         // A separate live glass surface for every button multiplies the number of
         // compositor passes over the video. This lightweight treatment keeps the
         // same visual language while reserving real glass for the containing panel.
-        AuraGlassButton(configuration: configuration, tone: tone, fillWidth: fillWidth)
+        AuraGlassButton(
+            configuration: configuration,
+            tone: tone,
+            fillWidth: fillWidth
+        )
     }
 }
 
@@ -2009,13 +2270,13 @@ private struct AuraGlassButton: View {
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     private var baseTint: Color {
         switch tone {
         case .secondary:
-            return colorScheme == .dark
-                ? Color.white.opacity(0.08)
-                : Color.white.opacity(0.06)
+            return adaptiveGlassAppearance.centerTextTone.contrastHighlightColor
+                .opacity(colorScheme == .dark ? 0.08 : 0.06)
         case .accent:
             return Color(red: 0.67, green: 0.28, blue: 0.78)
         case .destructive:
@@ -2048,9 +2309,9 @@ private struct AuraGlassButton: View {
     private var backdropColor: Color {
         switch tone {
         case .secondary:
-            return colorScheme == .dark
-                ? Color.black.opacity(0.24)
-                : Color.black.opacity(0.20)
+            return adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(
+                colorScheme == .dark ? 0.24 : 0.20
+            )
         case .accent:
             return Color.black.opacity(colorScheme == .dark ? 0.18 : 0.14)
         case .destructive:
@@ -2059,11 +2320,12 @@ private struct AuraGlassButton: View {
     }
 
     private var foregroundColor: Color {
+        let textTone = adaptiveGlassAppearance.centerTextTone
         switch tone {
         case .secondary:
-            return Color.white.opacity(0.94)
+            return textTone.primaryTextColor
         case .accent, .destructive:
-            return .white.opacity(isEnabled ? 0.96 : 0.82)
+            return textTone.primaryTextColor.opacity(isEnabled ? 1.0 : 0.86)
         }
     }
 
@@ -2072,7 +2334,9 @@ private struct AuraGlassButton: View {
     }
 
     private var pressedOverlayColor: Color {
-        Color.white.opacity(configuration.isPressed ? 0.10 : 0.0)
+        adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(
+            configuration.isPressed ? 0.10 : 0.0
+        )
     }
 
     @ViewBuilder
@@ -2090,29 +2354,86 @@ private struct AuraGlassButton: View {
         labelContent
             .font(.body.weight(.semibold))
             .foregroundStyle(foregroundColor)
-            .shadow(color: Color.black.opacity(tone == .secondary ? 0.10 : 0.18), radius: 1, x: 0, y: 1)
+            .shadow(
+                color: adaptiveGlassAppearance.centerTextTone.textShadowColor.opacity(tone == .secondary ? 0.55 : 0.80),
+                radius: 1,
+                x: 0,
+                y: 1
+            )
             .padding(.vertical, 3)
             .padding(.horizontal, 12)
             .background {
                 ZStack {
+                    #if compiler(>=6.2)
+                    if #available(macOS 26.0, *) {
+                        shape
+                            .fill(Color.clear)
+                            .glassEffect(.clear.interactive(), in: shape)
+                        shape.fill(
+                            adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(
+                                isEnabled
+                                    ? min(
+                                        0.34,
+                                        0.045
+                                            + (boundedAdaptiveSurfaceProtectionOpacity(
+                                                adaptiveGlassAppearance.centerProtectionOverlayOpacity
+                                            ) * 0.80)
+                                            + (configuration.isPressed ? 0.025 : 0.0)
+                                    )
+                                    : 0.016
+                            )
+                        )
+                    } else {
+                        shape.fill(backdropColor)
+                        shape.fill(
+                            baseTint.opacity(tintOpacity)
+                        )
+                        LinearGradient(
+                            colors: [
+                                adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.12),
+                                adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.04),
+                                adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(0.025),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .clipShape(shape)
+                    }
+                    #else
                     shape.fill(backdropColor)
                     shape.fill(baseTint.opacity(tintOpacity))
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(0.12),
-                            Color.white.opacity(0.04),
-                            Color.clear,
+                            adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.12),
+                            adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.04),
+                            adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(0.025),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                     .clipShape(shape)
+                    #endif
                     shape.fill(pressedOverlayColor)
                 }
                 .clipShape(shape)
             }
             .overlay {
-                shape.stroke(Color.white.opacity(borderOpacity), lineWidth: 1.0)
+                if #available(macOS 26.0, *) {
+                    let opacity: CGFloat = tone == .secondary ? 0.16 : 0.24
+                    shape.stroke(
+                        adaptiveGlassAppearance.centerTextTone.primaryTextColor.opacity(
+                            isEnabled ? opacity : 0.08
+                        ),
+                        lineWidth: 0.8
+                    )
+                } else {
+                    shape.stroke(
+                        adaptiveGlassAppearance.centerTextTone.primaryTextColor.opacity(
+                            isEnabled ? borderOpacity : 0.08
+                        ),
+                        lineWidth: 1.0
+                    )
+                }
             }
             .clipShape(shape)
             .opacity(isEnabled ? 1.0 : 0.62)
@@ -2152,6 +2473,7 @@ private struct AuraGlassRoundedSurface: View {
     var washColor: Color = .clear
     var alphaMultiplier: CGFloat = 1.0
     var protectionOverlayOpacity: CGFloat = 0.0
+    var protectionOverlayColor: Color = .black
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -2159,8 +2481,12 @@ private struct AuraGlassRoundedSurface: View {
 
     var body: some View {
         let strength = min(max(Double(alphaMultiplier), 0), 1)
+        let effectiveProtectionOpacity = boundedAdaptiveSurfaceProtectionOpacity(
+            protectionOverlayOpacity
+        )
 
         Group {
+            #if compiler(>=6.2)
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
@@ -2172,6 +2498,11 @@ private struct AuraGlassRoundedSurface: View {
                     .fill(material.legacyMaterial)
                     .opacity(strength)
             }
+            #else
+            shape
+                .fill(material.legacyMaterial)
+                .opacity(strength)
+            #endif
         }
         .overlay {
             if washColor != .clear {
@@ -2179,8 +2510,8 @@ private struct AuraGlassRoundedSurface: View {
             }
         }
         .overlay {
-            if protectionOverlayOpacity > 0.001 {
-                shape.fill(Color.black.opacity(protectionOverlayOpacity))
+            if effectiveProtectionOpacity > 0.001 {
+                shape.fill(protectionOverlayColor.opacity(effectiveProtectionOpacity))
             }
         }
         .clipShape(shape)
@@ -2192,12 +2523,17 @@ private struct AuraGlassCapsuleSurface: View {
     var washColor: Color = .clear
     var alphaMultiplier: CGFloat = 1.0
     var protectionOverlayOpacity: CGFloat = 0.0
+    var protectionOverlayColor: Color = .black
 
     var body: some View {
         let shape = Capsule()
         let strength = min(max(Double(alphaMultiplier), 0), 1)
+        let effectiveProtectionOpacity = boundedAdaptiveSurfaceProtectionOpacity(
+            protectionOverlayOpacity
+        )
 
         Group {
+            #if compiler(>=6.2)
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
@@ -2207,6 +2543,11 @@ private struct AuraGlassCapsuleSurface: View {
                     .fill(material.legacyMaterial)
                     .opacity(strength)
             }
+            #else
+            shape
+                .fill(material.legacyMaterial)
+                .opacity(strength)
+            #endif
         }
         .overlay {
             if washColor != .clear {
@@ -2214,8 +2555,8 @@ private struct AuraGlassCapsuleSurface: View {
             }
         }
         .overlay {
-            if protectionOverlayOpacity > 0.001 {
-                shape.fill(Color.black.opacity(protectionOverlayOpacity))
+            if effectiveProtectionOpacity > 0.001 {
+                shape.fill(protectionOverlayColor.opacity(effectiveProtectionOpacity))
             }
         }
         .clipShape(shape)
@@ -2233,6 +2574,7 @@ private extension AuraSurfaceMaterial {
     }
 }
 
+#if compiler(>=6.2)
 @available(macOS 26.0, *)
 private extension AuraSurfaceMaterial {
     var systemGlass: Glass {
@@ -2244,26 +2586,62 @@ private extension AuraSurfaceMaterial {
         }
     }
 }
+#endif
 
 struct AuraGlassInsetCard: View {
     var cornerRadius: CGFloat = 10
     var emphasized: Bool = false
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let textTone = adaptiveGlassAppearance.centerTextTone
+        let protectionOpacity = boundedAdaptiveSurfaceProtectionOpacity(
+            adaptiveGlassAppearance.centerProtectionOverlayOpacity
+        )
 
         ZStack {
+            #if compiler(>=6.2)
+            if #available(macOS 26.0, *) {
+                shape
+                    .fill(Color.clear)
+                    .glassEffect(.clear.interactive(), in: shape)
+                shape.fill(
+                    textTone.contrastSurfaceColor.opacity(
+                        min(
+                            0.34,
+                            (emphasized ? 0.08 : 0.06)
+                                + (protectionOpacity * 0.75)
+                        )
+                    )
+                )
+            } else {
+                shape.fill(
+                    textTone.contrastSurfaceColor.opacity(
+                        min(
+                            0.44,
+                            (emphasized ? 0.30 : 0.22)
+                                + (protectionOpacity * 0.30)
+                        )
+                    )
+                )
+            }
+            #else
             shape.fill(
-                colorScheme == .dark
-                    ? Color.black.opacity(emphasized ? 0.30 : 0.22)
-                    : Color.white.opacity(emphasized ? 0.22 : 0.16)
+                textTone.contrastSurfaceColor.opacity(
+                    min(
+                        0.44,
+                        (emphasized ? 0.30 : 0.22)
+                            + (protectionOpacity * 0.30)
+                    )
+                )
             )
+            #endif
             LinearGradient(
                 colors: [
-                    Color.white.opacity(emphasized ? 0.10 : 0.065),
-                    Color.white.opacity(0.018),
-                    Color.clear,
+                    textTone.contrastHighlightColor.opacity(emphasized ? 0.10 : 0.065),
+                    textTone.contrastHighlightColor.opacity(0.018),
+                    textTone.contrastSurfaceColor.opacity(0.012),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -2272,7 +2650,7 @@ struct AuraGlassInsetCard: View {
         }
         .overlay(
             shape
-                .stroke(Color.white.opacity(emphasized ? 0.14 : 0.10), lineWidth: 0.9)
+                .stroke(textTone.primaryTextColor.opacity(emphasized ? 0.14 : 0.10), lineWidth: 0.9)
         )
         .clipShape(shape)
     }
@@ -2280,32 +2658,66 @@ struct AuraGlassInsetCard: View {
 
 struct ErrorBanner: View {
     let text: String
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.yellow)
-            Text(text)
-                .font(.callout)
-                .foregroundColor(.primary)
-        }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 14)
-        .background(
-            AuraGlassRoundedSurface(
-                cornerRadius: 14,
-                material: .regular,
-                washColor: Color.orange.opacity(colorScheme == .dark ? 0.06 : 0.05)
-            )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(colorScheme == .dark ? 0.16 : 0.22), lineWidth: 0.9)
+        AuraNotificationBanner(
+            text: text,
+            systemImage: "exclamationmark.triangle.fill",
+            iconColor: .yellow
         )
     }
 }
 
+struct SuccessBanner: View {
+    let text: String
+
+    var body: some View {
+        AuraNotificationBanner(
+            text: text,
+            systemImage: "checkmark.circle.fill",
+            iconColor: .green
+        )
+    }
+}
+
+private struct AuraNotificationBanner: View {
+    let text: String
+    let systemImage: String
+    let iconColor: Color
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: systemImage)
+                .foregroundStyle(iconColor)
+            Text(UserFacingMessageFormatter.format(text))
+                .font(.callout)
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                .lineLimit(2)
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(
+            AuraGlassRoundedSurface(
+                cornerRadius: 14,
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.bottomGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.bottomTextTone.contrastSurfaceColor
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .shadow(color: Color.black.opacity(0.18), radius: 4, x: 0, y: 2)
+        .environment(\.colorScheme, .dark)
+    }
+}
+
+@MainActor
 struct WindowAccessor: NSViewRepresentable {
     @Binding var window: NSWindow?
     var onInteractionStart: () -> Void = {}
@@ -2356,13 +2768,14 @@ struct WindowAccessor: NSViewRepresentable {
         }
     }
 
-    final class Coordinator {
+    final class Coordinator: @unchecked Sendable {
         private weak var configuredWindow: NSWindow?
         private var observers: [NSObjectProtocol] = []
         private var interactionEndWorkItem: DispatchWorkItem?
         private var onInteractionStart: () -> Void = {}
         private var onInteractionEnd: () -> Void = {}
 
+        @MainActor
         func attachIfNeeded(
             _ window: NSWindow,
             onInteractionStart: @escaping () -> Void,
@@ -2382,27 +2795,37 @@ struct WindowAccessor: NSViewRepresentable {
                 ]
                 observers = names.map { name in
                     center.addObserver(forName: name, object: window, queue: .main) { _ in
-                        applyStandardWindowButtonAppearance(for: window)
+                        Task { @MainActor in
+                            applyStandardWindowButtonAppearance(for: window)
+                        }
                     }
                 }
                 observers.append(
                     center.addObserver(forName: NSWindow.willMoveNotification, object: window, queue: .main) { [weak self] _ in
-                        self?.beginWindowInteraction()
+                        Task { @MainActor [weak self] in
+                            self?.beginWindowInteraction()
+                        }
                     }
                 )
                 observers.append(
                     center.addObserver(forName: NSWindow.didMoveNotification, object: window, queue: .main) { [weak self] _ in
-                        self?.scheduleWindowInteractionEnd()
+                        Task { @MainActor [weak self] in
+                            self?.scheduleWindowInteractionEnd()
+                        }
                     }
                 )
                 observers.append(
                     center.addObserver(forName: NSWindow.willStartLiveResizeNotification, object: window, queue: .main) { [weak self] _ in
-                        self?.beginWindowInteraction()
+                        Task { @MainActor [weak self] in
+                            self?.beginWindowInteraction()
+                        }
                     }
                 )
                 observers.append(
                     center.addObserver(forName: NSWindow.didEndLiveResizeNotification, object: window, queue: .main) { [weak self] _ in
-                        self?.scheduleWindowInteractionEnd()
+                        Task { @MainActor [weak self] in
+                            self?.scheduleWindowInteractionEnd()
+                        }
                     }
                 )
                 configureWindowForClientDecorations(window)
@@ -2421,16 +2844,20 @@ struct WindowAccessor: NSViewRepresentable {
             interactionEndWorkItem = nil
         }
 
+        @MainActor
         private func beginWindowInteraction() {
             interactionEndWorkItem?.cancel()
             interactionEndWorkItem = nil
             onInteractionStart()
         }
 
+        @MainActor
         private func scheduleWindowInteractionEnd() {
             interactionEndWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak self] in
-                self?.onInteractionEnd()
+                Task { @MainActor [weak self] in
+                    self?.onInteractionEnd()
+                }
             }
             interactionEndWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
@@ -2438,6 +2865,7 @@ struct WindowAccessor: NSViewRepresentable {
     }
 }
 
+@MainActor
 private final class WindowAccessorView: NSView {
     var onWindowChange: ((NSWindow?) -> Void)?
 
@@ -2450,6 +2878,9 @@ private final class WindowAccessorView: NSView {
 private extension ContentView {
     func resolvedTopOverlayPadding() -> CGFloat {
         guard let window else { return topOverlayTopPadding }
+        if window.styleMask.contains(.fullScreen) {
+            return fullScreenTopOverlayPadding
+        }
         if usesZoomedWindowLayout(window) {
             return zoomedTopOverlayPadding
         }

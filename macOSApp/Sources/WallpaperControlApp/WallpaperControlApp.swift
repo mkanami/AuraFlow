@@ -125,11 +125,21 @@ private struct MenuBarControls: View {
         }
         .disabled(!viewModel.canStart)
 
-        Button("Stop") {
+        Button("Lock") {
             guard allowActionAfterMenuOpen else { return }
-            viewModel.stop()
+            performMenuBarActionAfterDismiss {
+                viewModel.applyLockScreenOnly()
+            }
         }
-        .disabled(!viewModel.canStop)
+        .disabled(!viewModel.canApplyLockScreenOnly)
+
+        Button(viewModel.playbackButtonTitle) {
+            guard allowActionAfterMenuOpen else { return }
+            performMenuBarActionAfterDismiss {
+                viewModel.togglePlayback()
+            }
+        }
+        .disabled(!viewModel.canTogglePlayback)
 
         Button("Remove Wallpaper") {
             guard allowActionAfterMenuOpen else { return }

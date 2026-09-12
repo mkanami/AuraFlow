@@ -2,34 +2,100 @@ import AppKit
 @_exported import AuraWallpaperCore
 import AVKit
 import Combine
+@preconcurrency import ObjectiveC
 import Foundation
+import OSLog
 import UniformTypeIdentifiers
 
-struct AdaptiveGlassAppearance: Equatable {
-    var topGlassAlpha: CGFloat
-    var bottomGlassAlpha: CGFloat
-    var topProtectionOverlayOpacity: CGFloat
-    var bottomProtectionOverlayOpacity: CGFloat
-    var bottomButtonProtectionOpacity: CGFloat
-    var bottomButtonHighlightOpacity: CGFloat
+private let lockScreenLifecycleLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "LockScreenLifecycle"
+)
+private let adaptiveContrastLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "AdaptiveContrast"
+)
 
-    static let `default` = AdaptiveGlassAppearance(
-        topGlassAlpha: 1.0,
-        bottomGlassAlpha: 1.0,
-        topProtectionOverlayOpacity: 0.0,
-        bottomProtectionOverlayOpacity: 0.0,
-        bottomButtonProtectionOpacity: 0.0,
-        bottomButtonHighlightOpacity: 0.055
-    )
+enum AdaptiveTextTone: Equatable {
+    case dark
+    case light
 }
 
-struct CatalogVideoSource: Hashable, Codable {
+struct AdaptiveGlassAppearance: Equatable, Sendable {
+    var topGlassAlpha: CGFloat
+    var bottomGlassAlpha: CGFloat
+    var centerGlassAlpha: CGFloat
+    var topProtectionOverlayOpacity: CGFloat
+    var bottomProtectionOverlayOpacity: CGFloat
+    var centerProtectionOverlayOpacity: CGFloat
+    var bottomButtonProtectionOpacity: CGFloat
+    var bottomButtonHighlightOpacity: CGFloat
+    /// One tone is intentionally shared by every text-bearing surface. The
+    /// backing/protection strength can still vary by region, but the text
+    /// never changes polarity between a button and a panel.
+    var textTone: AdaptiveTextTone
+
+    var topTextTone: AdaptiveTextTone { textTone }
+    var bottomTextTone: AdaptiveTextTone { textTone }
+    var centerTextTone: AdaptiveTextTone { textTone }
+
+    /// Used while a real wallpaper source is present but its first valid frame
+    /// has not been analyzed yet. Keep this light-backed so the transition to
+    /// a bright wallpaper never flashes an unreadable palette.
+    static let safeFallback = AdaptiveGlassAppearance(
+        topGlassAlpha: 0.92,
+        bottomGlassAlpha: 0.88,
+        centerGlassAlpha: 0.90,
+        topProtectionOverlayOpacity: 0.54,
+        bottomProtectionOverlayOpacity: 0.62,
+        centerProtectionOverlayOpacity: 0.58,
+        bottomButtonProtectionOpacity: 0.56,
+        bottomButtonHighlightOpacity: 0.018,
+        textTone: .dark
+    )
+
+    /// Used when there is no wallpaper at all (for example after a fresh
+    /// install or after the catalog/runtime cache has been cleared). The
+    /// preview surface is black in this state, so a dark translucent glass
+    /// palette keeps the controls from becoming opaque white slabs.
+    static let emptyState = AdaptiveGlassAppearance(
+        topGlassAlpha: 0.94,
+        bottomGlassAlpha: 0.92,
+        centerGlassAlpha: 0.93,
+        topProtectionOverlayOpacity: 0.10,
+        bottomProtectionOverlayOpacity: 0.14,
+        centerProtectionOverlayOpacity: 0.12,
+        bottomButtonProtectionOpacity: 0.10,
+        bottomButtonHighlightOpacity: 0.035,
+        textTone: .light
+    )
+
+    /// Used only while a new preview is being decoded and its exact tone is
+    /// not known yet. Keep the existing deterministic polarity for the
+    /// transition, but use minimal backing so changing or downloading a
+    /// wallpaper cannot turn every glass surface white for a frame.
+    static let previewTransitionFallback = AdaptiveGlassAppearance(
+        topGlassAlpha: 0.94,
+        bottomGlassAlpha: 0.92,
+        centerGlassAlpha: 0.93,
+        topProtectionOverlayOpacity: 0.03,
+        bottomProtectionOverlayOpacity: 0.055,
+        centerProtectionOverlayOpacity: 0.045,
+        bottomButtonProtectionOpacity: 0.025,
+        bottomButtonHighlightOpacity: 0.020,
+        textTone: .dark
+    )
+
+    static let `default` = emptyState
+}
+
+struct CatalogVideoSource: Hashable, Codable, Sendable {
     let url: URL
     let width: Int
     let height: Int
 }
 
-struct CatalogWallpaper: Identifiable, Hashable, Codable {
+struct CatalogWallpaper: Identifiable, Hashable, Codable, Sendable {
     let id: String
     let title: String
     let category: String
@@ -41,7 +107,7 @@ struct CatalogWallpaper: Identifiable, Hashable, Codable {
     static let defaultCatalog: [CatalogWallpaper] = []
 }
 
-enum CatalogWallpaperGroup: String, CaseIterable, Identifiable {
+enum CatalogWallpaperGroup: String, CaseIterable, Identifiable, Sendable {
     case anime
     case animeNature
     case scenic
@@ -87,7 +153,7 @@ extension CatalogWallpaper {
     }
 }
 
-struct DownloadedCatalogWallpaper: Identifiable, Hashable, Codable {
+struct DownloadedCatalogWallpaper: Identifiable, Hashable, Codable, Sendable {
     let id: String
     let wallpaperID: String
     let title: String
@@ -116,6 +182,7 @@ struct DownloadedCatalogWallpaper: Identifiable, Hashable, Codable {
 enum CatalogDownloadError: LocalizedError {
     case badStatus(url: URL, statusCode: Int)
     case htmlResponse(url: URL)
+    case unsupportedResponse(url: URL)
 
     var errorDescription: String? {
         switch self {
@@ -135,7 +202,10 @@ enum CatalogDownloadError: LocalizedError {
             }
         case .htmlResponse(let url):
             let host = url.host ?? "server"
-            return "\(host) returned an HTML page instead of a video file."
+            return "\(host) returned an HTML page instead of a wallpaper file."
+        case .unsupportedResponse(let url):
+            let host = url.host ?? "server"
+            return "\(host) returned an unsupported response instead of a wallpaper file."
         }
     }
 }
@@ -153,23 +223,48 @@ func catalogOriginHeaderValue(for url: URL) -> String? {
     return components.string
 }
 
-protocol WallpaperControlling {
+protocol WallpaperControlling: AnyObject, Sendable {
+    var lockScreenCapabilities: PlatformCapabilities { get }
+    func markNativeLockScreenBridgeUnavailable(reason: String)
     func status() throws -> ControlStatus
-    func start(videoURL: URL?, speed: Double?) throws -> ControlStatus
+    func start(videoURL: URL?, speed: Double?) async throws -> ControlStatus
     func resume() throws -> ControlStatus
     func stop() throws -> ControlStatus
-    func clearWallpaper() throws -> ControlStatus
+    func clearWallpaper() async throws -> ControlStatus
     func setVideo(_ url: URL) throws -> ControlStatus
-    func setSpeed(_ speed: Double) throws -> ControlStatus
+    func installLockScreenOnly(videoURL: URL) async throws -> ControlStatus
+    func prepareLockScreenMedia(videoURL: URL) async throws
+    func setSpeed(_ speed: Double) async throws -> ControlStatus
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus
-    func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus
-    func syncLockScreenSaver() throws
+    func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus
+    func syncLockScreenSaver() async throws
     func beginLockScreenPreview() throws -> ControlStatus
     func endLockScreenPreview() throws -> ControlStatus
     func setScaleMode(_ mode: WallpaperScaleMode) throws -> ControlStatus
     func setAutostart(_ enabled: Bool) throws -> ControlStatus
     func metrics() throws -> DaemonMetrics
+}
+
+extension WallpaperControlling {
+    var lockScreenCapabilities: PlatformCapabilities {
+        .legacyMacOS
+    }
+
+    func markNativeLockScreenBridgeUnavailable(reason: String) {}
+}
+
+extension WallpaperControlling {
+    func installLockScreenOnly(videoURL: URL) async throws -> ControlStatus {
+        throw NativeWallpaperControllerError.unavailable(
+            "Lock Screen-only wallpaper is unavailable."
+        )
+    }
+
+    func prepareLockScreenMedia(videoURL: URL) async throws {
+        // Controllers without a native Aerial implementation do not need a
+        // separate media cache.
+    }
 }
 
 enum NativeWallpaperControllerError: LocalizedError {
@@ -183,20 +278,126 @@ enum NativeWallpaperControllerError: LocalizedError {
     }
 }
 
-final class NativeWallpaperController: WallpaperControlling {
+/// Foundation notification tokens are not annotated Sendable in the current
+/// SDK, although NotificationCenter explicitly permits removing them from a
+/// teardown path. Keep the SDK token behind a tiny immutable ownership box so
+/// the MainActor view model can clean it up from its nonisolated deinit.
+private final class ObserverToken: @unchecked Sendable {
+    let value: NSObjectProtocol
+
+    init(_ value: NSObjectProtocol) {
+        self.value = value
+    }
+}
+
+private actor NativeLifecycleOperationGate {
+    private var isHeld = false
+
+    func acquire() async throws {
+        while isHeld {
+            try Task.checkCancellation()
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        try Task.checkCancellation()
+        isHeld = true
+    }
+
+    func release() {
+        isHeld = false
+    }
+}
+
+/// The controller owns all mutable runtime state behind its lifecycle and
+/// recursive locks. It is passed to background bridge calls as one stable
+/// service object, so explicitly document that synchronization boundary for
+/// Swift's strict concurrency checker.
+final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable {
     private struct RuntimeHelperResolution {
+        let url: URL
+        let didUpdateInstalledCopy: Bool
+    }
+
+    private struct RuntimeBinaryResolution {
         let url: URL
         let didUpdateInstalledCopy: Bool
     }
 
     private let store: WallpaperRuntimeStore
     private let helperURL: URL
-    private let lockScreenSaverInstaller: LockScreenSaverInstalling
+    private let nativeBridgeURL: URL?
+    private let nativeBridgeCapabilities: NativeLockScreenBridgeCapabilities
+    private let lockScreenPlatform: LockScreenPlatformOperating
+    private let daemonProcessManager: DaemonProcessManager
+    private let autostartManager: AutostartManager
+    private let recoveryCoordinator: WallpaperRecoveryCoordinator
+    private let lifecycleLock = NSRecursiveLock()
+    private let asyncLifecycleGate = NativeLifecycleOperationGate()
+    private var nextRuntimeOperationID: UInt64 = 0
+    private var nativeBridgeRuntimeFailureReason: String?
+
+    var lockScreenCapabilities: PlatformCapabilities {
+        let capabilities = lockScreenPlatform.capabilities
+        guard nativeBridgeRequired else {
+            return capabilities
+        }
+
+        if let nativeBridgeRuntimeFailureReason {
+            let fallback = PlatformCapabilities.legacyMacOS
+            return PlatformCapabilities(
+                platformName: fallback.platformName,
+                minimumMajorOSVersion: fallback.minimumMajorOSVersion,
+                supportsLockScreen: fallback.supportsLockScreen,
+                supportsLockScreenOnly: fallback.supportsLockScreenOnly,
+                supportsSecureLockScreen: fallback.supportsSecureLockScreen,
+                supportsAnimatedMedia: fallback.supportsAnimatedMedia,
+                usesPrivateWallpaperFramework: false,
+                availabilityMessage: NativeLockScreenBridgeAvailability
+                    .runtimeFailure(reason: nativeBridgeRuntimeFailureReason)
+                    .message
+            )
+        }
+
+        guard nativeBridgeCapabilities.isAvailable else {
+            return unavailableNativeBridgeCapabilities(
+                message: nativeBridgeCapabilities.message
+            )
+        }
+        return capabilities
+    }
+
+    func markNativeLockScreenBridgeUnavailable(reason: String) {
+        lifecycleLock.lock()
+        nativeBridgeRuntimeFailureReason = reason
+        lifecycleLock.unlock()
+        (lockScreenPlatform as? WallpaperPlatformAdapter)?
+            .markNativeBridgeUnavailable(reason: reason)
+        lockScreenLifecycleLogger.error(
+            "Native Lock Screen bridge marked unavailable: \(reason, privacy: .public)"
+        )
+    }
+
+    private func unavailableNativeBridgeCapabilities(
+        message: String
+    ) -> PlatformCapabilities {
+        return PlatformCapabilities(
+            platformName: "Native Lock Screen unavailable",
+            minimumMajorOSVersion: NativeLockScreenBridgeCapabilities
+                .minimumMajorOSVersion,
+            supportsLockScreen: false,
+            supportsLockScreenOnly: false,
+            supportsSecureLockScreen: false,
+            supportsAnimatedMedia: false,
+            usesPrivateWallpaperFramework: true,
+            availabilityMessage: message
+        )
+    }
 
     init(
         store: WallpaperRuntimeStore = WallpaperRuntimeStore(),
         helperURL: URL? = nil,
-        lockScreenSaverInstaller: LockScreenSaverInstalling? = nil
+        lockScreenSaverInstaller: LockScreenPlatformOperating? = nil,
+        nativeBridgeURL: URL? = nil,
+        nativeBridgeCapabilitiesOverride: NativeLockScreenBridgeCapabilities? = nil
     ) throws {
         self.store = store
         let helperResolution: RuntimeHelperResolution
@@ -209,12 +410,100 @@ final class NativeWallpaperController: WallpaperControlling {
             helperResolution = try Self.resolveHelperURL()
         }
         self.helperURL = helperResolution.url
-        self.lockScreenSaverInstaller =
-            lockScreenSaverInstaller ?? LockScreenWallpaperInstaller()
+        let resolvedNativeBridgeURL = nativeBridgeURL ?? Self.resolveNativeBridgeURL()
+        // An injected bridge path is used by tests and controlled migrations;
+        // production resolution performs the bounded startup handshake before
+        // the native route is advertised as available.
+        let resolvedNativeBridgeCapabilities: NativeLockScreenBridgeCapabilities
+        if let nativeBridgeCapabilitiesOverride {
+            resolvedNativeBridgeCapabilities = nativeBridgeCapabilitiesOverride
+        } else if nativeBridgeURL == nil {
+            resolvedNativeBridgeCapabilities =
+                NativeLockScreenBridgeCapabilityChecker.checkRuntime(
+                    executableURL: resolvedNativeBridgeURL,
+                    requireValidCodeSignature: true
+                )
+        } else {
+            resolvedNativeBridgeCapabilities =
+                NativeLockScreenBridgeCapabilityChecker.check(
+                    executableURL: resolvedNativeBridgeURL
+                )
+        }
+        let effectiveNativeBridgeURL = resolvedNativeBridgeCapabilities.isAvailable
+            ? resolvedNativeBridgeURL
+            : nil
+        // An explicitly injected URL is used by migration/runtime tests and
+        // by controlled integrations. The production resolver only returns
+        // a URL after the capability gate succeeds, so this exception cannot
+        // make an unverified bundled path part of the normal app flow.
+        let configuredNativeBridgeURL = nativeBridgeURL != nil
+            ? resolvedNativeBridgeURL
+            : effectiveNativeBridgeURL
+        self.nativeBridgeCapabilities = resolvedNativeBridgeCapabilities
+        self.nativeBridgeURL = effectiveNativeBridgeURL
+        if let lockScreenSaverInstaller {
+            self.lockScreenPlatform = lockScreenSaverInstaller
+        } else {
+            self.lockScreenPlatform = WallpaperPlatformAdapter(
+                nativeBridgeCapabilities: resolvedNativeBridgeCapabilities
+            )
+        }
+        let legacyHelperURLs = Self.legacyHelperURLs(for: store)
+        self.daemonProcessManager = DaemonProcessManager(
+            store: store,
+            expectedExecutableURL: helperResolution.url,
+            additionalExpectedExecutableURLs: legacyHelperURLs
+        )
+        self.autostartManager = AutostartManager(
+            store: store,
+            helperURL: helperResolution.url,
+            nativeBridgeURL: configuredNativeBridgeURL
+        )
+        self.recoveryCoordinator = WallpaperRecoveryCoordinator(store: store)
+        self.nextRuntimeOperationID =
+            store.loadCommand()?.operationID ?? 0
+        let selectedPlatformName = self.lockScreenPlatform.capabilities.platformName
+        let selectedPlatformIsSecure = self.lockScreenPlatform.capabilities
+            .supportsSecureLockScreen
+        lockScreenLifecycleLogger.notice(
+            "Lock Screen platform selected=\(selectedPlatformName, privacy: .public) secure=\(selectedPlatformIsSecure, privacy: .public) nativeBridge=\(resolvedNativeBridgeCapabilities.isAvailable, privacy: .public)"
+        )
+        (self.lockScreenPlatform as? LockScreenSaverInstalling)?
+            .refreshInstalledCompatibilityComponentIfNeeded()
+        migrateExistingLaunchAgentIfNeeded()
+        let terminatedOrphanedPIDs = daemonProcessManager
+            .terminateOrphanedProcesses(timeout: 1.0)
+        if !terminatedOrphanedPIDs.isEmpty {
+            lockScreenLifecycleLogger.notice(
+                "Terminated orphaned AuraFlow wallpaper agents: \(terminatedOrphanedPIDs.map(String.init).joined(separator: ", "), privacy: .public)"
+            )
+        }
         if helperResolution.didUpdateInstalledCopy {
             try restartRunningAgentAfterHelperUpdate()
         }
         recoverInterruptedWallpaperRemovalIfNeeded()
+    }
+
+    private static func legacyHelperURLs(for store: WallpaperRuntimeStore) -> [URL] {
+        var urls: [URL] = []
+        if let launchAgentURL = store.loadLaunchAgentExecutableURL() {
+            urls.append(launchAgentURL)
+        }
+
+        // Before the runtime helper was decoupled from the app bundle, the
+        // LaunchAgent and manual starts used one of these paths. Keep them as
+        // exact-path fallbacks so an upgrade can stop that old process without
+        // weakening PID-reuse protection.
+        urls.append(
+            Bundle.main.bundleURL
+                .appendingPathComponent("Contents/MacOS/AuraWallpaperAgent")
+        )
+        if let executableDirectory = Bundle.main.executableURL?
+            .deletingLastPathComponent()
+        {
+            urls.append(executableDirectory.appendingPathComponent("AuraWallpaperAgent"))
+        }
+        return urls
     }
 
     private static func resolveHelperURL() throws -> RuntimeHelperResolution {
@@ -238,19 +527,91 @@ final class NativeWallpaperController: WallpaperControlling {
         throw NativeWallpaperControllerError.unavailable("Native wallpaper agent is not bundled with AuraFlow.")
     }
 
+    private static func resolveNativeBridgeURL() -> URL? {
+        guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 else {
+            return nil
+        }
+        var candidates: [URL] = []
+        #if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        if let override = environment["AURAFLOW_NATIVE_BRIDGE_PATH"] {
+            let overrideURL = URL(fileURLWithPath: override)
+            if NativeLockScreenBridgeCapabilityChecker.check(
+                executableURL: overrideURL
+            ).isAvailable {
+                return overrideURL
+            }
+        }
+        #endif
+        candidates.append(
+            Bundle.main.bundleURL
+                .appendingPathComponent("Contents/MacOS/AuraWallpaperNativeBridge")
+        )
+        if let executableDirectory = Bundle.main.executableURL?
+            .deletingLastPathComponent()
+        {
+            candidates.append(
+                executableDirectory
+                    .appendingPathComponent("AuraWallpaperNativeBridge")
+            )
+        }
+        if let bundledURL = candidates.first(where: {
+            NativeLockScreenBridgeCapabilityChecker.check(
+                executableURL: $0
+            ).isAvailable
+        }) {
+            return try? installRuntimeBinary(
+                from: bundledURL,
+                named: "AuraWallpaperNativeBridge"
+            ).url
+        }
+
+        let runtimeURL = WallpaperRuntimeStore.defaultAppSupportURL()
+            .appendingPathComponent("Runtime/AuraWallpaperNativeBridge")
+        return NativeLockScreenBridgeCapabilityChecker.check(
+            executableURL: runtimeURL
+        ).isAvailable
+            ? runtimeURL
+            : nil
+    }
+
+    private func migrateExistingLaunchAgentIfNeeded() {
+        do {
+            try autostartManager.migrateExistingLaunchAgentIfNeeded()
+        } catch {
+            lockScreenLifecycleLogger.error(
+                "Could not migrate the existing LaunchAgent: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
     private static func installRuntimeHelper(
         from bundledHelperURL: URL
     ) throws -> RuntimeHelperResolution {
+        let resolution = try installRuntimeBinary(
+            from: bundledHelperURL,
+            named: "AuraWallpaperAgent"
+        )
+        return RuntimeHelperResolution(
+            url: resolution.url,
+            didUpdateInstalledCopy: resolution.didUpdateInstalledCopy
+        )
+    }
+
+    private static func installRuntimeBinary(
+        from bundledURL: URL,
+        named name: String
+    ) throws -> RuntimeBinaryResolution {
         let fileManager = FileManager.default
         let runtimeDirectory = WallpaperRuntimeStore.defaultAppSupportURL()
             .appendingPathComponent("Runtime", isDirectory: true)
-        let helperURL = runtimeDirectory.appendingPathComponent("AuraWallpaperAgent")
+        let installedURL = runtimeDirectory.appendingPathComponent(name)
         try fileManager.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
 
         let shouldCopy: Bool
-        if fileManager.fileExists(atPath: helperURL.path) {
-            let bundledAttributes = try fileManager.attributesOfItem(atPath: bundledHelperURL.path)
-            let installedAttributes = try fileManager.attributesOfItem(atPath: helperURL.path)
+        if fileManager.fileExists(atPath: installedURL.path) {
+            let bundledAttributes = try fileManager.attributesOfItem(atPath: bundledURL.path)
+            let installedAttributes = try fileManager.attributesOfItem(atPath: installedURL.path)
             shouldCopy = bundledAttributes[.size] as? NSNumber != installedAttributes[.size] as? NSNumber ||
                 bundledAttributes[.modificationDate] as? Date != installedAttributes[.modificationDate] as? Date
         } else {
@@ -258,57 +619,53 @@ final class NativeWallpaperController: WallpaperControlling {
         }
 
         if shouldCopy {
-            let temporaryURL = runtimeDirectory.appendingPathComponent(".AuraWallpaperAgent.\(UUID().uuidString).tmp")
+            let temporaryURL = runtimeDirectory.appendingPathComponent(".\(name).\(UUID().uuidString).tmp")
             try? fileManager.removeItem(at: temporaryURL)
-            try fileManager.copyItem(at: bundledHelperURL, to: temporaryURL)
+            try fileManager.copyItem(at: bundledURL, to: temporaryURL)
             _ = try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temporaryURL.path)
-            if fileManager.fileExists(atPath: helperURL.path) {
-                _ = try fileManager.replaceItemAt(helperURL, withItemAt: temporaryURL)
+            if fileManager.fileExists(atPath: installedURL.path) {
+                _ = try fileManager.replaceItemAt(installedURL, withItemAt: temporaryURL)
             } else {
-                try fileManager.moveItem(at: temporaryURL, to: helperURL)
+                try fileManager.moveItem(at: temporaryURL, to: installedURL)
             }
         }
 
-        return RuntimeHelperResolution(
-            url: helperURL,
+        return RuntimeBinaryResolution(
+            url: installedURL,
             didUpdateInstalledCopy: shouldCopy
         )
     }
 
+    private var nativeBridgeRequired: Bool {
+        // The selected adapter is the source of truth for private-framework
+        // usage. The factory never selects this capability before macOS 26,
+        // while injected adapters remain testable on the host OS.
+        lockScreenPlatform.capabilities.usesPrivateWallpaperFramework
+    }
+
     private func restartRunningAgentAfterHelperUpdate() throws {
-        guard store.processIsAlive(pid: store.loadPID()) else { return }
+        guard daemonProcessManager.isRunning else { return }
         let config = store.loadConfig()
-        guard store.terminateDaemon(timeout: 1.0) else {
+        let lockScreenOnlyAgent = store.isLockScreenOnlyAgent()
+        let runtimeWasPaused = store.isPaused()
+        guard daemonProcessManager.terminate(timeout: 1.0).succeeded else {
             throw NativeWallpaperControllerError.unavailable(
                 "The previous wallpaper agent did not stop during the update."
             )
         }
-        guard !config.video_path.isEmpty,
-              FileManager.default.fileExists(atPath: config.video_path)
+        guard lockScreenOnlyAgent
+            ? store.effectiveLockScreenSourceURL(for: config) != nil
+            : !config.video_path.isEmpty
+                && FileManager.default.fileExists(atPath: config.video_path)
         else {
             return
         }
-        try launchAgentIfNeeded()
-        try send(.reload, config: config)
+        try launchAgentIfNeeded(lockScreenOnly: lockScreenOnlyAgent)
+        try send(runtimeWasPaused ? .pause : .reload, config: config)
     }
 
     private func recoverInterruptedWallpaperRemovalIfNeeded() {
-        guard store.appSupportURL.standardizedFileURL
-            == WallpaperRuntimeStore.defaultAppSupportURL()
-                .standardizedFileURL
-        else {
-            return
-        }
-        let config = store.loadConfig()
-        guard config.video_path.isEmpty else {
-            return
-        }
-        if store.restoreWallpaperBackup() {
-            store.removeManagedFallback()
-        } else {
-            _ = WallpaperDesktopSupport
-                .repairCurrentDesktopWallpaperIfNeeded()
-        }
+        _ = recoveryCoordinator.recoverInterruptedWallpaperRemovalIfNeeded()
     }
 
     private func updateConfig(_ block: (inout ControlConfig) -> Void) throws -> ControlConfig {
@@ -320,7 +677,18 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     private func send(_ action: WallpaperRuntimeCommandAction, config: ControlConfig? = nil) throws {
-        try store.saveCommand(WallpaperRuntimeCommand(action: action, config: config))
+        nextRuntimeOperationID &+= 1
+        try store.saveCommand(
+            WallpaperRuntimeCommand(
+                operationID: nextRuntimeOperationID,
+                action: action,
+                config: config
+            )
+        )
+        postRuntimeCommandDidChange()
+    }
+
+    private func postRuntimeCommandDidChange() {
         DistributedNotificationCenter.default().post(
             name: WallpaperRuntimeNotifications.commandDidChange,
             object: nil,
@@ -328,57 +696,274 @@ final class NativeWallpaperController: WallpaperControlling {
         )
     }
 
-    private func launchAgentIfNeeded() throws {
-        if store.processIsAlive(pid: store.loadPID()) {
+    private func launchAgentIfNeeded(lockScreenOnly: Bool = false) throws {
+        if daemonProcessManager.isRunning {
             return
         }
 
         store.removeCommand()
         store.removeHealth()
+        if lockScreenOnly {
+            store.markLockScreenAgentReady(false)
+            store.markLockScreenAgentStarted(false)
+        }
         let task = Process()
         task.executableURL = helperURL
-        task.arguments = ["--config", store.configURL.path]
+        var arguments = [
+            "--config",
+            store.configURL.path,
+        ]
+        if lockScreenOnly {
+            arguments.append("--lock-screen-only")
+        }
+        if let nativeBridgeURL {
+            arguments.append("--native-bridge-path")
+            arguments.append(nativeBridgeURL.path)
+        }
+        task.arguments = arguments
+        // The agent is a background runtime process. Do not let an orphaned
+        // child keep the app's stdout/stderr pipes open during shutdown or
+        // test teardown; runtime diagnostics are written through OSLog.
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
         try task.run()
-        try store.savePID(task.processIdentifier)
+        do {
+            try store.savePID(task.processIdentifier)
+        } catch {
+            // The PID and identity are the ownership proof for this exact
+            // child. If persistence fails (for example, because the disk is
+            // full), terminate this Process directly before propagating the
+            // error; the manager cannot safely find it without persisted
+            // metadata.
+            if task.isRunning {
+                task.terminate()
+            }
+            task.waitUntilExit()
+            store.removePID()
+            throw error
+        }
+        store.markLockScreenOnlyAgent(lockScreenOnly)
+    }
+
+    private func waitForLockScreenAgentReady() async throws {
+        // Test fixtures use lightweight helper processes instead of the real
+        // lock-only agent. The readiness handshake is required only for the
+        // production runtime, where returning Applied before the agent has
+        // registered the shield callback creates the immediate-lock race.
+        guard store.appSupportURL.standardizedFileURL
+            == WallpaperRuntimeStore.defaultAppSupportURL()
+                .standardizedFileURL
+        else {
+            return
+        }
+
+        let deadline = Date().addingTimeInterval(6.0)
+        while Date() < deadline {
+            guard daemonProcessManager.isRunning else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The Lock Screen agent stopped during initialization."
+                )
+            }
+            if store.isLockScreenAgentStarted() {
+                return
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        throw NativeWallpaperControllerError.unavailable(
+            "The Lock Screen agent did not finish initializing."
+        )
+    }
+
+    private func waitForLockScreenGenerationReady(videoURL: URL) async throws {
+        // The agent-ready marker only says that its run loop is alive. The
+        // selected generation must also be valid and owned by the provider;
+        // otherwise the Apply button can report success while the next lock
+        // still falls back to the macOS wallpaper.
+        guard store.appSupportURL.standardizedFileURL
+            == WallpaperRuntimeStore.defaultAppSupportURL()
+                .standardizedFileURL
+        else {
+            return
+        }
+
+        let deadline = Date().addingTimeInterval(8.0)
+        while Date() < deadline {
+            guard daemonProcessManager.isRunning else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The Lock Screen agent stopped before the wallpaper was ready."
+                )
+            }
+
+            let status = lockScreenPlatform.lockScreenOnlyStatus(
+                videoURL: videoURL
+            )
+            if status.isReady,
+               status.providerRunning,
+               store.isLockScreenAgentReady() {
+                return
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        throw NativeWallpaperControllerError.unavailable(
+            "The Lock Screen provider did not confirm the selected wallpaper."
+        )
     }
 
     func status() throws -> ControlStatus {
         store.status()
     }
 
-    func start(videoURL: URL?, speed: Double?) throws -> ControlStatus {
-        let config = try updateConfig { config in
-            if let videoURL {
-                config.video_path = videoURL.path
+    func start(videoURL: URL?, speed: Double?) async throws -> ControlStatus {
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
+        let previousConfig = store.loadConfig()
+        let previousPaused = store.isPaused()
+        let previousLockScreenOnlySource = store.loadLockScreenOnlySource()
+        let previousLockScreenOnlyAgent = store.isLockScreenOnlyAgent()
+        let previousLockScreenOnlyMode =
+            previousLockScreenOnlyAgent || previousLockScreenOnlySource != nil
+        let previousPID = store.loadPID()
+        let previousAgentWasAlive = daemonProcessManager.isRunning(pid: previousPID)
+        let previousCommand = store.loadCommand()
+        let previousHealth = store.loadHealth()
+
+        // Resolve and validate the next configuration before touching the
+        // running lock-only agent or any persistent runtime state. A failed
+        // file selection must leave the previous working configuration intact.
+        var nextConfig = previousConfig
+        if let videoURL {
+            nextConfig.video_path = videoURL.path
+        }
+        if let speed {
+            nextConfig.playback_speed = speed
+        }
+        // Start is the shared Desktop + Lock Screen action. The setting can
+        // remain disabled before the first start, but a successful Start must
+        // persist the Lock Screen side before the agent is launched.
+        nextConfig.show_on_lock_screen = true
+        nextConfig = store.normalized(nextConfig)
+        guard !nextConfig.video_path.isEmpty else {
+            throw NativeWallpaperControllerError.unavailable(
+                "No video configured. Choose a wallpaper first."
+            )
+        }
+        guard FileManager.default.fileExists(atPath: nextConfig.video_path) else {
+            throw NativeWallpaperControllerError.unavailable(
+                "Video file not found: \(nextConfig.video_path)"
+            )
+        }
+
+        // The desktop backup is the last operation that can fail without
+        // requiring a rollback. Keep the old lock-only route alive until this
+        // succeeds, otherwise Start could destroy a working Lock Screen mode
+        // and then return an error.
+        let didCaptureDesktopBackup =
+            WallpaperDesktopPlatform.captureCurrentDesktopWallpaperBackup(
+                appSupportPath: store.appSupportURL.path
+            )
+        if !didCaptureDesktopBackup,
+           !WallpaperDesktopPlatform.hasWallpaperBackupFiles(
+               appSupportPath: store.appSupportURL.path
+           ),
+           !NSScreen.screens.isEmpty {
+            lockScreenLifecycleLogger.error(
+                "Desktop wallpaper backup could not be captured before Start"
+            )
+            throw NativeWallpaperControllerError.unavailable(
+                "AuraFlow could not save the current Desktop wallpaper before starting."
+            )
+        }
+
+        var previousAgentWasStopped = false
+        do {
+            if previousLockScreenOnlyAgent, previousAgentWasAlive {
+                guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
+                    throw NativeWallpaperControllerError.unavailable(
+                        "The Lock Screen agent did not stop before starting desktop wallpaper."
+                    )
+                }
+                previousAgentWasStopped = true
             }
-            if let speed {
-                config.playback_speed = speed
+            if previousLockScreenOnlyAgent {
+                store.removeCommand()
+                store.removeHealth()
+                store.markLockScreenOnlyAgent(false)
             }
-            // Version 1.3.0 stored the implicit default as an explicit `false`.
-            // Treat that legacy value as unset once. From 1.3.1 onward an
-            // explicit user toggle is recorded and always respected.
-            if config.lock_screen_preference_configured != true {
-                config.show_on_lock_screen = true
+
+            try store.saveConfig(nextConfig)
+            store.clearLockScreenOnlySource()
+
+            // Start keeps the original all-surfaces behavior: the selected
+            // wallpaper is applied to the Desktop and Lock Screen together.
+            // The separate Lock button uses installLockScreenOnly() and is the
+            // only path that leaves the user's Desktop untouched.
+            try await installLockScreenSaver(using: nextConfig)
+            guard lockScreenPlatform.installationConfirmed else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "macOS did not confirm the Desktop and Lock Screen wallpaper configuration."
+                )
             }
+            store.markPaused(false)
+            try launchAgentIfNeeded()
+            try send(.reload, config: nextConfig)
+            return store.status()
+        } catch {
+            let rollbackFailures = await rollbackStart(
+                previousConfig: previousConfig,
+                previousLockScreenOnlySource: previousLockScreenOnlySource,
+                previousLockScreenOnlyAgent: previousLockScreenOnlyAgent,
+                previousLockScreenOnlyMode: previousLockScreenOnlyMode,
+                previousAgentWasAlive: previousAgentWasAlive,
+                previousAgentWasStopped: previousAgentWasStopped,
+                previousPaused: previousPaused,
+                previousPID: previousPID,
+                previousCommand: previousCommand,
+                previousHealth: previousHealth
+            )
+            if !rollbackFailures.isEmpty {
+                throw NativeWallpaperControllerError.unavailable(
+                    "Start failed: \(error.localizedDescription); "
+                        + "rollback failed: "
+                        + rollbackFailures.joined(separator: "; ")
+                )
+            }
+            throw error
         }
-        guard !config.video_path.isEmpty else {
-            throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
-        }
-        guard FileManager.default.fileExists(atPath: config.video_path) else {
-            throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
-        }
-        _ = WallpaperDesktopSupport.captureCurrentDesktopWallpaperBackup(appSupportPath: store.appSupportURL.path)
-        if config.show_on_lock_screen ?? false {
-            try installLockScreenSaver(using: config)
-        }
-        store.markPaused(false)
-        try launchAgentIfNeeded()
-        try send(.reload, config: config)
-        return store.status()
     }
 
     func resume() throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
+
+        if store.isLockScreenOnlyMode() {
+            guard let sourceURL = store.effectiveLockScreenSourceURL(for: config),
+                  FileManager.default.fileExists(atPath: sourceURL.path)
+            else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "Lock Screen wallpaper file not found. Choose a wallpaper first."
+                )
+            }
+
+            if lockScreenCapabilities.supportsSecureLockScreen {
+                // A native Lock Screen-only route owns a dedicated agent. If
+                // an older agent disappeared while the wallpaper was paused,
+                // launch the correct mode before queueing the resume command.
+                try launchAgentIfNeeded(lockScreenOnly: true)
+                try send(.resume, config: config)
+                store.markPaused(false)
+            } else {
+                // The legacy screen saver observes the shared pause marker
+                // directly and resumes on the distributed notification.
+                store.markPaused(false)
+                postRuntimeCommandDidChange()
+            }
+            return store.status()
+        }
+
         guard !config.video_path.isEmpty else {
             throw NativeWallpaperControllerError.unavailable("No video configured. Choose a wallpaper first.")
         }
@@ -386,138 +971,581 @@ final class NativeWallpaperController: WallpaperControlling {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(config.video_path)")
         }
 
-        store.markPaused(false)
         try launchAgentIfNeeded()
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.resume, config: config)
         } else {
             try send(.reload, config: config)
         }
+        store.markPaused(false)
         return store.status()
     }
 
     func stop() throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
+        if let sourceURL = store.effectiveLockScreenSourceURL(for: config),
+           WallpaperMediaKind.forURL(sourceURL).isStaticImage {
+            // A still image has no playback state to pause. In particular,
+            // do not create a paused marker or a pause command for a photo;
+            // Stop remains a no-op for both Desktop and Lock Screen routes.
+            return store.status()
+        }
         store.markPaused(true)
-        if store.processIsAlive(pid: store.loadPID()) {
-            try send(.pause, config: config)
+        if daemonProcessManager.isRunning {
+            do {
+                try send(.pause, config: config)
+            } catch {
+                // The screen-saver process is separate from the agent. Still
+                // notify it when command persistence is unavailable (for
+                // example, during a full disk) so the marker can freeze the
+                // currently rendered Lock Screen frame immediately.
+                postRuntimeCommandDidChange()
+                throw error
+            }
+        } else {
+            // A stale or legacy agent may still exist without a valid
+            // PID/identity pair. The Lock Screen saver must not depend on
+            // that ownership check to observe Stop; it reads the marker and
+            // freezes its own AVPlayer on this notification.
+            postRuntimeCommandDidChange()
         }
         return store.status()
     }
 
-    func clearWallpaper() throws -> ControlStatus {
-        let currentConfig = store.loadConfig()
-        if store.processIsAlive(pid: store.loadPID()) {
-            try? send(.terminate, config: currentConfig)
+    func clearWallpaper() async throws -> ControlStatus {
+        // Lifecycle callers are frequently Main Actor isolated. Yield before
+        // synchronous termination and local cleanup so they never begin on
+        // that actor.
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
         }
-        guard store.terminateDaemon(timeout: 2.0) else {
-            throw NativeWallpaperControllerError.unavailable(
-                "The wallpaper agent did not stop, so its desktop window could not be removed."
+        await Task.yield()
+        let currentConfig = store.loadConfig()
+        let removingLockScreenOnly =
+            store.isLockScreenOnlyAgent()
+            || store.loadLockScreenOnlySource() != nil
+        let runtimeWasRunning = daemonProcessManager.isRunning
+        let runtimeWasPaused = store.isPaused()
+        let nativeDesktopStoreIsIsolated =
+            !removingLockScreenOnly
+            && lockScreenPlatform.capabilities
+                .usesPrivateWallpaperFramework
+            && lockScreenPlatform.requiresLockScreenSessionPromotion
+        // Shared native Start owns the visible Desktop while the Aerial
+        // transaction restores the user's last route. Do not tear down that
+        // cover first: the safe pre-Start provider would otherwise become
+        // visible for a frame before the journal's final image transition.
+        // Lock-only and legacy routes keep their existing termination order.
+        let deferSharedNativeRuntimeTermination =
+            runtimeWasRunning
+            && !removingLockScreenOnly
+            && lockScreenPlatform.capabilities
+                .usesPrivateWallpaperFramework
+        let hadNativeSharedWallpaperRoute =
+            deferSharedNativeRuntimeTermination
+            && lockScreenPlatform.isInstalled
+        var runtimeWasTerminated = !runtimeWasRunning
+        if runtimeWasRunning && !deferSharedNativeRuntimeTermination {
+            try? send(
+                removingLockScreenOnly
+                    ? .terminatePreservingDesktop
+                    : .terminate,
+                config: currentConfig
             )
+            guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The wallpaper agent did not stop, so its desktop window could not be removed."
+                )
+            }
+            runtimeWasTerminated = true
         }
         store.removeCommand()
         store.removeHealth()
-        if currentConfig.show_on_lock_screen == true
-            || lockScreenSaverInstaller.isInstalled {
-            try lockScreenSaverInstaller.uninstall()
+        do {
+            if currentConfig.show_on_lock_screen == true
+                || lockScreenPlatform.isInstalled {
+                if removingLockScreenOnly || nativeDesktopStoreIsIsolated {
+                    try await lockScreenPlatform
+                        .uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
+                } else {
+                    try await lockScreenPlatform.uninstallAsync()
+                }
+            }
+        } catch {
+            // Remove must not leave a still-configured wallpaper with its
+            // runtime already stopped. The uninstaller keeps its marker/source
+            // until the system transaction commits, so restore the previous
+            // process when any part of that transaction fails.
+            if runtimeWasRunning && runtimeWasTerminated {
+                do {
+                    store.markPaused(runtimeWasPaused)
+                    store.markLockScreenOnlyAgent(removingLockScreenOnly)
+                    try launchAgentIfNeeded(
+                        lockScreenOnly: removingLockScreenOnly
+                    )
+                    try send(
+                        runtimeWasPaused ? .pause : .reload,
+                        config: currentConfig
+                    )
+                } catch let rollbackError {
+                    throw NativeWallpaperControllerError.unavailable(
+                        "Remove failed: \(error.localizedDescription); "
+                            + "runtime rollback failed: "
+                            + rollbackError.localizedDescription
+                    )
+                }
+            }
+            throw error
         }
-        let restored = store.restoreWallpaperBackup()
+
+        if deferSharedNativeRuntimeTermination {
+            // The Aerial installer has now committed the user's final
+            // Desktop route. Remove the temporary Aura cover only after that
+            // point, so the user never sees the bootstrap/pre-Start route.
+            try? send(.terminate, config: currentConfig)
+            guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The wallpaper agent did not stop, so its desktop window could not be removed."
+                )
+            }
+            // `send(.terminate)` recreates command.json after the early
+            // cleanup above. Once the covered runtime has exited, remove that
+            // one-shot command so Monitoring and the next Start cannot read a
+            // stale termination request.
+            store.removeCommand()
+            store.removeHealth()
+        }
+        store.clearLockScreenOnlySource()
+        store.markLockScreenOnlyAgent(false)
+        let restoreStatus: WallpaperRestoreStatus
+        if removingLockScreenOnly {
+            // Lock-only mode never owns Desktop. The modern uninstaller has
+            // already preserved every current Desktop/Space in one wallpaper
+            // store update. Reapplying URL backups here would affect only the
+            // active Space and would visibly switch the Desktop a second time.
+            WallpaperDesktopPlatform.discardWallpaperBackupFiles(
+                appSupportPath: store.appSupportURL.path
+            )
+            store.markWallpaperRestorePending(false)
+            restoreStatus = .notNeeded
+        } else if hadNativeSharedWallpaperRoute {
+            // Modern Start either preserved Desktop/Linked for its entire
+            // lifetime or restored the complete journal under Aura's cover.
+            // Replaying the legacy one-image backup here would flatten Spaces
+            // and reintroduce the Golden Gate transition.
+            WallpaperDesktopPlatform.discardWallpaperBackupFiles(
+                appSupportPath: store.appSupportURL.path
+            )
+            store.markWallpaperRestorePending(false)
+            restoreStatus = .notNeeded
+        } else {
+            if WallpaperDesktopPlatform.hasWallpaperBackupFiles(
+                appSupportPath: store.appSupportURL.path
+            ) {
+                store.markWallpaperRestorePending(true)
+            }
+            restoreStatus = store.restoreWallpaperBackup()
+            if restoreStatus != .failed {
+                store.markWallpaperRestorePending(false)
+            }
+        }
         _ = try updateConfig { config in
             config.video_path = ""
+            config.show_on_lock_screen = false
         }
-        if restored {
+        if !removingLockScreenOnly, restoreStatus != .failed {
             store.removeManagedFallback()
         }
-        return store.status(wallpaperRestored: restored)
+        return store.status(
+            wallpaperRestored: restoreStatus == .failed ? nil : restoreStatus == .restored,
+            wallpaperRestoreStatus: restoreStatus
+        )
     }
 
     func setVideo(_ url: URL) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(url.path)")
         }
         let config = try updateConfig { config in
             config.video_path = url.path
         }
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.reload, config: config)
         }
         return store.status()
     }
 
-    func setSpeed(_ speed: Double) throws -> ControlStatus {
+    func installLockScreenOnly(videoURL: URL) async throws -> ControlStatus {
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
+        guard lockScreenPlatform.capabilities.supportsLockScreenOnly else {
+            throw NativeWallpaperControllerError.unavailable(
+                lockScreenPlatform.capabilities.availabilityMessage
+                    ?? "Lock Screen-only wallpaper is unavailable."
+            )
+        }
+        let normalizedURL = videoURL.standardizedFileURL
+        guard FileManager.default.fileExists(atPath: normalizedURL.path) else {
+            throw NativeWallpaperControllerError.unavailable(
+                "Video file not found: \(normalizedURL.path)"
+            )
+        }
+        let requiresDedicatedLockScreenAgent =
+            lockScreenPlatform.capabilities.supportsSecureLockScreen
+        let platformName = lockScreenPlatform.capabilities.platformName
+        let requiresNativeBridge = nativeBridgeRequired
+        lockScreenLifecycleLogger.notice(
+            "Lock Screen install requested platform=\(platformName, privacy: .public) secure=\(requiresDedicatedLockScreenAgent, privacy: .public) nativeRequired=\(requiresNativeBridge, privacy: .public)"
+        )
+
+        // Keep the selected source dedicated to Lock Screen. The runtime
+        // temporarily promotes its Aerial route only during the lock handoff
+        // and restores the user's Desktop route after unlock.
+
+        let previousSource = store.loadLockScreenOnlySource()
+        do {
+            // The legacy screen-saver host can be relaunched while the
+            // installer is selecting the bundle. Persist the new source
+            // before that happens; otherwise the host starts with an empty
+            // runtime configuration and keeps showing a blank frame until a
+            // later manual refresh.
+            try store.saveLockScreenOnlySource(normalizedURL)
+            try await installLockScreenSaver(
+                videoURL: normalizedURL,
+                ensureStillFrame: true,
+                lockScreenOnly: true
+            )
+            lockScreenLifecycleLogger.notice("Lock Screen route transaction completed")
+            guard lockScreenPlatform.installationConfirmed else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "macOS did not confirm the Lock Screen wallpaper configuration."
+                )
+            }
+        } catch {
+            store.restoreLockScreenOnlySource(previousSource)
+            throw error
+        }
+        let config = try updateConfig { config in
+            config.show_on_lock_screen = true
+        }
+        if daemonProcessManager.isRunning,
+           (!store.isLockScreenOnlyAgent() || !requiresDedicatedLockScreenAgent) {
+            // A normal desktop agent cannot be repurposed by a reload: it
+            // would continue presenting AuraFlow windows on the Desktop. The
+            // legacy saver also owns the Lock Screen route without an agent,
+            // so any existing agent must be stopped before entering either
+            // Lock Screen-only mode.
+            guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The desktop wallpaper agent did not stop before enabling Lock Screen only mode."
+                )
+            }
+            store.removeCommand()
+            store.removeHealth()
+            store.markLockScreenOnlyAgent(false)
+        }
+        if requiresDedicatedLockScreenAgent {
+            if daemonProcessManager.isRunning,
+               store.isLockScreenOnlyAgent() {
+                // The lock-only agent reads its source from the dedicated
+                // marker; reload it when the user replaces that source so
+                // the next lock cannot keep an old player item alive.
+                store.markLockScreenAgentReady(false)
+                try send(.reload, config: config)
+            } else {
+                try launchAgentIfNeeded(lockScreenOnly: true)
+            }
+        } else {
+            // On macOS 13–25 the selected screen saver is the complete
+            // Lock Screen-only runtime. There is no native provider to
+            // promote and no agent should be launched with an unsupported
+            // lock-screen platform.
+            store.removeCommand()
+            store.removeHealth()
+            store.markLockScreenOnlyAgent(false)
+        }
+        if requiresDedicatedLockScreenAgent {
+            try await waitForLockScreenAgentReady()
+            try await waitForLockScreenGenerationReady(videoURL: normalizedURL)
+        }
+        return store.status()
+    }
+
+    func prepareLockScreenMedia(videoURL: URL) async throws {
+        // This is a cache warm-up, not a runtime mutation. Holding the
+        // lifecycle gate here lets a background conversion block an explicit
+        // Lock action. The installer has its own mutation/cross-process
+        // coordinator, so preparation remains serialized with store writes
+        // without delaying unrelated lifecycle requests.
+        try requireNativeBridgeIfNeeded()
+        try await lockScreenPlatform.prepareLockScreenMedia(videoURL: videoURL)
+        // The legacy companion and the first secure transition both need the
+        // still frame. Warm it during the same preflight so install does not
+        // synchronously decode and encode the source after the user presses
+        // Lock. A transient decode failure remains best-effort here; the
+        // install path still has its existing fallback/error handling.
+        do {
+            _ = try store.ensureCurrentStillFrame(from: videoURL)
+        } catch {
+            lockScreenLifecycleLogger.debug(
+                "Lock Screen still-frame warm-up deferred: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
+    func setSpeed(_ speed: Double) async throws -> ControlStatus {
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
         let config = try updateConfig { config in
             config.playback_speed = speed
         }
-        if store.processIsAlive(pid: store.loadPID()) {
+
+        // The agent updates Desktop immediately. Apple's Aerial provider owns
+        // a separate player and ignores CALayer rate changes, so its active
+        // movie must also be regenerated with physically retimed samples.
+        // This covers both Start and the dedicated Lock-only route.
+        if lockScreenCapabilities.supportsSecureLockScreen,
+           lockScreenPlatform.isInstalled,
+           let sourceURL = store.effectiveLockScreenSourceURL(for: config),
+           !WallpaperMediaKind.forURL(sourceURL).isStaticImage {
+            _ = try await lockScreenPlatform.updatePlaybackSpeed(
+                videoURL: sourceURL,
+                speed: config.playback_speed
+            )
+        }
+        if daemonProcessManager.isRunning {
             try send(.update, config: config)
+        } else {
+            // A legacy saver can be active without a running Desktop agent.
+            // Its runtime notification is the equivalent of the agent update.
+            postRuntimeCommandDidChange()
         }
         return store.status()
     }
 
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = try updateConfig { config in
             config.blend_interpolation = enabled
         }
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.update, config: config)
         }
         return store.status()
     }
 
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = try updateConfig { config in
             config.pause_on_fullscreen = enabled
         }
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.update, config: config)
         }
         return store.status()
     }
 
-    func setShowOnLockScreen(_ enabled: Bool) throws -> ControlStatus {
+    func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus {
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
         let currentConfig = store.loadConfig()
+        var migratedLockScreenOnlySource: URL?
         if enabled {
-            guard !currentConfig.video_path.isEmpty else {
-                throw NativeWallpaperControllerError.unavailable(
-                    "Choose and start a wallpaper before enabling Lock Screen."
+            if let sourceURL = store.effectiveLockScreenSourceURL(for: currentConfig) {
+                guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+                    throw NativeWallpaperControllerError.unavailable(
+                        "Video file not found: \(sourceURL.path)"
+                    )
+                }
+                let backupURL = store.appSupportURL
+                    .appendingPathComponent("wallpaper_backup.json")
+                if !FileManager.default.fileExists(atPath: backupURL.path) {
+                    let didCaptureDesktopBackup =
+                        WallpaperDesktopPlatform
+                            .captureCurrentDesktopWallpaperBackup(
+                                appSupportPath: store.appSupportURL.path
+                            )
+                    if !didCaptureDesktopBackup,
+                       !NSScreen.screens.isEmpty {
+                        throw NativeWallpaperControllerError.unavailable(
+                            "AuraFlow could not save the current Desktop wallpaper before enabling Lock Screen."
+                        )
+                    }
+                }
+                let lockScreenOnlySource = store.loadLockScreenOnlySource()
+                let useLockScreenOnly = lockScreenOnlySource != nil
+                    && lockScreenCapabilities.supportsLockScreenOnly
+                if let lockScreenOnlySource,
+                   !useLockScreenOnly,
+                   lockScreenOnlySource.standardizedFileURL == sourceURL {
+                    migratedLockScreenOnlySource = lockScreenOnlySource
+                }
+                try await installLockScreenSaver(
+                    videoURL: sourceURL,
+                    ensureStillFrame: true,
+                    lockScreenOnly: useLockScreenOnly
                 )
             }
-            try installLockScreenSaver(using: currentConfig)
         } else {
-            try lockScreenSaverInstaller.uninstall()
+            try await lockScreenPlatform.uninstallAsync()
+            if store.isLockScreenOnlyAgent() {
+                if daemonProcessManager.isRunning {
+                    guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
+                        throw NativeWallpaperControllerError.unavailable(
+                            "The Lock Screen agent did not stop after disabling Lock Screen wallpaper."
+                        )
+                    }
+                }
+                store.removeCommand()
+                store.removeHealth()
+                store.markLockScreenOnlyAgent(false)
+            }
+            store.clearLockScreenOnlySource()
         }
 
         let config = try updateConfig { config in
             config.show_on_lock_screen = enabled
-            config.lock_screen_preference_configured = true
+            if let migratedLockScreenOnlySource {
+                config.video_path = migratedLockScreenOnlySource.path
+            }
         }
-        if store.processIsAlive(pid: store.loadPID()) {
+        if migratedLockScreenOnlySource != nil {
+            store.clearLockScreenOnlySource()
+        }
+        if daemonProcessManager.isRunning {
             try send(.update, config: config)
         }
         return store.status()
     }
 
-    func syncLockScreenSaver() throws {
+    func syncLockScreenSaver() async throws {
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
         let config = store.loadConfig()
-        guard config.show_on_lock_screen ?? false,
-              !config.video_path.isEmpty,
-              FileManager.default.fileExists(
-                atPath: config.video_path
-              )
+        var lockScreenOnlySource = store.loadLockScreenOnlySource()
+        let supportsLockScreenOnly =
+            lockScreenCapabilities.supportsLockScreenOnly
+        let nativeBridgeUnavailable = nativeBridgeRequired
+            && !nativeBridgeIsUsable
+        let hasUsableLockScreenOnlySource = lockScreenOnlySource.map {
+            FileManager.default.fileExists(atPath: $0.path)
+        } == true
+        let lockScreenEnabled = config.show_on_lock_screen ?? false
+        let lockScreenOnlyStatus: LockScreenOnlyGenerationStatus?
+        if lockScreenEnabled,
+           supportsLockScreenOnly,
+           let lockScreenOnlySource,
+           hasUsableLockScreenOnlySource {
+            lockScreenOnlyStatus = lockScreenPlatform.lockScreenOnlyStatus(
+                videoURL: lockScreenOnlySource
+            )
+        } else {
+            lockScreenOnlyStatus = nil
+        }
+        let lockScreenOnlyProviderAvailable =
+            lockScreenOnlyStatus?.providerAvailable == true
+
+        // A stale lock-only agent must not survive merely because the source
+        // disappeared or Lock Screen was disabled before this sync reached
+        // its normal source guard.
+        if store.isLockScreenOnlyAgent(),
+           (!lockScreenEnabled
+                || !hasUsableLockScreenOnlySource
+                || !supportsLockScreenOnly
+                || !lockScreenOnlyProviderAvailable) {
+            let terminationResult = daemonProcessManager.terminate(timeout: 2.0)
+            guard terminationResult.succeeded else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The Lock Screen agent did not stop during fallback cleanup (\(terminationResult))."
+                )
+            }
+            store.removeCommand()
+            store.removeHealth()
+            store.markLockScreenOnlyAgent(false)
+        }
+        if lockScreenOnlySource != nil,
+           (!lockScreenEnabled || !hasUsableLockScreenOnlySource) {
+            store.clearLockScreenOnlySource()
+            lockScreenOnlySource = nil
+        }
+
+        guard lockScreenEnabled,
+              let sourceURL = store.effectiveLockScreenSourceURL(for: config),
+              FileManager.default.fileExists(atPath: sourceURL.path)
         else {
             return
         }
-        try installLockScreenSaver(using: config)
+        let useLockScreenOnly = lockScreenOnlySource != nil
+            && supportsLockScreenOnly
+            && lockScreenOnlyProviderAvailable
+        if nativeBridgeUnavailable
+            || (lockScreenOnlySource != nil && !useLockScreenOnly) {
+            // A lock-only marker can survive a downgrade or removal of the
+            // modern provider. Migrate it through the explicit legacy route
+            // so the modern adapter cannot accidentally install a shared
+            // wallpaper and alter the user's Desktop.
+            if store.isLockScreenOnlyAgent() {
+                guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
+                    throw NativeWallpaperControllerError.unavailable(
+                        "The Lock Screen agent did not stop during legacy fallback."
+                    )
+                }
+                store.removeCommand()
+                store.removeHealth()
+                store.markLockScreenOnlyAgent(false)
+            }
+            _ = try store.ensureCurrentStillFrame(from: sourceURL)
+            try await lockScreenPlatform.installLegacyLockScreenFallback(
+                videoURL: sourceURL,
+                restoringLockScreenOnlyVideoURL: lockScreenOnlySource
+            )
+            if lockScreenOnlySource?.standardizedFileURL == sourceURL {
+                _ = try updateConfig { config in
+                    config.video_path = sourceURL.path
+                }
+            }
+            store.clearLockScreenOnlySource()
+            return
+        }
+        try requireNativeBridgeIfNeeded()
+        try await installLockScreenSaver(
+            videoURL: sourceURL,
+            ensureStillFrame: true,
+            lockScreenOnly: useLockScreenOnly
+        )
     }
 
     func beginLockScreenPreview() throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
         guard config.show_on_lock_screen ?? false else {
             throw NativeWallpaperControllerError.unavailable(
                 "Enable Lock Screen before previewing the transition."
             )
         }
-        guard store.processIsAlive(pid: store.loadPID()) else {
+        guard lockScreenCapabilities.supportsSecureLockScreen else {
+            throw NativeWallpaperControllerError.unavailable(
+                lockScreenCapabilities.availabilityMessage
+                    ?? "Lock Screen transition preview is unavailable."
+            )
+        }
+        guard daemonProcessManager.isRunning else {
             throw NativeWallpaperControllerError.unavailable(
                 "Start the wallpaper before previewing the Lock Screen transition."
             )
@@ -527,67 +1555,346 @@ final class NativeWallpaperController: WallpaperControlling {
     }
 
     func endLockScreenPreview() throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = store.loadConfig()
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.previewUnlock, config: config)
         }
         return store.status()
     }
 
     func setScaleMode(_ mode: WallpaperScaleMode) throws -> ControlStatus {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         let config = try updateConfig { config in
             config.scale_mode = mode.commandValue
         }
-        if store.processIsAlive(pid: store.loadPID()) {
+        if daemonProcessManager.isRunning {
             try send(.update, config: config)
         }
         return store.status()
     }
 
     func setAutostart(_ enabled: Bool) throws -> ControlStatus {
-        let config = try updateConfig { config in
-            config.autostart = enabled
-        }
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         if enabled {
-            guard !config.video_path.isEmpty else {
-                throw NativeWallpaperControllerError.unavailable("Choose a video before enabling launch at login.")
+            let config = store.normalized(store.loadConfig())
+            guard !config.video_path.isEmpty,
+                  FileManager.default.fileExists(atPath: config.video_path)
+            else {
+                // Keep the controller's user-facing error contract while the
+                // persistence/LaunchAgent transaction lives in the manager.
+                throw NativeWallpaperControllerError.unavailable(
+                    "Choose an existing video before enabling launch at login."
+                )
             }
-            try store.enableLaunchAgent(helperPath: helperURL.path)
-        } else {
-            store.disableLaunchAgent()
         }
-        return store.status()
+        return try autostartManager.setEnabled(enabled)
     }
 
     func metrics() throws -> DaemonMetrics {
         store.metrics()
     }
 
-    private func installLockScreenSaver(using config: ControlConfig) throws {
+    private func installLockScreenSaver(using config: ControlConfig) async throws {
         let videoURL = URL(fileURLWithPath: config.video_path)
-        // A thumbnail improves the static transition frame, but it must never
-        // prevent the actual live video from being installed. AVFoundation can
-        // fail still extraction for codecs that the system Aerial provider can
-        // nevertheless decode and play correctly.
-        _ = try? store.ensureCurrentStillFrame(from: videoURL)
-        try lockScreenSaverInstaller.install(videoURL: videoURL)
+        try await installLockScreenSaver(
+            videoURL: videoURL,
+            ensureStillFrame: true,
+            lockScreenOnly: false
+        )
+    }
+
+    private func rollbackStart(
+        previousConfig: ControlConfig,
+        previousLockScreenOnlySource: URL?,
+        previousLockScreenOnlyAgent: Bool,
+        previousLockScreenOnlyMode: Bool,
+        previousAgentWasAlive: Bool,
+        previousAgentWasStopped: Bool,
+        previousPaused: Bool,
+        previousPID: Int?,
+        previousCommand: WallpaperRuntimeCommand?,
+        previousHealth: DaemonHealth?
+    ) async -> [String] {
+        var rollbackFailures: [String] = []
+
+        do {
+            try store.saveConfig(previousConfig)
+        } catch {
+            rollbackFailures.append("config: \(error.localizedDescription)")
+        }
+        store.markPaused(previousPaused)
+        store.restoreLockScreenOnlySource(previousLockScreenOnlySource)
+
+        // An identity mismatch means the persisted PID no longer belongs to
+        // AuraFlow. Never start a replacement while the old process could
+        // still be alive; preserve the old marker and leave ownership-safe
+        // cleanup to the next explicit recovery attempt.
+        if previousLockScreenOnlyAgent,
+           previousAgentWasAlive,
+           !previousAgentWasStopped {
+            store.markLockScreenOnlyAgent(true)
+            restoreStartRuntimeMetadata(
+                previousCommand: previousCommand,
+                previousHealth: previousHealth
+            )
+            reportStartRollbackFailures(rollbackFailures)
+            return rollbackFailures
+        }
+
+        // If Start launched a replacement desktop agent before failing, stop
+        // it before restoring the previous route. This also prevents the
+        // replacement from racing the old lock-only state during rollback.
+        let currentPID = store.loadPID()
+        if currentPID != previousPID,
+           store.processIsAlive(pid: currentPID) {
+            if !daemonProcessManager.terminate(timeout: 2.0).succeeded {
+                rollbackFailures.append("replacement agent did not stop")
+            }
+        }
+
+        if previousLockScreenOnlyMode {
+            guard let sourceURL = previousLockScreenOnlySource
+                ?? (previousConfig.video_path.isEmpty
+                    ? nil
+                    : URL(fileURLWithPath: previousConfig.video_path))
+            else {
+                store.markLockScreenOnlyAgent(previousAgentWasAlive)
+                rollbackFailures.append("previous Lock Screen source is unavailable")
+                restoreStartRuntimeMetadata(
+                    previousCommand: previousCommand,
+                    previousHealth: previousHealth
+                )
+                reportStartRollbackFailures(rollbackFailures)
+                return rollbackFailures
+            }
+
+            if previousAgentWasAlive {
+                do {
+                    try await installLockScreenSaver(
+                        videoURL: sourceURL,
+                        ensureStillFrame: true,
+                        lockScreenOnly: true
+                    )
+                    guard lockScreenPlatform.installationConfirmed else {
+                        throw NativeWallpaperControllerError.unavailable(
+                            "macOS did not confirm the previous Lock Screen configuration."
+                        )
+                    }
+                    try store.saveLockScreenOnlySource(sourceURL)
+                    store.markLockScreenOnlyAgent(false)
+                    try launchAgentIfNeeded(lockScreenOnly: true)
+                    try send(.reload, config: previousConfig)
+                    if previousPaused {
+                        try send(.pause, config: previousConfig)
+                    } else {
+                        store.markPaused(false)
+                    }
+                } catch {
+                    rollbackFailures.append(
+                        "previous Lock Screen route: \(error.localizedDescription)"
+                    )
+                    // Preserve the configured route for the next recovery
+                    // attempt when reinstalling the previous route fails.
+                    store.markLockScreenOnlyAgent(true)
+                    restoreStartRuntimeMetadata(
+                        previousCommand: previousCommand,
+                        previousHealth: previousHealth
+                    )
+                }
+            } else if previousLockScreenOnlyAgent {
+                // Preserve the pre-existing configured/stale state. A failed
+                // Start must not silently remove a Lock Screen-only selection.
+                store.markLockScreenOnlyAgent(true)
+            } else {
+                // Legacy Lock Screen-only mode is owned by the screen saver,
+                // not by a dedicated agent. Reinstall the previous source and
+                // leave the Desktop agent stopped exactly as before Start.
+                do {
+                    try await installLockScreenSaver(
+                        videoURL: sourceURL,
+                        ensureStillFrame: true,
+                        lockScreenOnly: true
+                    )
+                    guard lockScreenPlatform.installationConfirmed else {
+                        throw NativeWallpaperControllerError.unavailable(
+                            "macOS did not confirm the previous Lock Screen configuration."
+                        )
+                    }
+                    try store.saveLockScreenOnlySource(sourceURL)
+                    store.markLockScreenOnlyAgent(false)
+                } catch {
+                    rollbackFailures.append(
+                        "previous Lock Screen route: \(error.localizedDescription)"
+                    )
+                }
+            }
+        } else {
+            store.clearLockScreenOnlySource()
+            store.markLockScreenOnlyAgent(false)
+            if previousAgentWasAlive,
+               !previousConfig.video_path.isEmpty,
+               FileManager.default.fileExists(atPath: previousConfig.video_path) {
+                do {
+                    try await installLockScreenSaver(using: previousConfig)
+                    guard lockScreenPlatform.installationConfirmed else {
+                        throw NativeWallpaperControllerError.unavailable(
+                            "macOS did not confirm the previous wallpaper configuration."
+                        )
+                    }
+                    try launchAgentIfNeeded()
+                    try send(.reload, config: previousConfig)
+                    if previousPaused {
+                        try send(.pause, config: previousConfig)
+                    } else {
+                        store.markPaused(false)
+                    }
+                } catch {
+                    rollbackFailures.append(
+                        "previous wallpaper route: \(error.localizedDescription)"
+                    )
+                }
+            }
+        }
+
+        if !previousAgentWasAlive {
+            restoreStartRuntimeMetadata(
+                previousCommand: previousCommand,
+                previousHealth: previousHealth
+            )
+        }
+        reportStartRollbackFailures(rollbackFailures)
+        return rollbackFailures
+    }
+
+    private func restoreStartRuntimeMetadata(
+        previousCommand: WallpaperRuntimeCommand?,
+        previousHealth: DaemonHealth?
+    ) {
+        if let previousCommand {
+            try? store.saveCommand(previousCommand)
+        } else {
+            store.removeCommand()
+        }
+        if let previousHealth {
+            try? store.saveHealth(previousHealth)
+        } else {
+            store.removeHealth()
+        }
+    }
+
+    private func reportStartRollbackFailures(_ failures: [String]) {
+        guard !failures.isEmpty else { return }
+        lockScreenLifecycleLogger.error(
+            "Start failed and rollback was incomplete: \(failures.joined(separator: "; "), privacy: .public)"
+        )
+    }
+
+    private func installLockScreenSaver(
+        videoURL: URL,
+        ensureStillFrame: Bool,
+        lockScreenOnly: Bool
+    ) async throws {
+        let useLegacyFallback = shouldUseLegacyNativeFallback
+        // Keep a cached frame for the app's desktop recovery path, but do not
+        // replace macOS's live Lock Screen descriptor with an image wallpaper.
+        if ensureStillFrame {
+            if lockScreenOnly {
+                // The legacy saver is also the compatibility companion on
+                // macOS 26+. A real cached frame prevents the host from
+                // exposing its black layer while AVPlayer decodes the first
+                // video frame. Keep an older frame as a last-resort visual
+                // fallback if AVFoundation has a transient decode failure.
+                do {
+                    _ = try store.ensureCurrentStillFrame(from: videoURL)
+                } catch {
+                    guard FileManager.default.fileExists(
+                        atPath: store.lastFrameURL.path
+                    ) else {
+                        throw error
+                    }
+                    lockScreenLifecycleLogger.warning(
+                        "Keeping the previous Lock Screen fallback frame after capture failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            } else {
+                _ = try store.ensureCurrentStillFrame(from: videoURL)
+            }
+        }
+        if useLegacyFallback {
+            try await lockScreenPlatform.installLegacyLockScreenFallback(
+                videoURL: videoURL,
+                restoringLockScreenOnlyVideoURL: lockScreenOnly
+                    ? videoURL
+                    : nil
+            )
+        } else {
+            try requireNativeBridgeIfNeeded()
+            if lockScreenOnly {
+                try await lockScreenPlatform.installLockScreenOnly(videoURL: videoURL)
+            } else {
+                try await lockScreenPlatform.installForDesktopAgent(
+                    videoURL: videoURL
+                )
+            }
+        }
+
+        // A saved non-default rate must also be applied when the user starts
+        // a new shared or Lock-only route before touching the speed slider.
+        let configuredSpeed = store.loadConfig().playback_speed
+        if lockScreenPlatform.capabilities.supportsSecureLockScreen,
+           !WallpaperMediaKind.forURL(videoURL).isStaticImage,
+           abs(configuredSpeed - 1.0) > 0.0001 {
+            _ = try await lockScreenPlatform.updatePlaybackSpeed(
+                videoURL: videoURL,
+                speed: configuredSpeed
+            )
+        }
+    }
+
+    private var shouldUseLegacyNativeFallback: Bool {
+        guard lockScreenPlatform is WallpaperPlatformAdapter else {
+            return false
+        }
+        if !nativeBridgeCapabilities.isAvailable {
+            return true
+        }
+        lifecycleLock.lock()
+        let hasRuntimeFailure = nativeBridgeRuntimeFailureReason != nil
+        lifecycleLock.unlock()
+        return hasRuntimeFailure
+    }
+
+    private func requireNativeBridgeIfNeeded() throws {
+        guard nativeBridgeIsUsable else {
+            throw NativeWallpaperControllerError.unavailable(
+                nativeBridgeCapabilities.message
+            )
+        }
+    }
+
+    private var nativeBridgeIsUsable: Bool {
+        guard nativeBridgeRequired else { return true }
+        lifecycleLock.lock()
+        let hasRuntimeFailure = nativeBridgeRuntimeFailureReason != nil
+        lifecycleLock.unlock()
+        return nativeBridgeCapabilities.isAvailable && !hasRuntimeFailure
     }
 }
 
 @MainActor
 final class AppViewModel: ObservableObject {
-    @Published private(set) var appliedVideoURL: URL?
-    @Published private(set) var pendingPreviewVideoURL: URL?
-    @Published var playbackSpeed: Double = 1.0
-    @Published var isRunning: Bool = false
-    @Published private(set) var isPlaybackActive: Bool = false
-    @Published private(set) var isPlaybackPaused: Bool = false
+    let catalogViewModel: CatalogViewModel
+    let previewViewModel: PreviewViewModel
+    let lifecycleViewModel: LifecycleViewModel
+
     @Published var autostartEnabled: Bool = false
     @Published var blendInterpolationEnabled: Bool = false
     @Published var pauseOnFullscreenEnabled: Bool = true
     @Published var showOnLockScreenEnabled: Bool = false
-    @Published private(set) var isLockScreenPreviewActive: Bool = false
-    @Published var scaleMode: WallpaperScaleMode = .fill
     @Published var isSettingsOpen: Bool = false
     @Published var isMonitoringOpen: Bool = false
     @Published var monitoringSnapshot: DaemonMetrics?
@@ -606,39 +1913,148 @@ final class AppViewModel: ObservableObject {
     @Published var statusMessage: String?
     @Published var alertMessage: String?
     @Published var successBannerMessage: String?
-    @Published var previewPlayer: AVPlayer?
-    @Published var isCatalogOpen: Bool = false
-    @Published var isDownloadedWallpapersOpen: Bool = false
-    @Published var selectedCatalogWallpaper: CatalogWallpaper?
-    @Published var catalogScrollTargetID: String?
-    @Published var catalogSearchText: String = ""
-    @Published var selectedCatalogGroup: CatalogWallpaperGroup?
-    @Published var catalogDownloadID: String?
-    @Published private(set) var catalogWallpapers: [CatalogWallpaper] = []
-    @Published private(set) var catalogIsRefreshing: Bool = false
-    @Published private(set) var downloadedCatalogWallpapers: [DownloadedCatalogWallpaper] = []
     @Published private(set) var controllerAvailable: Bool = false
+    @Published private(set) var lockScreenCapabilities: PlatformCapabilities = .legacyMacOS
     @Published private(set) var adaptiveGlassAppearance: AdaptiveGlassAppearance = .default
 
+    var appliedVideoURL: URL? {
+        get { previewViewModel.appliedVideoURL }
+        set { previewViewModel.appliedVideoURL = newValue }
+    }
+
+    var pendingPreviewVideoURL: URL? {
+        get { previewViewModel.pendingVideoURL }
+        set { previewViewModel.pendingVideoURL = newValue }
+    }
+
+    var playbackSpeed: Double {
+        get { previewViewModel.playbackSpeed }
+        set { previewViewModel.playbackSpeed = newValue }
+    }
+
+    var previewPlayer: AVPlayer? {
+        get { previewViewModel.player }
+        set { previewViewModel.player = newValue }
+    }
+
+    var scaleMode: WallpaperScaleMode {
+        get { previewViewModel.scaleMode }
+        set { previewViewModel.scaleMode = newValue }
+    }
+
+    var isRunning: Bool {
+        get { lifecycleViewModel.isRunning }
+        set { lifecycleViewModel.isRunning = newValue }
+    }
+
+    var isPlaybackActive: Bool {
+        get { lifecycleViewModel.isPlaybackActive }
+        set { lifecycleViewModel.isPlaybackActive = newValue }
+    }
+
+    var isPlaybackPaused: Bool {
+        get { lifecycleViewModel.isPlaybackPaused }
+        set { lifecycleViewModel.isPlaybackPaused = newValue }
+    }
+
+    var isLockScreenOnlyActive: Bool {
+        get { lifecycleViewModel.isLockScreenOnlyActive }
+        set { lifecycleViewModel.isLockScreenOnlyActive = newValue }
+    }
+
+    var isLockScreenPreviewActive: Bool {
+        get { lifecycleViewModel.isLockScreenPreviewActive }
+        set { lifecycleViewModel.isLockScreenPreviewActive = newValue }
+    }
+
+    var lifecycleState: WallpaperLifecycleState {
+        get { lifecycleViewModel.state }
+        set { lifecycleViewModel.state = newValue }
+    }
+
+    var isLifecycleBusy: Bool {
+        get { lifecycleViewModel.isBusy }
+        set { lifecycleViewModel.isBusy = newValue }
+    }
+
+    var isCatalogOpen: Bool {
+        get { catalogViewModel.isCatalogOpen }
+        set { catalogViewModel.isCatalogOpen = newValue }
+    }
+
+    var isDownloadedWallpapersOpen: Bool {
+        get { catalogViewModel.isDownloadedWallpapersOpen }
+        set { catalogViewModel.isDownloadedWallpapersOpen = newValue }
+    }
+
+    var selectedCatalogWallpaper: CatalogWallpaper? {
+        get { catalogViewModel.selectedWallpaper }
+        set { catalogViewModel.selectedWallpaper = newValue }
+    }
+
+    var catalogScrollTargetID: String? {
+        get { catalogViewModel.scrollTargetID }
+        set { catalogViewModel.scrollTargetID = newValue }
+    }
+
+    var catalogSearchText: String {
+        get { catalogViewModel.searchText }
+        set { catalogViewModel.searchText = newValue }
+    }
+
+    var selectedCatalogGroup: CatalogWallpaperGroup? {
+        get { catalogViewModel.selectedGroup }
+        set { catalogViewModel.selectedGroup = newValue }
+    }
+
+    var catalogDownloadID: String? {
+        get { catalogViewModel.downloadID }
+        set { catalogViewModel.downloadID = newValue }
+    }
+
+    var catalogWallpapers: [CatalogWallpaper] {
+        get { catalogViewModel.wallpapers }
+        set { catalogViewModel.wallpapers = newValue }
+    }
+
+    var catalogIsRefreshing: Bool {
+        get { catalogViewModel.isRefreshing }
+        set { catalogViewModel.isRefreshing = newValue }
+    }
+
+    var downloadedCatalogWallpapers: [DownloadedCatalogWallpaper] {
+        get { catalogViewModel.downloadedWallpapers }
+        set { catalogViewModel.downloadedWallpapers = newValue }
+    }
+
     private var controller: WallpaperControlling?
-    private let catalogProvider: WallpaperCatalogProviding
+    private let catalogRepository: CatalogRepository
+    private let catalogDownloadService: CatalogDownloadService
+    private var featureViewModelCancellables = Set<AnyCancellable>()
     private let optimizer = VideoOptimizer()
     private let optimizationStore: VideoOptimizationStore
-    private var previewEndObserver: NSObjectProtocol?
-    private var previewStalledObserver: NSObjectProtocol?
+    private var previewEndObserver: ObserverToken?
+    private var previewStalledObserver: ObserverToken?
     private var previewItemStatusObservation: NSKeyValueObservation?
     private var didAttemptAutostartOnLaunch = false
     private var healthMonitorTask: Task<Void, Never>?
     private var isHealthCheckInProgress = false
+    private var lockScreenProviderUnavailableObserver: ObserverToken?
+    private var pendingLockScreenProviderFallback = false
+    private var pendingLockScreenProviderFallbackReason: String?
+    private var lockScreenProviderFallbackRetryTask: Task<Void, Never>?
     private var bridgeFailureCount = 0
     private var daemonSuspiciousPolls = 0
     private var lowPowerAutoPauseActive = false
     private var fullscreenAutoPauseActive = false
     private var monitoringTask: Task<Void, Never>?
-    private var terminationObserver: NSObjectProtocol?
+    private var terminationObserver: ObserverToken?
     private var isShuttingDown = false
-    private var catalogNavigationLockedUntil: Date = .distantPast
     private var catalogRefreshTask: Task<Void, Never>?
+    private var catalogDownloadTask: Task<Void, Never>?
+    private var localWallpaperImportTask: Task<Void, Never>?
+    private var localWallpaperImportGeneration = 0
+    private var catalogNavigationLockedUntil: Date = .distantPast
     private var lastCatalogRefreshAt: Date?
     private var successBannerTask: Task<Void, Never>?
     private var controllerBootstrapTask: Task<Void, Never>?
@@ -647,13 +2063,35 @@ final class AppViewModel: ObservableObject {
     private var previewRenderingSuspended = false
     private var suspendedPreviewRate: Float?
     private var glassAnalysisTask: Task<Void, Never>?
-
+    private var glassAnalysisGeneration = 0
+    // Keep valid profiles by the exact content signature. A single global
+    // "last good" profile makes A -> B -> A history-dependent: if B's
+    // analysis fails, A can temporarily inherit B's text polarity.
+    private var adaptiveGlassAppearancesBySourceSignature: [String: AdaptiveGlassAppearance] = [:]
+    private var cacheGeneration = 0
+    private var previewPreparationTask: Task<Void, Never>?
+    private var previewPreparationGeneration = 0
+    private var lockScreenPreparationTask: Task<Void, Never>?
+    private var lockScreenPreparationGeneration = 0
     private let expectedStatusContractVersion = 3
     private let bridgeFailureThreshold = 3
     private let daemonSuspiciousThreshold = 2
-    private static let appSupportDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+    private static let defaultAppSupportDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/AuraFlow", isDirectory: true)
-    private static let startupConfigURL = appSupportDirectoryURL.appendingPathComponent("config.json")
+
+    private static func defaultAppSupportDirectoryForCurrentProcess() -> URL {
+        let isTestProcess = CommandLine.arguments.contains { $0.contains(".xctest") }
+            || Bundle.allBundles.contains { $0.bundleURL.pathExtension == "xctest" }
+            || NSClassFromString("XCTestCase") != nil
+        guard isTestProcess else {
+            return defaultAppSupportDirectoryURL
+        }
+        return FileManager.default.temporaryDirectory
+            .appendingPathComponent("AuraFlow-AppViewModelTests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+
+    private let appSupportDirectoryURL: URL
 
     var isControllerAvailable: Bool {
         controllerAvailable
@@ -667,30 +2105,98 @@ final class AppViewModel: ObservableObject {
         selectedVideoURL
     }
 
+    var appSupportDirectoryURLForTesting: URL {
+        appSupportDirectoryURL
+    }
+
     private var isPlaybackRunningForControls: Bool {
         isRunning && !isPlaybackPaused
     }
 
+    private var isLockScreenOnlyModeActiveForControls: Bool {
+        isLockScreenOnlyActive
+            || lifecycleViewModel.activeIntentName == "lock"
+            || lifecycleViewModel.pendingIntentName == "lock"
+    }
+
+    /// Stop pauses playback without releasing the installed wallpaper session.
+    /// Start and Lock must remain unavailable until Remove clears that session.
+    private var hasInstalledWallpaperSessionForControls: Bool {
+        isRunning || isPlaybackPaused || isLockScreenOnlyActive
+    }
+
     var isStartButtonHighlighted: Bool {
-        selectedVideoURL != nil
-            && !isPlaybackRunningForControls
-            && !isPlaybackPaused
+        canStart
     }
 
     var isStopButtonHighlighted: Bool {
         appliedVideoURL != nil && isPlaybackPaused
     }
 
+    var playbackButtonTitle: String {
+        isPlaybackPaused ? "Play" : "Stop"
+    }
+
+    var playbackButtonSystemImage: String {
+        isPlaybackPaused ? "play.fill" : "stop.circle"
+    }
+
+    private var activeWallpaperURLForControls: URL? {
+        if isLockScreenOnlyModeActiveForControls {
+            return selectedVideoURL ?? appliedVideoURL
+        }
+        return appliedVideoURL ?? selectedVideoURL
+    }
+
+    private var isStaticWallpaperForControls: Bool {
+        activeWallpaperURLForControls.map {
+            WallpaperMediaKind.forURL($0).isStaticImage
+        } ?? false
+    }
+
     var canStart: Bool {
-        isControllerAvailable && !isBusy && !isPlaybackRunningForControls && selectedVideoURL != nil
+        isControllerAvailable
+            && !isBusy
+            && !isLifecycleBusy
+            && !lifecycleViewModel.hasActiveOrPendingLifecycleOperation
+            && !isLockScreenOnlyModeActiveForControls
+            && !hasInstalledWallpaperSessionForControls
+            && selectedVideoURL != nil
+    }
+
+    var canApplyLockScreenOnly: Bool {
+        isControllerAvailable
+            && !isBusy
+            && !isLifecycleBusy
+            && !lifecycleViewModel.hasActiveOrPendingLifecycleOperation
+            && lockScreenCapabilities.supportsLockScreenOnly
+            && !isLockScreenOnlyModeActiveForControls
+            && !hasInstalledWallpaperSessionForControls
+            && selectedVideoURL != nil
     }
 
     var canStop: Bool {
-        isControllerAvailable && !isBusy && isPlaybackRunningForControls
+        isControllerAvailable
+            && (isPlaybackRunningForControls
+                || isLockScreenOnlyActive
+                || lifecycleViewModel.activeIntentName == "lock"
+                || lifecycleViewModel.pendingIntentName == "lock")
+    }
+
+    var canTogglePlayback: Bool {
+        guard isControllerAvailable,
+              !isBusy,
+              !lifecycleViewModel.hasActiveOrPendingLifecycleOperation,
+              !isStaticWallpaperForControls
+        else {
+            return false
+        }
+
+        return isPlaybackPaused || canStop
     }
 
     var canClearWallpaper: Bool {
-        isControllerAvailable && !isBusy
+        isControllerAvailable
     }
 
     var canToggleAutostart: Bool {
@@ -706,13 +2212,15 @@ final class AppViewModel: ObservableObject {
     }
 
     var canToggleShowOnLockScreen: Bool {
-        isControllerAvailable && !isBusy && appliedVideoURL != nil
+        isControllerAvailable
+            && lockScreenCapabilities.supportsLockScreen
+            && !isBusy
     }
 
     var canPreviewLockScreen: Bool {
-        canToggleShowOnLockScreen
+        isPlaybackRunningForControls
+            && lockScreenCapabilities.supportsLockScreen
             && showOnLockScreenEnabled
-            && isPlaybackActive
             && !isLockScreenPreviewActive
     }
 
@@ -728,16 +2236,19 @@ final class AppViewModel: ObservableObject {
         !isBusy && !optimizationInProgress
     }
 
-    var canApplyCatalogWallpaper: Bool {
-        isControllerAvailable && !isBusy && catalogDownloadID == nil
+    var canDownloadCatalogWallpaper: Bool {
+        !isBusy && catalogDownloadID == nil
     }
 
     var canClearCache: Bool {
-        true
+        !isBusy
+            && !optimizationInProgress
+            && catalogDownloadID == nil
+            && !catalogIsRefreshing
     }
 
     private var selectedVideoURL: URL? {
-        pendingPreviewVideoURL ?? appliedVideoURL
+        previewViewModel.selectedVideoURL
     }
 
     private var previewPlayerURL: URL? {
@@ -745,37 +2256,60 @@ final class AppViewModel: ObservableObject {
     }
 
     var filteredCatalogWallpapers: [CatalogWallpaper] {
-        let groupFiltered = catalogWallpapers.filter { wallpaper in
-            guard let selectedCatalogGroup else { return true }
-            return wallpaper.catalogGroup == selectedCatalogGroup
-        }
-        let query = catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return groupFiltered }
-        return groupFiltered.filter { wallpaper in
-            wallpaper.title.localizedCaseInsensitiveContains(query)
-                || wallpaper.category.localizedCaseInsensitiveContains(query)
-        }
+        catalogViewModel.filteredWallpapers
     }
 
     init(
         controller: WallpaperControlling? = nil,
         optimizationStore: VideoOptimizationStore = VideoOptimizationStore(),
-        catalogProvider: WallpaperCatalogProviding = ManagedWallpaperCatalogProvider()
+        catalogProvider: WallpaperCatalogProviding = ManagedWallpaperCatalogProvider(),
+        appSupportDirectoryURL: URL? = nil,
+        previewStateURL: URL? = nil
     ) {
+        let resolvedAppSupportURL = appSupportDirectoryURL
+            ?? Self.defaultAppSupportDirectoryForCurrentProcess()
+        let resolvedPreviewStateURL = previewStateURL
+            ?? resolvedAppSupportURL.appendingPathComponent("last_preview.json")
+        self.catalogViewModel = CatalogViewModel()
+        self.previewViewModel = PreviewViewModel(
+            previewStateURL: resolvedPreviewStateURL
+        )
+        self.lifecycleViewModel = LifecycleViewModel()
         self.optimizationStore = optimizationStore
-        self.catalogProvider = catalogProvider
+        let catalogDirectoryURL = resolvedAppSupportURL
+            .appendingPathComponent("Catalog", isDirectory: true)
+        self.catalogRepository = CatalogRepository(
+            provider: catalogProvider,
+            catalogDirectoryURL: catalogDirectoryURL
+        )
+        self.catalogDownloadService = CatalogDownloadService(
+            provider: catalogProvider,
+            catalogDirectoryURL: catalogDirectoryURL
+        )
+        self.appSupportDirectoryURL = resolvedAppSupportURL
         if let controller {
             self.controller = controller
             self.controllerAvailable = true
+            self.lockScreenCapabilities = controller.lockScreenCapabilities
         } else {
             self.controller = nil
             self.controllerAvailable = false
             self.isControllerBootstrapInProgress = true
         }
+        configureLifecycleViewModel()
         optimizationHardwareAV1DecodeAvailable = optimizer.supportsHardwareAV1Decode()
         applyOptimizationSettings(optimizationStore.load())
         restoreInitialPreviewFromSavedConfig()
-        terminationObserver = NotificationCenter.default.addObserver(
+        catalogViewModel.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &featureViewModelCancellables)
+        previewViewModel.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &featureViewModelCancellables)
+        lifecycleViewModel.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &featureViewModelCancellables)
+        terminationObserver = ObserverToken(NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
@@ -783,7 +2317,24 @@ final class AppViewModel: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.beginShutdown()
             }
-        }
+        })
+        lockScreenProviderUnavailableObserver = ObserverToken(
+            DistributedNotificationCenter.default().addObserver(
+                forName: WallpaperRuntimeNotifications
+                    .lockScreenProviderBecameUnavailable,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                let reason = notification.userInfo?[
+                    WallpaperRuntimeNotifications.lockScreenFallbackReasonKey
+                ] as? String
+                Task { @MainActor [weak self] in
+                    await self?.handleLockScreenProviderBecameUnavailable(
+                        reason: reason
+                    )
+                }
+            }
+        )
         Task { [weak self] in
             await self?.loadCatalogFromCache()
             await MainActor.run {
@@ -794,20 +2345,90 @@ final class AppViewModel: ObservableObject {
         startHealthMonitor()
     }
 
+    private func configureLifecycleViewModel() {
+        lifecycleViewModel.configure(
+            dependencies: LifecycleViewModelDependencies(
+                controller: { [weak self] in
+                    self?.controller
+                },
+                prepareVideo: { [weak self] sourceURL in
+                    guard let self else { throw CancellationError() }
+                    let prepared = try await self.prepareVideoURLForPlayback(sourceURL)
+                    return PreparedLifecycleVideo(
+                        url: prepared.url,
+                        summary: prepared.summary
+                    )
+                },
+                prepareCatalogVideo: { [weak self] sourceURL in
+                    guard let self else { throw CancellationError() }
+                    let prepared = try await self.prepareCatalogVideoURLForPlayback(sourceURL)
+                    return PreparedLifecycleVideo(
+                        url: prepared.url,
+                        summary: prepared.summary
+                    )
+                },
+                prepareLockScreenVideo: { [weak self] sourceURL in
+                    guard let self else { throw CancellationError() }
+                    let prepared = try await self.prepareLockScreenVideoURLForPlayback(sourceURL)
+                    return PreparedLifecycleVideo(
+                        url: prepared.url,
+                        summary: prepared.summary
+                    )
+                },
+                isManagedCacheURL: { [weak self] sourceURL in
+                    self?.isManagedCacheURL(sourceURL) == true
+                }
+            ),
+            callbacks: LifecycleViewModelCallbacks(
+                applyResult: { [weak self] result in
+                    self?.applyLifecycleResult(result)
+                },
+                setStatusMessage: { [weak self] message in
+                    self?.statusMessage = message
+                },
+                setAlertMessage: { [weak self] message in
+                    self?.alertMessage = message
+                },
+                recordBridgeSuccess: { [weak self] in
+                    self?.recordBridgeSuccess()
+                },
+                recordBridgeFailure: { [weak self] error, context in
+                    self?.recordBridgeFailure(error, context: context)
+                },
+                showSuccessBanner: { [weak self] message in
+                    self?.showSuccessBanner(message)
+                },
+                scheduleFallbackRetry: { [weak self] in
+                    self?.scheduleLockScreenProviderFallbackRetry()
+                }
+            )
+        )
+    }
+
     deinit {
         healthMonitorTask?.cancel()
         monitoringTask?.cancel()
         catalogRefreshTask?.cancel()
+        catalogDownloadTask?.cancel()
+        localWallpaperImportTask?.cancel()
         controllerBootstrapTask?.cancel()
         glassAnalysisTask?.cancel()
+        previewPreparationTask?.cancel()
+        lockScreenPreparationTask?.cancel()
+        lockScreenProviderFallbackRetryTask?.cancel()
         if let terminationObserver {
-            NotificationCenter.default.removeObserver(terminationObserver)
+            NotificationCenter.default.removeObserver(terminationObserver.value)
+        }
+        if let lockScreenProviderUnavailableObserver {
+            DistributedNotificationCenter.default().removeObserver(
+                lockScreenProviderUnavailableObserver.value
+            )
         }
         if let previewEndObserver {
-            NotificationCenter.default.removeObserver(previewEndObserver)
+            NotificationCenter.default.removeObserver(previewEndObserver.value)
         }
         if let previewStalledObserver {
-            NotificationCenter.default.removeObserver(previewStalledObserver)
+            NotificationCenter.default.removeObserver(previewStalledObserver.value)
         }
         previewItemStatusObservation?.invalidate()
         successBannerTask?.cancel()
@@ -820,9 +2441,15 @@ final class AppViewModel: ObservableObject {
             }
             return
         }
-        guard !isBusy else { return }
+        lockScreenCapabilities = controller.lockScreenCapabilities
+        guard !isBusy, !isLifecycleBusy else { return }
         isBusy = true
-        defer { isBusy = false }
+        defer {
+            isBusy = false
+            if pendingLockScreenProviderFallback {
+                scheduleLockScreenProviderFallbackRetry()
+            }
+        }
 
         do {
             let status = try await runAsync { try controller.status() }
@@ -830,17 +2457,26 @@ final class AppViewModel: ObservableObject {
             let needsNormalizationURL = configuredVideoNeedingCompatibilityNormalization(from: status)
             recordBridgeSuccess()
             await startFromAutostartIfNeeded(using: status)
-            if status.config.show_on_lock_screen ?? false,
-               !status.config.video_path.isEmpty {
-                do {
-                    try await runAsync {
-                        try controller.syncLockScreenSaver()
-                    }
-                } catch {
-                    alertMessage =
-                        "Lock Screen sync failed: \(error.localizedDescription)"
-                    return
+            do {
+                try await runAsync {
+                    try await controller.syncLockScreenSaver()
                 }
+            } catch {
+                alertMessage =
+                    "Lock Screen sync failed: \(error.localizedDescription)"
+                return
+            }
+            do {
+                let synchronizedStatus = try await runAsync {
+                    try controller.status()
+                }
+                apply(status: synchronizedStatus)
+                if autostartWarning(for: synchronizedStatus) == nil {
+                    alertMessage = nil
+                }
+            } catch {
+                recordBridgeFailure(error, context: "status-after-lock-screen-sync")
+                return
             }
             if let needsNormalizationURL {
                 Task { @MainActor [weak self] in
@@ -851,17 +2487,94 @@ final class AppViewModel: ObservableObject {
                     )
                 }
             }
-            alertMessage = nil
         } catch {
             recordBridgeFailure(error, context: "status")
         }
     }
 
+    private func handleLockScreenProviderBecameUnavailable(
+        reason: String? = nil
+    ) async {
+        if let reason, !reason.isEmpty {
+            pendingLockScreenProviderFallbackReason = reason
+            controller?.markNativeLockScreenBridgeUnavailable(reason: reason)
+        }
+        guard !isShuttingDown else { return }
+        guard controller != nil else {
+            pendingLockScreenProviderFallback = true
+            scheduleLockScreenProviderFallbackRetry()
+            return
+        }
+        guard !isBusy, !isLifecycleBusy else {
+            pendingLockScreenProviderFallback = true
+            scheduleLockScreenProviderFallbackRetry()
+            return
+        }
+        pendingLockScreenProviderFallback = false
+        if let reason = pendingLockScreenProviderFallbackReason {
+            lockScreenLifecycleLogger.notice(
+                "Lock Screen fallback requested: \(reason, privacy: .public)"
+            )
+        }
+        pendingLockScreenProviderFallbackReason = nil
+        await loadStatus()
+    }
+
+    private func scheduleLockScreenProviderFallbackRetry() {
+        guard pendingLockScreenProviderFallback,
+              !isShuttingDown,
+              lockScreenProviderFallbackRetryTask == nil
+        else {
+            return
+        }
+
+        lockScreenProviderFallbackRetryTask = Task { @MainActor [weak self] in
+            defer {
+                self?.lockScreenProviderFallbackRetryTask = nil
+            }
+            var retryDelay: UInt64 = 100_000_000
+            var bootstrapRetryCount = 0
+            let maximumBootstrapRetries = 8
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: retryDelay)
+                guard let self, !Task.isCancelled else { return }
+                guard self.pendingLockScreenProviderFallback,
+                      !self.isShuttingDown
+                else {
+                    return
+                }
+                guard self.controller != nil else {
+                    guard self.isControllerBootstrapInProgress else {
+                        return
+                    }
+                    bootstrapRetryCount += 1
+                    guard bootstrapRetryCount < maximumBootstrapRetries else {
+                        return
+                    }
+                    retryDelay = min(retryDelay * 2, 2_000_000_000)
+                    continue
+                }
+                guard !self.isBusy, !self.isLifecycleBusy else {
+                    retryDelay = min(retryDelay * 2, 1_000_000_000)
+                    continue
+                }
+                await self.handleLockScreenProviderBecameUnavailable()
+                return
+            }
+        }
+    }
+
     private func restoreInitialPreviewFromSavedConfig() {
         guard pendingPreviewVideoURL == nil else { return }
-        guard let seed = Self.loadStartupPreviewSeed() else { return }
-        let videoURL = URL(fileURLWithPath: seed.video_path).standardizedFileURL
-        guard FileManager.default.fileExists(atPath: videoURL.path) else { return }
+        let seeds = [
+            previewViewModel.loadStartupSeed(from: appSupportDirectoryURL),
+            previewViewModel.loadSavedSeed(),
+        ].compactMap { $0 }
+        guard let seed = seeds.first(where: { PreviewViewModel.validPreviewURL(for: $0) != nil }),
+              let videoURL = PreviewViewModel.validPreviewURL(for: seed)
+        else {
+            return
+        }
 
         appliedVideoURL = videoURL
         playbackSpeed = seed.playback_speed
@@ -869,12 +2582,175 @@ final class AppViewModel: ObservableObject {
            let restoredScaleMode = WallpaperScaleMode(rawValue: rawScaleMode) {
             scaleMode = restoredScaleMode
         }
-        configurePreview(for: videoURL)
+        configurePreviewOrPrepare(for: videoURL)
     }
 
-    private static func loadStartupPreviewSeed() -> ControlConfig? {
-        guard let data = try? Data(contentsOf: startupConfigURL) else { return nil }
-        return try? JSONDecoder().decode(ControlConfig.self, from: data)
+    private func refreshPreviewFromSavedSeedIfNeeded(refreshPreview: Bool) -> Bool {
+        guard let seed = previewViewModel.loadSavedSeed(),
+              let savedURL = PreviewViewModel.validPreviewURL(for: seed)
+        else {
+            return false
+        }
+
+        let previewChanged = appliedVideoURL?.standardizedFileURL != savedURL
+        if previewChanged {
+            appliedVideoURL = savedURL
+        }
+        if previewChanged || (refreshPreview && previewPlayer?.currentItem == nil) {
+            configurePreviewOrPrepare(for: savedURL)
+        }
+        return true
+    }
+
+    private func cancelPreviewPreparation() {
+        previewPreparationGeneration &+= 1
+        previewPreparationTask?.cancel()
+        previewPreparationTask = nil
+        lockScreenPreparationGeneration &+= 1
+        lockScreenPreparationTask?.cancel()
+        lockScreenPreparationTask = nil
+    }
+
+    private func configurePreviewOrPrepare(for url: URL) {
+        guard !WallpaperMediaKind.forURL(url).isStaticImage else {
+            cancelPreviewPreparation()
+            configurePreview(for: url)
+            scheduleLockScreenMediaPreparation(
+                for: url,
+                previewGeneration: previewPreparationGeneration
+            )
+            return
+        }
+
+        let isNativeContainer = isNativePlaybackContainer(url)
+        if isNativeContainer {
+            configurePreview(for: url)
+        } else if previewPlayer == nil {
+            // Keep the view attached to a real player while compatibility
+            // conversion runs. Unsupported containers must never be handed to
+            // AVPlayer as the final preview source.
+            configurePreview(for: nil)
+        }
+        schedulePreviewPreparation(for: url)
+    }
+
+    private func schedulePreviewPreparation(for sourceURL: URL) {
+        cancelPreviewPreparation()
+        let requestedGeneration = previewPreparationGeneration
+        let normalizedSourceURL = sourceURL.standardizedFileURL
+
+        previewPreparationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                if isNativePlaybackContainer(normalizedSourceURL),
+                   normalizedSourceURL.pathExtension.lowercased() != "gif",
+                   await isPreviewPlayableVideo(at: normalizedSourceURL) {
+                    guard !Task.isCancelled,
+                          requestedGeneration == previewPreparationGeneration,
+                          selectedVideoURL?.standardizedFileURL == normalizedSourceURL
+                    else {
+                        return
+                    }
+                    scheduleLockScreenMediaPreparation(
+                        for: normalizedSourceURL,
+                        previewGeneration: requestedGeneration
+                    )
+                    if requestedGeneration == previewPreparationGeneration {
+                        previewPreparationTask = nil
+                    }
+                    return
+                }
+
+                let prepared = try await prepareCatalogVideoURLForPlayback(normalizedSourceURL)
+                guard !Task.isCancelled,
+                      requestedGeneration == previewPreparationGeneration,
+                      selectedVideoURL?.standardizedFileURL == normalizedSourceURL
+                else {
+                    return
+                }
+
+                configurePreview(for: prepared.url)
+                savePreviewSeed(for: prepared.url)
+                scheduleLockScreenMediaPreparation(
+                    for: prepared.url,
+                    previewGeneration: requestedGeneration
+                )
+                if let summary = prepared.summary {
+                    statusMessage = summary
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard requestedGeneration == previewPreparationGeneration,
+                      selectedVideoURL?.standardizedFileURL == normalizedSourceURL
+                else {
+                    return
+                }
+                // Keep the current preview visible and let Start/Lock surface
+                // the actionable conversion error at commit time.
+                statusMessage = "Preview preparation failed. Press Start or Lock to retry."
+            }
+
+            if requestedGeneration == previewPreparationGeneration {
+                previewPreparationTask = nil
+            }
+        }
+    }
+
+    private func scheduleLockScreenMediaPreparation(
+        for sourceURL: URL,
+        previewGeneration: Int
+    ) {
+        guard controller != nil else { return }
+
+        lockScreenPreparationGeneration &+= 1
+        let requestedGeneration = lockScreenPreparationGeneration
+        lockScreenPreparationTask?.cancel()
+        let normalizedSourceURL = sourceURL.standardizedFileURL
+        guard FileManager.default.fileExists(atPath: normalizedSourceURL.path) else {
+            return
+        }
+        let controller = self.controller
+
+        lockScreenPreparationTask = Task { @MainActor [weak self] in
+            guard let self, let controller else { return }
+            do {
+                try await self.runAsync {
+                    try await controller.prepareLockScreenMedia(
+                        videoURL: normalizedSourceURL
+                    )
+                }
+                try Task.checkCancellation()
+                guard requestedGeneration == self.lockScreenPreparationGeneration,
+                      previewGeneration == self.previewPreparationGeneration
+                else {
+                    return
+                }
+                self.lockScreenPreparationTask = nil
+            } catch is CancellationError {
+                return
+            } catch {
+                // Cache warming is best-effort. Lock keeps its existing
+                // preparation and user-facing error path if needed.
+                guard requestedGeneration == self.lockScreenPreparationGeneration,
+                      previewGeneration == self.previewPreparationGeneration
+                else {
+                    return
+                }
+                lockScreenLifecycleLogger.debug(
+                    "Lock Screen media cache warm-up deferred: \(error.localizedDescription, privacy: .public)"
+                )
+                self.lockScreenPreparationTask = nil
+            }
+        }
+    }
+
+    private func savePreviewSeed(for videoURL: URL) {
+        previewViewModel.saveSeed(
+            for: videoURL,
+            playbackSpeed: playbackSpeed,
+            scaleMode: scaleMode
+        )
     }
 
     private func bootstrapControllerIfNeeded() {
@@ -888,10 +2764,23 @@ final class AppViewModel: ObservableObject {
                     guard let self else { return }
                     self.controller = controller
                     self.controllerAvailable = true
+                    self.lockScreenCapabilities = controller.lockScreenCapabilities
+                    if let pendingReason = self.pendingLockScreenProviderFallbackReason,
+                       !pendingReason.isEmpty {
+                        controller.markNativeLockScreenBridgeUnavailable(
+                            reason: pendingReason
+                        )
+                        self.lockScreenCapabilities = controller.lockScreenCapabilities
+                    }
                     self.isControllerBootstrapInProgress = false
                     self.controllerBootstrapTask = nil
-                    Task { @MainActor [weak self] in
-                        await self?.loadStatus()
+                    self.scheduleLockScreenMediaPreparationForCurrentPreview()
+                    if self.pendingLockScreenProviderFallback {
+                        self.scheduleLockScreenProviderFallbackRetry()
+                    } else {
+                        Task { @MainActor [weak self] in
+                            await self?.loadStatus()
+                        }
                     }
                 }
             } catch {
@@ -901,23 +2790,83 @@ final class AppViewModel: ObservableObject {
                     self.controllerAvailable = false
                     self.isControllerBootstrapInProgress = false
                     self.controllerBootstrapTask = nil
+                    self.pendingLockScreenProviderFallback = false
+                    self.pendingLockScreenProviderFallbackReason = nil
+                    self.lockScreenProviderFallbackRetryTask?.cancel()
+                    self.lockScreenProviderFallbackRetryTask = nil
                     self.alertMessage = error.localizedDescription
                 }
             }
         }
     }
 
+    private func scheduleLockScreenMediaPreparationForCurrentPreview() {
+        guard let sourceURL = selectedVideoURL else { return }
+        let isStatic = WallpaperMediaKind.forURL(sourceURL).isStaticImage
+        guard isStatic || isNativePlaybackContainer(sourceURL) else {
+            // The preview preparation task will schedule the cache warm-up
+            // after it produces a compatible file for non-native containers.
+            return
+        }
+        scheduleLockScreenMediaPreparation(
+            for: sourceURL,
+            previewGeneration: previewPreparationGeneration
+        )
+    }
+
     func chooseVideo(force: Bool = false) {
         guard force || !isBusy else { return }
         let panel = NSOpenPanel()
-        var types: [UTType] = [.mpeg4Movie, .quickTimeMovie, .gif]
+        var types: [UTType] = [
+            .mpeg4Movie,
+            .quickTimeMovie,
+            .gif,
+            .png,
+            .jpeg,
+            .heic,
+            .tiff,
+            .bmp,
+        ]
         if let m4v = UTType(filenameExtension: "m4v") {
             types.append(m4v)
         }
-        panel.allowedContentTypes = types
-        panel.allowsMultipleSelection = false
+        if let webp = UTType(filenameExtension: "webp") {
+            types.append(webp)
+        }
+        configureMediaOpenPanel(
+            panel,
+            title: "Choose Desktop Wallpaper",
+            allowedContentTypes: types,
+            preferredDirectory: "Movies"
+        )
         if panel.runModal() == .OK, let url = panel.url {
             selectLocalVideoForPreview(url)
+        }
+    }
+
+    private func configureMediaOpenPanel(
+        _ panel: NSOpenPanel,
+        title: String,
+        allowedContentTypes: [UTType],
+        preferredDirectory: String
+    ) {
+        panel.title = title
+        panel.prompt = "Choose"
+        panel.allowedContentTypes = allowedContentTypes
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser
+        let preferredURL = home.appendingPathComponent(preferredDirectory, isDirectory: true)
+        let downloadsURL = home.appendingPathComponent("Downloads", isDirectory: true)
+        if fileManager.fileExists(atPath: preferredURL.path) {
+            panel.directoryURL = preferredURL
+        } else if fileManager.fileExists(atPath: downloadsURL.path) {
+            panel.directoryURL = downloadsURL
+        } else {
+            panel.directoryURL = home
         }
     }
 
@@ -979,8 +2928,10 @@ final class AppViewModel: ObservableObject {
             do {
                 let resolvedURL = try await resolveDownloadedCatalogWallpaperURL(wallpaper)
                 closeDownloadedWallpapers()
-                selectVideoForPreview(resolvedURL, summary: nil)
-                applySelectionImmediately(resolvedURL, failureContext: "start")
+                selectVideoForPreview(
+                    resolvedURL,
+                    summary: "Wallpaper loaded into preview. Press Start or Lock to apply."
+                )
             } catch {
                 alertMessage = "Failed to prepare downloaded wallpaper: \(error.localizedDescription)"
             }
@@ -1006,37 +2957,45 @@ final class AppViewModel: ObservableObject {
     }
 
     func isDownloading(_ wallpaper: CatalogWallpaper) -> Bool {
-        catalogDownloadID == wallpaper.id
+        catalogViewModel.isDownloading(wallpaper)
     }
 
     func toggleCatalogGroup(_ group: CatalogWallpaperGroup) {
-        selectedCatalogGroup = selectedCatalogGroup == group ? nil : group
-        catalogScrollTargetID = filteredCatalogWallpapers.first?.id
+        catalogViewModel.toggleGroup(group)
     }
 
     func catalogWallpaperCount(in group: CatalogWallpaperGroup) -> Int {
-        catalogWallpapers.filter { $0.catalogGroup == group }.count
+        catalogViewModel.count(in: group)
     }
 
     func applyCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
-        guard canApplyCatalogWallpaper else { return }
-        if isCatalogWallpaperAlreadyApplied(wallpaper) {
-            showSuccessBanner("Wallpaper is already applied.")
-            return
-        }
+        guard canDownloadCatalogWallpaper else { return }
         catalogDownloadID = wallpaper.id
+        let requestedCacheGeneration = cacheGeneration
 
-        Task {
-            defer { catalogDownloadID = nil }
+        catalogDownloadTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                catalogDownloadID = nil
+                catalogDownloadTask = nil
+            }
             do {
                 let localURL = try await downloadCatalogVideo(for: wallpaper)
-                do {
-                    try await applyDownloadedCatalogWallpaperImmediately(wallpaper, localURL: localURL)
-                    alertMessage = nil
-                } catch {
-                    alertMessage = "Wallpaper downloaded, but apply failed: \(error.localizedDescription)"
+                guard !Task.isCancelled, requestedCacheGeneration == cacheGeneration else {
+                    try? FileManager.default.removeItem(at: localURL)
+                    return
                 }
+                let persistenceStatus = stageCatalogWallpaperForPreview(
+                    wallpaper,
+                    localURL: localURL
+                )
+                if persistenceStatus.warningMessage == nil {
+                    showSuccessBanner("Wallpaper downloaded to preview.")
+                }
+            } catch is CancellationError {
+                return
             } catch {
+                guard !Task.isCancelled else { return }
                 alertMessage = "Failed to download wallpaper: \(error.localizedDescription)"
             }
         }
@@ -1064,83 +3023,64 @@ final class AppViewModel: ObservableObject {
     }
 
     func start() {
-        guard !isBusy else { return }
-        guard !isPlaybackRunningForControls else { return }
-        guard let selectedVideoURL else {
-            alertMessage = "Choose a video before starting."
-            return
-        }
+        guard canStart else { return }
+        lifecycleViewModel.start(
+            selectedVideoURL: selectedVideoURL,
+            hasPendingPreview: pendingPreviewVideoURL != nil
+        )
+    }
 
-        Task {
-            isBusy = true
-            defer { isBusy = false }
-            do {
-                if isPlaybackPaused && pendingPreviewVideoURL == nil {
-                    guard let controller else {
-                        throw NativeWallpaperControllerError.unavailable("Native wallpaper runtime unavailable.")
-                    }
-                    let status = try await runAsync { try controller.resume() }
-                    apply(status: status)
-                    recordBridgeSuccess()
-                    statusMessage = "Wallpaper resumed."
-                    alertMessage = nil
-                } else {
-                    try await startWallpaper(using: selectedVideoURL, statusSummary: "Wallpaper started.")
-                }
-            } catch {
-                recordBridgeFailure(error, context: "start")
-                if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to start: \(error.localizedDescription)"
-                }
-            }
+    func togglePlayback() {
+        guard canTogglePlayback else { return }
+        if isPlaybackPaused {
+            lifecycleViewModel.resume()
+        } else {
+            lifecycleViewModel.stop(selectedVideoURL: selectedVideoURL)
         }
+    }
+
+    func applyLockScreenOnly() {
+        guard canApplyLockScreenOnly else { return }
+        // Preview and Lock can be requested back-to-back while a catalog
+        // source is being converted. They do not share an in-flight Task, so
+        // leaving preview alive starts a second conversion against the same
+        // cache output and delays the actual Lock operation. Cancel only the
+        // unfinished preview task; an already completed Lock cache warm-up is
+        // left intact and can still be reused by the installer.
+        previewPreparationGeneration &+= 1
+        previewPreparationTask?.cancel()
+        previewPreparationTask = nil
+        lifecycleViewModel.applyLockScreenOnly(selectedVideoURL: selectedVideoURL)
     }
 
     func stop() {
-        guard let controller else { return }
-        guard !isBusy else { return }
-        guard isPlaybackRunningForControls else { return }
-        Task {
-            isBusy = true
-            defer { isBusy = false }
-            do {
-                let status = try await runAsync { try controller.stop() }
-                apply(status: status)
-                recordBridgeSuccess()
-                statusMessage = "Paused on current frame."
-                alertMessage = nil
-            } catch {
-                recordBridgeFailure(error, context: "pause")
-                if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to pause: \(error.localizedDescription)"
-                }
-            }
-        }
+        lifecycleViewModel.stop(selectedVideoURL: selectedVideoURL)
     }
 
     func clearWallpaper() {
-        guard let controller else { return }
-        guard !isBusy else { return }
-        Task {
-            isBusy = true
-            defer { isBusy = false }
-            do {
-                let status = try await runAsync { try controller.clearWallpaper() }
-                apply(status: status)
-                recordBridgeSuccess()
-                if let restored = status.wallpaper_restored {
-                    statusMessage = restored ? "Original wallpaper restored." : "Wallpaper backup not found."
-                } else {
-                    statusMessage = "Removing live wallpaper."
-                }
-                alertMessage = nil
-            } catch {
-                recordBridgeFailure(error, context: "clear-wallpaper")
-                if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to restore wallpaper: \(error.localizedDescription)"
-                }
+        // Preview selection starts a best-effort native Aerial cache warm-up
+        // in the background. Remove must cancel that conversion first;
+        // otherwise its installer mutation lock can make the button wait for
+        // avconvert to finish even though the wallpaper is already being
+        // removed.
+        cancelPreviewPreparation()
+        lifecycleViewModel.clearWallpaper()
+    }
+
+    private func applyLifecycleResult(_ result: LifecycleResult) {
+        if result.clearPendingPreview {
+            previewViewModel.clearPendingVideo()
+        }
+        apply(status: result.status, refreshPreview: result.refreshPreview)
+        if let previewURL = result.previewURL {
+            let configuredURL = result.status.config.video_path.isEmpty
+                ? previewURL
+                : URL(fileURLWithPath: result.status.config.video_path)
+            if previewPlayerURL != configuredURL.standardizedFileURL {
+                configurePreview(for: configuredURL)
             }
         }
+        statusMessage = result.statusMessage
     }
 
     func updateSpeed(_ speed: Double) {
@@ -1151,7 +3091,9 @@ final class AppViewModel: ObservableObject {
             isBusy = true
             defer { isBusy = false }
             do {
-                let status = try await runAsync { try controller.setSpeed(speed) }
+                let status = try await runAsync {
+                    try await controller.setSpeed(speed)
+                }
                 apply(status: status)
                 recordBridgeSuccess()
                 statusMessage = "Speed updated."
@@ -1166,6 +3108,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func setPreviewPlaybackSpeed(_ speed: Double) {
+        guard abs(playbackSpeed - speed) > 0.0001 else { return }
         playbackSpeed = speed
         syncPreviewPlaybackRate()
     }
@@ -1191,8 +3134,15 @@ final class AppViewModel: ObservableObject {
                 let status = try await runAsync { try controller.setAutostart(enabled) }
                 apply(status: status)
                 recordBridgeSuccess()
-                statusMessage = enabled ? "Launch at login enabled." : "Launch at login disabled."
-                alertMessage = nil
+                if let warning = autostartWarning(for: status) {
+                    statusMessage = warning
+                    alertMessage = warning
+                } else {
+                    statusMessage = enabled
+                        ? "Launch at login enabled."
+                        : "Launch at login disabled."
+                    alertMessage = nil
+                }
             } catch {
                 autostartEnabled = previous
                 recordBridgeFailure(error, context: "set-autostart")
@@ -1277,13 +3227,17 @@ final class AppViewModel: ObservableObject {
             defer { isBusy = false }
             do {
                 let status = try await runAsync {
-                    try controller.setShowOnLockScreen(enabled)
+                    try await controller.setShowOnLockScreen(enabled)
                 }
                 apply(status: status)
                 recordBridgeSuccess()
-                statusMessage = enabled
-                    ? "AuraFlow Lock Screen installed and selected."
-                    : "AuraFlow Lock Screen removed."
+                if enabled, status.config.video_path.isEmpty {
+                    statusMessage = "Lock Screen enabled; it will activate when wallpaper starts."
+                } else {
+                    statusMessage = enabled
+                        ? "AuraFlow Lock Screen installed and selected."
+                        : "AuraFlow Lock Screen removed."
+                }
                 alertMessage = nil
             } catch {
                 showOnLockScreenEnabled = previous
@@ -1332,7 +3286,7 @@ final class AppViewModel: ObservableObject {
 
     func openScreenSaverSettings() {
         let destinations = [
-            "x-apple.systempreferences:com.apple.ScreenSaver-Settings.extension",
+            "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension",
             "x-apple.systempreferences:com.apple.preference.desktopscreeneffect",
         ]
         for destination in destinations {
@@ -1346,21 +3300,23 @@ final class AppViewModel: ObservableObject {
     }
 
     func startSystemScreenSaver() {
-        let screenSaverURL = URL(
-            fileURLWithPath:
-                "/System/Library/CoreServices/ScreenSaverEngine.app",
-            isDirectory: true
-        )
-        guard FileManager.default.fileExists(
-            atPath: screenSaverURL.path
-        ),
-        NSWorkspace.shared.open(screenSaverURL)
-        else {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+        task.arguments = ["displaysleepnow"]
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
             alertMessage =
-                "macOS could not start the system Screen Saver."
+                "macOS could not start the Lock Screen test."
             return
         }
-        statusMessage = "Starting the system Lock Screen wallpaper."
+        guard task.terminationStatus == 0 else {
+            alertMessage =
+                "macOS did not accept the Lock Screen test request."
+            return
+        }
+        statusMessage = "Lock Screen test started. Unlock the Mac manually to return."
         alertMessage = nil
     }
 
@@ -1377,7 +3333,7 @@ final class AppViewModel: ObservableObject {
                 apply(status: status)
                 if showOnLockScreenEnabled {
                     try await runAsync {
-                        try controller.syncLockScreenSaver()
+                        try await controller.syncLockScreenSaver()
                     }
                 }
                 recordBridgeSuccess()
@@ -1457,6 +3413,7 @@ final class AppViewModel: ObservableObject {
         if let cacheClearTask, !cacheClearTask.isCancelled {
             return
         }
+        cancelLocalWallpaperImport()
 
         cacheClearTask = Task {
             isBusy = true
@@ -1466,31 +3423,66 @@ final class AppViewModel: ObservableObject {
             }
 
             do {
-                let preservedPaths = preservedCachePaths()
-                try clearCatalogCache(preserving: preservedPaths)
-                try clearOptimizedVideoCache(preserving: preservedPaths)
-                CatalogPreviewImageLoader.clearCache()
+                cacheGeneration &+= 1
+                catalogRefreshTask?.cancel()
+                catalogDownloadTask?.cancel()
+                catalogDownloadID = nil
+                let refreshTask = catalogRefreshTask
+                let downloadTask = catalogDownloadTask
+                await refreshTask?.value
+                await downloadTask?.value
 
-                if let cacheClearingProvider = catalogProvider as? CatalogCacheClearing {
-                    await cacheClearingProvider.clearCache()
-                }
+                let appliedVideoIsManaged = appliedVideoURL.map(isManagedCacheURL) ?? false
+                let pendingPreviewIsManaged = pendingPreviewVideoURL.map(isManagedCacheURL) ?? false
 
-                downloadedCatalogWallpapers = []
-
-                if let pendingPreviewURL = pendingPreviewVideoURL,
-                   !preservedPaths.contains(pendingPreviewURL.standardizedFileURL.path) {
+                // A downloaded wallpaper can still be the active source. Stop
+                // it before deleting the file, otherwise the daemon keeps the
+                // item alive and the cache appears to survive the cleanup.
+                if appliedVideoIsManaged {
+                    // Clearing the active managed wallpaper also clears any
+                    // preview layer; otherwise `apply(status:)` intentionally
+                    // keeps a pending preview alive.
+                    pendingPreviewVideoURL = nil
+                } else if pendingPreviewIsManaged {
                     pendingPreviewVideoURL = nil
                 }
+                if appliedVideoIsManaged {
+                    guard let controller else {
+                        throw NativeWallpaperControllerError.unavailable(
+                            "Cannot clear the active downloaded wallpaper while the wallpaper runtime is unavailable."
+                        )
+                    }
+                    let status = try await controller.clearWallpaper()
+                    apply(status: status)
+                    recordBridgeSuccess()
+                } else if pendingPreviewIsManaged {
+                    configurePreview(for: selectedVideoURL)
+                }
+
+                try await catalogRepository.clearCache()
+                try clearOptimizedVideoCache()
+                try clearRuntimePreviewCache()
+                AdaptiveContrastAnalyzer.clearCache()
+                URLCache.shared.removeAllCachedResponses()
+                CatalogPreviewImageLoader.clearCache()
+
+                downloadedCatalogWallpapers = []
 
                 catalogWallpapers = []
                 selectedCatalogWallpaper = nil
                 lastCatalogRefreshAt = nil
-                statusMessage = "Cache cleared."
+                statusMessage = "Cache and downloaded wallpapers cleared."
                 alertMessage = nil
             } catch {
                 alertMessage = "Failed to clear cache: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func cancelLocalWallpaperImport() {
+        localWallpaperImportGeneration &+= 1
+        localWallpaperImportTask?.cancel()
+        localWallpaperImportTask = nil
     }
 
     func preview() {
@@ -1525,6 +3517,9 @@ final class AppViewModel: ObservableObject {
     }
 
     private func prepareVideoURLForPlayback(_ sourceURL: URL) async throws -> (url: URL, summary: String?) {
+        if WallpaperMediaKind.forURL(sourceURL).isStaticImage {
+            return (sourceURL.standardizedFileURL, nil)
+        }
         let settings = currentOptimizationSettings()
         guard settings.enabled else {
             return (sourceURL, nil)
@@ -1566,13 +3561,30 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func prepareDownloadedCatalogSourceForPlayback(_ sourceURL: URL) async throws -> URL {
-        if await isPreviewPlayableVideo(at: sourceURL) {
-            return sourceURL
+    private func prepareCatalogVideoURLForPlayback(_ sourceURL: URL) async throws -> (url: URL, summary: String?) {
+        if WallpaperMediaKind.forURL(sourceURL).isStaticImage {
+            return (sourceURL.standardizedFileURL, nil)
+        }
+
+        // GIF is deliberately kept on the compatibility path. AVPlayer can
+        // inspect it, but the desktop agent needs the optimizer's MP4 output
+        // for reliable looping.
+        let isGIF = sourceURL.pathExtension.lowercased() == "gif"
+        if !isGIF,
+           isNativePlaybackContainer(sourceURL),
+           await isPreviewPlayableVideo(at: sourceURL) {
+            // A native MP4/MOV/M4V source is already ready to render. Do not
+            // make a catalog download wait for the user's optional HEVC or
+            // 1080p optimization pass.
+            return (sourceURL.standardizedFileURL, nil)
         }
 
         var settings = currentOptimizationSettings()
         settings.enabled = true
+        // Catalog application should not transcode an otherwise playable
+        // H.264 source just because the global optimization preference is on.
+        // This flag still leaves WebM/MKV/GIF compatibility conversion active.
+        settings.transcodeH264ToHEVC = false
 
         let result = try await optimizer.optimizeIfNeeded(
             inputURL: sourceURL,
@@ -1580,11 +3592,47 @@ final class AppViewModel: ObservableObject {
             progress: { _ in }
         )
 
-        guard await isPreviewPlayableVideo(at: result.outputURL) else {
+        let outputIsPlayable: Bool
+        if WallpaperMediaKind.forURL(result.outputURL).isStaticImage {
+            outputIsPlayable = true
+        } else {
+            outputIsPlayable = await isPreviewPlayableVideo(at: result.outputURL)
+        }
+        guard outputIsPlayable else {
             throw URLError(.cannotDecodeContentData)
         }
 
-        return result.outputURL
+        switch result.decision {
+        case .passthrough(let reason):
+            return (result.outputURL, reason)
+        case .transcode(let reason):
+            let summary = result.fromCache
+                ? "Using cached compatible wallpaper. \(reason)"
+                : "Wallpaper converted for macOS playback. \(reason)"
+            return (result.outputURL, summary)
+        }
+    }
+
+    private func prepareLockScreenVideoURLForPlayback(_ sourceURL: URL) async throws -> (url: URL, summary: String?) {
+        // The native Lock Screen bridge prepares a still frame with avconvert.
+        // Catalog files and non-native containers must therefore go through
+        // the compatibility path first; passing a raw WebM/MKV/GIF here makes
+        // Lock fail even when the same source already has a usable preview.
+        if WallpaperMediaKind.forURL(sourceURL).isStaticImage {
+            return (sourceURL.standardizedFileURL, nil)
+        }
+
+        if isManagedCacheURL(sourceURL) || !isNativePlaybackContainer(sourceURL) {
+            return try await prepareCatalogVideoURLForPlayback(sourceURL)
+        }
+
+        // Native MP4/MOV/M4V files are already valid inputs for AVPlayer and
+        // the Aerial installer. Do not run the user's optional desktop
+        // optimization pass on the Lock button: that pass can transcode a
+        // large file before Aerial even gets a chance to use its own cached
+        // HEVC preparation. The background Lock Screen warm-up handles the
+        // provider-specific conversion ahead of time.
+        return (sourceURL.standardizedFileURL, nil)
     }
 
     private func apply(
@@ -1595,11 +3643,51 @@ final class AppViewModel: ObservableObject {
         let hasConfiguredVideo = !status.config.video_path.isEmpty
         let paused = status.paused ?? false
         let effectiveRunning = statusIndicatesActivePlayback(status)
+        let lockScreenOnlyActive = status.lock_screen_only == true
+            || (
+                status.lock_screen_only == nil
+                    && !status.running
+                    && !paused
+                    && status.health?.available == true
+                    && status.health?.suspicious != true
+            )
+        let pauseSourceURL: URL?
+        if lockScreenOnlyActive {
+            // Lock Screen-only keeps the Desktop video_path intact. The
+            // selected preview/source is the useful media identity for this
+            // route; otherwise a previous Desktop image could hide a paused
+            // Lock Screen video (or vice versa).
+            pauseSourceURL = selectedVideoURL ?? appliedVideoURL
+        } else if hasConfiguredVideo {
+            pauseSourceURL = URL(fileURLWithPath: status.config.video_path)
+        } else {
+            pauseSourceURL = appliedVideoURL ?? selectedVideoURL
+        }
+        let pauseSourceIsStatic = pauseSourceURL.map {
+            WallpaperMediaKind.forURL($0).isStaticImage
+        } ?? false
         Self.setIfChanged(&isRunning, to: status.running)
         Self.setIfChanged(&isPlaybackActive, to: effectiveRunning)
-        Self.setIfChanged(&isPlaybackPaused, to: paused && hasConfiguredVideo && !effectiveRunning)
+        Self.setIfChanged(
+            &isPlaybackPaused,
+            to: paused
+                && (hasConfiguredVideo || lockScreenOnlyActive)
+                && !pauseSourceIsStatic
+                && !effectiveRunning
+        )
+        Self.setIfChanged(
+            &isLockScreenOnlyActive,
+            to: lockScreenOnlyActive
+        )
         Self.setIfChanged(&playbackSpeed, to: status.config.playback_speed)
         Self.setIfChanged(&autostartEnabled, to: status.autostart ?? status.config.autostart ?? false)
+        if let warning = autostartWarning(for: status) {
+            if backgroundUpdate {
+                statusMessage = warning
+            } else {
+                alertMessage = warning
+            }
+        }
         Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
         Self.setIfChanged(&pauseOnFullscreenEnabled, to: status.config.pause_on_fullscreen ?? true)
         Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? false)
@@ -1614,11 +3702,24 @@ final class AppViewModel: ObservableObject {
                refreshPreview && (hasVideoChanged || previewPlayer?.currentItem == nil || previousScaleMode != scaleMode) {
                 configurePreview(for: currentURL)
             }
-        } else {
-            Self.setIfChanged(&appliedVideoURL, to: nil)
             if pendingPreviewVideoURL == nil {
-                if previewPlayer != nil {
-                    previewPlayer = nil
+                savePreviewSeed(for: currentURL)
+            }
+        } else {
+            if pendingPreviewVideoURL == nil {
+                if refreshPreviewFromSavedSeedIfNeeded(refreshPreview: refreshPreview) {
+                    // Lock-only intentionally keeps config.video_path empty.
+                    // Re-read the persisted preview so another AuraFlow window
+                    // or a completed Lock operation cannot leave this window
+                    // attached to a deleted/stale player item.
+                } else if let currentURL = appliedVideoURL?.standardizedFileURL,
+                   FileManager.default.fileExists(atPath: currentURL.path) {
+                    if refreshPreview && previewPlayer?.currentItem == nil {
+                        configurePreview(for: currentURL)
+                    }
+                } else {
+                    Self.setIfChanged(&appliedVideoURL, to: nil)
+                    configurePreview(for: nil)
                 }
             }
         }
@@ -1640,6 +3741,27 @@ final class AppViewModel: ObservableObject {
                 await self?.recoverPlaybackIfUnexpectedlyStopped()
             }
         }
+    }
+
+    private func autostartWarning(for status: ControlStatus) -> String? {
+        guard status.config.autostart == true,
+              status.autostart != true,
+              status.autostart_plist_exists != nil
+                || status.autostart_service_loaded != nil
+        else {
+            return nil
+        }
+
+        if status.autostart_plist_exists == false {
+            return "Launch at Login is enabled, but its LaunchAgent plist is missing."
+        }
+        if status.autostart_service_loaded == false {
+            return "Launch at Login is enabled, but the AuraFlow LaunchAgent is not loaded."
+        }
+        if status.autostart_service_running == false {
+            return "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
+        }
+        return "Launch at Login is enabled, but the AuraFlow LaunchAgent is unavailable."
     }
 
     private func recoverPlaybackIfUnexpectedlyStopped() async {
@@ -1670,7 +3792,7 @@ final class AppViewModel: ObservableObject {
 
             if shouldRecover || shouldRecoverSuspiciousDaemon {
                 let recoveredStatus = try await runAsync {
-                    try controller.start(videoURL: nil, speed: nil)
+                    try await controller.start(videoURL: nil, speed: nil)
                 }
                 apply(status: recoveredStatus, refreshPreview: false, backgroundUpdate: true)
                 recordBridgeSuccess()
@@ -1726,61 +3848,23 @@ final class AppViewModel: ObservableObject {
     }
 
     private func loadCatalogFromCache() async {
-        if let cached = await catalogProvider.loadCachedCatalog(), !cached.isEmpty {
+        let result = await catalogRepository.loadCatalogCache()
+        if let cached = result.wallpapers, !cached.isEmpty {
             catalogWallpapers = cached
+        }
+        if let warningMessage = result.persistenceStatus.warningMessage {
+            statusMessage = warningMessage
         }
     }
 
     private func loadDownloadedCatalogWallpapers() {
-        let loaded: [DownloadedCatalogWallpaper]
-        do {
-            let manifestURL = try downloadedCatalogManifestURL()
-            guard let data = try? Data(contentsOf: manifestURL) else {
-                let inferred = inferredDownloadedCatalogWallpapersFromDisk()
-                downloadedCatalogWallpapers = inferred
-                if !inferred.isEmpty {
-                    try? persistDownloadedCatalogWallpapers(inferred)
-                }
-                return
-            }
-            loaded = try JSONDecoder().decode([DownloadedCatalogWallpaper].self, from: data)
-        } catch {
-            downloadedCatalogWallpapers = inferredDownloadedCatalogWallpapersFromDisk()
-            return
-        }
-
-        let existing = loaded.compactMap { item -> DownloadedCatalogWallpaper? in
-            guard FileManager.default.fileExists(atPath: item.localURL.path) else {
-                return nil
-            }
-
-            let repairedPreviewPath = item.localPreviewPath.flatMap { localPreviewPath in
-                FileManager.default.fileExists(atPath: localPreviewPath) ? localPreviewPath : nil
-            }
-
-            return DownloadedCatalogWallpaper(
-                id: item.id,
-                wallpaperID: item.wallpaperID,
-                title: item.title,
-                category: item.category,
-                attribution: item.attribution,
-                previewImageURL: item.previewImageURL,
-                localPreviewPath: repairedPreviewPath,
-                sourcePageURL: item.sourcePageURL,
-                localPath: item.localPath,
-                downloadedAt: item.downloadedAt
-            )
-        }
-        var sorted = existing.sorted(by: { lhs, rhs in
-            lhs.downloadedAt > rhs.downloadedAt
-        })
-        if sorted.isEmpty {
-            sorted = inferredDownloadedCatalogWallpapersFromDisk()
-        }
-        downloadedCatalogWallpapers = sorted
-
-        if existing.count != loaded.count {
-            try? persistDownloadedCatalogWallpapers(sorted)
+        let result = catalogRepository.loadDownloadedWallpapers(
+            preserving: downloadedCatalogWallpapers
+        )
+        downloadedCatalogWallpapers = result.wallpapers
+        if let warningMessage = result.persistenceStatus.warningMessage {
+            alertMessage = warningMessage
+            statusMessage = warningMessage
         }
     }
 
@@ -1803,7 +3887,7 @@ final class AppViewModel: ObservableObject {
             }
 
             do {
-                let fetched = try await catalogProvider.fetchCatalog { [weak self] partial in
+                let refreshResult = try await catalogRepository.refreshCatalog { [weak self] partial in
                     guard let self else { return }
                     guard !Task.isCancelled else { return }
                     await MainActor.run {
@@ -1814,6 +3898,7 @@ final class AppViewModel: ObservableObject {
                     }
                 }
                 guard !Task.isCancelled else { return }
+                let fetched = refreshResult.wallpapers
                 guard !fetched.isEmpty else {
                     catalogWallpapers = []
                     selectedCatalogWallpaper = nil
@@ -1825,9 +3910,11 @@ final class AppViewModel: ObservableObject {
                 if let selectedCatalogWallpaper {
                     self.selectedCatalogWallpaper = fetched.first(where: { $0.id == selectedCatalogWallpaper.id })
                 }
-                statusMessage = nil
+                statusMessage = refreshResult.persistenceStatus.warningMessage
+                alertMessage = refreshResult.persistenceStatus.warningMessage
                 lastCatalogRefreshAt = Date()
             } catch {
+                guard !Task.isCancelled else { return }
                 if catalogWallpapers.isEmpty {
                     selectedCatalogWallpaper = nil
                 }
@@ -1837,214 +3924,19 @@ final class AppViewModel: ObservableObject {
     }
 
     private func downloadCatalogVideo(for wallpaper: CatalogWallpaper) async throws -> URL {
-        if let existing = downloadedCatalogWallpapers.first(where: { $0.wallpaperID == wallpaper.id }),
-           FileManager.default.fileExists(atPath: existing.localURL.path) {
-            if await isPreviewPlayableVideo(at: existing.localURL) {
-                return existing.localURL
-            }
-            try? FileManager.default.removeItem(at: existing.localURL)
+        if let existingURL = catalogRepository.reusableDownloadedWallpaperURL(
+            for: wallpaper.id,
+            in: downloadedCatalogWallpapers
+        ) {
+            return existingURL
         }
-
-        var lastError: Error?
-
-        if isMoeWallsWallpaper(wallpaper) {
-            do {
-                if let detailSource = try await moeWallsDetailDownloadSource(for: wallpaper) {
-                    return try await downloadCatalogSource(detailSource, for: wallpaper)
-                }
-            } catch {
-                lastError = error
-            }
-        }
-
-        if isMoeWallsWallpaper(wallpaper),
-           let pageURL = wallpaper.sourcePageURL {
-            do {
-                return try await downloadMoeWallsVideo(for: wallpaper, pageURL: pageURL)
-            } catch {
-                lastError = error
-            }
-        }
-
-        let sources = try await catalogSources(for: wallpaper)
-
-        for source in sources {
-            do {
-                return try await downloadCatalogSource(source, for: wallpaper)
-            } catch {
-                lastError = error
-            }
-        }
-
-        throw lastError ?? URLError(.badURL)
+        return try await catalogDownloadService.download(wallpaper)
     }
 
-    private func moeWallsDetailDownloadSource(for wallpaper: CatalogWallpaper) async throws -> CatalogVideoSource? {
-        guard let pageURL = wallpaper.sourcePageURL else { return nil }
-        guard let moeWallsSource = catalogProvider as? MoeWallsSource else { return nil }
-
-        let details = try await moeWallsSource.fetchDetails(pageURL: pageURL)
-        guard details.hasExplicitPlayableSource == true,
-              let downloadURL = details.downloadURL else {
-            return nil
-        }
-        let width = details.resolution?.width ?? 0
-        let height = details.resolution?.height ?? 0
-        return CatalogVideoSource(url: downloadURL, width: width, height: height)
+    private func hasUsableCatalogFile(at url: URL) -> Bool {
+        catalogRepository.hasUsableCatalogFile(at: url)
     }
 
-    private func downloadCatalogSource(_ source: CatalogVideoSource, for wallpaper: CatalogWallpaper) async throws -> URL {
-        if isMoeWallsWallpaper(wallpaper),
-           source.url.host?.lowercased() == "go.moewalls.com",
-           let sourcePageURL = wallpaper.sourcePageURL {
-            return try await downloadMoeWallsVideo(for: wallpaper, pageURL: sourcePageURL)
-        }
-
-        let widthLabel = source.width > 0 ? String(source.width) : "auto"
-        let heightLabel = source.height > 0 ? String(source.height) : "auto"
-        let destination = try catalogDirectoryURL().appendingPathComponent(
-            "\(wallpaper.id)-\(widthLabel)x\(heightLabel).\(downloadFileExtension(for: source.url))"
-        )
-
-        if FileManager.default.fileExists(atPath: destination.path) {
-            if await isPreviewPlayableVideo(at: destination) {
-                return destination
-            }
-            try? FileManager.default.removeItem(at: destination)
-        }
-
-        let useBrowserStyleHeaders = shouldUseBrowserStyleHeaders(for: source.url, wallpaper: wallpaper)
-        var request = URLRequest(url: source.url)
-        request.timeoutInterval = 45
-        request.setValue(
-            useBrowserStyleHeaders
-                ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15"
-                : "AuraFlow/1.1",
-            forHTTPHeaderField: "User-Agent"
-        )
-        request.setValue("*/*", forHTTPHeaderField: "Accept")
-        if useBrowserStyleHeaders {
-            request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
-            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-            request.setValue("no-cache", forHTTPHeaderField: "Pragma")
-        }
-        if let sourcePageURL = wallpaper.sourcePageURL {
-            request.setValue(sourcePageURL.absoluteString, forHTTPHeaderField: "Referer")
-            if source.url.host?.contains("moewalls.com") == true,
-               let origin = catalogOriginHeaderValue(for: sourcePageURL) {
-                request.setValue(origin, forHTTPHeaderField: "Origin")
-            }
-        }
-
-        let session: URLSession
-        if useBrowserStyleHeaders {
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.httpCookieAcceptPolicy = .always
-            configuration.httpShouldSetCookies = true
-            session = URLSession(configuration: configuration)
-        } else {
-            session = .shared
-        }
-
-        let (temporaryURL, response) = try await session.download(for: request)
-        if let httpResponse = response as? HTTPURLResponse,
-           !(200...299).contains(httpResponse.statusCode) {
-            throw CatalogDownloadError.badStatus(url: source.url, statusCode: httpResponse.statusCode)
-        }
-        if let mimeType = response.mimeType?.lowercased(),
-           mimeType.hasPrefix("text/") || mimeType.contains("html") {
-            throw CatalogDownloadError.htmlResponse(url: source.url)
-        }
-
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: temporaryURL, to: destination)
-
-        return try await prepareDownloadedCatalogSourceForPlayback(destination)
-    }
-
-    private func downloadMoeWallsVideo(for wallpaper: CatalogWallpaper, pageURL: URL) async throws -> URL {
-        let resolver = await MainActor.run {
-            let resolver = MoeWallsBrowserResolver()
-            return resolver
-        }
-        let destination = try catalogDirectoryURL().appendingPathComponent("\(wallpaper.id).mp4")
-        try? FileManager.default.removeItem(at: destination)
-        let downloadedURL = try await resolver.downloadWallpaper(from: pageURL, to: destination)
-        guard await isPreviewPlayableVideo(at: downloadedURL) else {
-            try? FileManager.default.removeItem(at: downloadedURL)
-            throw URLError(.cannotDecodeContentData)
-        }
-        return downloadedURL
-    }
-
-    private func catalogSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
-        if !wallpaper.sources.isEmpty {
-            var ordered = wallpaper.sources
-            if let preferred = preferredSource(for: wallpaper),
-               let preferredIndex = ordered.firstIndex(of: preferred),
-               preferredIndex != 0 {
-                ordered.remove(at: preferredIndex)
-                ordered.insert(preferred, at: 0)
-            }
-            return ordered
-        }
-
-        let resolvedURL = try await catalogProvider.resolveDownloadURL(for: wallpaper)
-        return [CatalogVideoSource(url: resolvedURL, width: 0, height: 0)]
-    }
-
-    private func downloadFileExtension(for url: URL) -> String {
-        let ext = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if ext.isEmpty {
-            return "mp4"
-        }
-        return ext
-    }
-
-    private func isLikelyCatalogVideoResponse(response: URLResponse, sourceURL: URL) -> Bool {
-        if let mime = response.mimeType?.lowercased() {
-            if mime.hasPrefix("video/") || mime == "application/octet-stream" || mime == "binary/octet-stream" {
-                return true
-            }
-            if mime.hasPrefix("text/") {
-                return false
-            }
-        }
-        let ext = sourceURL.pathExtension.lowercased()
-        return ["mp4", "webm", "mov", "m4v", "gif"].contains(ext)
-    }
-
-    private func isMoeWallsWallpaper(_ wallpaper: CatalogWallpaper) -> Bool {
-        wallpaper.attribution == "MoeWalls" || wallpaper.sourcePageURL?.host?.contains("moewalls.com") == true
-    }
-
-    private func preferredSource(for wallpaper: CatalogWallpaper) -> CatalogVideoSource? {
-        guard !wallpaper.sources.isEmpty else { return nil }
-        guard wallpaper.sources.count > 1 else { return wallpaper.sources.first }
-
-        let nativeSources = wallpaper.sources.filter { source in
-            isNativePlaybackContainer(source.url)
-        }
-        let candidateSources = nativeSources.isEmpty ? wallpaper.sources : nativeSources
-
-        let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
-        let targetWidth = Int(screenFrame.width)
-        let targetHeight = Int(screenFrame.height)
-
-        let largerOrEqual = candidateSources.filter { source in
-            source.width >= targetWidth && source.height >= targetHeight
-        }
-
-        if let best = largerOrEqual.min(by: { lhs, rhs in
-            (lhs.width * lhs.height) < (rhs.width * rhs.height)
-        }) {
-            return best
-        }
-
-        return candidateSources.max(by: { lhs, rhs in
-            (lhs.width * lhs.height) < (rhs.width * rhs.height)
-        })
-    }
 
     private func isNativePlaybackContainer(_ url: URL) -> Bool {
         switch url.pathExtension.lowercased() {
@@ -2055,71 +3947,11 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func shouldUseBrowserStyleHeaders(for sourceURL: URL, wallpaper: CatalogWallpaper) -> Bool {
-        guard isMoeWallsWallpaper(wallpaper) else {
-            return false
-        }
-
-        guard let host = sourceURL.host?.lowercased() else {
-            return false
-        }
-
-        return host.contains("moewalls.com")
-            || host.contains("media.moewalls.com")
-            || host.contains("cdn.moewalls.com")
-    }
-
-    private func catalogDirectoryURL() throws -> URL {
-        let appSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let directory = appSupport
-            .appendingPathComponent("AuraFlow", isDirectory: true)
-            .appendingPathComponent("Catalog", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }
-
     private func optimizedVideosDirectoryURL() throws -> URL {
-        let appSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let directory = appSupport
-            .appendingPathComponent("AuraFlow", isDirectory: true)
+        let directory = appSupportDirectoryURL
             .appendingPathComponent("OptimizedVideos", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
-    }
-
-    private func downloadedCatalogManifestURL() throws -> URL {
-        try catalogDirectoryURL().appendingPathComponent("downloaded-catalog.json")
-    }
-
-    private func catalogPreviewImagesDirectoryURL() throws -> URL {
-        let directory = try catalogDirectoryURL().appendingPathComponent("PreviewImages", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }
-
-    private func localPreviewImageURL(for previewKey: String) throws -> URL {
-        try catalogPreviewImagesDirectoryURL().appendingPathComponent("\(previewKey).jpg")
-    }
-
-    private func previewImageKey(for videoURL: URL) -> String {
-        videoURL.standardizedFileURL.deletingPathExtension().lastPathComponent
-    }
-
-    private func existingLocalPreviewImageURL(for previewKey: String) -> URL? {
-        guard let url = try? localPreviewImageURL(for: previewKey) else {
-            return nil
-        }
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     private func scheduleLocalPreviewImageGeneration(
@@ -2127,254 +3959,66 @@ final class AppViewModel: ObservableObject {
         legacyWallpaperID: String?,
         wallpaperID: String
     ) {
-        let previewKey = previewImageKey(for: videoURL)
+        let request = CatalogRepository.PreviewGenerationRequest(
+            videoURL: videoURL,
+            legacyWallpaperID: legacyWallpaperID,
+            wallpaperID: wallpaperID
+        )
+        let requestedCacheGeneration = cacheGeneration
 
-        guard existingLocalPreviewImageURL(for: previewKey) == nil else { return }
-        guard let destinationURL = try? localPreviewImageURL(for: previewKey) else { return }
-        let legacyURL = legacyWallpaperID.flatMap { existingLocalPreviewImageURL(for: $0) }
-
-        Task.detached(priority: .utility) { [weak self] in
-            guard let generatedURL = Self.generateLocalPreviewImage(
-                for: videoURL,
-                destinationURL: destinationURL,
-                legacyURL: legacyURL
-            ) else {
-                return
-            }
-
-            await MainActor.run { [weak self] in
-                self?.storeGeneratedPreview(generatedURL, wallpaperID: wallpaperID)
-            }
-        }
-    }
-
-    nonisolated private static func generateLocalPreviewImage(
-        for videoURL: URL,
-        destinationURL: URL,
-        legacyURL: URL?
-    ) -> URL? {
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
-            return destinationURL
-        }
-        if let legacyURL {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
             do {
-                try FileManager.default.copyItem(at: legacyURL, to: destinationURL)
-                return destinationURL
+                guard let generatedURL = try await self.catalogRepository
+                    .generatePreviewIfNeeded(for: request)
+                else {
+                    return
+                }
+                guard self.cacheGeneration == requestedCacheGeneration else {
+                    self.catalogRepository.removeFile(at: generatedURL)
+                    return
+                }
+                self.storeGeneratedPreview(generatedURL, wallpaperID: wallpaperID)
+            } catch is CancellationError {
+                return
             } catch {
-                return legacyURL
+                // Preview generation is optional; the video remains usable
+                // without a generated thumbnail.
             }
-        }
-        let asset = AVURLAsset(url: videoURL)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = NSSize(width: 960, height: 540)
-
-        let time = CMTime(seconds: 0.0, preferredTimescale: 600)
-        guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else {
-            return nil
-        }
-
-        let bitmap = NSBitmapImageRep(cgImage: cgImage)
-        guard let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.82]) else {
-            return nil
-        }
-
-        do {
-            try jpegData.write(to: destinationURL, options: .atomic)
-            return destinationURL
-        } catch {
-            return nil
         }
     }
 
     private func storeGeneratedPreview(_ previewURL: URL, wallpaperID: String) {
-        var updated = downloadedCatalogWallpapers
-        guard let index = updated.firstIndex(where: { $0.wallpaperID == wallpaperID }) else {
-            return
-        }
-        let current = updated[index]
-        guard current.localPreviewPath != previewURL.path else { return }
-
-        updated[index] = DownloadedCatalogWallpaper(
-            id: current.id,
-            wallpaperID: current.wallpaperID,
-            title: current.title,
-            category: current.category,
-            attribution: current.attribution,
-            previewImageURL: current.previewImageURL,
-            localPreviewPath: previewURL.path,
-            sourcePageURL: current.sourcePageURL,
-            localPath: current.localPath,
-            downloadedAt: current.downloadedAt
+        let result = catalogRepository.updateGeneratedPreview(
+            previewURL,
+            wallpaperID: wallpaperID,
+            in: downloadedCatalogWallpapers
         )
-        downloadedCatalogWallpapers = updated
-        try? persistDownloadedCatalogWallpapers(updated)
+        downloadedCatalogWallpapers = result.wallpapers
+        if let warningMessage = result.persistenceStatus.warningMessage {
+            alertMessage = warningMessage
+            statusMessage = warningMessage
+        }
     }
 
-    private func registerDownloadedCatalogWallpaper(for wallpaper: CatalogWallpaper, localURL: URL) {
-        let normalizedPath = localURL.standardizedFileURL.path
-        let previewKey = previewImageKey(for: localURL)
-        let localPreviewPath = existingLocalPreviewImageURL(for: previewKey)?.path
-        var updated = downloadedCatalogWallpapers
-
-        let entry = DownloadedCatalogWallpaper(
-            id: wallpaper.id,
-            wallpaperID: wallpaper.id,
-            title: wallpaper.title,
-            category: wallpaper.category,
-            attribution: wallpaper.attribution,
-            previewImageURL: wallpaper.previewImageURL,
-            localPreviewPath: localPreviewPath,
-            sourcePageURL: wallpaper.sourcePageURL,
-            localPath: normalizedPath,
-            downloadedAt: Date()
+    private func registerDownloadedCatalogWallpaper(
+        for wallpaper: CatalogWallpaper,
+        localURL: URL
+    ) -> CatalogPersistenceStatus {
+        let result = catalogRepository.registerDownloadedWallpaper(
+            wallpaper,
+            localURL: localURL,
+            existing: downloadedCatalogWallpapers
         )
-
-        if let existingIndex = updated.firstIndex(where: { $0.id == entry.id || $0.localPath == entry.localPath }) {
-            updated[existingIndex] = entry
-        } else {
-            updated.append(entry)
-        }
-
-        updated.sort(by: { lhs, rhs in
-            lhs.downloadedAt > rhs.downloadedAt
-        })
-        downloadedCatalogWallpapers = updated
-        try? persistDownloadedCatalogWallpapers(updated)
-        if localPreviewPath == nil {
+        downloadedCatalogWallpapers = result.wallpapers
+        if let request = result.previewRequest {
             scheduleLocalPreviewImageGeneration(
-                for: localURL,
-                legacyWallpaperID: wallpaper.id,
-                wallpaperID: wallpaper.id
+                for: request.videoURL,
+                legacyWallpaperID: request.legacyWallpaperID,
+                wallpaperID: request.wallpaperID
             )
         }
-    }
-
-    private func persistDownloadedCatalogWallpapers(_ wallpapers: [DownloadedCatalogWallpaper]) throws {
-        let data = try JSONEncoder().encode(wallpapers)
-        try data.write(to: try downloadedCatalogManifestURL(), options: .atomic)
-    }
-
-    private func syncDownloadedCatalogWallpaperAfterApply(
-        wallpaperID: String,
-        requestedURL: URL,
-        previousVideoPath: String?
-    ) {
-        guard let appliedURL = appliedVideoURL?.standardizedFileURL else {
-            return
-        }
-        let appliedPath = appliedURL.path
-        if let previousVideoPath, previousVideoPath == appliedPath {
-            return
-        }
-
-        var updated = downloadedCatalogWallpapers
-        guard let index = updated.firstIndex(where: { $0.wallpaperID == wallpaperID }) else {
-            return
-        }
-
-        let normalizedRequestedPath = requestedURL.standardizedFileURL.path
-        let normalizedExistingPath = updated[index].localURL.standardizedFileURL.path
-        if normalizedExistingPath == appliedPath {
-            return
-        }
-
-        let normalizedPathToStore: String
-        if FileManager.default.fileExists(atPath: appliedPath) {
-            normalizedPathToStore = appliedPath
-        } else {
-            normalizedPathToStore = normalizedRequestedPath
-        }
-
-        let current = updated[index]
-        updated[index] = DownloadedCatalogWallpaper(
-            id: current.id,
-            wallpaperID: current.wallpaperID,
-            title: current.title,
-            category: current.category,
-            attribution: current.attribution,
-            previewImageURL: current.previewImageURL,
-            localPreviewPath: current.localPreviewPath,
-            sourcePageURL: current.sourcePageURL,
-            localPath: normalizedPathToStore,
-            downloadedAt: current.downloadedAt
-        )
-        downloadedCatalogWallpapers = updated
-        try? persistDownloadedCatalogWallpapers(updated)
-    }
-
-    private func inferredDownloadedCatalogWallpapersFromDisk() -> [DownloadedCatalogWallpaper] {
-        guard let directory = try? catalogDirectoryURL() else {
-            return []
-        }
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-
-        let validExtensions = Set(["mp4", "mov", "m4v", "webm", "gif"])
-        let ignoredNames: Set<String> = [
-            "waifu-anime-cache.json",
-            "waifu-download-links.json",
-            "downloaded-catalog.json",
-        ]
-
-        let mapped: [DownloadedCatalogWallpaper] = files.compactMap { fileURL in
-            let name = fileURL.lastPathComponent
-            guard !ignoredNames.contains(name) else { return nil }
-            let ext = fileURL.pathExtension.lowercased()
-            guard validExtensions.contains(ext) else { return nil }
-
-            let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey])
-            let downloadedAt = values?.contentModificationDate ?? Date()
-            let fileName = fileURL.deletingPathExtension().lastPathComponent
-
-            return DownloadedCatalogWallpaper(
-                id: "local-\(fileName)",
-                wallpaperID: "local-\(fileName)",
-                title: inferredTitleFromDownloadedFileName(fileName),
-                category: "Downloaded",
-                attribution: "Catalog Cache",
-                previewImageURL: nil,
-                localPreviewPath: existingLocalPreviewImageURL(
-                    for: previewImageKey(for: fileURL)
-                )?.path,
-                sourcePageURL: nil,
-                localPath: fileURL.standardizedFileURL.path,
-                downloadedAt: downloadedAt
-            )
-        }
-
-        return mapped.sorted(by: { lhs, rhs in
-            lhs.downloadedAt > rhs.downloadedAt
-        })
-    }
-
-    private func inferredTitleFromDownloadedFileName(_ fileName: String) -> String {
-        fileName
-            .replacingOccurrences(of: "-", with: " ")
-            .replacingOccurrences(of: "_", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(separator: " ")
-            .map { part in
-                let word = String(part)
-                guard let first = word.first else { return word }
-                return first.uppercased() + word.dropFirst()
-            }
-            .joined(separator: " ")
-    }
-
-    private func isCatalogWallpaperAlreadyApplied(_ wallpaper: CatalogWallpaper) -> Bool {
-        guard let appliedPath = appliedVideoURL?.standardizedFileURL.path else {
-            return false
-        }
-        guard let downloaded = downloadedCatalogWallpapers.first(where: { $0.wallpaperID == wallpaper.id }) else {
-            return false
-        }
-        return downloaded.localURL.standardizedFileURL.path == appliedPath
+        return result.persistenceStatus
     }
 
     private func showSuccessBanner(_ message: String) {
@@ -2389,120 +4033,174 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func preservedCachePaths() -> Set<String> {
-        var paths: Set<String> = []
-        if let appliedVideoURL, (isPlaybackActive || isPlaybackPaused || isRunning) {
-            paths.insert(appliedVideoURL.standardizedFileURL.path)
+    private func isManagedCacheURL(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        if catalogRepository.isManagedCacheURL(url) {
+            return true
         }
-        return paths
+        guard let optimizedDirectory = try? optimizedVideosDirectoryURL() else {
+            return false
+        }
+        let optimizedPath = optimizedDirectory.standardizedFileURL.path
+        return path == optimizedPath || path.hasPrefix(optimizedPath + "/")
     }
 
-    private func clearCatalogCache(preserving preservedPaths: Set<String>) throws {
-        let directory = try catalogDirectoryURL()
-        let manifestURL = try downloadedCatalogManifestURL()
-        let entries = (try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )) ?? []
-
-        for entry in entries {
-            let standardizedPath = entry.standardizedFileURL.path
-            if preservedPaths.contains(standardizedPath) {
-                continue
-            }
-            try? FileManager.default.removeItem(at: entry)
-        }
-
-        downloadedCatalogWallpapers = []
-        try? FileManager.default.removeItem(at: manifestURL)
-    }
-
-    private func clearOptimizedVideoCache(preserving preservedPaths: Set<String>) throws {
+    private func clearOptimizedVideoCache() throws {
         let directory = try optimizedVideosDirectoryURL()
-        let entries = (try? FileManager.default.contentsOfDirectory(
+        let entries = try FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )) ?? []
+            options: []
+        )
 
         for entry in entries {
-            if preservedPaths.contains(entry.standardizedFileURL.path) {
-                continue
+            try FileManager.default.removeItem(at: entry)
+        }
+    }
+
+    private func clearRuntimePreviewCache() throws {
+        let fileManager = FileManager.default
+        let entries = try fileManager.contentsOfDirectory(
+            at: appSupportDirectoryURL,
+            includingPropertiesForKeys: nil,
+            options: []
+        )
+
+        for entry in entries {
+            let name = entry.lastPathComponent
+            let isGeneratedStillFrame = name == "last_frame.png"
+                || name == "last_frame_source.json"
+                || (name.hasPrefix("last_frame_") && name.hasSuffix(".png"))
+            let isPreparedLockScreenCache = name == "LockScreenMediaCache"
+            if isGeneratedStillFrame || isPreparedLockScreenCache {
+                try fileManager.removeItem(at: entry)
             }
-            try? FileManager.default.removeItem(at: entry)
         }
     }
 
     private func selectVideoForPreview(_ url: URL, summary: String?) {
-        pendingPreviewVideoURL = url
-        configurePreview(for: url)
+        cancelPreviewPreparation()
+        previewViewModel.selectPendingVideo(url)
+        configurePreviewOrPrepare(for: url)
+        savePreviewSeed(for: url)
         statusMessage = summary
         alertMessage = nil
     }
 
-    func stageCatalogWallpaperForPreview(_ wallpaper: CatalogWallpaper, localURL: URL) {
-        registerDownloadedCatalogWallpaper(for: wallpaper, localURL: localURL)
-        selectVideoForPreview(localURL, summary: "Wallpaper downloaded. Press Start to apply.")
-    }
-
-    private func applyDownloadedCatalogWallpaperImmediately(_ wallpaper: CatalogWallpaper, localURL: URL) async throws {
-        stageCatalogWallpaperForPreview(wallpaper, localURL: localURL)
-
-        let previousVideoPath = appliedVideoURL?.standardizedFileURL.path
-        guard !isBusy else {
-            throw NativeWallpaperControllerError.unavailable("AuraFlow is busy right now. Try applying the wallpaper again.")
+    @discardableResult
+    func stageCatalogWallpaperForPreview(
+        _ wallpaper: CatalogWallpaper,
+        localURL: URL
+    ) -> CatalogPersistenceStatus {
+        let persistenceStatus = registerDownloadedCatalogWallpaper(
+            for: wallpaper,
+            localURL: localURL
+        )
+        selectVideoForPreview(
+            localURL,
+            summary: "Wallpaper downloaded to preview. Press Start or Lock to apply."
+        )
+        if let warningMessage = persistenceStatus.warningMessage {
+            alertMessage = warningMessage
+            statusMessage = warningMessage
         }
-
-        isBusy = true
-        defer { isBusy = false }
-
-        do {
-            try await startWallpaper(
-                using: localURL,
-                statusSummary: "Wallpaper downloaded and applied."
-            )
-            syncDownloadedCatalogWallpaperAfterApply(
-                wallpaperID: wallpaper.id,
-                requestedURL: localURL,
-                previousVideoPath: previousVideoPath
-            )
-        } catch {
-            statusMessage = "Wallpaper downloaded. Press Start to apply."
-            throw error
-        }
+        return persistenceStatus
     }
 
     func selectLocalVideoForPreview(_ url: URL) {
-        selectVideoForPreview(url, summary: "Video loaded into preview. Press Start to apply.")
+        let normalizedURL = url.standardizedFileURL
+        scheduleLocalWallpaperImport(for: normalizedURL)
+        selectVideoForPreview(
+            normalizedURL,
+            summary: "Video loaded into preview. Press Start or Lock to apply."
+        )
     }
 
-    private func applySelectionImmediately(_ sourceURL: URL, failureContext: String) {
-        guard !isBusy else { return }
+    private func scheduleLocalWallpaperImport(for sourceURL: URL) {
+        guard !isManagedCacheURL(sourceURL) else { return }
 
-        Task {
-            isBusy = true
-            defer { isBusy = false }
+        localWallpaperImportTask?.cancel()
+        let requestedGeneration = localWallpaperImportGeneration
+        localWallpaperImportTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var copiedResult: CatalogRepository.LocalImportResult?
+
             do {
-                try await startWallpaper(using: sourceURL, statusSummary: "Wallpaper started.")
-            } catch {
-                recordBridgeFailure(error, context: failureContext)
-                if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to start: \(error.localizedDescription)"
+                copiedResult = try await catalogRepository.copyLocalWallpaper(
+                    from: sourceURL,
+                    existing: downloadedCatalogWallpapers
+                )
+                try Task.checkCancellation()
+                guard requestedGeneration == localWallpaperImportGeneration else {
+                    if copiedResult?.created == true {
+                        catalogRepository.removeFile(at: copiedResult!.url)
+                    }
+                    return
                 }
+                if let copiedResult {
+                    let persistenceStatus = registerLocalWallpaperCopy(
+                        originalURL: sourceURL,
+                        copiedURL: copiedResult.url
+                    )
+                    if let warningMessage = persistenceStatus.warningMessage {
+                        alertMessage = warningMessage
+                        statusMessage = warningMessage
+                    }
+                }
+            } catch is CancellationError {
+                if copiedResult?.created == true {
+                    catalogRepository.removeFile(at: copiedResult!.url)
+                }
+            } catch {
+                if copiedResult?.created == true {
+                    catalogRepository.removeFile(at: copiedResult!.url)
+                }
+                guard requestedGeneration == localWallpaperImportGeneration else { return }
+                statusMessage = "Wallpaper selected, but its copy could not be saved."
+            }
+
+            if requestedGeneration == localWallpaperImportGeneration {
+                localWallpaperImportTask = nil
             }
         }
     }
 
-    private func startWallpaper(using sourceURL: URL, statusSummary: String) async throws {
+    private func registerLocalWallpaperCopy(
+        originalURL: URL,
+        copiedURL: URL
+    ) -> CatalogPersistenceStatus {
+        let result = catalogRepository.registerLocalWallpaperCopy(
+            originalURL: originalURL,
+            copiedURL: copiedURL,
+            existing: downloadedCatalogWallpapers
+        )
+        downloadedCatalogWallpapers = result.wallpapers
+        if let request = result.previewRequest {
+            scheduleLocalPreviewImageGeneration(
+                for: request.videoURL,
+                legacyWallpaperID: request.legacyWallpaperID,
+                wallpaperID: request.wallpaperID
+            )
+        }
+        return result.persistenceStatus
+    }
+
+    private func startWallpaper(
+        using sourceURL: URL,
+        statusSummary: String
+    ) async throws {
         guard let controller else {
             throw NativeWallpaperControllerError.unavailable("Native wallpaper runtime unavailable.")
         }
 
-        let prepared = try await prepareVideoURLForPlayback(sourceURL)
-        let finalStatus = try await runAsync { try controller.start(videoURL: prepared.url, speed: nil) }
+        let prepared = isManagedCacheURL(sourceURL)
+            ? try await prepareCatalogVideoURLForPlayback(sourceURL)
+            : try await prepareVideoURLForPlayback(sourceURL)
+        let finalStatus = try await runAsync {
+            try await controller.start(videoURL: prepared.url, speed: nil)
+        }
 
-        pendingPreviewVideoURL = nil
+        previewViewModel.clearPendingVideo()
         apply(status: finalStatus, refreshPreview: false)
         let configuredPreviewURL = finalStatus.config.video_path.isEmpty
             ? prepared.url
@@ -2516,7 +4214,7 @@ final class AppViewModel: ObservableObject {
         if showOnLockScreenEnabled {
             do {
                 try await runAsync {
-                    try controller.syncLockScreenSaver()
+                    try await controller.syncLockScreenSaver()
                 }
             } catch {
                 alertMessage = "Wallpaper started, but Lock Screen sync failed: \(error.localizedDescription)"
@@ -2525,20 +4223,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func resolveDownloadedCatalogWallpaperURL(_ wallpaper: DownloadedCatalogWallpaper) async throws -> URL {
-        if await isPreviewPlayableVideo(at: wallpaper.localURL) {
-            return wallpaper.localURL
-        }
-
-        let surrogate = CatalogWallpaper(
-            id: wallpaper.wallpaperID,
-            title: wallpaper.title,
-            category: wallpaper.category,
-            attribution: wallpaper.attribution,
-            previewImageURL: wallpaper.previewImageURL,
-            sourcePageURL: wallpaper.sourcePageURL,
-            sources: []
-        )
-        return try await downloadCatalogVideo(for: surrogate)
+        try catalogRepository.resolveDownloadedWallpaperURL(wallpaper)
     }
 
     private func isPreviewPlayableVideo(at url: URL) async -> Bool {
@@ -2558,12 +4243,16 @@ final class AppViewModel: ObservableObject {
     }
 
     private func configurePreview(for url: URL?) {
+        glassAnalysisGeneration &+= 1
+        glassAnalysisTask?.cancel()
+        glassAnalysisTask = nil
+
         if let previewEndObserver {
-            NotificationCenter.default.removeObserver(previewEndObserver)
+            NotificationCenter.default.removeObserver(previewEndObserver.value)
             self.previewEndObserver = nil
         }
         if let previewStalledObserver {
-            NotificationCenter.default.removeObserver(previewStalledObserver)
+            NotificationCenter.default.removeObserver(previewStalledObserver.value)
             self.previewStalledObserver = nil
         }
         previewItemStatusObservation?.invalidate()
@@ -2573,9 +4262,15 @@ final class AppViewModel: ObservableObject {
             previewPlayer?.pause()
             previewPlayer?.replaceCurrentItem(with: nil)
             previewPlayer = nil
-            adaptiveGlassAppearance = .default
+            adaptiveGlassAppearance = .emptyState
             return
         }
+
+        // Never carry the previous wallpaper's black/white polarity into a
+        // new preview. Until the current source is analyzed, use the
+        // low-contrast transition fallback; the current source's exact profile
+        // is published below once its signature has been verified.
+        adaptiveGlassAppearance = .previewTransitionFallback
 
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 0.35
@@ -2607,7 +4302,7 @@ final class AppViewModel: ObservableObject {
             }
         }
 
-        previewEndObserver = NotificationCenter.default.addObserver(
+        previewEndObserver = ObserverToken(NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
             queue: .main
@@ -2616,9 +4311,9 @@ final class AppViewModel: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.applyPreviewPlaybackRate(to: player)
             }
-        }
+        })
 
-        previewStalledObserver = NotificationCenter.default.addObserver(
+        previewStalledObserver = ObserverToken(NotificationCenter.default.addObserver(
             forName: .AVPlayerItemPlaybackStalled,
             object: item,
             queue: .main
@@ -2628,7 +4323,7 @@ final class AppViewModel: ObservableObject {
                 guard player.currentItem === item else { return }
                 self.applyPreviewPlaybackRate(to: player)
             }
-        }
+        })
 
         applyPreviewPlaybackRate(to: player)
         scheduleAdaptiveGlassRefresh(for: url)
@@ -2636,155 +4331,105 @@ final class AppViewModel: ObservableObject {
 
     private func scheduleAdaptiveGlassRefresh(for url: URL) {
         glassAnalysisTask?.cancel()
+        glassAnalysisGeneration &+= 1
+        let requestedGeneration = glassAnalysisGeneration
         let requestedURL = url.standardizedFileURL
         let requestedScaleMode = scaleMode
 
-        glassAnalysisTask = Task.detached(priority: .utility) { [requestedURL, requestedScaleMode] in
-            let appearance = Self.adaptiveGlassAppearance(for: requestedURL, scaleMode: requestedScaleMode)
+        glassAnalysisTask = Task.detached(priority: .utility) { [requestedURL, requestedScaleMode, requestedGeneration] in
+            let requestedSourceSignature = AdaptiveContrastAnalyzer.sourceSignature(for: requestedURL)
+            let analysis = await AdaptiveContrastAnalyzer.analyze(
+                url: requestedURL,
+                scaleMode: requestedScaleMode
+            )
             guard !Task.isCancelled else { return }
-
-            await MainActor.run {
-                let currentURL = self.selectedVideoURL?.standardizedFileURL
-                let appliedURL = self.appliedVideoURL?.standardizedFileURL
-                let pendingURL = self.pendingPreviewVideoURL?.standardizedFileURL
-                guard currentURL == requestedURL || appliedURL == requestedURL || pendingURL == requestedURL else {
+            guard let analysis else {
+                // Do not restore another wallpaper's profile when decoding is
+                // temporarily unavailable. Reuse only a profile whose exact
+                // content signature matches this source; otherwise remain on
+                // the deterministic safe fallback.
+                guard AdaptiveContrastAnalyzer.sourceSignature(for: requestedURL) == requestedSourceSignature else {
                     return
                 }
-                self.adaptiveGlassAppearance = appearance
+                await MainActor.run { [weak self] in
+                    guard let self,
+                          requestedGeneration == self.glassAnalysisGeneration else {
+                        return
+                    }
+                    let fallbackAppearance = requestedSourceSignature
+                        .flatMap { self.adaptiveGlassAppearancesBySourceSignature[$0] }
+                        ?? .safeFallback
+                    let reusedSourceProfile = requestedSourceSignature
+                        .map { self.adaptiveGlassAppearancesBySourceSignature[$0] != nil }
+                        ?? false
+                    self.adaptiveGlassAppearance = fallbackAppearance
+                    adaptiveContrastLogger.debug(
+                        "Appearance analysis unavailable; source-specific profile reused=\(reusedSourceProfile, privacy: .public)"
+                    )
+                }
+                return
+            }
+
+            // A file can be replaced in place while the background decoder is
+            // working. Recheck the signature before publishing the result so
+            // an old frame can never win merely because its URL is unchanged.
+            guard AdaptiveContrastAnalyzer.sourceSignature(for: requestedURL) == analysis.sourceSignature,
+                  !Task.isCancelled else {
+                return
+            }
+
+            await MainActor.run { [weak self] in
+                guard let self,
+                      requestedGeneration == self.glassAnalysisGeneration else {
+                    return
+                }
+
+                guard Self.shouldAcceptAdaptiveGlassAnalysis(
+                    requestedURL: requestedURL,
+                    displayedPreviewURL: self.previewPlayerURL,
+                    selectedURL: self.selectedVideoURL,
+                    appliedURL: self.appliedVideoURL,
+                    pendingURL: self.pendingPreviewVideoURL
+                ) else {
+                    return
+                }
+
+                self.adaptiveGlassAppearance = analysis.appearance
+                self.adaptiveGlassAppearancesBySourceSignature[analysis.sourceSignature] = analysis.appearance
+                adaptiveContrastLogger.debug(
+                    "Appearance analysis accepted: samples=\(analysis.sampleCount, privacy: .public), cache_hit=\(analysis.cacheHit, privacy: .public), selected_score=\(analysis.selectedToneScore, privacy: .public), alternate_score=\(analysis.alternateToneScore, privacy: .public)"
+                )
             }
         }
+    }
+
+    /// The player item is authoritative after compatibility conversion. The
+    /// selected/pending URL can intentionally remain the original WebM or GIF
+    /// while the preview displays a prepared MP4; rejecting that MP4's color
+    /// analysis leaves the whole UI on its temporary black-text fallback.
+    nonisolated static func shouldAcceptAdaptiveGlassAnalysis(
+        requestedURL: URL,
+        displayedPreviewURL: URL?,
+        selectedURL: URL?,
+        appliedURL: URL?,
+        pendingURL: URL?
+    ) -> Bool {
+        let requested = requestedURL.standardizedFileURL
+        if let displayedPreviewURL {
+            return displayedPreviewURL.standardizedFileURL == requested
+        }
+        return [selectedURL, appliedURL, pendingURL]
+            .compactMap { $0?.standardizedFileURL }
+            .contains(requested)
     }
 
     nonisolated static func adaptiveGlassAppearance(for url: URL, scaleMode: WallpaperScaleMode) -> AdaptiveGlassAppearance {
-        let asset = AVURLAsset(url: url)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = NSSize(width: 240, height: 135)
-
-        let sampleTime: Double
-        switch scaleMode {
-        case .fill:
-            sampleTime = 0.5
-        case .fit, .stretch:
-            sampleTime = 0.2
-        }
-
-        let time = CMTime(seconds: sampleTime, preferredTimescale: 600)
-        guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else {
-            return .default
-        }
-        return adaptiveGlassAppearance(for: cgImage)
+        AdaptiveContrastAnalyzer.analyzeSynchronously(url: url, scaleMode: scaleMode)?.appearance
+            ?? AdaptiveGlassAppearance.safeFallback
     }
 
     nonisolated static func adaptiveGlassAppearance(for cgImage: CGImage) -> AdaptiveGlassAppearance {
-        let width = 120
-        let height = 68
-        guard let pixels = rgbaPixels(from: cgImage, width: width, height: height) else {
-            return .default
-        }
-
-        let topStats = luminanceStats(
-            pixels: pixels,
-            width: width,
-            height: height,
-            region: CGRect(x: 0.26, y: 0.04, width: 0.48, height: 0.10)
-        )
-        let bottomStats = luminanceStats(
-            pixels: pixels,
-            width: width,
-            height: height,
-            region: CGRect(x: 0.08, y: 0.80, width: 0.84, height: 0.16)
-        )
-
-        let topProtection = protectionLevel(for: topStats)
-        let bottomProtection = protectionLevel(for: bottomStats)
-
-        return AdaptiveGlassAppearance(
-            topGlassAlpha: 1.0 - (0.08 * topProtection),
-            bottomGlassAlpha: 1.0 - (0.10 * bottomProtection),
-            topProtectionOverlayOpacity: 0.016 * topProtection,
-            bottomProtectionOverlayOpacity: 0.020 * bottomProtection,
-            bottomButtonProtectionOpacity: 0.014 * bottomProtection,
-            bottomButtonHighlightOpacity: max(0.018, 0.055 - (0.040 * bottomProtection))
-        )
-    }
-
-    nonisolated private static func protectionLevel(for stats: LuminanceStats) -> CGFloat {
-        let bright = normalized(stats.mean, lower: 0.72, upper: 0.96)
-        let flat = 1.0 - normalized(stats.standardDeviation, lower: 0.07, upper: 0.24)
-        let protection = bright * (0.35 + (flat * 0.65))
-        return min(max(protection, 0.0), 1.0)
-    }
-
-    nonisolated private static func normalized(_ value: CGFloat, lower: CGFloat, upper: CGFloat) -> CGFloat {
-        guard upper > lower else { return 0 }
-        return min(max((value - lower) / (upper - lower), 0.0), 1.0)
-    }
-
-    nonisolated private static func rgbaPixels(from cgImage: CGImage, width: Int, height: Int) -> [UInt8]? {
-        let bytesPerPixel = 4
-        let bytesPerRow = width * bytesPerPixel
-        var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
-
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                data: &pixels,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: bytesPerRow,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              ) else {
-            return nil
-        }
-
-        context.interpolationQuality = .medium
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return pixels
-    }
-
-    nonisolated private static func luminanceStats(
-        pixels: [UInt8],
-        width: Int,
-        height: Int,
-        region: CGRect
-    ) -> LuminanceStats {
-        let minX = max(Int(CGFloat(width) * region.minX), 0)
-        let maxX = min(Int(CGFloat(width) * region.maxX), width)
-        let minY = max(Int(CGFloat(height) * region.minY), 0)
-        let maxY = min(Int(CGFloat(height) * region.maxY), height)
-
-        var luminanceValues: [CGFloat] = []
-        luminanceValues.reserveCapacity(max((maxX - minX) * (maxY - minY), 1))
-
-        for y in minY..<maxY {
-            for x in minX..<maxX {
-                let offset = ((y * width) + x) * 4
-                let red = CGFloat(pixels[offset]) / 255.0
-                let green = CGFloat(pixels[offset + 1]) / 255.0
-                let blue = CGFloat(pixels[offset + 2]) / 255.0
-                let luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
-                luminanceValues.append(luminance)
-            }
-        }
-
-        guard !luminanceValues.isEmpty else {
-            return LuminanceStats(mean: 0.0, standardDeviation: 0.0)
-        }
-
-        let mean = luminanceValues.reduce(0, +) / CGFloat(luminanceValues.count)
-        let variance = luminanceValues.reduce(0) { partialResult, value in
-            let delta = value - mean
-            return partialResult + (delta * delta)
-        } / CGFloat(luminanceValues.count)
-
-        return LuminanceStats(mean: mean, standardDeviation: sqrt(variance))
-    }
-
-    private struct LuminanceStats {
-        let mean: CGFloat
-        let standardDeviation: CGFloat
+        AdaptiveContrastAnalyzer.appearance(for: cgImage)
     }
 
     private func previewPlaybackRate() -> Float {
@@ -2851,7 +4496,7 @@ final class AppViewModel: ObservableObject {
 
         do {
             let updatedStatus = try await runAsync {
-                try controller.start(videoURL: nil, speed: nil)
+                try await controller.start(videoURL: nil, speed: nil)
             }
             apply(status: updatedStatus)
             recordBridgeSuccess()
@@ -2979,7 +4624,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func runAsync<T>(_ work: @escaping () throws -> T) async throws -> T {
+    private func runAsync<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
@@ -2990,5 +4635,9 @@ final class AppViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func runAsync<T: Sendable>(_ work: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await work()
     }
 }

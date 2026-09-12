@@ -4,22 +4,33 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SWIFT_DIR="$ROOT_DIR/macOSApp"
-DIST_DIR="$ROOT_DIR/dist"
+DIST_DIR="${AURAFLOW_OUTPUT_DIR:-$ROOT_DIR/dist}"
 APP_TARGET="WallpaperControlApp"
 HELPER_TARGET="AuraWallpaperAgent"
+NATIVE_BRIDGE_TARGET="AuraWallpaperNativeBridge"
 APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-AuraFlow}"
 APP_VERSION="${AURAFLOW_VERSION:-1.3.1}"
 APP_BUILD="${AURAFLOW_BUILD:-10}"
-APP_BUNDLE="$DIST_DIR/${APP_DISPLAY_NAME}.app"
+MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
+export MACOSX_DEPLOYMENT_TARGET
+STAGING_DIR=""
+APP_BUNDLE=""
 APP_ZIP="$DIST_DIR/${APP_DISPLAY_NAME}.zip"
 APP_DMG="$DIST_DIR/${APP_DISPLAY_NAME}.dmg"
 SWIFT_BIN="${AURAFLOW_SWIFT_BIN:-swift}"
 SDKROOT="${SDKROOT:-}"
 SWIFT_SDK_ARGS=()
+SDK_VERSION=""
+SDK_PATH=""
+SDK_MAJOR=""
 ICON_PNG="$ROOT_DIR/Resources/AppIcon.png"
 ICON_ICNS="$ROOT_DIR/Resources/AppIcon.icns"
 BUILD_UNIVERSAL="${BUILD_UNIVERSAL:-1}"
 REQUIRE_UNIVERSAL="${REQUIRE_UNIVERSAL:-0}"
+BUILD_NATIVE_BRIDGE="${BUILD_NATIVE_BRIDGE:-${AURAFLOW_NATIVE_BRIDGE:-auto}}"
+REQUIRE_NATIVE_BRIDGE="${REQUIRE_NATIVE_BRIDGE:-0}"
+NATIVE_BRIDGE_ENABLED="0"
+PRIVATE_FRAMEWORKS_DIR="/System/Library/PrivateFrameworks"
 FFMPEG_RUNTIME_BUNDLING="${FFMPEG_RUNTIME_BUNDLING:-1}"
 REQUIRE_FFMPEG_RUNTIME="${REQUIRE_FFMPEG_RUNTIME:-0}"
 FFMPEG_BIN="${AURAFLOW_FFMPEG_BIN:-}"
@@ -28,7 +39,7 @@ CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 CODESIGN_KEYCHAIN_PATH="${CODESIGN_KEYCHAIN_PATH:-}"
 REQUIRE_CODESIGN="${REQUIRE_CODESIGN:-0}"
 LOCK_DIR="$ROOT_DIR/.build-lock"
-BUNDLED_TOOLS_DIR="$APP_BUNDLE/Contents/Resources/BundledTools"
+BUNDLED_TOOLS_DIR=""
 
 log() {
   printf '[build] %s\n' "$1"
@@ -67,35 +78,106 @@ configure_developer_dir() {
   fi
 }
 
-require_macos_sdk() {
-  local sdk_version=""
-  local sdk_path=""
-
+resolve_macos_sdk() {
   if [[ -n "$SDKROOT" && -f "$SDKROOT/SDKSettings.plist" ]]; then
-    sdk_path="$SDKROOT"
-    sdk_version="$(plutil -extract Version raw "$SDKROOT/SDKSettings.plist" 2>/dev/null || true)"
-    SWIFT_SDK_ARGS=(--sdk "$SDKROOT")
+    SDK_PATH="$SDKROOT"
+    SDK_VERSION="$(plutil -extract Version raw "$SDKROOT/SDKSettings.plist" 2>/dev/null || true)"
   else
     require_command xcrun
-    sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
-    sdk_path="$(xcrun --show-sdk-path --sdk macosx)"
+    SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+    SDK_PATH="$(xcrun --show-sdk-path --sdk macosx)"
   fi
+
+  if [[ ! -d "$SDK_PATH" || -z "$SDK_VERSION" ]]; then
+    log "Unable to resolve a usable macOS SDK (path: ${SDK_PATH:-unknown}, version: ${SDK_VERSION:-unknown})."
+    exit 1
+  fi
+
+  SWIFT_SDK_ARGS=(--sdk "$SDK_PATH")
 
   if [[ ! -x "$SWIFT_BIN" ]]; then
     require_command "$SWIFT_BIN"
   fi
 
-  local sdk_major="${sdk_version%%.*}"
-  if [[ ! "$sdk_major" =~ ^[0-9]+$ || "$sdk_major" -lt 26 ]]; then
-    log "macOS SDK 26+ is required for native Liquid Glass. Current SDK: $sdk_version ($sdk_path)"
-    log "Install/use Xcode 26+ or set DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer"
+  SDK_MAJOR="${SDK_VERSION%%.*}"
+  if [[ ! "$SDK_MAJOR" =~ ^[0-9]+$ ]]; then
+    log "Unable to determine macOS SDK major version from '$SDK_VERSION'."
     exit 1
+  fi
+
+  local minimum_macos_major="${MACOSX_DEPLOYMENT_TARGET%%.*}"
+  if [[ ! "$minimum_macos_major" =~ ^[0-9]+$ || "$minimum_macos_major" -lt 13 ]]; then
+    log "MACOSX_DEPLOYMENT_TARGET must be macOS 13.0 or newer (got '$MACOSX_DEPLOYMENT_TARGET')."
+    exit 1
+  fi
+
+  if [[ "$SDK_MAJOR" -lt 26 ]]; then
+    log "Using macOS SDK $SDK_VERSION ($SDK_PATH); native bridge disabled, legacy fallback will be packaged."
+  else
+    log "Using macOS SDK $SDK_VERSION ($SDK_PATH)"
   fi
   log "Using Swift: $SWIFT_BIN"
 }
 
+private_frameworks_available() {
+  # On newer macOS releases the framework image can be supplied by the dyld
+  # shared cache instead of being present as a standalone file inside the
+  # bundle. The native bridge links successfully against that installation,
+  # so checking only `.../Wallpaper.framework/Wallpaper` incorrectly forced
+  # every release build into legacy-fallback mode.
+  [[ -d "$PRIVATE_FRAMEWORKS_DIR/Wallpaper.framework" ]] || return 1
+  [[ -d "$PRIVATE_FRAMEWORKS_DIR/WallpaperTypes.framework" ]] || return 1
+}
+
+configure_native_bridge() {
+  case "$BUILD_NATIVE_BRIDGE" in
+    auto)
+      ;;
+    0 | false | no | off)
+      if [[ "$REQUIRE_NATIVE_BRIDGE" == "1" ]]; then
+        log "REQUIRE_NATIVE_BRIDGE=1 conflicts with BUILD_NATIVE_BRIDGE=$BUILD_NATIVE_BRIDGE."
+        exit 1
+      fi
+      NATIVE_BRIDGE_ENABLED="0"
+      log "Native bridge disabled by BUILD_NATIVE_BRIDGE=$BUILD_NATIVE_BRIDGE."
+      return
+      ;;
+    1 | true | yes | on)
+      ;;
+    *)
+      log "BUILD_NATIVE_BRIDGE must be auto, 0, or 1 (got '$BUILD_NATIVE_BRIDGE')."
+      exit 1
+      ;;
+  esac
+
+  if [[ "$SDK_MAJOR" -lt 26 ]]; then
+    if [[ "$BUILD_NATIVE_BRIDGE" != "auto" || "$REQUIRE_NATIVE_BRIDGE" == "1" ]]; then
+      log "Native bridge requested, but SDK 26+ is unavailable (current SDK: $SDK_VERSION)."
+      exit 1
+    fi
+    NATIVE_BRIDGE_ENABLED="0"
+    return
+  fi
+
+  if ! private_frameworks_available; then
+    if [[ "$BUILD_NATIVE_BRIDGE" != "auto" || "$REQUIRE_NATIVE_BRIDGE" == "1" ]]; then
+      log "Native bridge requested, but Wallpaper.framework and/or WallpaperTypes.framework is unavailable."
+      exit 1
+    fi
+    NATIVE_BRIDGE_ENABLED="0"
+    log "Private Wallpaper frameworks unavailable; native bridge omitted and legacy fallback will be packaged."
+    return
+  fi
+
+  NATIVE_BRIDGE_ENABLED="1"
+  log "Native bridge enabled (SDK $SDK_VERSION and private Wallpaper frameworks available)."
+}
+
 cleanup_lock() {
   rm -rf "$LOCK_DIR"
+  if [[ -n "$STAGING_DIR" ]]; then
+    rm -rf "$STAGING_DIR"
+  fi
 }
 
 acquire_lock() {
@@ -150,6 +232,9 @@ ensure_icon() {
 prepare_environment() {
   rm -rf "$DIST_DIR"
   mkdir -p "$DIST_DIR"
+  STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/auraflow-release.XXXXXX")"
+  APP_BUNDLE="$STAGING_DIR/${APP_DISPLAY_NAME}.app"
+  BUNDLED_TOOLS_DIR="$APP_BUNDLE/Contents/Resources/BundledTools"
 }
 
 resolve_tool_path() {
@@ -181,68 +266,135 @@ resolve_tool_path() {
   return 1
 }
 
-build_swift_app() {
-  log "Building Swift target"
-  pushd "$SWIFT_DIR" >/dev/null
-  "$SWIFT_BIN" build -c release "${SWIFT_SDK_ARGS[@]}"
+swift_build_product() {
+  local architecture="$1"
+  local product="$2"
+  local -a swift_command=("$SWIFT_BIN" build -c release "${SWIFT_SDK_ARGS[@]}" --product "$product")
 
-  local arm_binary="$SWIFT_DIR/.build/arm64-apple-macosx/release/${APP_TARGET}"
-  local arm_helper="$SWIFT_DIR/.build/arm64-apple-macosx/release/${HELPER_TARGET}"
-  local x86_binary="$SWIFT_DIR/.build/x86_64-apple-macosx/release/${APP_TARGET}"
-  local x86_helper="$SWIFT_DIR/.build/x86_64-apple-macosx/release/${HELPER_TARGET}"
-  local universal_dir="$SWIFT_DIR/.build/universal"
-  local built_x86="0"
+  if [[ "$architecture" != "$(uname -m)" ]]; then
+    swift_command=(arch "-$architecture" "${swift_command[@]}")
+  fi
+  "${swift_command[@]}"
+}
 
-  if [[ "$BUILD_UNIVERSAL" == "1" ]] && command -v arch >/dev/null 2>&1; then
-    log "Building x86_64 slice (Rosetta may be required)"
-    if arch -x86_64 "$SWIFT_BIN" build -c release "${SWIFT_SDK_ARGS[@]}"; then
-      log "Built x86_64 slice"
-      built_x86="1"
-    else
-      if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
-        log "Failed to build x86_64 slice and REQUIRE_UNIVERSAL=1 is set."
-        exit 1
-      fi
-      log "[warn] Failed to build x86_64 slice. Using arm64 only."
-    fi
-  elif [[ "$BUILD_UNIVERSAL" != "1" ]]; then
-    log "Skipping x86_64 build (BUILD_UNIVERSAL=$BUILD_UNIVERSAL)"
-  else
-    if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
-      log "'arch' command not found and REQUIRE_UNIVERSAL=1 is set."
-      exit 1
-    fi
-    log "[warn] 'arch' command not found; building arm64 slice only."
+swift_show_bin_path() {
+  local architecture="$1"
+  local product="$2"
+  local -a swift_command=("$SWIFT_BIN" build -c release "${SWIFT_SDK_ARGS[@]}" --product "$product" --show-bin-path)
+
+  if [[ "$architecture" != "$(uname -m)" ]]; then
+    swift_command=(arch "-$architecture" "${swift_command[@]}")
+  fi
+  "${swift_command[@]}"
+}
+
+build_swift_architecture() {
+  local architecture="$1"
+  log "Building app and agent for $architecture"
+  if ! swift_build_product "$architecture" "$APP_TARGET"; then
+    log "Failed to build ${APP_TARGET} for $architecture."
+    return 1
+  fi
+  if ! swift_build_product "$architecture" "$HELPER_TARGET"; then
+    log "Failed to build ${HELPER_TARGET} for $architecture."
+    return 1
   fi
 
-  local bin_path=""
-  local helper_path=""
-  if [[ "$built_x86" == "1" && -f "$arm_binary" && -f "$x86_binary" && -f "$arm_helper" && -f "$x86_helper" ]]; then
-    mkdir -p "$universal_dir"
-    lipo -create -output "$universal_dir/${APP_TARGET}" "$arm_binary" "$x86_binary"
-    lipo -create -output "$universal_dir/${HELPER_TARGET}" "$arm_helper" "$x86_helper"
-    bin_path="$universal_dir"
-    helper_path="$universal_dir/${HELPER_TARGET}"
-    log "Created universal binary"
-  elif [[ -f "$arm_binary" && -f "$arm_helper" ]]; then
-    bin_path="$(dirname "$arm_binary")"
-    helper_path="$arm_helper"
+  if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
+    log "Building native bridge for $architecture"
+    if ! swift_build_product "$architecture" "$NATIVE_BRIDGE_TARGET"; then
+      if [[ "$REQUIRE_NATIVE_BRIDGE" == "1" || "$BUILD_NATIVE_BRIDGE" != "auto" ]]; then
+        log "Native bridge build failed and is required by the current configuration."
+        return 1
+      fi
+      NATIVE_BRIDGE_ENABLED="0"
+      log "[warn] Native bridge build failed for $architecture. Continuing with the legacy fallback only."
+    fi
+  fi
+}
+
+build_swift_app() {
+  local host_arch
+  host_arch="$(uname -m)"
+  case "$host_arch" in
+    arm64 | x86_64) ;;
+    *)
+      log "Unsupported host architecture: $host_arch"
+      exit 1
+      ;;
+  esac
+
+  pushd "$SWIFT_DIR" >/dev/null
+  build_swift_architecture "$host_arch"
+
+  local secondary_arch=""
+  local built_secondary="0"
+  if [[ "$BUILD_UNIVERSAL" == "1" ]]; then
+    if [[ "$host_arch" == "arm64" ]]; then
+      secondary_arch="x86_64"
+    else
+      secondary_arch="arm64"
+    fi
+
+    if command -v arch >/dev/null 2>&1; then
+      log "Building $secondary_arch slice (Rosetta may be required)"
+      if build_swift_architecture "$secondary_arch"; then
+        log "Built $secondary_arch slice"
+        built_secondary="1"
+      else
+        if [[ "$REQUIRE_NATIVE_BRIDGE" == "1" || "$BUILD_NATIVE_BRIDGE" != "auto" ]]; then
+          log "Failed to build the required $secondary_arch slice."
+          exit 1
+        fi
+        if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
+          log "Failed to build $secondary_arch slice and REQUIRE_UNIVERSAL=1 is set."
+          exit 1
+        fi
+        log "[warn] Failed to build $secondary_arch slice. Using $host_arch only."
+      fi
+    else
+      if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
+        log "'arch' command not found and REQUIRE_UNIVERSAL=1 is set."
+        exit 1
+      fi
+      log "[warn] 'arch' command not found; building $host_arch slice only."
+    fi
   else
-    bin_path="$("$SWIFT_BIN" build -c release "${SWIFT_SDK_ARGS[@]}" --show-bin-path)"
-    helper_path="$bin_path/${HELPER_TARGET}"
+    log "Skipping secondary architecture build (BUILD_UNIVERSAL=$BUILD_UNIVERSAL)"
+  fi
+
+  local host_bin_path secondary_bin_path
+  host_bin_path="$(swift_show_bin_path "$host_arch" "$APP_TARGET")"
+  if [[ "$built_secondary" == "1" ]]; then
+    secondary_bin_path="$(swift_show_bin_path "$secondary_arch" "$APP_TARGET")"
+  else
+    secondary_bin_path=""
+  fi
+
+  local bin_path="$host_bin_path"
+  local resources_bundle="$host_bin_path/${APP_TARGET}_${APP_TARGET}.bundle"
+  if [[ "$built_secondary" == "1" ]]; then
+    local universal_dir="$SWIFT_DIR/.build/universal"
+    require_command lipo
+    mkdir -p "$universal_dir"
+    lipo -create -output "$universal_dir/${APP_TARGET}" \
+      "$host_bin_path/${APP_TARGET}" "$secondary_bin_path/${APP_TARGET}"
+    lipo -create -output "$universal_dir/${HELPER_TARGET}" \
+      "$host_bin_path/${HELPER_TARGET}" "$secondary_bin_path/${HELPER_TARGET}"
+    if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
+      lipo -create -output "$universal_dir/${NATIVE_BRIDGE_TARGET}" \
+        "$host_bin_path/${NATIVE_BRIDGE_TARGET}" "$secondary_bin_path/${NATIVE_BRIDGE_TARGET}"
+    fi
+    bin_path="$universal_dir"
+    log "Created universal app and agent binaries"
   fi
   popd >/dev/null
 
   local binary="$bin_path/${APP_TARGET}"
-  local resources_bundle="$bin_path/${APP_TARGET}_${APP_TARGET}.bundle"
-  if [[ ! -d "$resources_bundle" ]]; then
-    local arm_resources_bundle="$SWIFT_DIR/.build/arm64-apple-macosx/release/${APP_TARGET}_${APP_TARGET}.bundle"
-    local x86_resources_bundle="$SWIFT_DIR/.build/x86_64-apple-macosx/release/${APP_TARGET}_${APP_TARGET}.bundle"
-    if [[ -d "$arm_resources_bundle" ]]; then
-      resources_bundle="$arm_resources_bundle"
-    elif [[ -d "$x86_resources_bundle" ]]; then
-      resources_bundle="$x86_resources_bundle"
-    fi
+  local helper_path="$bin_path/${HELPER_TARGET}"
+  local native_bridge_path=""
+  if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
+    native_bridge_path="$bin_path/${NATIVE_BRIDGE_TARGET}"
   fi
 
   if [[ ! -x "$binary" ]]; then
@@ -251,6 +403,10 @@ build_swift_app() {
   fi
   if [[ ! -x "$helper_path" ]]; then
     log "Helper binary not found: $helper_path"
+    exit 1
+  fi
+  if [[ "$NATIVE_BRIDGE_ENABLED" == "1" && ! -x "$native_bridge_path" ]]; then
+    log "Native bridge binary not found: $native_bridge_path"
     exit 1
   fi
 
@@ -262,6 +418,10 @@ build_swift_app() {
   cp "$helper_path" "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
+  if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
+    cp "$native_bridge_path" "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
+    chmod +x "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
+  fi
 
   if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
     local app_archs helper_archs
@@ -274,6 +434,14 @@ build_swift_app() {
     if [[ "$helper_archs" != *"arm64"* || "$helper_archs" != *"x86_64"* ]]; then
       log "Universal helper binary required, produced: ${helper_archs:-unknown}"
       exit 1
+    fi
+    if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
+      local native_bridge_archs
+      native_bridge_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}" 2>/dev/null || true)"
+      if [[ "$native_bridge_archs" != *"arm64"* || "$native_bridge_archs" != *"x86_64"* ]]; then
+        log "Universal native bridge binary required, produced: ${native_bridge_archs:-unknown}"
+        exit 1
+      fi
     fi
   fi
 
@@ -316,6 +484,7 @@ apply_plist_customizations() {
   plist_set_string "$plist" CFBundleIdentifier "com.andrijvergeles.auraflow"
   plist_set_string "$plist" CFBundleShortVersionString "$APP_VERSION"
   plist_set_string "$plist" CFBundleVersion "$APP_BUILD"
+  plist_set_string "$plist" LSMinimumSystemVersion "$MACOSX_DEPLOYMENT_TARGET"
   ensure_icon
   cp "$ICON_ICNS" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
   plist_set_string "$plist" CFBundleIconFile "AppIcon"
@@ -374,6 +543,46 @@ bundle_lock_screen_saver() {
   fi
 }
 
+verify_private_framework_isolation() {
+  require_command otool
+
+  local app_binary="$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
+  local helper_binary="$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
+  local bridge_binary="$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
+  local saver_binary="$APP_BUNDLE/Contents/PlugIns/AuraFlowLockScreen.saver/Contents/MacOS/AuraFlowLockScreen"
+  local portable_binary
+
+  for portable_binary in "$app_binary" "$helper_binary" "$saver_binary"; do
+    if [[ ! -f "$portable_binary" ]]; then
+      log "Portable target is missing from the staged app bundle: $portable_binary"
+      exit 1
+    fi
+    if otool -L "$portable_binary" | grep -Eq '/(Wallpaper|WallpaperTypes)\.framework'; then
+      log "Private Wallpaper framework leaked into portable target: $portable_binary"
+      exit 1
+    fi
+  done
+
+  if [[ "$NATIVE_BRIDGE_ENABLED" != "1" ]]; then
+    log "Native bridge omitted; private Wallpaper framework linkage is absent and legacy fallback is active."
+    return
+  fi
+
+  if [[ ! -f "$bridge_binary" ]]; then
+    log "Native bridge binary is missing from the staged app bundle."
+    exit 1
+  fi
+  if ! otool -L "$bridge_binary" | grep -Eq '/Wallpaper\.framework'; then
+    log "Native bridge is not linked with Wallpaper.framework."
+    exit 1
+  fi
+  if ! otool -L "$bridge_binary" | grep -Eq '/WallpaperTypes\.framework'; then
+    log "Native bridge is not linked with WallpaperTypes.framework."
+    exit 1
+  fi
+  log "Private framework linkage is isolated to ${NATIVE_BRIDGE_TARGET}"
+}
+
 codesign_args() {
   local identity="${CODESIGN_IDENTITY:--}"
   local args=(
@@ -389,6 +598,22 @@ codesign_args() {
   printf '%s\n' "${args[@]}"
 }
 
+strip_code_signing_blockers() {
+  local bundle_path="$1"
+  if ! command -v xattr >/dev/null 2>&1; then
+    return
+  fi
+
+  # File-provider-backed workspaces can reintroduce Finder metadata on bundle
+  # directories even when xattr -cr succeeds for most descendants. codesign
+  # rejects those resource-fork/FinderInfo attributes on nested bundles.
+  xattr -cr "$bundle_path" >/dev/null 2>&1 || true
+  while IFS= read -r -d '' candidate; do
+    xattr -d com.apple.FinderInfo "$candidate" >/dev/null 2>&1 || true
+    xattr -d com.apple.ResourceFork "$candidate" >/dev/null 2>&1 || true
+  done < <(find "$bundle_path" -print0)
+}
+
 prepare_bundle_for_codesign() {
   if [[ -z "$CODESIGN_IDENTITY" && "$REQUIRE_CODESIGN" == "1" ]]; then
     log "REQUIRE_CODESIGN=1 but CODESIGN_IDENTITY is not set."
@@ -396,15 +621,15 @@ prepare_bundle_for_codesign() {
   fi
 
   require_command codesign
-  if command -v xattr >/dev/null 2>&1; then
-    xattr -cr "$APP_BUNDLE" >/dev/null 2>&1 || true
-  fi
+  strip_code_signing_blockers "$APP_BUNDLE"
   find "$APP_BUNDLE" -type d -name "_CodeSignature" -prune -exec rm -rf {} +
 }
 
 find_macho_files() {
   while IFS= read -r -d '' candidate; do
-    if /usr/bin/file -b "$candidate" 2>/dev/null | grep -q "Mach-O"; then
+    # Read the complete `file` output. With `set -o pipefail`, grep -q can
+    # make universal Mach-O detection fail when `file` receives SIGPIPE.
+    if /usr/bin/file -b "$candidate" 2>/dev/null | grep "Mach-O" >/dev/null 2>&1; then
       printf '%s\n' "$candidate"
     fi
   done < <(find "$APP_BUNDLE" -type f -print0)
@@ -420,6 +645,10 @@ codesign_target() {
   if [[ "$#" -gt 0 ]]; then
     args+=("$@")
   fi
+  # File Provider may restore FinderInfo between signing nested Mach-O files;
+  # clear it immediately before every codesign invocation as well as during
+  # initial bundle preparation.
+  strip_code_signing_blockers "$APP_BUNDLE"
   codesign "${args[@]}" "$target"
 }
 
@@ -427,6 +656,13 @@ sign_app_bundle() {
   prepare_bundle_for_codesign
 
   log "Signing app bundle"
+  if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
+    # Sign the optional private-framework client before the main executable.
+    # The universal lipo output has no reusable ad-hoc signature, and the
+    # main executable rejects an unsigned nested bridge during signing.
+    codesign_target "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
+  fi
+
   while IFS= read -r target; do
     codesign_target "$target"
   done < <(find_macho_files)
@@ -455,6 +691,7 @@ sign_app_bundle() {
   else
     codesign_target "$APP_BUNDLE"
   fi
+  strip_code_signing_blockers "$APP_BUNDLE"
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 }
 
@@ -468,23 +705,26 @@ sign_disk_image() {
 }
 
 package_distribution() {
-  if command -v xattr >/dev/null 2>&1; then
-    xattr -cr "$APP_BUNDLE" >/dev/null 2>&1 || true
-  fi
+  strip_code_signing_blockers "$APP_BUNDLE"
+
+  local final_app_bundle="$DIST_DIR/${APP_DISPLAY_NAME}.app"
+  rm -rf "$final_app_bundle"
+  ditto --norsrc "$APP_BUNDLE" "$final_app_bundle"
 
   log "Creating ZIP archive"
-  pushd "$DIST_DIR" >/dev/null
-  COPYFILE_DISABLE=1 ditto -c -k --norsrc --keepParent "${APP_DISPLAY_NAME}.app" "$(basename "$APP_ZIP")"
-  popd >/dev/null
+  COPYFILE_DISABLE=1 ditto -c -k --norsrc --keepParent \
+    "$APP_BUNDLE" "$APP_ZIP"
 
   log "Creating DMG"
   local dmg_stage="$DIST_DIR/.dmg-stage"
   rm -rf "$dmg_stage"
   mkdir -p "$dmg_stage"
-  COPYFILE_DISABLE=1 cp -R "$APP_BUNDLE" "$dmg_stage/${APP_DISPLAY_NAME}.app"
+  COPYFILE_DISABLE=1 ditto --norsrc \
+    "$APP_BUNDLE" "$dmg_stage/${APP_DISPLAY_NAME}.app"
   if command -v xattr >/dev/null 2>&1; then
     xattr -cr "$dmg_stage/${APP_DISPLAY_NAME}.app" >/dev/null 2>&1 || true
   fi
+  strip_code_signing_blockers "$dmg_stage/${APP_DISPLAY_NAME}.app"
   ln -s /Applications "$dmg_stage/Applications"
 
   hdiutil create \
@@ -502,15 +742,17 @@ package_distribution() {
 main() {
   acquire_lock
   configure_developer_dir
-  require_macos_sdk
+  resolve_macos_sdk
+  configure_native_bridge
   prepare_environment
   build_swift_app
   apply_plist_customizations
   bundle_runtime_tools
   bundle_lock_screen_saver
+  verify_private_framework_isolation
   sign_app_bundle
   package_distribution
-  log "Done: $APP_BUNDLE"
+  log "Done: $DIST_DIR/${APP_DISPLAY_NAME}.app"
   log "Artifacts: $APP_ZIP and $APP_DMG"
 }
 

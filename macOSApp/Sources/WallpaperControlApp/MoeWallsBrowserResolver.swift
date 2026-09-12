@@ -49,15 +49,9 @@ final class MoeWallsBrowserResolver: NSObject {
         try await prepareDownloadState()
         var lastError: Error?
 
-        do {
-            return try await startBrowserManagedDownload(to: destinationURL)
-        } catch {
-            lastError = error
-        }
-
         let cookies = await currentCookies()
 
-        if let token = try? await waitForDownloadToken() {
+        if let token = try? await waitForDownloadToken(maxAttempts: 8) {
             do {
                 let downloadURL = try Self.resolvedDownloadURL(from: token, pageURL: pageURL)
                 return try await downloadWithBrowserContext(
@@ -71,7 +65,8 @@ final class MoeWallsBrowserResolver: NSObject {
             }
         }
 
-        if let playableSourceURL = try? await waitForPlayableSourceURL(pageURL: pageURL) {
+        do {
+            let playableSourceURL = try await waitForPlayableSourceURL(pageURL: pageURL)
             do {
                 return try await downloadWithBrowserContext(
                     from: playableSourceURL,
@@ -82,6 +77,18 @@ final class MoeWallsBrowserResolver: NSObject {
             } catch {
                 lastError = error
             }
+        } catch {
+        }
+
+        // A JavaScript click can be intercepted by WebKit without producing
+        // a WKDownload (for example when the site opens the response in a
+        // popup). Keep that path only as the final compatibility fallback;
+        // direct playable sources above are deterministic and do not leave
+        // the catalog button waiting for the 20-second timeout.
+        do {
+            return try await startBrowserManagedDownload(to: destinationURL)
+        } catch {
+            lastError = error
         }
 
         throw lastError ?? MoeWallsBrowserResolverError.downloadDidNotStart
@@ -107,7 +114,7 @@ final class MoeWallsBrowserResolver: NSObject {
         }
     }
 
-    private func waitForDownloadToken() async throws -> String {
+    private func waitForDownloadToken(maxAttempts: Int = 80) async throws -> String {
         let script = """
         (() => {
             const button = document.getElementById('moe-download');
@@ -116,7 +123,7 @@ final class MoeWallsBrowserResolver: NSObject {
         })();
         """
 
-        for _ in 0..<80 {
+        for _ in 0..<maxAttempts {
             if let value = try await webView.evaluateJavaScript(script) as? String,
                !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                !value.contains("facebook.com/sharer"),
@@ -281,12 +288,23 @@ final class MoeWallsBrowserResolver: NSObject {
         }
 
         let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 180
+        configuration.httpMaximumConnectionsPerHost = 4
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpShouldSetCookies = true
         configuration.httpCookieStorage = HTTPCookieStorage()
         cookies.forEach { configuration.httpCookieStorage?.setCookie($0) }
 
         let session = URLSession(configuration: configuration)
+        // The browser resolver already has a page-scoped token and cookies.
+        // Use one regular download for this compatibility path: the range
+        // assembler is optimized for stable CDN assets, while token-backed
+        // responses can reject parallel range requests even though a normal
+        // full response is valid.
         let (temporaryURL, response) = try await session.download(for: request)
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
         if let httpResponse = response as? HTTPURLResponse,
            !(200...299).contains(httpResponse.statusCode) {
             throw CatalogDownloadError.badStatus(url: downloadURL, statusCode: httpResponse.statusCode)
@@ -345,15 +363,23 @@ extension MoeWallsBrowserResolver: WKUIDelegate {
 }
 
 extension MoeWallsBrowserResolver: WKDownloadDelegate {
-    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+    private func downloadDestinationURL() -> URL? {
         guard let destinationURL = pendingDownloadDestinationURL else {
-            completionHandler(nil)
             finishDownload(with: .failure(MoeWallsBrowserResolverError.downloadDestinationMissing))
-            return
+            return nil
         }
 
         try? FileManager.default.removeItem(at: destinationURL)
-        completionHandler(destinationURL)
+        return destinationURL
+    }
+
+    @available(macOS 11.3, *)
+    func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String
+    ) async -> URL? {
+        downloadDestinationURL()
     }
 
     func downloadDidFinish(_ download: WKDownload) {

@@ -1,6 +1,12 @@
 import CoreFoundation
 import AuraWallpaperCore
 import Foundation
+import OSLog
+
+private let lockScreenSaverInstallerLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "LockScreenSaverInstaller"
+)
 
 enum LockScreenSaverInstallerError: LocalizedError {
     case componentNotBundled
@@ -56,7 +62,8 @@ protocol ScreenSaverPreferenceManaging: AnyObject {
 }
 
 final class HostScreenSaverPreferences: ScreenSaverPreferenceManaging {
-    private let applicationID = "com.apple.screensaver" as CFString
+    private let applicationID =
+        WallpaperPlatformConstants.screenSaverApplicationID as CFString
 
     var selectedModule: ScreenSaverModulePreference? {
         guard let dictionary = copyValue(forKey: "moduleDict") as? [String: Any],
@@ -144,6 +151,10 @@ struct ScreenSaverSelectionCoordinator {
         self.backupURL = backupURL
     }
 
+    var isSelected: Bool {
+        preferences.selectedModule?.pointsTo(destinationURL) == true
+    }
+
     func activate() throws {
         let previousModule = preferences.selectedModule
         let previousIdleTime = preferences.idleTime
@@ -168,14 +179,17 @@ struct ScreenSaverSelectionCoordinator {
             path: destinationURL.standardizedFileURL.path,
             type: 0
         )
-        let desiredIdleTime = previousIdleTime > 0 ? nil : 300
+        // Selecting AuraFlow must never change the user's screen-saver
+        // timeout. In particular, an idleTime of zero means "Never" and
+        // silently replacing it with a positive timeout can lock the Mac
+        // without any AuraFlow action from the user.
         let accepted = preferences.apply(
             module: desiredModule,
-            idleTime: desiredIdleTime
+            idleTime: nil
         )
         let verified = accepted
             && preferences.selectedModule?.pointsTo(destinationURL) == true
-            && preferences.idleTime > 0
+            && preferences.idleTime == previousIdleTime
         guard verified else {
             _ = preferences.apply(
                 module: previousModule,
@@ -200,11 +214,13 @@ struct ScreenSaverSelectionCoordinator {
             .flatMap { try? JSONDecoder().decode(Backup.self, from: $0) }
         let fallbackModule = ScreenSaverModulePreference(
             moduleName: "Ventura",
-            path: "/System/Library/ExtensionKit/Extensions/Ventura.appex",
+            path: WallpaperPlatformConstants.fallbackScreenSaverPath,
             type: 0
         )
         let previousModule = backup?.module ?? fallbackModule
-        let previousIdleTime = backup?.idleTime ?? 300
+        // If the backup is unavailable, preserve the setting currently held
+        // by macOS instead of inventing a five-minute timeout.
+        let previousIdleTime = backup?.idleTime ?? preferences.idleTime
         guard preferences.apply(
             module: previousModule,
             idleTime: previousIdleTime
@@ -258,10 +274,35 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         fileManager.fileExists(atPath: destinationURL.path)
     }
 
-    func install(videoURL: URL) throws {
+    var installationConfirmed: Bool {
+        isInstalled && selectionCoordinator.isSelected
+    }
+
+    func install(videoURL: URL) async throws {
+        try withOperationLock {
+            try installLocked(videoURL: videoURL)
+        }
+    }
+
+    func refreshInstalledCompatibilityComponentIfNeeded() {
+        guard isInstalled else { return }
+        do {
+            try withOperationLock {
+                try refreshInstalledCompatibilityComponentLocked()
+            }
+        } catch {
+            lockScreenSaverInstallerLogger.error(
+                "Could not refresh the installed Lock Screen saver: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
+    private func withOperationLock<T>(
+        _ operation: () throws -> T
+    ) rethrows -> T {
         operationLock.lock()
         defer { operationLock.unlock() }
-        try installLocked(videoURL: videoURL)
+        return try operation()
     }
 
     private func installLocked(videoURL: URL) throws {
@@ -318,7 +359,6 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         }
         do {
             try selectionCoordinator.activate()
-            refreshScreenSaverHosts()
         } catch {
             try restorePreviousInstallation(
                 from: previousInstallationURL,
@@ -328,17 +368,81 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         }
     }
 
+    private func refreshInstalledCompatibilityComponentLocked() throws {
+        guard let templateURL,
+              fileManager.fileExists(atPath: templateURL.path),
+              fileManager.fileExists(atPath: destinationURL.path)
+        else {
+            return
+        }
+
+        let templateExecutable = templateURL
+            .appendingPathComponent("Contents/MacOS/AuraFlowLockScreen")
+        let installedExecutable = destinationURL
+            .appendingPathComponent("Contents/MacOS/AuraFlowLockScreen")
+        guard fileManager.fileExists(atPath: templateExecutable.path),
+              fileManager.fileExists(atPath: installedExecutable.path),
+              !fileManager.contentsEqual(
+                  atPath: templateExecutable.path,
+                  andPath: installedExecutable.path
+              )
+        else {
+            return
+        }
+
+        let parentURL = destinationURL.deletingLastPathComponent()
+        let stagingURL = parentURL.appendingPathComponent(
+            ".AuraFlowLockScreen.refresh.\(UUID().uuidString).saver",
+            isDirectory: true
+        )
+        let previousInstallationURL = parentURL.appendingPathComponent(
+            ".AuraFlowLockScreen.previous.\(UUID().uuidString).saver",
+            isDirectory: true
+        )
+        defer {
+            try? fileManager.removeItem(at: stagingURL)
+            try? fileManager.removeItem(at: previousInstallationURL)
+        }
+
+        try fileManager.copyItem(at: templateURL, to: stagingURL)
+        try signatureVerifier(stagingURL)
+        try fileManager.moveItem(
+            at: destinationURL,
+            to: previousInstallationURL
+        )
+        do {
+            try fileManager.moveItem(at: stagingURL, to: destinationURL)
+        } catch {
+            try restorePreviousInstallation(
+                from: previousInstallationURL,
+                hadExistingInstallation: true
+            )
+            throw error
+        }
+    }
+
     func uninstall() throws {
         operationLock.lock()
         defer { operationLock.unlock() }
         try selectionCoordinator.restoreIfNeeded()
-        refreshScreenSaverHosts()
         guard fileManager.fileExists(atPath: destinationURL.path) else { return }
-        var trashedURL: NSURL?
-        try fileManager.trashItem(
-            at: destinationURL,
-            resultingItemURL: &trashedURL
-        )
+        // This is AuraFlow's own installed copy. Removing it directly avoids
+        // asking Finder to process a Trash operation during Lock rollback.
+        try fileManager.removeItem(at: destinationURL)
+    }
+
+    /// Async counterpart used by lifecycle orchestration. The transaction
+    /// itself is still synchronous because it consists of local file and
+    /// preference updates, but the suspension keeps it off a caller's Main
+    /// Actor and preserves the same lock used by synchronous clients.
+    func uninstallAsync() async throws {
+        await Task.yield()
+        try uninstall()
+    }
+
+    func uninstallLockScreenOnlyPreservingCurrentDesktopAsync() async throws {
+        await Task.yield()
+        try uninstallLockScreenOnlyPreservingCurrentDesktop()
     }
 
     private static func verifyBundleSignature(at url: URL) throws {
@@ -361,20 +465,6 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 ?? "exit \(process.terminationStatus)"
             throw LockScreenSaverInstallerError.componentSignatureInvalid(detail)
-        }
-    }
-
-    private func refreshScreenSaverHosts() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        process.arguments = ["-x", "legacyScreenSaver"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return
         }
     }
 

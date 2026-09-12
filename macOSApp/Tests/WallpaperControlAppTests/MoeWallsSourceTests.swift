@@ -7,6 +7,44 @@ import Testing
     #expect(MoeWallsParser.isChallengePage(html))
 }
 
+@Test func moewallsRealPageWithChallengeScriptIsNotRejected() {
+    let html = """
+    <html><body>
+      <h1>Anime Live Wallpapers</h1>
+      <script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>
+    </body></html>
+    """
+
+    #expect(!MoeWallsParser.isChallengePage(html))
+}
+
+@Test func moewallsHTTPClientUsesProxyAfterCrossHostRedirect() async throws {
+    MoeWallsRedirectURLProtocol.reset()
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MoeWallsRedirectURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+
+    let client = MoeWallsHTTPClient(
+        session: session,
+        timeout: 2,
+        maxRetries: 0,
+        proxyBaseURL: "https://proxy.test/http://"
+    )
+    let response = try await client.get(URL(string: "https://moewalls.com/wp-json/")!)
+
+    #expect(response.text == "{\"proxied\":true}")
+    #expect(MoeWallsRedirectURLProtocol.requestedPaths == [
+        "https://moewalls.com/wp-json/",
+        "https://proxy.test/http://moewalls.com/wp-json/",
+    ])
+    #expect(MoeWallsRedirectURLProtocol.acceptHeaders == [
+        "text/html,application/xml,application/json",
+        "text/plain",
+    ])
+}
+
 @Test func moewallsArchiveCardsAreParsed() throws {
     let html = try loadFixture(named: "moewalls_archive_anime", ext: "html")
     let page = MoeWallsParser.parseArchivePage(
@@ -25,8 +63,8 @@ import Testing
     let markdown = """
     Latest Videos
 
-    *   [![Image 3](https://moewalls.com/wp-content/uploads/2026/03/musashi-soul-of-the-katana-vagabond-thumb-364x205.jpg)](https://moewalls.com/anime/musashi-soul-of-the-katana-vagabond-live-wallpaper/ "Musashi Soul Of The Katana Vagabond Live Wallpaper")
-    *   [![Image 4](https://moewalls.com/wp-content/uploads/2026/03/gojo-hollow-purple-unlimited-void-jujutsu-kaisen-thumb-364x205.jpg)](https://moewalls.com/anime/gojo-hollow-purple-unlimited-void-jujutsu-kaisen-live-wallpaper/ "Gojo Hollow Purple Unlimited Void Jujutsu Kaisen Live Wallpaper")
+    *   [![Image 3](https://moewalls.com/wp-content/uploads/2026/03/musashi-soul-of-the-katana-vagabond-thumb-364x205.jpg)](https://moewalls.com/anime/musashi-soul-of-the-katana-vagabond-live-wallpaper/ "Musashi Soul Of The Katana Vagabond Live Wallpaper") [3840x2160](https://moewalls.com/resolution/3840x2160/)
+    *   [![Image 4](https://moewalls.com/wp-content/uploads/2026/03/gojo-hollow-purple-unlimited-void-jujutsu-kaisen-thumb-364x205.jpg)](https://moewalls.com/anime/gojo-hollow-purple-unlimited-void-jujutsu-kaisen-live-wallpaper/ "Gojo Hollow Purple Unlimited Void Jujutsu Kaisen Live Wallpaper") [2560x1440](https://moewalls.com/resolution/2560x1440/)
     """
 
     let page = MoeWallsParser.parseArchivePage(
@@ -37,6 +75,8 @@ import Testing
     #expect(page.wallpapers.count == 2)
     #expect(page.wallpapers[0].slug == "musashi-soul-of-the-katana-vagabond-live-wallpaper")
     #expect(page.wallpapers[0].previewVideoURL?.absoluteString == "https://moewalls.com/wp-content/uploads/preview/2026/musashi-soul-of-the-katana-vagabond-preview.webm")
+    #expect(page.wallpapers[0].resolution == MoeWallsResolution(width: 3840, height: 2160))
+    #expect(page.wallpapers[1].resolution == MoeWallsResolution(width: 2560, height: 1440))
 }
 
 @Test func moewallsDetailPageIsParsed() throws {
@@ -209,4 +249,64 @@ private func loadFixtureData(named name: String, ext: String) throws -> Data {
 private enum FixtureError: Error {
     case missingFixture(String)
     case invalidEncoding
+}
+
+private final class MoeWallsRedirectURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var paths: [String] = []
+    private static var accepts: [String] = []
+
+    static var requestedPaths: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return paths
+    }
+
+    static var acceptHeaders: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return accepts
+    }
+
+    static func reset() {
+        lock.lock()
+        paths = []
+        accepts = []
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "moewalls.com" || request.url?.host == "proxy.test"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let requestedURL = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        Self.lock.lock()
+        Self.paths.append(requestedURL.absoluteString)
+        Self.accepts.append(request.value(forHTTPHeaderField: "Accept") ?? "")
+        Self.lock.unlock()
+
+        let responseURL = requestedURL.host == "moewalls.com"
+            ? URL(string: "https://motionbgs.com/wp-json/")!
+            : requestedURL
+        let response = HTTPURLResponse(
+            url: responseURL,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        let body = Data((requestedURL.host == "moewalls.com" ? "redirected" : "{\"proxied\":true}").utf8)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

@@ -1,8 +1,9 @@
 import Foundation
 
-enum MoeWallsSourceError: LocalizedError {
+enum MoeWallsSourceError: LocalizedError, Sendable {
     case unavailable(String)
     case challengeBlocked
+    case proxyRequired
     case invalidResponse
     case missingDownloadURL
 
@@ -12,6 +13,8 @@ enum MoeWallsSourceError: LocalizedError {
             return reason
         case .challengeBlocked:
             return "MoeWalls is protected by a challenge page."
+        case .proxyRequired:
+            return "MoeWalls redirected to an unexpected host."
         case .invalidResponse:
             return "MoeWalls returned an invalid response."
         case .missingDownloadURL:
@@ -20,20 +23,20 @@ enum MoeWallsSourceError: LocalizedError {
     }
 }
 
-enum MoeWallsCatalogStrategy: String, Codable {
+enum MoeWallsCatalogStrategy: String, Codable, Sendable {
     case rest
     case sitemap
     case archive
     case unavailable
 }
 
-struct MoeWallsProbeResult {
+struct MoeWallsProbeResult: Sendable {
     let strategy: MoeWallsCatalogStrategy
     let available: Bool
     let reason: String?
 }
 
-struct MoeWallsHTTPResponse {
+struct MoeWallsHTTPResponse: Sendable {
     let data: Data
     let response: HTTPURLResponse
 
@@ -42,23 +45,25 @@ struct MoeWallsHTTPResponse {
     }
 }
 
-final class MoeWallsHTTPClient {
+final class MoeWallsHTTPClient: @unchecked Sendable {
     private let session: URLSession
     private let timeout: TimeInterval
     private let userAgent: String
     private let maxRetries: Int
-    private let proxyBaseURL = "https://r.jina.ai/http://"
+    private let proxyBaseURL: String
 
     init(
         session: URLSession = .shared,
         timeout: TimeInterval = 20,
         userAgent: String = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
-        maxRetries: Int = 2
+        maxRetries: Int = 2,
+        proxyBaseURL: String = "https://r.jina.ai/http://"
     ) {
         self.session = session
         self.timeout = timeout
         self.userAgent = userAgent
         self.maxRetries = maxRetries
+        self.proxyBaseURL = proxyBaseURL
     }
 
     func get(_ url: URL, accept: String = "text/html,application/xml,application/json") async throws -> MoeWallsHTTPResponse {
@@ -68,7 +73,7 @@ final class MoeWallsHTTPClient {
             do {
                 do {
                     return try await performRequest(url: url, accept: accept)
-                } catch MoeWallsSourceError.challengeBlocked {
+                } catch MoeWallsSourceError.challengeBlocked, MoeWallsSourceError.proxyRequired {
                     return try await performProxyRequest(for: url, accept: accept)
                 } catch {
                     if attempt == maxRetries {
@@ -100,6 +105,12 @@ final class MoeWallsHTTPClient {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw MoeWallsSourceError.invalidResponse
         }
+        if let requestedHost = url.host?.lowercased(),
+           requestedHost.contains("moewalls.com"),
+           let finalHost = httpResponse.url?.host?.lowercased(),
+           !finalHost.contains("moewalls.com") {
+            throw MoeWallsSourceError.proxyRequired
+        }
         guard (200...299).contains(httpResponse.statusCode) else {
             if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
                 throw MoeWallsSourceError.challengeBlocked
@@ -107,7 +118,7 @@ final class MoeWallsHTTPClient {
             throw URLError(.badServerResponse)
         }
         let payload = MoeWallsHTTPResponse(data: data, response: httpResponse)
-        if MoeWallsParser.isChallengePage(payload.text) {
+        if url.host?.contains("r.jina.ai") != true && MoeWallsParser.isChallengePage(payload.text) {
             throw MoeWallsSourceError.challengeBlocked
         }
         return payload
@@ -115,14 +126,23 @@ final class MoeWallsHTTPClient {
 
     private func performProxyRequest(for url: URL, accept: String) async throws -> MoeWallsHTTPResponse {
         let proxyURL = makeProxyURL(for: url)
-        let payload = try await performRequest(url: proxyURL, accept: accept)
+        // Jina returns a JSON envelope when the caller advertises
+        // application/json. MoeWalls parsers consume the reader's Markdown
+        // body, so keep the proxy request explicitly text-only.
+        let payload = try await performRequest(url: proxyURL, accept: "text/plain")
         let unwrapped = unwrapProxyPayload(payload.text)
+        if MoeWallsParser.isChallengePage(unwrapped) {
+            throw MoeWallsSourceError.challengeBlocked
+        }
         let data = Data(unwrapped.utf8)
         return MoeWallsHTTPResponse(data: data, response: payload.response)
     }
 
     private func makeProxyURL(for url: URL) -> URL {
-        URL(string: proxyBaseURL + url.absoluteString)!
+        let target = url.absoluteString
+            .replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+        return URL(string: proxyBaseURL + target)!
     }
 
     private func unwrapProxyPayload(_ text: String) -> String {
@@ -147,7 +167,7 @@ final class MoeWallsHTTPClient {
     }
 }
 
-final class MoeWallsProbeService {
+final class MoeWallsProbeService: @unchecked Sendable {
     private let client: MoeWallsHTTPClient
     private let baseURL: URL
 

@@ -1,138 +1,109 @@
-[![downloads](https://img.shields.io/github/downloads/mkanami/AuraFlow/total?label=downloads&color=brightgreen)](https://github.com/mkanami/AuraFlow/releases)
+[![Tests](https://github.com/mkanami/AuraFlow/actions/workflows/tests.yml/badge.svg)](https://github.com/mkanami/AuraFlow/actions/workflows/tests.yml)
+[![Downloads](https://img.shields.io/github/downloads/mkanami/AuraFlow/total?label=downloads&color=brightgreen)](https://github.com/mkanami/AuraFlow/releases)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 # AuraFlow
 
-AuraFlow is a native macOS live wallpaper app. It uses a Swift control app, a separate AppKit + AVFoundation wallpaper agent, and a small Objective-C bridge for the Liquid Glass layer.
+AuraFlow turns videos, animated files, and pictures into wallpapers on macOS.
+You can use a wallpaper on the Desktop and Lock Screen together, or apply it
+only to the Lock Screen without changing your Desktop.
 
 <p align="center">
-  <img src="docs/aura-ui.png" width="900" alt="AuraFlow interface preview" />
+  <img src="docs/aura-ui.png" width="900" alt="AuraFlow app showing a live wallpaper preview" />
 </p>
 
-## Current Runtime
+## What you can do
 
-AuraFlow uses a native split runtime built from these macOS targets:
+- Use your own videos, GIFs, WebM files, and pictures as wallpapers
+- Browse and download wallpapers from the built-in catalog
+- Apply one wallpaper to all connected displays
+- Choose how the wallpaper fits the screen: Fill, Fit, or Stretch
+- Change the playback speed of animated wallpapers
+- Pause and continue playback with Stop and Play
+- Use a wallpaper on the Lock Screen only
+- Automatically pause animated wallpapers while another app is fullscreen
+- Restore your previous macOS wallpaper with Remove
 
-- `WallpaperControlApp`: SwiftUI control app for preview, catalog, downloads, settings, and playback controls.
-- `AuraWallpaperAgent`: helper executable that owns desktop wallpaper windows and AVFoundation playback.
-- `AuraWallpaperCore`: shared Swift models, JSON runtime state, command files, metrics, and wallpaper backup/restore logic.
-- `AuraGlassBridgeKit`: small Objective-C/AppKit bridge used only for the glass visual layer.
-
-Runtime state is stored in:
-
-```text
-~/Library/Application Support/AuraFlow
-```
-
-## Features
-
-- local video wallpaper preview and playback
-- one wallpaper window per display
-- start, stop, and remove wallpaper actions
-- restore the latest non-AuraFlow wallpaper when live wallpaper is removed
-- playback speed control
-- fill, fit, and stretch scale modes
-- auto-pause while fullscreen apps are active
-- matching live system screen saver with a direct Start button
-- launch at login through a LaunchAgent
-- built-in wallpaper catalog
-- downloaded wallpaper library
-- optional video compatibility optimization
-
-## UI
-
-- native Liquid Glass path on macOS 26 and newer
-- blur-based fallback UI on older supported macOS versions
-- native window controls
-- optimized window drag and resize handling
-- preview playback handled independently from wallpaper playback
-
-## System Requirements
+## Requirements
 
 - macOS 13 or later
 - Apple Silicon or Intel Mac
-- internet connection for catalog downloads
+- An internet connection only when browsing or downloading from the catalog
 
-## Lock Screen
+The native animated Lock Screen experience requires macOS 26 or later. On
+older supported macOS versions, AuraFlow uses its included Screen Saver mode
+for Lock Screen playback.
 
-**Play AuraFlow on Lock Screen** is enabled by default and can be turned off in
-Playback Settings. It keeps the current video playing through macOS's modern
-lock-screen wallpaper engine. Because Apple does not publish its
-wallpaper-extension API, AuraFlow temporarily reserves a compatible Apple
-Aerial cache slot advertised by the system provider. The original Aerial asset
-and the complete wallpaper configuration are backed up before the first change
-and are restored when the feature is disabled.
+## Installation
 
-The current video, thumbnail, active Spaces, and displays are synchronized each
-time the wallpaper starts. Deleted Space records and old AuraFlow
-`last_frame.png` references are removed during the transaction. On macOS
-versions without the modern Aerial store, AuraFlow falls back to its bundled
-legacy Screen Saver module.
+1. Download the latest `AuraFlow.dmg` from
+   [GitHub Releases](https://github.com/mkanami/AuraFlow/releases/latest)
+2. Open the downloaded DMG
+3. Drag `AuraFlow.app` into the Applications folder
+4. Open AuraFlow from Applications
 
-**Remove** stops the wallpaper agent, restores the reserved Aerial asset and
-wallpaper configuration, clears the selected video, restores the original
-desktop on every current Space, and restarts the macOS wallpaper presenters so
-no managed stop frame is left behind. The Lock Screen preference is remembered,
-so applying another wallpaper synchronizes it again automatically.
+## Quick start
 
-This integration is intentionally reversible but uses an undocumented macOS
-cache format. A macOS update or an Aerial re-download can temporarily replace
-the reserved asset; launching AuraFlow synchronizes it again.
+1. Open AuraFlow
+2. Click **Change Wallpaper…** to choose a file from your Mac, or open
+   **Wallpaper Catalog** to find one online
+3. Check the wallpaper in the preview
+4. Click **Start** to use it on the Desktop and Lock Screen, or **Lock** to use
+   it only on the Lock Screen
+5. Use the speed slider if you want to change animation speed
+6. Click **Remove** when you want AuraFlow to stop and restore your regular
+   macOS wallpaper
 
-For release builds, `ffmpeg` and `ffprobe` are bundled when available on the build machine. They are used only for compatibility conversion paths, not for normal AVFoundation playback.
+## Controls
 
-## Install
+| Button | What it does |
+| --- | --- |
+| **Start** | Applies the selected wallpaper to the Desktop and Lock Screen |
+| **Lock** | Applies the selected wallpaper only to the Lock Screen |
+| **Stop** | Freezes an animated wallpaper on its current frame |
+| **Play** | Continues a wallpaper previously frozen with Stop |
+| **Remove** | Removes the AuraFlow wallpaper and restores your regular wallpaper |
+| **Change Wallpaper…** | Selects a video, animation, or picture from your Mac |
+| **Wallpaper Catalog** | Opens the online wallpaper collection |
+| **Downloaded Wallpapers** | Shows wallpapers already saved to your Mac |
+| **Monitoring** | Shows whether the wallpaper process is running correctly |
 
-Download `AuraFlow.dmg` from GitHub Releases, open it, and drag `AuraFlow.app` into `/Applications`.
+Stop and Play are unavailable for pictures because a still image has no
+playback to pause. Start and Lock remain unavailable while an AuraFlow
+wallpaper is active; click Remove before applying a different mode.
 
-If the release is not Developer ID notarized, macOS may block the first launch with a security warning. In that case, open System Settings, go to Privacy & Security, and allow AuraFlow from the blocked app section.
+## Using the wallpaper catalog
 
-## Build
+Open **Wallpaper Catalog**, select a wallpaper, and click **Download to
+Preview**. After the download finishes, the wallpaper appears in the main
+preview. It is not applied until you click Start or Lock.
 
-Build the app and release artifacts:
+Downloaded wallpapers remain available under **Downloaded Wallpapers**, so you
+do not need to download them again.
 
-```bash
-./build_app.sh
-```
+## Restoring your normal wallpaper
 
-Universal build:
+Click **Remove** to stop AuraFlow and return to your regular macOS wallpaper.
+AuraFlow remembers the most recent wallpaper you selected in macOS, including
+your own pictures and Apple's built-in wallpapers.
 
-```bash
-BUILD_UNIVERSAL=1 ./build_app.sh
-```
+If macOS needs extra time to update multiple displays or Spaces, leave AuraFlow
+open until Remove finishes.
 
-The build output is written to:
+## If something does not work
 
-```text
-dist/AuraFlow.app
-dist/AuraFlow.zip
-dist/AuraFlow.dmg
-```
+- Make sure there is enough free storage for wallpaper downloads and temporary
+  video processing
+- Use **Monitoring** to check whether the wallpaper process is running
+- If a download was interrupted, try it again from the catalog
+- If Start or Lock is unavailable, click Remove first and then select the
+  wallpaper again
+- After updating macOS, install the latest AuraFlow release for the best Lock
+  Screen compatibility
 
-## Test
-
-```bash
-cd macOSApp
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
-```
-
-## Release Packaging
-
-`scripts/build_release.sh` builds the Swift targets, stages the app bundle, signs nested Mach-O binaries, signs the app bundle, and packages ZIP and DMG artifacts.
-
-When `CODESIGN_IDENTITY` is set to a Developer ID Application certificate, release builds can be notarized by the GitHub Actions release workflow. Without Developer ID credentials, the build falls back to valid ad-hoc signing so the bundle is structurally valid, but macOS will still show an unknown-developer warning.
-
-## Project Layout
-
-- `macOSApp/Package.swift`: SwiftPM package definition
-- `macOSApp/Sources/WallpaperControlApp`: SwiftUI control app
-- `macOSApp/Sources/AuraWallpaperAgent`: native wallpaper helper process
-- `macOSApp/Sources/AuraWallpaperCore`: shared runtime models and storage
-- `macOSApp/Sources/AuraGlassBridgeKit`: Objective-C glass bridge
-- `macOSApp/Tests`: Swift tests
-- `scripts/build_release.sh`: build, signing, and packaging script
-- `Resources`: app icon assets
-- `docs`: README images
+When reporting a problem, include your macOS version, Mac model, wallpaper file
+type, and the exact button you pressed.
 
 ## License
 
-MIT
+AuraFlow is available under the [MIT License](LICENSE).

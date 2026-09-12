@@ -212,7 +212,8 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
             html: html,
             postID: Self.postID(from: wallpaper.id) ?? 0,
             fallbackTitle: wallpaper.title,
-            pageURL: pageURL
+            pageURL: pageURL,
+            enforceScenicFilter: false
         )
     }
 
@@ -487,7 +488,8 @@ enum DarefulParser {
         html: String,
         postID: Int,
         fallbackTitle: String,
-        pageURL: URL
+        pageURL: URL,
+        enforceScenicFilter: Bool = true
     ) -> CatalogWallpaper? {
         let normalized = decodeHTMLEntities(html)
         let title = cleanupTitle(
@@ -496,7 +498,7 @@ enum DarefulParser {
                 ?? fallbackTitle
         )
         let tags = tagNames(in: normalized)
-        guard isSupportedScenicText(([title] + tags).joined(separator: " ")) else {
+        guard !enforceScenicFilter || isSupportedScenicText(([title] + tags).joined(separator: " ")) else {
             return nil
         }
 
