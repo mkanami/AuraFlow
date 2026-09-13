@@ -19,6 +19,7 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
     private var queuePlayer: AVQueuePlayer?
     private var playerLooper: AVPlayerLooper?
     private var fallbackTask: Task<Void, Never>?
+    private var streamingStartupTask: Task<Void, Never>?
     private var generation = 0
 
     func load(_ wallpaper: CatalogWallpaper) async {
@@ -30,6 +31,11 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         switch Self.immediatePreviewSource(for: wallpaper) {
         case let .web(streamingURL):
             streamingVideoURL = streamingURL
+            scheduleStreamingFallback(
+                url: streamingURL,
+                wallpaper: wallpaper,
+                requestedGeneration: requestedGeneration
+            )
             return
         case let .native(directVideoURL):
             if await startAVPlayback(directVideoURL, requestedGeneration: requestedGeneration) {
@@ -49,6 +55,8 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
 
     func streamingPreviewDidStart(url: URL) {
         guard streamingVideoURL == url else { return }
+        streamingStartupTask?.cancel()
+        streamingStartupTask = nil
         withAnimation(.easeInOut(duration: 0.18)) {
             isVideoVisible = true
         }
@@ -56,6 +64,8 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
 
     func streamingPreviewDidFail(url: URL, wallpaper: CatalogWallpaper) {
         guard streamingVideoURL == url else { return }
+        streamingStartupTask?.cancel()
+        streamingStartupTask = nil
         streamingVideoURL = nil
         isVideoVisible = false
         let requestedGeneration = generation
@@ -141,6 +151,8 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
     private func stopPlayback() {
         isVideoVisible = false
         streamingVideoURL = nil
+        streamingStartupTask?.cancel()
+        streamingStartupTask = nil
         fallbackTask?.cancel()
         fallbackTask = nil
         clearAVPlayback()
@@ -153,6 +165,25 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         player = nil
         playerLooper = nil
         queuePlayer = nil
+    }
+
+    private func scheduleStreamingFallback(
+        url: URL,
+        wallpaper: CatalogWallpaper,
+        requestedGeneration: Int
+    ) {
+        streamingStartupTask?.cancel()
+        streamingStartupTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled,
+                  let self,
+                  requestedGeneration == self.generation,
+                  self.streamingVideoURL == url,
+                  !self.isVideoVisible else {
+                return
+            }
+            self.streamingPreviewDidFail(url: url, wallpaper: wallpaper)
+        }
     }
 
     private static func preferredImageURL(for wallpaper: CatalogWallpaper) -> URL? {

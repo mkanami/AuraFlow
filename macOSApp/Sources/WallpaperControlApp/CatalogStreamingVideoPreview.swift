@@ -45,6 +45,7 @@ final class CatalogStreamingVideoSessionStore {
         let webView: CatalogStreamingWKWebView
         let messageHandler: MessageHandler
         var lastAccess = Date()
+        var speculativePauseTask: Task<Void, Never>?
 
         init(url: URL, referer: URL?) {
             self.url = url
@@ -65,17 +66,41 @@ final class CatalogStreamingVideoSessionStore {
             webView.loadHTMLString(Self.document(for: url), baseURL: referer)
         }
 
-        func prewarm() {
+        func prewarm(prioritize: Bool) {
             lastAccess = Date()
-            webView.evaluateJavaScript("document.getElementById('preview')?.load()")
+            if prioritize {
+                play()
+                speculativePauseTask?.cancel()
+                speculativePauseTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    guard !Task.isCancelled,
+                          let self,
+                          self.webView.superview == nil else {
+                        return
+                    }
+                    self.pause()
+                }
+            } else {
+                webView.evaluateJavaScript("document.getElementById('preview')?.load()")
+            }
         }
 
         func play() {
             lastAccess = Date()
-            webView.evaluateJavaScript("document.getElementById('preview')?.play()")
+            speculativePauseTask?.cancel()
+            speculativePauseTask = nil
+            messageHandler.shouldPlay = true
+            messageHandler.requestPlayback(in: webView)
+        }
+
+        func pause() {
+            messageHandler.shouldPlay = false
+            webView.evaluateJavaScript("window.auraPausePreview?.()")
         }
 
         func stop() {
+            speculativePauseTask?.cancel()
+            messageHandler.shouldPlay = false
             webView.stopLoading()
             webView.configuration.userContentController.removeScriptMessageHandler(
                 forName: MessageHandler.messageName
@@ -102,19 +127,40 @@ final class CatalogStreamingVideoSessionStore {
                 const video = document.getElementById('preview');
                 let started = false;
                 let failed = false;
+                let retryTimer = null;
                 const send = (value) => window.webkit.messageHandlers.\(MessageHandler.messageName).postMessage(value);
                 const reportStarted = () => {
                   if (started || video.currentTime <= 0.03 || video.readyState < 2) return;
                   started = true;
+                  clearTimeout(retryTimer);
                   requestAnimationFrame(() => requestAnimationFrame(() => send('started')));
                 };
                 const reportFailed = () => {
                   if (failed || started) return;
                   failed = true;
+                  clearTimeout(retryTimer);
                   send('failed');
+                };
+                const attemptPlayback = () => {
+                  if (!window.auraPreviewShouldPlay || failed) return;
+                  video.muted = true;
+                  video.play().catch(() => {});
+                  clearTimeout(retryTimer);
+                  if (!started) retryTimer = setTimeout(attemptPlayback, 250);
+                };
+                window.auraStartPreview = () => {
+                  window.auraPreviewShouldPlay = true;
+                  attemptPlayback();
+                };
+                window.auraPausePreview = () => {
+                  window.auraPreviewShouldPlay = false;
+                  clearTimeout(retryTimer);
+                  video.pause();
                 };
                 video.addEventListener('playing', reportStarted);
                 video.addEventListener('timeupdate', reportStarted);
+                video.addEventListener('loadeddata', attemptPlayback);
+                video.addEventListener('canplay', attemptPlayback);
                 video.addEventListener('error', reportFailed);
               </script>
             </body>
@@ -140,8 +186,14 @@ final class CatalogStreamingVideoSessionStore {
 
         var hasStarted = false
         var hasFailed = false
+        var shouldPlay = false
         var onStarted: (() -> Void)?
         var onFailed: (() -> Void)?
+
+        func requestPlayback(in webView: WKWebView) {
+            guard shouldPlay, !hasFailed else { return }
+            webView.evaluateJavaScript("window.auraStartPreview?.()")
+        }
 
         func userContentController(
             _ userContentController: WKUserContentController,
@@ -178,6 +230,10 @@ final class CatalogStreamingVideoSessionStore {
             reportFailureIfNeeded()
         }
 
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            requestPlayback(in: webView)
+        }
+
         private func reportFailureIfNeeded() {
             guard !hasFailed, !hasStarted else { return }
             hasFailed = true
@@ -206,7 +262,7 @@ final class CatalogStreamingVideoSessionStore {
            !prioritize {
             return
         }
-        session(for: url, referer: referer).prewarm()
+        session(for: url, referer: referer).prewarm(prioritize: prioritize)
         pruneIfNeeded(keeping: url)
     }
 
@@ -241,7 +297,7 @@ final class CatalogStreamingVideoSessionStore {
         session.messageHandler.onFailed = nil
         session.webView.removeFromSuperview()
         hostView.url = nil
-        session.webView.evaluateJavaScript("document.getElementById('preview')?.pause()")
+        session.pause()
     }
 
     private func session(for url: URL, referer: URL?) -> Session {
