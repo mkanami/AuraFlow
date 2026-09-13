@@ -126,6 +126,11 @@ actor CatalogPreviewPipeline {
         let validatedAt: Date
     }
 
+    private struct MetadataManifest: Codable {
+        var version = 1
+        var entries: [String: CatalogResolvedMedia] = [:]
+    }
+
     private struct Job {
         let token: UUID
         var priority: CatalogPreviewPriority
@@ -135,51 +140,100 @@ actor CatalogPreviewPipeline {
     }
 
     private let resolver: (any WallpaperCatalogPreviewResolving)?
+    private let mediaResolver: (any WallpaperCatalogMediaResolving)?
+    private let transferCoordinator: CatalogTransferCoordinator
     private let mediaPreparer: any CatalogPreviewMediaPreparing
     private let session: URLSession
     private let configuration: Configuration
     private let cacheDirectory: URL
     private let manifestURL: URL
+    private let metadataManifestURL: URL
     private let metadataPermits = CatalogPreviewPermitPool(limit: 4)
-    // Range probes must never wait behind full preview downloads. A slow CDN
-    // download used to make a newly selected card appear stuck after scrolling.
-    private let probePermits = CatalogPreviewPermitPool(limit: 4)
     private let downloadPermits = CatalogPreviewPermitPool(limit: 2)
     private let conversionPermits = CatalogPreviewPermitPool(limit: 1)
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "AuraFlow",
         category: "CatalogPreview"
     )
+    private let transferLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "AuraFlow",
+        category: "CatalogTransfer"
+    )
 
     private var manifest: Manifest
+    private var metadataManifest: MetadataManifest
     private var jobs: [String: Job] = [:]
     private var failures: [String: Date] = [:]
+    private var metadataResolutionTasks: [String: Task<CatalogResolvedMedia, Error>] = [:]
     private var subscribers: [String: [UUID: AsyncStream<CatalogPreviewEvent>.Continuation]] = [:]
     private var manifestSaveTask: Task<Void, Never>?
+    private var metadataManifestSaveTask: Task<Void, Never>?
 
     init(
         resolver: (any WallpaperCatalogPreviewResolving)?,
+        mediaResolver: (any WallpaperCatalogMediaResolving)? = nil,
         catalogDirectoryURL: URL,
         session: URLSession = .shared,
         configuration: Configuration = Configuration(),
-        mediaPreparer: any CatalogPreviewMediaPreparing = DefaultCatalogPreviewMediaPreparer()
+        mediaPreparer: any CatalogPreviewMediaPreparing = DefaultCatalogPreviewMediaPreparer(),
+        transferCoordinator: CatalogTransferCoordinator = CatalogTransferCoordinator()
     ) {
         self.resolver = resolver
+        self.mediaResolver = mediaResolver
+        self.transferCoordinator = transferCoordinator
         self.mediaPreparer = mediaPreparer
         self.session = session
         self.configuration = configuration
         cacheDirectory = catalogDirectoryURL.appendingPathComponent("PreparedPreviews", isDirectory: true)
         manifestURL = cacheDirectory.appendingPathComponent("manifest.json")
+        metadataManifestURL = cacheDirectory.appendingPathComponent("media-routes.json")
         if let data = try? Data(contentsOf: manifestURL),
            let decoded = try? JSONDecoder().decode(Manifest.self, from: data) {
             manifest = decoded
         } else {
             manifest = Manifest()
         }
+        if let data = try? Data(contentsOf: metadataManifestURL),
+           let decoded = try? JSONDecoder().decode(MetadataManifest.self, from: data) {
+            metadataManifest = decoded
+        } else {
+            metadataManifest = MetadataManifest()
+        }
     }
 
     func prefetch(_ wallpaper: CatalogWallpaper, priority: CatalogPreviewPriority) {
         startIfNeeded(wallpaper, priority: priority)
+    }
+
+    func prefetchMetadata(_ wallpaper: CatalogWallpaper, priority: CatalogPreviewPriority) {
+        startIfNeeded(wallpaper, priority: min(priority, .hovered))
+    }
+
+    func resolvedMediaForForegroundDownload(
+        _ wallpaper: CatalogWallpaper
+    ) async throws -> CatalogResolvedMedia {
+        try await resolvedMedia(for: wallpaper, priority: .selected)
+    }
+
+    func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {
+        metadataResolutionTasks[wallpaper.id]?.cancel()
+        metadataResolutionTasks[wallpaper.id] = nil
+        metadataManifest.entries[wallpaper.id] = nil
+        failures[wallpaper.id] = nil
+        try? persistMetadataManifest()
+        await mediaResolver?.invalidateResolvedMedia(for: wallpaper)
+    }
+
+    func beginForegroundDownload() async -> CatalogForegroundDownloadLease {
+        let lease = await transferCoordinator.beginForegroundDownload()
+        let cancelledCount = jobs.count
+        cancelAll()
+        transferLogger.info("stage=foreground-priority cancelled_background_tasks=\(cancelledCount)")
+        return lease
+    }
+
+    func endForegroundDownload(_ lease: CatalogForegroundDownloadLease) async {
+        await transferCoordinator.endForegroundDownload(lease)
     }
 
     func events(
@@ -210,20 +264,29 @@ actor CatalogPreviewPipeline {
         for (id, job) in jobs where !protectedIDs.contains(id) && job.priority < .selected {
             job.task?.cancel()
             jobs[id] = nil
+            metadataResolutionTasks[id]?.cancel()
+            metadataResolutionTasks[id] = nil
         }
     }
 
     func cancelAll() {
         for job in jobs.values { job.task?.cancel() }
         jobs.removeAll()
+        metadataResolutionTasks.values.forEach { $0.cancel() }
+        metadataResolutionTasks.removeAll()
     }
 
     func clear() throws {
         cancelAll()
         manifestSaveTask?.cancel()
         manifestSaveTask = nil
+        metadataManifestSaveTask?.cancel()
+        metadataManifestSaveTask = nil
         failures.removeAll()
+        metadataResolutionTasks.values.forEach { $0.cancel() }
+        metadataResolutionTasks.removeAll()
         manifest = Manifest()
+        metadataManifest = MetadataManifest()
         try? FileManager.default.removeItem(at: cacheDirectory)
     }
 
@@ -272,7 +335,8 @@ actor CatalogPreviewPipeline {
     ) async {
         let startedAt = Date()
         do {
-            if let localCandidate = existingLocalCandidate(for: wallpaper) {
+            if currentPriority(for: wallpaper.id, fallback: priority) == .selected,
+               let localCandidate = existingLocalCandidate(for: wallpaper) {
                 try ensureCurrentJob(wallpaper.id, token: token)
                 jobs[wallpaper.id]?.directURL = localCandidate.url
                 emit(.direct(localCandidate.url), for: wallpaper.id)
@@ -280,67 +344,55 @@ actor CatalogPreviewPipeline {
                     localCandidate,
                     wallpaperID: wallpaper.id,
                     referer: wallpaper.sourcePageURL,
-                    priority: priority,
+                    priority: .selected,
                     token: token
                 )
-                try ensureCurrentJob(wallpaper.id, token: token)
-                jobs[wallpaper.id] = nil
-                failures[wallpaper.id] = nil
-                emit(.state(.ready), for: wallpaper.id)
-                emit(.ready(cachedURL), for: wallpaper.id)
+                try finishReady(cachedURL, wallpaperID: wallpaper.id, token: token)
                 return
             }
 
             setState(.resolving, wallpaperID: wallpaper.id, token: token)
-            try await metadataPermits.acquire(
-                priority: currentPriority(for: wallpaper.id, fallback: priority),
-                key: wallpaper.id
+            let media = try await resolvedMedia(
+                for: wallpaper,
+                priority: currentPriority(for: wallpaper.id, fallback: priority)
             )
-            let sources: [CatalogVideoSource]
-            do {
-                if let resolver {
-                    sources = try await resolver.resolvePreviewSources(for: wallpaper)
-                } else {
-                    sources = wallpaper.sources
-                }
-                await metadataPermits.release()
-            } catch {
-                await metadataPermits.release()
-                throw error
-            }
             try ensureCurrentJob(wallpaper.id, token: token)
+
+            // Visible, lookahead, and hovered cards stop here. Scrolling now
+            // warms only provider metadata and never consumes a media body.
+            guard currentPriority(for: wallpaper.id, fallback: priority) == .selected else {
+                jobs[wallpaper.id] = nil
+                failures[wallpaper.id] = nil
+                return
+            }
+
+            guard await transferCoordinator.permitsBackgroundMedia() else {
+                jobs[wallpaper.id] = nil
+                return
+            }
 
             var seen = Set<String>()
             var cachedURL: URL?
             var lastCandidateError: Error?
-            for candidate in sources where seen.insert(candidate.url.absoluteString).inserted {
+            for candidate in media.previewSources where seen.insert(candidate.url.absoluteString).inserted {
                 try ensureCurrentJob(wallpaper.id, token: token)
-                let candidatePriority = currentPriority(for: wallpaper.id, fallback: priority)
-
-                // The selected card can try the resolved stream immediately.
-                // Probe and local preparation continue in parallel as fallback.
-                if candidatePriority == .selected, !candidate.url.isFileURL {
+                guard await transferCoordinator.permitsBackgroundMedia() else {
+                    throw CancellationError()
+                }
+                if !candidate.url.isFileURL {
                     jobs[wallpaper.id]?.directURL = candidate.url
                     emit(.direct(candidate.url), for: wallpaper.id)
+                    // Give the direct stream a brief head start. If the user
+                    // presses Download or leaves, this task is cancelled before
+                    // it consumes the entire preview file.
+                    try await Task.sleep(nanoseconds: 150_000_000)
                 }
-                let reachable = candidate.url.isFileURL
-                    ? FileManager.default.fileExists(atPath: candidate.url.path)
-                    : try await probe(
-                        candidate.url,
-                        wallpaperID: wallpaper.id,
-                        referer: wallpaper.sourcePageURL,
-                        priority: candidatePriority
-                    )
-                guard reachable else { continue }
-
-                jobs[wallpaper.id]?.directURL = candidate.url
-                emit(.direct(candidate.url), for: wallpaper.id)
                 do {
                     cachedURL = try await prepare(
                         candidate,
                         wallpaperID: wallpaper.id,
                         referer: wallpaper.sourcePageURL,
-                        priority: currentPriority(for: wallpaper.id, fallback: priority),
+                        priority: .selected,
                         token: token
                     )
                     break
@@ -354,11 +406,7 @@ actor CatalogPreviewPipeline {
             guard let cachedURL else {
                 throw lastCandidateError ?? URLError(.resourceUnavailable)
             }
-            try ensureCurrentJob(wallpaper.id, token: token)
-            jobs[wallpaper.id] = nil
-            failures[wallpaper.id] = nil
-            emit(.state(.ready), for: wallpaper.id)
-            emit(.ready(cachedURL), for: wallpaper.id)
+            try finishReady(cachedURL, wallpaperID: wallpaper.id, token: token)
             let milliseconds = Int(Date().timeIntervalSince(startedAt) * 1_000)
             logger.info("provider=\(wallpaper.attribution, privacy: .public) stage=ready elapsed_ms=\(milliseconds)")
         } catch is CancellationError {
@@ -375,6 +423,77 @@ actor CatalogPreviewPipeline {
         }
     }
 
+    private func finishReady(_ url: URL, wallpaperID: String, token: UUID) throws {
+        try ensureCurrentJob(wallpaperID, token: token)
+        jobs[wallpaperID] = nil
+        failures[wallpaperID] = nil
+        emit(.state(.ready), for: wallpaperID)
+        emit(.ready(url), for: wallpaperID)
+    }
+
+    private func resolvedMedia(
+        for wallpaper: CatalogWallpaper,
+        priority: CatalogPreviewPriority
+    ) async throws -> CatalogResolvedMedia {
+        if let cached = metadataManifest.entries[wallpaper.id], cached.validUntil > Date() {
+            return cached
+        }
+        if let task = metadataResolutionTasks[wallpaper.id] {
+            return try await task.value
+        }
+
+        let mediaResolver = mediaResolver
+        let resolver = resolver
+        let metadataPermits = metadataPermits
+        let task = Task<CatalogResolvedMedia, Error> {
+            try await metadataPermits.acquire(priority: priority, key: wallpaper.id)
+            do {
+                let resolved: CatalogResolvedMedia
+                if let mediaResolver {
+                    resolved = try await mediaResolver.resolveMedia(for: wallpaper)
+                } else {
+                    let previewSources: [CatalogVideoSource]
+                    if let resolver {
+                        previewSources = try await resolver.resolvePreviewSources(for: wallpaper)
+                    } else {
+                        previewSources = wallpaper.sources
+                    }
+                    resolved = CatalogResolvedMedia(
+                        previewSources: previewSources,
+                        originalSources: wallpaper.sources,
+                        provider: wallpaper.attribution,
+                        validUntil: Date().addingTimeInterval(24 * 60 * 60)
+                    )
+                }
+                await metadataPermits.release()
+                return resolved
+            } catch {
+                await metadataPermits.release()
+                throw error
+            }
+        }
+        metadataResolutionTasks[wallpaper.id] = task
+
+        do {
+            let resolved = try await task.value
+            metadataResolutionTasks[wallpaper.id] = nil
+            let maximumValidUntil = Date().addingTimeInterval(configuration.successfulResolutionLifetime)
+            let cached = CatalogResolvedMedia(
+                previewSources: resolved.previewSources,
+                originalSources: resolved.originalSources,
+                provider: resolved.provider,
+                validUntil: min(resolved.validUntil, maximumValidUntil)
+            )
+            metadataManifest.entries[wallpaper.id] = cached
+            scheduleMetadataManifestPersistence()
+            return cached
+        } catch {
+            task.cancel()
+            metadataResolutionTasks[wallpaper.id] = nil
+            throw error
+        }
+    }
+
     private func prepare(
         _ candidate: CatalogVideoSource,
         wallpaperID: String,
@@ -383,6 +502,9 @@ actor CatalogPreviewPipeline {
         token: UUID
     ) async throws -> URL {
         try ensureCurrentJob(wallpaperID, token: token)
+        guard await transferCoordinator.permitsBackgroundMedia() else {
+            throw CancellationError()
+        }
         setState(.downloading, wallpaperID: wallpaperID, token: token)
         try await downloadPermits.acquire(priority: priority, key: wallpaperID)
         let downloadedURL: URL
@@ -403,6 +525,9 @@ actor CatalogPreviewPipeline {
         var preparedURL = downloadedURL
         let sourceExtension = candidate.url.pathExtension.lowercased()
         if sourceExtension == "webm" || sourceExtension == "mkv" {
+            guard await transferCoordinator.permitsBackgroundMedia() else {
+                throw CancellationError()
+            }
             setState(.preparing, wallpaperID: wallpaperID, token: token)
             try await conversionPermits.acquire(
                 priority: currentPriority(for: wallpaperID, fallback: priority),
@@ -426,33 +551,6 @@ actor CatalogPreviewPipeline {
             wallpaperID: wallpaperID,
             sourceURL: candidate.url
         )
-    }
-
-    private func probe(
-        _ url: URL,
-        wallpaperID: String,
-        referer: URL?,
-        priority: CatalogPreviewPriority
-    ) async throws -> Bool {
-        try await probePermits.acquire(priority: priority, key: wallpaperID)
-        defer { Task { await probePermits.release() } }
-        var request = Self.request(url: url, referer: referer)
-        request.timeoutInterval = 12
-        // A tiny real media range is enough to reject HTML/404 responses and
-        // avoids making a slow MoeWalls CDN look dead before WebKit can stream.
-        request.setValue("bytes=0-4095", forHTTPHeaderField: "Range")
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse,
-                  http.statusCode == 200 || http.statusCode == 206,
-                  data.count > 1_024 else { return false }
-            let mime = response.mimeType?.lowercased() ?? ""
-            return mime.hasPrefix("video/") || Self.videoExtensions.contains(url.pathExtension.lowercased())
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            return false
-        }
     }
 
     private func existingLocalCandidate(for wallpaper: CatalogWallpaper) -> CatalogVideoSource? {
@@ -545,7 +643,6 @@ actor CatalogPreviewPipeline {
     private func promoteQueuedWork(for wallpaperID: String, to priority: CatalogPreviewPriority) {
         Task {
             await metadataPermits.promote(key: wallpaperID, to: priority)
-            await probePermits.promote(key: wallpaperID, to: priority)
             await downloadPermits.promote(key: wallpaperID, to: priority)
             await conversionPermits.promote(key: wallpaperID, to: priority)
         }
@@ -565,6 +662,20 @@ actor CatalogPreviewPipeline {
         try? persistManifest()
     }
 
+    private func scheduleMetadataManifestPersistence() {
+        guard metadataManifestSaveTask == nil else { return }
+        metadataManifestSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled, let self else { return }
+            await self.persistScheduledMetadataManifest()
+        }
+    }
+
+    private func persistScheduledMetadataManifest() {
+        metadataManifestSaveTask = nil
+        try? persistMetadataManifest()
+    }
+
     private func enforceCacheLimit(protecting protectedFileNames: Set<String>) throws {
         var total = manifest.entries.values.reduce(Int64(0)) { $0 + $1.byteCount }
         let candidates = manifest.entries.sorted { $0.value.lastAccessedAt < $1.value.lastAccessedAt }
@@ -580,6 +691,12 @@ actor CatalogPreviewPipeline {
         try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(manifest)
         try data.write(to: manifestURL, options: .atomic)
+    }
+
+    private func persistMetadataManifest() throws {
+        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(metadataManifest)
+        try data.write(to: metadataManifestURL, options: .atomic)
     }
 
     private func setState(_ state: CatalogPreviewState, wallpaperID: String, token: UUID) {

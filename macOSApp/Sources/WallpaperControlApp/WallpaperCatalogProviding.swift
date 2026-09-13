@@ -32,6 +32,25 @@ protocol WallpaperCatalogPreviewResolving: Sendable {
     func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource]
 }
 
+/// Provider routes resolved from one detail-page fetch. Preview renditions are
+/// kept separate from original downloads so scrolling never consumes the
+/// bandwidth reserved for a user-initiated transfer.
+struct CatalogResolvedMedia: Codable, Sendable, Equatable {
+    let previewSources: [CatalogVideoSource]
+    let originalSources: [CatalogVideoSource]
+    let provider: String
+    let validUntil: Date
+}
+
+protocol WallpaperCatalogMediaResolving: Sendable {
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia
+    func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async
+}
+
+extension WallpaperCatalogMediaResolving {
+    func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {}
+}
+
 extension WallpaperCatalogProviding {
     func fetchCatalog(progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
         let wallpapers = try await fetchCatalog()

@@ -3,21 +3,21 @@ import Testing
 @testable import WallpaperControlApp
 
 @Test @MainActor
-func catalogDetailPrefersImmediatelyStreamableWebMOverMP4Fallback() {
+func catalogDetailWaitsForResolvedPreviewInsteadOfStreamingRemoteOriginal() {
     let mp4URL = URL(string: "https://example.com/preview.mp4")!
     let webMURL = URL(string: "https://example.com/preview.webm")!
     let wallpaper = previewTestWallpaper(sources: [mp4URL, webMURL])
 
-    #expect(CatalogDetailMediaPreviewModel.immediatePreviewSource(for: wallpaper) == .web(webMURL))
+    #expect(CatalogDetailMediaPreviewModel.immediatePreviewSource(for: wallpaper) == nil)
 }
 
 @Test @MainActor
-func catalogDetailStartsNativeVideoWithoutPreparationWhenWebMIsUnavailable() {
+func catalogDetailDoesNotStartRemoteNativeOriginalBeforeResolution() {
     let imageURL = URL(string: "https://example.com/poster.jpg")!
     let mp4URL = URL(string: "https://example.com/preview.mp4")!
     let wallpaper = previewTestWallpaper(sources: [imageURL, mp4URL])
 
-    #expect(CatalogDetailMediaPreviewModel.immediatePreviewSource(for: wallpaper) == .native(mp4URL))
+    #expect(CatalogDetailMediaPreviewModel.immediatePreviewSource(for: wallpaper) == nil)
 }
 
 @Test @MainActor
@@ -31,7 +31,8 @@ func catalogDetailDoesNotTreatStaticImagesAsLivePreviews() {
 
 @Test @MainActor
 func catalogDetailKeepsFirstMovingWebRouteAfterItWins() async {
-    let webMURL = URL(string: "https://example.com/preview.webm")!
+    let webMURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("catalog-preview.webm")
     let wallpaper = previewTestWallpaper(sources: [webMURL])
     let model = CatalogDetailMediaPreviewModel()
 

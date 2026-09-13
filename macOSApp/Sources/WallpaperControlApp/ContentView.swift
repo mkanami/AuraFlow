@@ -1675,7 +1675,8 @@ struct WallpaperCatalogDetailView: View {
 
                 CatalogDetailMediaPreview(
                     wallpaper: wallpaper,
-                    pipeline: viewModel.catalogPreviewPipeline
+                    pipeline: viewModel.catalogPreviewPipeline,
+                    isDownloadActive: viewModel.isDownloading(wallpaper)
                 )
                     .aspectRatio(16.0 / 9.0, contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
@@ -1692,11 +1693,17 @@ struct WallpaperCatalogDetailView: View {
 
 private struct CatalogDetailMediaPreview: View {
     let wallpaper: CatalogWallpaper
+    let isDownloadActive: Bool
     @StateObject private var model: CatalogDetailMediaPreviewModel
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
-    init(wallpaper: CatalogWallpaper, pipeline: CatalogPreviewPipeline) {
+    init(
+        wallpaper: CatalogWallpaper,
+        pipeline: CatalogPreviewPipeline,
+        isDownloadActive: Bool
+    ) {
         self.wallpaper = wallpaper
+        self.isDownloadActive = isDownloadActive
         _model = StateObject(wrappedValue: CatalogDetailMediaPreviewModel(pipeline: pipeline))
     }
 
@@ -1737,7 +1744,12 @@ private struct CatalogDetailMediaPreview: View {
                 .stroke(adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.14), lineWidth: 1)
         )
         .task(id: wallpaper.id) {
-            await model.load(wallpaper)
+            if !isDownloadActive {
+                await model.load(wallpaper)
+            }
+        }
+        .onChange(of: isDownloadActive) { downloading in
+            model.setNetworkSuspended(downloading, wallpaper: wallpaper)
         }
         .onDisappear {
             model.stop()

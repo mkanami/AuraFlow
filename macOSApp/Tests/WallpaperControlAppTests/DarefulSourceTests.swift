@@ -149,9 +149,11 @@ import Testing
         sources: []
     )
 
-    let sources = try await DarefulSource(session: session).resolvePreviewSources(for: wallpaper)
+    let media = try await DarefulSource(session: session).resolveMedia(for: wallpaper)
+    let sources = media.previewSources
 
     #expect(sources.first?.url.absoluteString == "https://stream.mux.com/preview123/low.mp4")
+    #expect(media.originalSources.first?.url.absoluteString == "https://stream.mux.com/preview123/high.mp4")
 }
 
 @Test func darefulParserRejectsPeopleTextLogoAndVerticalVideos() {

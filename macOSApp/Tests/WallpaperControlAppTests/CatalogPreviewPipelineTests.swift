@@ -4,6 +4,72 @@ import Testing
 
 @Suite(.serialized)
 struct CatalogPreviewPipelineTests {
+@Test func visiblePrefetchResolvesMetadataWithoutDownloadingMedia() async throws {
+    CatalogPreviewURLProtocol.configure(statusCode: 206, byteCount: 4_096)
+    let session = previewTestSession()
+    defer { session.invalidateAndCancel() }
+    let resolver = CatalogPreviewResolverSpy()
+    let directory = previewTestDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let pipeline = CatalogPreviewPipeline(
+        resolver: resolver,
+        catalogDirectoryURL: directory,
+        session: session,
+        mediaPreparer: CatalogPreviewMediaPreparerStub()
+    )
+    let wallpaper = previewPipelineWallpaper(id: "metadata-only")
+
+    await pipeline.prefetchMetadata(wallpaper, priority: .visible)
+    _ = try await pipeline.resolvedMediaForForegroundDownload(wallpaper)
+
+    #expect(await resolver.callCount == 1)
+    #expect(CatalogPreviewURLProtocol.fullRequestCount == 0)
+}
+
+@Test func warmedMetadataIsReusedByForegroundDownloadWithoutResolvingAgain() async throws {
+    let directory = previewTestDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let resolver = CatalogMediaResolverSpy()
+    let pipeline = CatalogPreviewPipeline(
+        resolver: nil,
+        mediaResolver: resolver,
+        catalogDirectoryURL: directory,
+        mediaPreparer: CatalogPreviewMediaPreparerStub()
+    )
+    let wallpaper = previewPipelineWallpaper(id: "route-reuse")
+
+    await pipeline.prefetchMetadata(wallpaper, priority: .visible)
+    let first = try await pipeline.resolvedMediaForForegroundDownload(wallpaper)
+    let second = try await pipeline.resolvedMediaForForegroundDownload(wallpaper)
+
+    #expect(first == second)
+    #expect(await resolver.callCount == 1)
+}
+
+@Test func foregroundDownloadBlocksPreviewBodiesUntilLeaseEnds() async throws {
+    CatalogPreviewURLProtocol.configure(statusCode: 206, byteCount: 4_096)
+    let session = previewTestSession()
+    defer { session.invalidateAndCancel() }
+    let directory = previewTestDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let pipeline = CatalogPreviewPipeline(
+        resolver: CatalogPreviewResolverSpy(),
+        catalogDirectoryURL: directory,
+        session: session,
+        mediaPreparer: CatalogPreviewMediaPreparerStub()
+    )
+    let wallpaper = previewPipelineWallpaper(id: "foreground-priority")
+
+    let lease = await pipeline.beginForegroundDownload()
+    await pipeline.prefetch(wallpaper, priority: .selected)
+    try await Task.sleep(nanoseconds: 250_000_000)
+    #expect(CatalogPreviewURLProtocol.fullRequestCount == 0)
+
+    await pipeline.endForegroundDownload(lease)
+    _ = try await awaitReadyURL(await pipeline.events(for: wallpaper))
+    #expect(CatalogPreviewURLProtocol.fullRequestCount == 1)
+}
+
 @Test func catalogPreviewPipelineDeduplicatesPreparationAndReusesDiskCache() async throws {
     CatalogPreviewURLProtocol.configure(statusCode: 206, byteCount: 4_096)
     let session = previewTestSession()
@@ -192,6 +258,22 @@ private actor CatalogPreviewResolverSpy: WallpaperCatalogPreviewResolving {
         callCount += 1
         return wallpaper.sources
     }
+}
+
+private actor CatalogMediaResolverSpy: WallpaperCatalogMediaResolving {
+    private(set) var callCount = 0
+
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
+        callCount += 1
+        return CatalogResolvedMedia(
+            previewSources: wallpaper.sources,
+            originalSources: wallpaper.sources,
+            provider: wallpaper.attribution,
+            validUntil: Date().addingTimeInterval(86_400)
+        )
+    }
+
+    func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {}
 }
 
 private actor CatalogPreviewOrderRecorder {

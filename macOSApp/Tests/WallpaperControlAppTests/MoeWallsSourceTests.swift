@@ -177,9 +177,11 @@ import Testing
         ]
     )
 
-    let sources = try await MoeWallsSource().resolvePreviewSources(for: wallpaper)
+    let media = try await MoeWallsSource().resolveMedia(for: wallpaper)
+    let sources = media.previewSources
 
     #expect(sources.map(\.url) == [webm, mp4])
+    #expect(media.originalSources.map(\.url) == [mp4, webm])
 }
 
 @Test func moewallsDetailPageResolvesTokenDownloadURL() {

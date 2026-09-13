@@ -78,7 +78,7 @@ struct MoeWallsTaxonomyTerm: Decodable, Sendable {
     let slug: String
 }
 
-actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, WallpaperCatalogPreviewResolving {
+actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, WallpaperCatalogPreviewResolving, WallpaperCatalogMediaResolving {
     private let baseURL = URL(string: "https://moewalls.com/")!
     private let client: MoeWallsHTTPClient
     private let probeService: MoeWallsProbeService
@@ -194,14 +194,20 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wallpap
     }
 
     func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
+        try await resolveMedia(for: wallpaper).previewSources
+    }
+
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
         let dimensions = wallpaper.sources.first.map { ($0.width, $0.height) } ?? (0, 0)
         var urls = wallpaper.sources.map(\.url)
+        var explicitDownloadURL: URL?
 
         // Listing data can contain a derived URL. Refresh the detail page when
         // possible so stale CDN routes do not poison the prepared cache.
         if let pageURL = wallpaper.sourcePageURL,
            let details = try? await fetchDetails(pageURL: pageURL) {
             urls.append(contentsOf: details.previewCandidateURLs)
+            explicitDownloadURL = details.downloadURL
         }
 
         var seen = Set<String>()
@@ -213,7 +219,38 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wallpap
             let rhsRank = (rhsExtension == "webm" || rhsExtension == "mkv") ? 0 : 1
             return lhsRank == rhsRank ? lhs.offset < rhs.offset : lhsRank < rhsRank
         }.map(\.element)
-        return ordered.map { CatalogVideoSource(url: $0, width: dimensions.0, height: dimensions.1) }
+        let previewSources = ordered.map {
+            CatalogVideoSource(url: $0, width: dimensions.0, height: dimensions.1)
+        }
+        let originalSources: [CatalogVideoSource]
+        if let explicitDownloadURL {
+            originalSources = [CatalogVideoSource(
+                url: explicitDownloadURL,
+                width: dimensions.0,
+                height: dimensions.1
+            )]
+        } else if wallpaper.sourcePageURL == nil {
+            originalSources = wallpaper.sources
+        } else {
+            // Catalog entries carry preview candidates in `sources`. If the
+            // detail route cannot be resolved, leave originals empty so the
+            // foreground browser-token fallback is used instead of saving a
+            // low-resolution preview as the wallpaper.
+            originalSources = []
+        }
+        return CatalogResolvedMedia(
+            previewSources: previewSources,
+            originalSources: originalSources,
+            provider: "MoeWalls",
+            validUntil: Date().addingTimeInterval(24 * 60 * 60)
+        )
+    }
+
+    func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {
+        guard let key = wallpaper.sourcePageURL?.absoluteString else { return }
+        detailCache[key] = nil
+        detailCacheDates[key] = nil
+        detailCacheOrder.removeAll { $0 == key }
     }
 
     func fetchLatest(page: Int) async throws -> [MoeWallsWallpaper] {

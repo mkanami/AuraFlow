@@ -4,7 +4,7 @@ protocol CatalogCacheClearing: Sendable {
     func clearCache() async
 }
 
-actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPaging, WallpaperCatalogSearching, WallpaperCatalogPreviewResolving {
+actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPaging, WallpaperCatalogSearching, WallpaperCatalogPreviewResolving, WallpaperCatalogMediaResolving {
     private let animeProvider: WallpaperCatalogProviding
     private let animeNatureProvider: WallpaperCatalogProviding
     private let scenicProvider: WallpaperCatalogProviding
@@ -116,6 +116,10 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
     }
 
     func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
+        try await resolveMedia(for: wallpaper).previewSources
+    }
+
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
         let provider: WallpaperCatalogProviding
         switch wallpaper.catalogGroup {
         case .anime:
@@ -125,10 +129,37 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         case .scenic:
             provider = scenicProvider
         }
-        guard let previewProvider = provider as? any WallpaperCatalogPreviewResolving else {
-            return wallpaper.sources
+        if let mediaProvider = provider as? any WallpaperCatalogMediaResolving {
+            return try await mediaProvider.resolveMedia(for: wallpaper)
         }
-        return try await previewProvider.resolvePreviewSources(for: wallpaper)
+        let previewSources: [CatalogVideoSource]
+        if let previewProvider = provider as? any WallpaperCatalogPreviewResolving {
+            previewSources = try await previewProvider.resolvePreviewSources(for: wallpaper)
+        } else {
+            previewSources = wallpaper.sources
+        }
+        let originalURL = try await provider.resolveDownloadURL(for: wallpaper)
+        return CatalogResolvedMedia(
+            previewSources: previewSources,
+            originalSources: [CatalogVideoSource(url: originalURL, width: 0, height: 0)],
+            provider: wallpaper.attribution,
+            validUntil: Date().addingTimeInterval(24 * 60 * 60)
+        )
+    }
+
+    func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {
+        let provider: WallpaperCatalogProviding
+        switch wallpaper.catalogGroup {
+        case .anime:
+            provider = animeProvider
+        case .animeNature:
+            provider = animeNatureProvider
+        case .scenic:
+            provider = scenicProvider
+        }
+        if let mediaProvider = provider as? any WallpaperCatalogMediaResolving {
+            await mediaProvider.invalidateResolvedMedia(for: wallpaper)
+        }
     }
 
     func fetchNextCatalogPage() async throws -> CatalogPage {

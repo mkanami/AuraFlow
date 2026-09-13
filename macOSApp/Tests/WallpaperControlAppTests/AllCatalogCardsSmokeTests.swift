@@ -59,10 +59,15 @@ import Testing
             height: 1080
         )]
     )
-    try await probeMediaSource(moeWalls.sources[0].url, wallpaper: moeWalls)
-    print("[catalog-preview] MoeWalls: real streaming media range ready")
+    let moeMedia = try await MoeWallsSource().resolveMedia(for: moeWalls)
+    let moePreview = try #require(moeMedia.previewSources.first)
+    try await probeMediaSource(moePreview.url, wallpaper: moeWalls)
+    if let moeOriginal = moeMedia.originalSources.first {
+        try await probeMediaSource(moeOriginal.url, wallpaper: moeWalls)
+    }
+    print("[catalog-preview] MoeWalls: preview and original routes ready")
 
-    let nativeSamples: [(String, CatalogWallpaper, any WallpaperCatalogPreviewResolving)] = [
+    let nativeSamples: [(String, CatalogWallpaper, any WallpaperCatalogMediaResolving)] = [
         (
             "MotionBGS",
             CatalogWallpaper(
@@ -91,12 +96,14 @@ import Testing
         ),
     ]
     for (name, wallpaper, provider) in nativeSamples {
-        let sources = try await withTimeout(seconds: 45) {
-            try await provider.resolvePreviewSources(for: wallpaper)
+        let media = try await withTimeout(seconds: 45) {
+            try await provider.resolveMedia(for: wallpaper)
         }
-        let source = try #require(sources.first)
-        try await probeMediaSource(source.url, wallpaper: wallpaper)
-        print("[catalog-preview] \(name): real preview media range ready")
+        let preview = try #require(media.previewSources.first)
+        let original = try #require(media.originalSources.first)
+        try await probeMediaSource(preview.url, wallpaper: wallpaper)
+        try await probeMediaSource(original.url, wallpaper: wallpaper)
+        print("[catalog-preview] \(name): preview and original media ranges ready")
     }
 }
 

@@ -138,7 +138,10 @@ import Testing
 @Test func motionBGSPreviewResolverSelectsLightweightOGVideo() async throws {
     MotionBGSPreviewURLProtocol.configure(html: """
     <meta property="og:video" content="https://motionbgs.com/media/9806/miku-nakano.960x540.mp4">
-    <a href=/dl/4k/9806>4K Download</a>
+    <a href=/dl/4k/9806 rel=nofollow target=_blank>
+      <div class="text-lg mb-1"><span class=font-bold>4K</span> Wallpaper</div>
+      <div class=text-xs>3840x2160 mp4 file</div>
+    </a>
     """)
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [MotionBGSPreviewURLProtocol.self]
@@ -154,14 +157,18 @@ import Testing
         sources: []
     )
 
-    let sources = try await MotionBGSAnimeNatureSource(session: session)
-        .resolvePreviewSources(for: wallpaper)
+    let media = try await MotionBGSAnimeNatureSource(session: session)
+        .resolveMedia(for: wallpaper)
+    let sources = media.previewSources
 
     #expect(sources.map(\.url.absoluteString) == [
         "https://motionbgs.com/media/9806/miku-nakano.960x540.mp4"
     ])
     #expect(sources.first?.width == 960)
     #expect(sources.first?.height == 540)
+    #expect(media.originalSources.map(\.url.absoluteString) == [
+        "https://motionbgs.com/dl/4k/9806"
+    ])
 }
 
 private final class MotionBGSPreviewURLProtocol: URLProtocol, @unchecked Sendable {

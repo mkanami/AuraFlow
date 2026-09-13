@@ -15,6 +15,10 @@ private let adaptiveContrastLogger = Logger(
     subsystem: "com.andrijvergeles.auraflow",
     category: "AdaptiveContrast"
 )
+private let catalogTransferLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "CatalogTransfer"
+)
 
 enum AdaptiveTextTone: Equatable {
     case dark
@@ -2311,9 +2315,12 @@ final class AppViewModel: ObservableObject {
             provider: catalogProvider,
             catalogDirectoryURL: catalogDirectoryURL
         )
+        let catalogTransferCoordinator = CatalogTransferCoordinator()
         self.catalogPreviewPipeline = CatalogPreviewPipeline(
             resolver: catalogProvider as? any WallpaperCatalogPreviewResolving,
-            catalogDirectoryURL: catalogDirectoryURL
+            mediaResolver: catalogProvider as? any WallpaperCatalogMediaResolving,
+            catalogDirectoryURL: catalogDirectoryURL,
+            transferCoordinator: catalogTransferCoordinator
         )
         self.appSupportDirectoryURL = resolvedAppSupportURL
         if let controller {
@@ -3003,7 +3010,7 @@ final class AppViewModel: ObservableObject {
 
     func prefetchCatalogPreview(_ wallpaper: CatalogWallpaper, hovered: Bool = false) {
         let priority: CatalogPreviewPriority = hovered ? .hovered : .visible
-        Task { await catalogPreviewPipeline.prefetch(wallpaper, priority: priority) }
+        Task { await catalogPreviewPipeline.prefetchMetadata(wallpaper, priority: priority) }
     }
 
     func catalogPreviewVisibilityChanged(_ wallpaper: CatalogWallpaper, isVisible: Bool) {
@@ -3046,6 +3053,10 @@ final class AppViewModel: ObservableObject {
             defer {
                 catalogDownloadID = nil
                 catalogDownloadTask = nil
+                if selectedCatalogWallpaper?.id == wallpaper.id {
+                    Task { await self.catalogPreviewPipeline.prefetch(wallpaper, priority: .selected) }
+                }
+                applyCatalogPreviewViewport()
             }
             do {
                 let localURL = try await downloadCatalogVideo(for: wallpaper)
@@ -4116,10 +4127,10 @@ final class AppViewModel: ObservableObject {
         Task { [catalogPreviewPipeline] in
             await catalogPreviewPipeline.cancelPending(except: protectedIDs)
             for wallpaper in visible {
-                await catalogPreviewPipeline.prefetch(wallpaper, priority: .visible)
+                await catalogPreviewPipeline.prefetchMetadata(wallpaper, priority: .visible)
             }
             for wallpaper in lookahead {
-                await catalogPreviewPipeline.prefetch(wallpaper, priority: .lookahead)
+                await catalogPreviewPipeline.prefetchMetadata(wallpaper, priority: .lookahead)
             }
         }
     }
@@ -4168,7 +4179,60 @@ final class AppViewModel: ObservableObject {
         ) {
             return existingURL
         }
-        return try await catalogDownloadService.download(wallpaper)
+
+        let lease = await catalogPreviewPipeline.beginForegroundDownload()
+        let startedAt = Date()
+        do {
+            let resolveStartedAt = Date()
+            var media = try await catalogPreviewPipeline.resolvedMediaForForegroundDownload(wallpaper)
+            let resolveMilliseconds = Int(Date().timeIntervalSince(resolveStartedAt) * 1_000)
+            catalogTransferLogger.info(
+                "provider=\(media.provider, privacy: .public) stage=resolved elapsed_ms=\(resolveMilliseconds)"
+            )
+
+            let localURL: URL
+            do {
+                catalogTransferLogger.info(
+                    "provider=\(media.provider, privacy: .public) stage=transfer-start route=original"
+                )
+                localURL = try await catalogDownloadService.download(
+                    wallpaper,
+                    preferredSources: media.originalSources,
+                    allowProviderFallbackAfterStaleRoute: false
+                )
+            } catch {
+                guard Self.catalogRouteNeedsRefresh(error) else { throw error }
+                await catalogPreviewPipeline.invalidateResolvedMedia(for: wallpaper)
+                media = try await catalogPreviewPipeline.resolvedMediaForForegroundDownload(wallpaper)
+                localURL = try await catalogDownloadService.download(
+                    wallpaper,
+                    preferredSources: media.originalSources
+                )
+            }
+
+            await catalogPreviewPipeline.endForegroundDownload(lease)
+            let attributes = try? FileManager.default.attributesOfItem(atPath: localURL.path)
+            let bytes = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+            let elapsedMilliseconds = Int(Date().timeIntervalSince(startedAt) * 1_000)
+            catalogTransferLogger.info(
+                "provider=\(media.provider, privacy: .public) stage=complete bytes=\(bytes) elapsed_ms=\(elapsedMilliseconds) route=original"
+            )
+            return localURL
+        } catch {
+            await catalogPreviewPipeline.endForegroundDownload(lease)
+            catalogTransferLogger.notice(
+                "provider=\(wallpaper.attribution, privacy: .public) stage=failed reason=\(String(describing: type(of: error)), privacy: .public)"
+            )
+            throw error
+        }
+    }
+
+    private static func catalogRouteNeedsRefresh(_ error: Error) -> Bool {
+        guard let downloadError = error as? CatalogDownloadError else { return false }
+        if case let .badStatus(_, statusCode) = downloadError {
+            return statusCode == 403 || statusCode == 404
+        }
+        return false
     }
 
     private func hasUsableCatalogFile(at url: URL) -> Bool {

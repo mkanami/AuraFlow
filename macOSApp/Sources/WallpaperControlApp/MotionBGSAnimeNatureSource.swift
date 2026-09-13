@@ -1,6 +1,6 @@
 import Foundation
 
-actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogSearching, WallpaperCatalogPreviewResolving {
+actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogSearching, WallpaperCatalogPreviewResolving, WallpaperCatalogMediaResolving {
     private let baseURL = URL(string: "https://motionbgs.com/")!
     private let startPath = "tag:anime-nature/"
     private let session: URLSession
@@ -68,13 +68,41 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
     }
 
     func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
-        guard let pageURL = wallpaper.sourcePageURL else { return wallpaper.sources }
-        let data = try await fetchData(pageURL)
-        guard let html = String(data: data, encoding: .utf8),
-              let url = MotionBGSParser.previewVideoURL(html: html, baseURL: baseURL) else {
-            return wallpaper.sources
+        try await resolveMedia(for: wallpaper).previewSources
+    }
+
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
+        guard let pageURL = wallpaper.sourcePageURL else {
+            return CatalogResolvedMedia(
+                previewSources: wallpaper.sources,
+                originalSources: wallpaper.sources,
+                provider: "MotionBGS",
+                validUntil: Date().addingTimeInterval(24 * 60 * 60)
+            )
         }
-        return [CatalogVideoSource(url: url, width: 960, height: 540)]
+        let data = try await fetchData(pageURL)
+        guard let html = String(data: data, encoding: .utf8) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        let item = MotionBGSListItem(
+            title: wallpaper.title,
+            pageURL: pageURL,
+            previewImageURL: wallpaper.previewImageURL
+        )
+        let originalSources = MotionBGSParser.parseDetailPage(
+            html: html,
+            item: item,
+            baseURL: baseURL
+        )?.sources ?? wallpaper.sources
+        let previewSources = MotionBGSParser.previewVideoURL(html: html, baseURL: baseURL).map {
+            [CatalogVideoSource(url: $0, width: 960, height: 540)]
+        } ?? originalSources
+        return CatalogResolvedMedia(
+            previewSources: previewSources,
+            originalSources: originalSources,
+            provider: "MotionBGS",
+            validUntil: Date().addingTimeInterval(24 * 60 * 60)
+        )
     }
 
     func searchCatalog(query rawQuery: String) async throws -> [CatalogWallpaper] {

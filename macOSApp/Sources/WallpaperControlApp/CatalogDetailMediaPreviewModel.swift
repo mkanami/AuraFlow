@@ -26,12 +26,14 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
     private var nativeAttemptGeneration = 0
     private var winner: Winner?
     private var attemptedURLs = Set<URL>()
+    private var isNetworkSuspended = false
 
     init(pipeline: CatalogPreviewPipeline? = nil) {
         self.pipeline = pipeline
     }
 
     func load(_ wallpaper: CatalogWallpaper) async {
+        guard !isNetworkSuspended else { return }
         generation &+= 1
         let requestedGeneration = generation
         stopPlayback()
@@ -72,14 +74,27 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         stopPlayback()
     }
 
+    func setNetworkSuspended(_ suspended: Bool, wallpaper: CatalogWallpaper) {
+        guard isNetworkSuspended != suspended else { return }
+        isNetworkSuspended = suspended
+        if suspended {
+            generation &+= 1
+            stopPlayback()
+        } else {
+            Task { [weak self] in
+                await self?.load(wallpaper)
+            }
+        }
+    }
+
     static func immediatePreviewSource(for wallpaper: CatalogWallpaper) -> CatalogDetailImmediatePreviewSource? {
         if let streamingURL = wallpaper.sources.map(\.url).first(where: {
-            streamingVideoExtensions.contains($0.pathExtension.lowercased())
+            $0.isFileURL && streamingVideoExtensions.contains($0.pathExtension.lowercased())
         }) {
             return .web(streamingURL)
         }
         if let nativeURL = wallpaper.sources.map(\.url).first(where: {
-            nativeVideoExtensions.contains($0.pathExtension.lowercased())
+            $0.isFileURL && nativeVideoExtensions.contains($0.pathExtension.lowercased())
         }) {
             return .native(nativeURL)
         }

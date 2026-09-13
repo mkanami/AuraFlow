@@ -1,6 +1,6 @@
 import Foundation
 
-actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPreviewResolving {
+actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPreviewResolving, WallpaperCatalogMediaResolving {
     private let baseURL = URL(string: "https://dareful.com/")!
     private let tagSlugs = [
         "nature",
@@ -94,11 +94,26 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperC
     }
 
     func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
+        try await resolveMedia(for: wallpaper).previewSources
+    }
+
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
         let resolved = try await fetchWallpaperDetails(for: wallpaper)
         let sources = resolved?.sources ?? wallpaper.sources
-        return sources.sorted { lhs, rhs in
+        let previewSources = sources.sorted { lhs, rhs in
             Self.previewRenditionRank(lhs.url) < Self.previewRenditionRank(rhs.url)
         }
+        let originalSources = sources.sorted { lhs, rhs in
+            if lhs.width != rhs.width { return lhs.width > rhs.width }
+            if lhs.height != rhs.height { return lhs.height > rhs.height }
+            return Self.previewRenditionRank(lhs.url) > Self.previewRenditionRank(rhs.url)
+        }
+        return CatalogResolvedMedia(
+            previewSources: previewSources,
+            originalSources: originalSources,
+            provider: "Dareful",
+            validUntil: Date().addingTimeInterval(24 * 60 * 60)
+        )
     }
 
     private static func previewRenditionRank(_ url: URL) -> Int {
