@@ -1,6 +1,6 @@
 import Foundation
 
-actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
+actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPreviewResolving {
     private let baseURL = URL(string: "https://dareful.com/")!
     private let tagSlugs = [
         "nature",
@@ -91,6 +91,23 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
             throw URLError(.fileDoesNotExist)
         }
         return source.url
+    }
+
+    func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
+        let resolved = try await fetchWallpaperDetails(for: wallpaper)
+        let sources = resolved?.sources ?? wallpaper.sources
+        return sources.sorted { lhs, rhs in
+            Self.previewRenditionRank(lhs.url) < Self.previewRenditionRank(rhs.url)
+        }
+    }
+
+    private static func previewRenditionRank(_ url: URL) -> Int {
+        switch url.deletingPathExtension().lastPathComponent.lowercased() {
+        case "low": return 0
+        case "medium": return 1
+        case "high": return 2
+        default: return 3
+        }
     }
 
     private func fetchTags() async throws -> [DarefulTag] {

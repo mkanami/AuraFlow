@@ -1,6 +1,6 @@
 import Foundation
 
-actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogSearching {
+actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogSearching, WallpaperCatalogPreviewResolving {
     private let baseURL = URL(string: "https://motionbgs.com/")!
     private let startPath = "tag:anime-nature/"
     private let session: URLSession
@@ -65,6 +65,16 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
             throw URLError(.fileDoesNotExist)
         }
         return source.url
+    }
+
+    func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
+        guard let pageURL = wallpaper.sourcePageURL else { return wallpaper.sources }
+        let data = try await fetchData(pageURL)
+        guard let html = String(data: data, encoding: .utf8),
+              let url = MotionBGSParser.previewVideoURL(html: html, baseURL: baseURL) else {
+            return wallpaper.sources
+        }
+        return [CatalogVideoSource(url: url, width: 960, height: 540)]
     }
 
     func searchCatalog(query rawQuery: String) async throws -> [CatalogWallpaper] {

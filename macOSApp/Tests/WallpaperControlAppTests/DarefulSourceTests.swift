@@ -130,6 +130,30 @@ import Testing
     #expect(resolvedURL.absoluteString == "https://stream.mux.com/yEnOBy3oVkXppC8GAG2x5SWLy7lzud701Njc39IOiN1o/high.mp4")
 }
 
+@Test func darefulPreviewResolverSelectsLowMuxRendition() async throws {
+    DarefulDetailURLProtocol.configure(html: """
+    <mux-player metadata-video-title="Lake" playback-id="preview123"></mux-player>
+    Resolution — 3840 x 2160
+    """)
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [DarefulDetailURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+    let wallpaper = CatalogWallpaper(
+        id: "dareful-1",
+        title: "Lake",
+        category: "Scenic",
+        attribution: "Dareful",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://dareful.test/lake")!,
+        sources: []
+    )
+
+    let sources = try await DarefulSource(session: session).resolvePreviewSources(for: wallpaper)
+
+    #expect(sources.first?.url.absoluteString == "https://stream.mux.com/preview123/low.mp4")
+}
+
 @Test func darefulParserRejectsPeopleTextLogoAndVerticalVideos() {
     #expect(darefulWallpaper(title: "Person Walking Near Waterfall", tags: ["nature"]) == nil)
     #expect(darefulWallpaper(title: "Nature Text Overlay", tags: ["forest"]) == nil)

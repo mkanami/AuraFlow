@@ -1,0 +1,552 @@
+import AVFoundation
+import CryptoKit
+import Foundation
+import OSLog
+
+enum CatalogPreviewState: String, Sendable {
+    case resolving
+    case downloading
+    case preparing
+    case ready
+    case failed
+}
+
+enum CatalogPreviewPriority: Int, Sendable, Comparable {
+    case lookahead = 0
+    case visible = 1
+    case hovered = 2
+    case selected = 3
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
+enum CatalogPreviewEvent: Sendable, Equatable {
+    case state(CatalogPreviewState)
+    case direct(URL)
+    case ready(URL)
+    case failed
+}
+
+actor CatalogPreviewPermitPool {
+    private struct Waiter {
+        let id: UUID
+        let priority: CatalogPreviewPriority
+        let order: UInt64
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private var available: Int
+    private var order: UInt64 = 0
+    private var waiters: [Waiter] = []
+
+    init(limit: Int) {
+        available = max(1, limit)
+    }
+
+    func acquire(priority: CatalogPreviewPriority) async throws {
+        try Task.checkCancellation()
+        if available > 0 {
+            available -= 1
+            return
+        }
+
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                order &+= 1
+                waiters.append(Waiter(id: id, priority: priority, order: order, continuation: continuation))
+                waiters.sort {
+                    $0.priority == $1.priority ? $0.order < $1.order : $0.priority > $1.priority
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(id: id) }
+        }
+    }
+
+    func release() {
+        while !waiters.isEmpty {
+            let waiter = waiters.removeFirst()
+            waiter.continuation.resume()
+            return
+        }
+        available += 1
+    }
+
+    private func cancel(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+}
+
+actor CatalogPreviewPipeline {
+    struct Configuration: Sendable {
+        var maximumCacheBytes: Int64 = 300 * 1_024 * 1_024
+        var successfulResolutionLifetime: TimeInterval = 24 * 60 * 60
+        var failureRetryInterval: TimeInterval = 15 * 60
+    }
+
+    private struct Manifest: Codable {
+        var version = 1
+        var entries: [String: Entry] = [:]
+    }
+
+    private struct Entry: Codable {
+        let fileName: String
+        let sourceFingerprint: String
+        let byteCount: Int64
+        var lastAccessedAt: Date
+        let validatedAt: Date
+    }
+
+    private struct Job {
+        var priority: CatalogPreviewPriority
+        var state: CatalogPreviewState
+        var directURL: URL?
+        var task: Task<Void, Never>?
+    }
+
+    private let resolver: (any WallpaperCatalogPreviewResolving)?
+    private let mediaPreparer: any CatalogPreviewMediaPreparing
+    private let session: URLSession
+    private let configuration: Configuration
+    private let cacheDirectory: URL
+    private let manifestURL: URL
+    private let metadataPermits = CatalogPreviewPermitPool(limit: 4)
+    private let downloadPermits = CatalogPreviewPermitPool(limit: 2)
+    private let conversionPermits = CatalogPreviewPermitPool(limit: 1)
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "AuraFlow",
+        category: "CatalogPreview"
+    )
+
+    private var manifest: Manifest
+    private var jobs: [String: Job] = [:]
+    private var failures: [String: Date] = [:]
+    private var subscribers: [String: [UUID: AsyncStream<CatalogPreviewEvent>.Continuation]] = [:]
+
+    init(
+        resolver: (any WallpaperCatalogPreviewResolving)?,
+        catalogDirectoryURL: URL,
+        session: URLSession = .shared,
+        configuration: Configuration = Configuration(),
+        mediaPreparer: any CatalogPreviewMediaPreparing = DefaultCatalogPreviewMediaPreparer()
+    ) {
+        self.resolver = resolver
+        self.mediaPreparer = mediaPreparer
+        self.session = session
+        self.configuration = configuration
+        cacheDirectory = catalogDirectoryURL.appendingPathComponent("PreparedPreviews", isDirectory: true)
+        manifestURL = cacheDirectory.appendingPathComponent("manifest.json")
+        if let data = try? Data(contentsOf: manifestURL),
+           let decoded = try? JSONDecoder().decode(Manifest.self, from: data) {
+            manifest = decoded
+        } else {
+            manifest = Manifest()
+        }
+    }
+
+    func prefetch(_ wallpaper: CatalogWallpaper, priority: CatalogPreviewPriority) {
+        startIfNeeded(wallpaper, priority: priority)
+    }
+
+    func events(
+        for wallpaper: CatalogWallpaper,
+        priority: CatalogPreviewPriority = .selected
+    ) -> AsyncStream<CatalogPreviewEvent> {
+        let subscriberID = UUID()
+        return AsyncStream { continuation in
+            subscribers[wallpaper.id, default: [:]][subscriberID] = continuation
+            continuation.onTermination = { _ in
+                Task { await self.removeSubscriber(subscriberID, wallpaperID: wallpaper.id) }
+            }
+
+            if let entry = reusableEntry(for: wallpaper.id) {
+                continuation.yield(.state(.ready))
+                continuation.yield(.ready(cacheDirectory.appendingPathComponent(entry.fileName)))
+            } else if let job = jobs[wallpaper.id] {
+                continuation.yield(.state(job.state))
+                if let directURL = job.directURL {
+                    continuation.yield(.direct(directURL))
+                }
+            }
+            startIfNeeded(wallpaper, priority: priority)
+        }
+    }
+
+    func cancelPending(except protectedIDs: Set<String> = []) {
+        for (id, job) in jobs where !protectedIDs.contains(id) && job.priority < .selected {
+            job.task?.cancel()
+            jobs[id] = nil
+        }
+    }
+
+    func cancelAll() {
+        for job in jobs.values { job.task?.cancel() }
+        jobs.removeAll()
+    }
+
+    func clear() throws {
+        cancelAll()
+        failures.removeAll()
+        manifest = Manifest()
+        try? FileManager.default.removeItem(at: cacheDirectory)
+    }
+
+    func cachedURL(for wallpaperID: String) -> URL? {
+        guard let entry = reusableEntry(for: wallpaperID) else { return nil }
+        return cacheDirectory.appendingPathComponent(entry.fileName)
+    }
+
+    private func startIfNeeded(_ wallpaper: CatalogWallpaper, priority: CatalogPreviewPriority) {
+        if reusableEntry(for: wallpaper.id) != nil { return }
+        if let failedAt = failures[wallpaper.id],
+           Date().timeIntervalSince(failedAt) < configuration.failureRetryInterval {
+            emit(.failed, for: wallpaper.id)
+            return
+        }
+        if var existing = jobs[wallpaper.id] {
+            existing.priority = max(existing.priority, priority)
+            jobs[wallpaper.id] = existing
+            return
+        }
+
+        jobs[wallpaper.id] = Job(priority: priority, state: .resolving, directURL: nil, task: nil)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.run(wallpaper, priority: priority)
+        }
+        jobs[wallpaper.id]?.task = task
+    }
+
+    private func run(_ wallpaper: CatalogWallpaper, priority: CatalogPreviewPriority) async {
+        let startedAt = Date()
+        do {
+            if let localCandidate = existingLocalCandidate(for: wallpaper) {
+                jobs[wallpaper.id]?.directURL = localCandidate.url
+                emit(.direct(localCandidate.url), for: wallpaper.id)
+                let cachedURL = try await prepare(
+                    localCandidate,
+                    wallpaperID: wallpaper.id,
+                    referer: wallpaper.sourcePageURL,
+                    priority: priority
+                )
+                jobs[wallpaper.id] = nil
+                failures[wallpaper.id] = nil
+                emit(.state(.ready), for: wallpaper.id)
+                emit(.ready(cachedURL), for: wallpaper.id)
+                return
+            }
+
+            emit(.state(.resolving), for: wallpaper.id)
+            try await metadataPermits.acquire(priority: priority)
+            let sources: [CatalogVideoSource]
+            do {
+                if let resolver {
+                    sources = try await resolver.resolvePreviewSources(for: wallpaper)
+                } else {
+                    sources = wallpaper.sources
+                }
+                await metadataPermits.release()
+            } catch {
+                await metadataPermits.release()
+                throw error
+            }
+            try Task.checkCancellation()
+
+            var seen = Set<String>()
+            var cachedURL: URL?
+            var lastCandidateError: Error?
+            for candidate in sources where seen.insert(candidate.url.absoluteString).inserted {
+                try Task.checkCancellation()
+                let reachable = candidate.url.isFileURL
+                    ? FileManager.default.fileExists(atPath: candidate.url.path)
+                    : try await probe(candidate.url, referer: wallpaper.sourcePageURL, priority: priority)
+                guard reachable else { continue }
+
+                jobs[wallpaper.id]?.directURL = candidate.url
+                emit(.direct(candidate.url), for: wallpaper.id)
+                do {
+                    cachedURL = try await prepare(
+                        candidate,
+                        wallpaperID: wallpaper.id,
+                        referer: wallpaper.sourcePageURL,
+                        priority: priority
+                    )
+                    break
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    lastCandidateError = error
+                    logger.debug("provider=\(wallpaper.attribution, privacy: .public) stage=retry reason=\(Self.errorCategory(error), privacy: .public)")
+                }
+            }
+            guard let cachedURL else {
+                throw lastCandidateError ?? URLError(.resourceUnavailable)
+            }
+            jobs[wallpaper.id] = nil
+            failures[wallpaper.id] = nil
+            emit(.state(.ready), for: wallpaper.id)
+            emit(.ready(cachedURL), for: wallpaper.id)
+            let milliseconds = Int(Date().timeIntervalSince(startedAt) * 1_000)
+            logger.info("provider=\(wallpaper.attribution, privacy: .public) stage=ready elapsed_ms=\(milliseconds)")
+        } catch is CancellationError {
+            jobs[wallpaper.id] = nil
+        } catch {
+            jobs[wallpaper.id] = nil
+            failures[wallpaper.id] = Date()
+            emit(.state(.failed), for: wallpaper.id)
+            emit(.failed, for: wallpaper.id)
+            logger.notice("provider=\(wallpaper.attribution, privacy: .public) stage=fallback reason=\(Self.errorCategory(error), privacy: .public)")
+        }
+    }
+
+    private func prepare(
+        _ candidate: CatalogVideoSource,
+        wallpaperID: String,
+        referer: URL?,
+        priority: CatalogPreviewPriority
+    ) async throws -> URL {
+        setState(.downloading, wallpaperID: wallpaperID)
+        try await downloadPermits.acquire(priority: priority)
+        let downloadedURL: URL
+        do {
+            downloadedURL = try await download(candidate.url, referer: referer)
+            await downloadPermits.release()
+        } catch {
+            await downloadPermits.release()
+            throw error
+        }
+        defer {
+            if !candidate.url.isFileURL {
+                try? FileManager.default.removeItem(at: downloadedURL)
+            }
+        }
+
+        var preparedURL = downloadedURL
+        let sourceExtension = candidate.url.pathExtension.lowercased()
+        if sourceExtension == "webm" || sourceExtension == "mkv" {
+            setState(.preparing, wallpaperID: wallpaperID)
+            try await conversionPermits.acquire(priority: priority)
+            do {
+                preparedURL = try await convertToMP4(downloadedURL)
+                await conversionPermits.release()
+            } catch {
+                await conversionPermits.release()
+                throw error
+            }
+        }
+
+        try Task.checkCancellation()
+        guard await mediaPreparer.containsPlayableVideo(preparedURL) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        return try storePreparedFile(
+            preparedURL,
+            wallpaperID: wallpaperID,
+            sourceURL: candidate.url
+        )
+    }
+
+    private func probe(_ url: URL, referer: URL?, priority: CatalogPreviewPriority) async throws -> Bool {
+        try await downloadPermits.acquire(priority: priority)
+        defer { Task { await downloadPermits.release() } }
+        var request = Self.request(url: url, referer: referer)
+        request.timeoutInterval = 12
+        // A tiny real media range is enough to reject HTML/404 responses and
+        // avoids making a slow MoeWalls CDN look dead before WebKit can stream.
+        request.setValue("bytes=0-4095", forHTTPHeaderField: "Range")
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  http.statusCode == 200 || http.statusCode == 206,
+                  data.count > 1_024 else { return false }
+            let mime = response.mimeType?.lowercased() ?? ""
+            return mime.hasPrefix("video/") || Self.videoExtensions.contains(url.pathExtension.lowercased())
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return false
+        }
+    }
+
+    private func existingLocalCandidate(for wallpaper: CatalogWallpaper) -> CatalogVideoSource? {
+        let catalogDirectory = cacheDirectory.deletingLastPathComponent()
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: catalogDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        let prefix = wallpaper.id + "-"
+        guard let url = files.first(where: {
+            $0.lastPathComponent.hasPrefix(prefix) &&
+                Self.videoExtensions.contains($0.pathExtension.lowercased())
+        }) else { return nil }
+        return CatalogVideoSource(url: url, width: 0, height: 0)
+    }
+
+    private func download(_ url: URL, referer: URL?) async throws -> URL {
+        if url.isFileURL { return url }
+        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        let rawExtension = url.pathExtension.isEmpty ? "media" : url.pathExtension
+        let destination = cacheDirectory.appendingPathComponent("raw-\(UUID().uuidString).\(rawExtension)")
+        let (temporaryURL, response) = try await session.download(for: Self.request(url: url, referer: referer))
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              response.mimeType?.lowercased().hasPrefix("video/") == true else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        try FileManager.default.moveItem(at: temporaryURL, to: destination)
+        return destination
+    }
+
+    private func convertToMP4(_ inputURL: URL) async throws -> URL {
+        try await mediaPreparer.convertToMP4(inputURL)
+    }
+
+    private func storePreparedFile(_ source: URL, wallpaperID: String, sourceURL: URL) throws -> URL {
+        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        let fingerprint = Self.digest(sourceURL.absoluteString)
+        let fileName = "\(Self.digest(wallpaperID))-\(fingerprint.prefix(12)).mp4"
+        let destination = cacheDirectory.appendingPathComponent(fileName)
+        let temporary = cacheDirectory.appendingPathComponent(".\(UUID().uuidString).tmp")
+        try? FileManager.default.removeItem(at: temporary)
+        try FileManager.default.copyItem(at: source, to: temporary)
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: temporary, to: destination)
+        let attributes = try FileManager.default.attributesOfItem(atPath: destination.path)
+        let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        manifest.entries[wallpaperID] = Entry(
+            fileName: fileName,
+            sourceFingerprint: fingerprint,
+            byteCount: byteCount,
+            lastAccessedAt: Date(),
+            validatedAt: Date()
+        )
+        var protectedFileNames = Set(
+            subscribers.keys.compactMap { manifest.entries[$0]?.fileName }
+        )
+        protectedFileNames.insert(fileName)
+        try enforceCacheLimit(protecting: protectedFileNames)
+        try persistManifest()
+        return destination
+    }
+
+    private func reusableEntry(for wallpaperID: String) -> Entry? {
+        guard var entry = manifest.entries[wallpaperID],
+              Date().timeIntervalSince(entry.validatedAt) <= configuration.successfulResolutionLifetime else {
+            return nil
+        }
+        let url = cacheDirectory.appendingPathComponent(entry.fileName)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            manifest.entries[wallpaperID] = nil
+            return nil
+        }
+        entry.lastAccessedAt = Date()
+        manifest.entries[wallpaperID] = entry
+        try? persistManifest()
+        return entry
+    }
+
+    private func enforceCacheLimit(protecting protectedFileNames: Set<String>) throws {
+        var total = manifest.entries.values.reduce(Int64(0)) { $0 + $1.byteCount }
+        let candidates = manifest.entries.sorted { $0.value.lastAccessedAt < $1.value.lastAccessedAt }
+        for (id, entry) in candidates where total > configuration.maximumCacheBytes {
+            guard !protectedFileNames.contains(entry.fileName) else { continue }
+            try? FileManager.default.removeItem(at: cacheDirectory.appendingPathComponent(entry.fileName))
+            manifest.entries[id] = nil
+            total -= entry.byteCount
+        }
+    }
+
+    private func persistManifest() throws {
+        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(manifest)
+        try data.write(to: manifestURL, options: .atomic)
+    }
+
+    private func setState(_ state: CatalogPreviewState, wallpaperID: String) {
+        jobs[wallpaperID]?.state = state
+        emit(.state(state), for: wallpaperID)
+    }
+
+    private func emit(_ event: CatalogPreviewEvent, for wallpaperID: String) {
+        for continuation in subscribers[wallpaperID]?.values ?? [:].values {
+            continuation.yield(event)
+        }
+    }
+
+    private func removeSubscriber(_ id: UUID, wallpaperID: String) {
+        subscribers[wallpaperID]?[id] = nil
+        if subscribers[wallpaperID]?.isEmpty == true { subscribers[wallpaperID] = nil }
+    }
+
+    private static func request(url: URL, referer: URL?) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 45
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.setValue("video/webm,video/mp4,video/*;q=0.9,*/*;q=0.5", forHTTPHeaderField: "Accept")
+        if let referer {
+            request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+            if let components = URLComponents(url: referer, resolvingAgainstBaseURL: false),
+               let scheme = components.scheme, let host = components.host {
+                request.setValue("\(scheme)://\(host)", forHTTPHeaderField: "Origin")
+            }
+        }
+        return request
+    }
+
+    private static func digest(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func errorCategory(_ error: Error) -> String {
+        if error is CancellationError { return "cancelled" }
+        if let urlError = error as? URLError { return "url_\(urlError.code.rawValue)" }
+        return String(describing: type(of: error))
+    }
+
+    private static let videoExtensions: Set<String> = ["mp4", "mov", "m4v", "webm", "mkv"]
+}
+
+protocol CatalogPreviewMediaPreparing: Sendable {
+    func convertToMP4(_ inputURL: URL) async throws -> URL
+    func containsPlayableVideo(_ url: URL) async -> Bool
+}
+
+struct DefaultCatalogPreviewMediaPreparer: CatalogPreviewMediaPreparing {
+    func convertToMP4(_ inputURL: URL) async throws -> URL {
+        let settings = VideoOptimizationSettings(
+            enabled: true,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: false,
+            forceSoftwareAV1Encode: false,
+            profile: .balanced
+        )
+        return try await Task { @MainActor in
+            let result = try await VideoOptimizer().optimizeIfNeeded(
+                inputURL: inputURL,
+                settings: settings,
+                progress: { _ in }
+            )
+            return result.outputURL
+        }.value
+    }
+
+    func containsPlayableVideo(_ url: URL) async -> Bool {
+        let asset = AVURLAsset(url: url)
+        do {
+            let isPlayable = try await asset.load(.isPlayable)
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            return isPlayable && !tracks.isEmpty
+        } catch {
+            return false
+        }
+    }
+}

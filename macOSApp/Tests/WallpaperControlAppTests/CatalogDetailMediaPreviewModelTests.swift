@@ -29,6 +29,21 @@ func catalogDetailDoesNotTreatStaticImagesAsLivePreviews() {
     #expect(CatalogDetailMediaPreviewModel.immediatePreviewSource(for: wallpaper) == nil)
 }
 
+@Test @MainActor
+func catalogDetailKeepsFirstMovingWebRouteAfterItWins() async {
+    let webMURL = URL(string: "https://example.com/preview.webm")!
+    let wallpaper = previewTestWallpaper(sources: [webMURL])
+    let model = CatalogDetailMediaPreviewModel()
+
+    await model.load(wallpaper)
+    model.streamingPreviewDidStart(url: webMURL)
+    model.streamingPreviewDidFail(url: webMURL, wallpaper: wallpaper)
+
+    #expect(model.isVideoVisible)
+    #expect(model.streamingVideoURL == webMURL)
+    #expect(model.player == nil)
+}
+
 private func previewTestWallpaper(sources: [URL]) -> CatalogWallpaper {
     CatalogWallpaper(
         id: "preview-test",

@@ -2048,6 +2048,7 @@ final class AppViewModel: ObservableObject {
     private var controller: WallpaperControlling?
     private let catalogRepository: CatalogRepository
     private let catalogDownloadService: CatalogDownloadService
+    let catalogPreviewPipeline: CatalogPreviewPipeline
     private var featureViewModelCancellables = Set<AnyCancellable>()
     private let optimizer = VideoOptimizer()
     private let optimizationStore: VideoOptimizationStore
@@ -2305,6 +2306,10 @@ final class AppViewModel: ObservableObject {
         )
         self.catalogDownloadService = CatalogDownloadService(
             provider: catalogProvider,
+            catalogDirectoryURL: catalogDirectoryURL
+        )
+        self.catalogPreviewPipeline = CatalogPreviewPipeline(
+            resolver: catalogProvider as? any WallpaperCatalogPreviewResolving,
             catalogDirectoryURL: catalogDirectoryURL
         )
         self.appSupportDirectoryURL = resolvedAppSupportURL
@@ -2965,6 +2970,7 @@ final class AppViewModel: ObservableObject {
         guard Date() >= catalogNavigationLockedUntil else { return }
         catalogScrollTargetID = wallpaper.id
         selectedCatalogWallpaper = wallpaper
+        Task { await catalogPreviewPipeline.prefetch(wallpaper, priority: .selected) }
     }
 
     func navigateBackFromCatalog() {
@@ -2976,6 +2982,7 @@ final class AppViewModel: ObservableObject {
         selectedCatalogWallpaper = nil
         catalogScrollTargetID = nil
         isCatalogOpen = false
+        Task { await catalogPreviewPipeline.cancelAll() }
         catalogNavigationLockedUntil = Date().addingTimeInterval(0.2)
     }
 
@@ -2985,6 +2992,21 @@ final class AppViewModel: ObservableObject {
 
     func toggleCatalogGroup(_ group: CatalogWallpaperGroup) {
         catalogViewModel.toggleGroup(group)
+        Task { await catalogPreviewPipeline.cancelPending() }
+    }
+
+    func prefetchCatalogPreview(_ wallpaper: CatalogWallpaper, hovered: Bool = false) {
+        let priority: CatalogPreviewPriority = hovered ? .hovered : .visible
+        Task { await catalogPreviewPipeline.prefetch(wallpaper, priority: priority) }
+        guard !hovered,
+              let index = filteredCatalogWallpapers.firstIndex(where: { $0.id == wallpaper.id }) else {
+            return
+        }
+        let lookaheadEnd = min(filteredCatalogWallpapers.count, index + 4)
+        guard index + 1 < lookaheadEnd else { return }
+        for candidate in filteredCatalogWallpapers[(index + 1)..<lookaheadEnd] {
+            Task { await catalogPreviewPipeline.prefetch(candidate, priority: .lookahead) }
+        }
     }
 
     func catalogWallpaperCount(in group: CatalogWallpaperGroup) -> Int {
@@ -3502,6 +3524,7 @@ final class AppViewModel: ObservableObject {
                     configurePreview(for: selectedVideoURL)
                 }
 
+                try await catalogPreviewPipeline.clear()
                 try await catalogRepository.clearCache()
                 try clearOptimizedVideoCache()
                 try clearRuntimePreviewCache()
@@ -4001,6 +4024,7 @@ final class AppViewModel: ObservableObject {
         catalogSearchGeneration &+= 1
         let generation = catalogSearchGeneration
         catalogSearchTask?.cancel()
+        Task { await catalogPreviewPipeline.cancelPending() }
 
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard query.count >= 2 else {

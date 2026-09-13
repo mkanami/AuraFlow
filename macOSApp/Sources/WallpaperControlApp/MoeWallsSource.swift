@@ -78,7 +78,7 @@ struct MoeWallsTaxonomyTerm: Decodable, Sendable {
     let slug: String
 }
 
-actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
+actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, WallpaperCatalogPreviewResolving {
     private let baseURL = URL(string: "https://moewalls.com/")!
     private let client: MoeWallsHTTPClient
     private let probeService: MoeWallsProbeService
@@ -95,6 +95,7 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
 
     private var probeResult: MoeWallsProbeResult?
     private var detailCache: [String: MoeWallsWallpaper] = [:]
+    private var detailCacheDates: [String: Date] = [:]
     private var detailCacheOrder: [String] = []
     private var loadedCatalog: [MoeWallsWallpaper] = []
     private var nextArchiveCatalogPage = 1
@@ -111,6 +112,7 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
 
     func clearCache() async {
         detailCache.removeAll()
+        detailCacheDates.removeAll()
         detailCacheOrder.removeAll()
         probeResult = nil
         loadedCatalog.removeAll()
@@ -191,6 +193,29 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
         throw MoeWallsSourceError.missingDownloadURL
     }
 
+    func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
+        let dimensions = wallpaper.sources.first.map { ($0.width, $0.height) } ?? (0, 0)
+        var urls = wallpaper.sources.map(\.url)
+
+        // Listing data can contain a derived URL. Refresh the detail page when
+        // possible so stale CDN routes do not poison the prepared cache.
+        if let pageURL = wallpaper.sourcePageURL,
+           let details = try? await fetchDetails(pageURL: pageURL) {
+            urls.append(contentsOf: details.previewCandidateURLs)
+        }
+
+        var seen = Set<String>()
+        let unique = urls.filter { seen.insert($0.absoluteString).inserted }
+        let ordered = unique.enumerated().sorted { lhs, rhs in
+            let lhsExtension = lhs.element.pathExtension.lowercased()
+            let rhsExtension = rhs.element.pathExtension.lowercased()
+            let lhsRank = (lhsExtension == "webm" || lhsExtension == "mkv") ? 0 : 1
+            let rhsRank = (rhsExtension == "webm" || rhsExtension == "mkv") ? 0 : 1
+            return lhsRank == rhsRank ? lhs.offset < rhs.offset : lhsRank < rhsRank
+        }.map(\.element)
+        return ordered.map { CatalogVideoSource(url: $0, width: dimensions.0, height: dimensions.1) }
+    }
+
     func fetchLatest(page: Int) async throws -> [MoeWallsWallpaper] {
         let probe = try await usableStrategy()
         switch probe {
@@ -264,7 +289,9 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
 
     func fetchDetails(pageURL: URL) async throws -> MoeWallsWallpaper {
         let cacheKey = pageURL.absoluteString
-        if let cached = detailCache[cacheKey] {
+        if let cached = detailCache[cacheKey],
+           let cachedAt = detailCacheDates[cacheKey],
+           Date().timeIntervalSince(cachedAt) < 24 * 60 * 60 {
             touchDetailCacheKey(cacheKey)
             return cached
         }
@@ -282,11 +309,13 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
 
     private func cacheDetailWallpaper(_ wallpaper: MoeWallsWallpaper, for key: String) {
         detailCache[key] = wallpaper
+        detailCacheDates[key] = Date()
         touchDetailCacheKey(key)
 
         while detailCacheOrder.count > detailCacheLimit {
             let oldestKey = detailCacheOrder.removeFirst()
             detailCache.removeValue(forKey: oldestKey)
+            detailCacheDates.removeValue(forKey: oldestKey)
         }
     }
 

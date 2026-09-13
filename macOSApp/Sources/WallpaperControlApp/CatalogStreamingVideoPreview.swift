@@ -44,8 +44,6 @@ final class CatalogStreamingVideoSessionStore {
         let url: URL
         let webView: CatalogStreamingWKWebView
         let messageHandler: MessageHandler
-        var lastAccess = Date()
-        var speculativePauseTask: Task<Void, Never>?
 
         init(url: URL, referer: URL?) {
             self.url = url
@@ -66,29 +64,7 @@ final class CatalogStreamingVideoSessionStore {
             webView.loadHTMLString(Self.document(for: url), baseURL: referer)
         }
 
-        func prewarm(prioritize: Bool) {
-            lastAccess = Date()
-            if prioritize {
-                play()
-                speculativePauseTask?.cancel()
-                speculativePauseTask = Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: 8_000_000_000)
-                    guard !Task.isCancelled,
-                          let self,
-                          self.webView.superview == nil else {
-                        return
-                    }
-                    self.pause()
-                }
-            } else {
-                webView.evaluateJavaScript("document.getElementById('preview')?.load()")
-            }
-        }
-
         func play() {
-            lastAccess = Date()
-            speculativePauseTask?.cancel()
-            speculativePauseTask = nil
             messageHandler.shouldPlay = true
             messageHandler.requestPlayback(in: webView)
         }
@@ -99,7 +75,6 @@ final class CatalogStreamingVideoSessionStore {
         }
 
         func stop() {
-            speculativePauseTask?.cancel()
             messageHandler.shouldPlay = false
             webView.stopLoading()
             webView.configuration.userContentController.removeScriptMessageHandler(
@@ -254,17 +229,6 @@ final class CatalogStreamingVideoSessionStore {
     }
 
     private var sessions: [URL: Session] = [:]
-    private let maximumSessionCount = 8
-
-    func prewarm(url: URL, referer: URL?, prioritize: Bool) {
-        if sessions[url] == nil,
-           sessions.count >= maximumSessionCount,
-           !prioritize {
-            return
-        }
-        session(for: url, referer: referer).prewarm(prioritize: prioritize)
-        pruneIfNeeded(keeping: url)
-    }
 
     func attach(
         url: URL,
@@ -273,6 +237,10 @@ final class CatalogStreamingVideoSessionStore {
         onStarted: @escaping () -> Void,
         onFailed: @escaping () -> Void
     ) {
+        let staleURLs = sessions.keys.filter { $0 != url }
+        for existingURL in staleURLs {
+            sessions.removeValue(forKey: existingURL)?.stop()
+        }
         let session = session(for: url, referer: referer)
         session.messageHandler.onStarted = onStarted
         session.messageHandler.onFailed = onFailed
@@ -284,7 +252,6 @@ final class CatalogStreamingVideoSessionStore {
         session.play()
 
         session.messageHandler.deliverCurrentState()
-        pruneIfNeeded(keeping: url)
     }
 
     func detach(from hostView: CatalogStreamingVideoHostView) {
@@ -295,14 +262,13 @@ final class CatalogStreamingVideoSessionStore {
         }
         session.messageHandler.onStarted = nil
         session.messageHandler.onFailed = nil
-        session.webView.removeFromSuperview()
         hostView.url = nil
-        session.pause()
+        sessions[url] = nil
+        session.stop()
     }
 
     private func session(for url: URL, referer: URL?) -> Session {
         if let existing = sessions[url] {
-            existing.lastAccess = Date()
             return existing
         }
         let session = Session(url: url, referer: referer)
@@ -310,16 +276,6 @@ final class CatalogStreamingVideoSessionStore {
         return session
     }
 
-    private func pruneIfNeeded(keeping protectedURL: URL) {
-        guard sessions.count > maximumSessionCount else { return }
-        let removable = sessions.values
-            .filter { $0.url != protectedURL && $0.webView.superview == nil }
-            .sorted { $0.lastAccess < $1.lastAccess }
-        for session in removable where sessions.count > maximumSessionCount {
-            sessions[session.url] = nil
-            session.stop()
-        }
-    }
 }
 
 final class CatalogStreamingVideoHostView: NSView {

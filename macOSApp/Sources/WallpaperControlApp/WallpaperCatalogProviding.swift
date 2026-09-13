@@ -25,6 +25,13 @@ protocol WallpaperCatalogSearching: Sendable {
     func searchCatalog(query: String) async throws -> [CatalogWallpaper]
 }
 
+/// Optional provider capability used by the catalog preview pipeline. Preview
+/// sources are deliberately separate from full wallpaper downloads so a card
+/// can use a small rendition without changing what the user ultimately saves.
+protocol WallpaperCatalogPreviewResolving: Sendable {
+    func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource]
+}
+
 extension WallpaperCatalogProviding {
     func fetchCatalog(progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
         let wallpapers = try await fetchCatalog()

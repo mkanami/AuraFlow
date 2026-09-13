@@ -1570,11 +1570,11 @@ struct WallpaperCatalogGridView: View {
                         .id(wallpaper.id)
                         .onAppear {
                             viewModel.loadMoreCatalogIfNeeded(after: wallpaper.id)
-                            CatalogDetailMediaPreviewModel.preload(wallpaper)
+                            viewModel.prefetchCatalogPreview(wallpaper)
                         }
                         .onHover { isHovering in
                             if isHovering {
-                                CatalogDetailMediaPreviewModel.preload(wallpaper, prioritize: true)
+                                viewModel.prefetchCatalogPreview(wallpaper, hovered: true)
                             }
                         }
                     }
@@ -1670,7 +1670,10 @@ struct WallpaperCatalogDetailView: View {
                 .frame(width: sidebarWidth)
                 .frame(maxHeight: .infinity, alignment: .top)
 
-                CatalogDetailMediaPreview(wallpaper: wallpaper)
+                CatalogDetailMediaPreview(
+                    wallpaper: wallpaper,
+                    pipeline: viewModel.catalogPreviewPipeline
+                )
                     .aspectRatio(16.0 / 9.0, contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
                     .layoutPriority(1)
@@ -1686,8 +1689,13 @@ struct WallpaperCatalogDetailView: View {
 
 private struct CatalogDetailMediaPreview: View {
     let wallpaper: CatalogWallpaper
-    @StateObject private var model = CatalogDetailMediaPreviewModel()
+    @StateObject private var model: CatalogDetailMediaPreviewModel
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+
+    init(wallpaper: CatalogWallpaper, pipeline: CatalogPreviewPipeline) {
+        self.wallpaper = wallpaper
+        _model = StateObject(wrappedValue: CatalogDetailMediaPreviewModel(pipeline: pipeline))
+    }
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {

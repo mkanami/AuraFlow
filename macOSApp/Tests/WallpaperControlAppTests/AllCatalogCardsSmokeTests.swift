@@ -41,6 +41,65 @@ import Testing
     }
 }
 
+@Test func liveCatalogPreviewMediaRangesEveryProvider() async throws {
+    guard ProcessInfo.processInfo.environment["AURAFLOW_LIVE_PREVIEW_SMOKE"] == "1" else {
+        return
+    }
+
+    let moeWalls = CatalogWallpaper(
+        id: "moewalls-nephis-shadow-slave-live-wallpaper",
+        title: "Nephis Shadow Slave",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://moewalls.com/anime/nephis-shadow-slave-live-wallpaper/")!,
+        sources: [CatalogVideoSource(
+            url: URL(string: "https://moewalls.com/wp-content/uploads/preview/2026/nephis-shadow-slave-preview.webm")!,
+            width: 1920,
+            height: 1080
+        )]
+    )
+    try await probeMediaSource(moeWalls.sources[0].url, wallpaper: moeWalls)
+    print("[catalog-preview] MoeWalls: real streaming media range ready")
+
+    let nativeSamples: [(String, CatalogWallpaper, any WallpaperCatalogPreviewResolving)] = [
+        (
+            "MotionBGS",
+            CatalogWallpaper(
+                id: "motionbgs-anime-nature-summer-mountain-paradise",
+                title: "Summer Mountain Paradise",
+                category: "Anime Nature",
+                attribution: "MotionBGS",
+                previewImageURL: nil,
+                sourcePageURL: URL(string: "https://motionbgs.com/summer-mountain-paradise")!,
+                sources: []
+            ),
+            MotionBGSAnimeNatureSource()
+        ),
+        (
+            "Dareful",
+            CatalogWallpaper(
+                id: "dareful-52",
+                title: "Las Vegas Strip Sunset 4k",
+                category: "Scenic",
+                attribution: "Dareful",
+                previewImageURL: nil,
+                sourcePageURL: URL(string: "https://dareful.com/free-4k-time-lapse-stock-video-las-vegas-strip-sunset/")!,
+                sources: []
+            ),
+            DarefulSource()
+        ),
+    ]
+    for (name, wallpaper, provider) in nativeSamples {
+        let sources = try await withTimeout(seconds: 45) {
+            try await provider.resolvePreviewSources(for: wallpaper)
+        }
+        let source = try #require(sources.first)
+        try await probeMediaSource(source.url, wallpaper: wallpaper)
+        print("[catalog-preview] \(name): real preview media range ready")
+    }
+}
+
 private func withTimeout<T: Sendable>(
     seconds: UInt64,
     operation: @escaping @Sendable () async throws -> T
@@ -132,7 +191,12 @@ private func candidateSources(
     for wallpaper: CatalogWallpaper,
     provider: any WallpaperCatalogProviding
 ) async throws -> [URL] {
-    var candidates = wallpaper.sources.map(\.url)
+    var candidates: [URL]
+    if let previewProvider = provider as? any WallpaperCatalogPreviewResolving {
+        candidates = try await previewProvider.resolvePreviewSources(for: wallpaper).map(\.url)
+    } else {
+        candidates = wallpaper.sources.map(\.url)
+    }
 
     if candidates.isEmpty,
        let moeWallsProvider = provider as? MoeWallsSource,
@@ -199,20 +263,13 @@ private func probeMediaSource(
     let session = URLSession(configuration: .ephemeral)
     defer { session.invalidateAndCancel() }
 
-    var headRequest = makeProbeRequest(sourceURL, wallpaper: wallpaper)
-    headRequest.httpMethod = "HEAD"
-    do {
-        let (_, response) = try await session.data(for: headRequest)
-        try validateMediaResponse(response, sourceURL: sourceURL)
-        return
-    } catch {
-        try Task.checkCancellation()
-    }
-
     var rangeRequest = makeProbeRequest(sourceURL, wallpaper: wallpaper)
-    rangeRequest.setValue("bytes=0-0", forHTTPHeaderField: "Range")
-    let (_, response) = try await session.data(for: rangeRequest)
+    rangeRequest.setValue("bytes=0-4095", forHTTPHeaderField: "Range")
+    let (data, response) = try await session.data(for: rangeRequest)
     try validateMediaResponse(response, sourceURL: sourceURL)
+    guard data.count > 1_024 else {
+        throw CatalogAllCardsSmokeError("Media range returned too little data")
+    }
 }
 
 private func makeProbeRequest(

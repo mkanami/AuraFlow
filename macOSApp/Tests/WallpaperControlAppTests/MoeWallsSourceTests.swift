@@ -161,6 +161,27 @@ import Testing
     #expect(wallpaper.downloadURL == nil)
 }
 
+@Test func moewallsPreviewResolverDoesNotPrioritizeSyntheticMP4() async throws {
+    let mp4 = URL(string: "https://moewalls.com/wp-content/uploads/preview/test.mp4")!
+    let webm = URL(string: "https://moewalls.com/wp-content/uploads/preview/test.webm")!
+    let wallpaper = CatalogWallpaper(
+        id: "moewalls-test",
+        title: "Test",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: [
+            CatalogVideoSource(url: mp4, width: 1920, height: 1080),
+            CatalogVideoSource(url: webm, width: 1920, height: 1080),
+        ]
+    )
+
+    let sources = try await MoeWallsSource().resolvePreviewSources(for: wallpaper)
+
+    #expect(sources.map(\.url) == [webm, mp4])
+}
+
 @Test func moewallsDetailPageResolvesTokenDownloadURL() {
     let html = """
     <html>
