@@ -215,7 +215,10 @@ private func pngData(for image: CGImage) -> Data {
 
     #expect(controller.clearCallCount == 1)
     #expect(controller.prepareLockScreenMediaCancellationCount == 1)
-    #expect(Date().timeIntervalSince(removalStartedAt) < 1.0)
+    // CI runs the full Swift Testing suite concurrently, so scheduler pressure
+    // can add more than a second even though the 30-second warm-up was
+    // cancelled correctly. Keep the assertion focused on prompt cancellation.
+    #expect(Date().timeIntervalSince(removalStartedAt) < 2.0)
 }
 
 @MainActor
