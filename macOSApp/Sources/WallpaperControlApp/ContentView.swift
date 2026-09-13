@@ -1570,6 +1570,12 @@ struct WallpaperCatalogGridView: View {
                         .id(wallpaper.id)
                         .onAppear {
                             viewModel.loadMoreCatalogIfNeeded(after: wallpaper.id)
+                            CatalogDetailMediaPreviewModel.preload(wallpaper)
+                        }
+                        .onHover { isHovering in
+                            if isHovering {
+                                CatalogDetailMediaPreviewModel.preload(wallpaper, prioritize: true)
+                            }
                         }
                     }
 

@@ -121,6 +121,23 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         stopPlayback()
     }
 
+    static func preload(_ wallpaper: CatalogWallpaper, prioritize: Bool = false) {
+        switch immediatePreviewSource(for: wallpaper) {
+        case let .web(url):
+            CatalogStreamingVideoSessionStore.shared.prewarm(
+                url: url,
+                referer: wallpaper.sourcePageURL,
+                prioritize: prioritize
+            )
+        case .native:
+            Task(priority: .utility) {
+                _ = await CatalogDetailPreviewPreparationCache.shared.playableURL(for: wallpaper)
+            }
+        case nil:
+            break
+        }
+    }
+
     private func stopPlayback() {
         isVideoVisible = false
         streamingVideoURL = nil
