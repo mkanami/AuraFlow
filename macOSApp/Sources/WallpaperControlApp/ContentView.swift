@@ -1641,11 +1641,12 @@ struct WallpaperCatalogDetailView: View {
                         viewModel.applyCatalogWallpaper(wallpaper)
                     } label: {
                         Text("Download")
+                            .padding(.vertical, isCompactLayout ? 2 : 3)
                     }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
-                    .frame(width: isCompactLayout ? 140 : 160)
+                    .frame(width: isCompactLayout ? 170 : 190)
                     .disabled(!viewModel.canDownloadCatalogWallpaper)
-                    .padding(.top, isCompactLayout ? 4 : 8)
+                    .padding(.top, isCompactLayout ? 12 : 16)
                 }
                 .padding(.top, isCompactLayout ? 20 : 28)
                 .frame(maxHeight: .infinity, alignment: .top)
