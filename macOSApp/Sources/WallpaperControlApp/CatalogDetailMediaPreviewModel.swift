@@ -4,14 +4,21 @@ import CryptoKit
 import Foundation
 import SwiftUI
 
+enum CatalogDetailImmediatePreviewSource: Equatable {
+    case web(URL)
+    case native(URL)
+}
+
 @MainActor
 final class CatalogDetailMediaPreviewModel: ObservableObject {
     @Published private(set) var imageURL: URL?
     @Published private(set) var player: AVPlayer?
+    @Published private(set) var streamingVideoURL: URL?
     @Published private(set) var isVideoVisible = false
 
     private var queuePlayer: AVQueuePlayer?
     private var playerLooper: AVPlayerLooper?
+    private var fallbackTask: Task<Void, Never>?
     private var generation = 0
 
     func load(_ wallpaper: CatalogWallpaper) async {
@@ -20,13 +27,53 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         stopPlayback()
         imageURL = Self.preferredImageURL(for: wallpaper)
 
-        guard let videoURL = await CatalogDetailPreviewPreparationCache.shared.playableURL(
-            for: wallpaper
-        ),
-        !Task.isCancelled,
-        requestedGeneration == generation else {
+        switch Self.immediatePreviewSource(for: wallpaper) {
+        case let .web(streamingURL):
+            streamingVideoURL = streamingURL
+            return
+        case let .native(directVideoURL):
+            if await startAVPlayback(directVideoURL, requestedGeneration: requestedGeneration) {
+                return
+            }
+        case nil:
+            break
+        }
+
+        guard let preparedURL = await CatalogDetailPreviewPreparationCache.shared.playableURL(for: wallpaper),
+              !Task.isCancelled,
+              requestedGeneration == generation else {
             return
         }
+        _ = await startAVPlayback(preparedURL, requestedGeneration: requestedGeneration)
+    }
+
+    func streamingPreviewDidStart(url: URL) {
+        guard streamingVideoURL == url else { return }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isVideoVisible = true
+        }
+    }
+
+    func streamingPreviewDidFail(url: URL, wallpaper: CatalogWallpaper) {
+        guard streamingVideoURL == url else { return }
+        streamingVideoURL = nil
+        isVideoVisible = false
+        let requestedGeneration = generation
+        fallbackTask?.cancel()
+        fallbackTask = Task { [weak self] in
+            guard let self,
+                  let preparedURL = await CatalogDetailPreviewPreparationCache.shared.playableURL(for: wallpaper),
+                  !Task.isCancelled,
+                  requestedGeneration == self.generation else {
+                return
+            }
+            _ = await self.startAVPlayback(preparedURL, requestedGeneration: requestedGeneration)
+        }
+    }
+
+    private func startAVPlayback(_ videoURL: URL, requestedGeneration: Int) async -> Bool {
+        guard !Task.isCancelled, requestedGeneration == generation else { return false }
+        clearAVPlayback()
 
         let item = AVPlayerItem(url: videoURL)
         let queuePlayer = AVQueuePlayer()
@@ -45,7 +92,7 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         // is available and can still expose a black/empty layer for a frame.
         for _ in 0..<160 {
             guard !Task.isCancelled, requestedGeneration == generation else {
-                return
+                return false
             }
             switch queuePlayer.currentItem?.status {
             case .readyToPlay:
@@ -54,18 +101,19 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
                     withAnimation(.easeInOut(duration: 0.18)) {
                         isVideoVisible = true
                     }
-                    return
+                    return true
                 }
             case .failed:
-                stopPlayback()
-                return
+                clearAVPlayback()
+                return false
             default:
                 break
             }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        stopPlayback()
+        clearAVPlayback()
+        return false
     }
 
     func stop() {
@@ -73,14 +121,15 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         stopPlayback()
     }
 
-    static func preload(_ wallpaper: CatalogWallpaper) {
-        Task(priority: .utility) {
-            _ = await CatalogDetailPreviewPreparationCache.shared.playableURL(for: wallpaper)
-        }
-    }
-
     private func stopPlayback() {
         isVideoVisible = false
+        streamingVideoURL = nil
+        fallbackTask?.cancel()
+        fallbackTask = nil
+        clearAVPlayback()
+    }
+
+    private func clearAVPlayback() {
         queuePlayer?.pause()
         playerLooper?.disableLooping()
         queuePlayer?.removeAllItems()
@@ -98,6 +147,24 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
             .first(where: { imageExtensions.contains($0.pathExtension.lowercased()) })
     }
 
+    static func immediatePreviewSource(for wallpaper: CatalogWallpaper) -> CatalogDetailImmediatePreviewSource? {
+        if let streamingURL = wallpaper.sources
+            .map(\.url)
+            .first(where: { streamingVideoExtensions.contains($0.pathExtension.lowercased()) }) {
+            return .web(streamingURL)
+        }
+
+        if let nativeURL = wallpaper.sources
+            .map(\.url)
+            .first(where: { nativeVideoExtensions.contains($0.pathExtension.lowercased()) }) {
+            return .native(nativeURL)
+        }
+
+        return nil
+    }
+
+    private static let streamingVideoExtensions: Set<String> = ["webm", "mkv"]
+    private static let nativeVideoExtensions: Set<String> = ["mp4", "mov", "m4v"]
     private static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "heif", "webp"]
 }
 

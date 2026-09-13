@@ -1571,11 +1571,6 @@ struct WallpaperCatalogGridView: View {
                         .onAppear {
                             viewModel.loadMoreCatalogIfNeeded(after: wallpaper.id)
                         }
-                        .onHover { isHovering in
-                            if isHovering {
-                                CatalogDetailMediaPreviewModel.preload(wallpaper)
-                            }
-                        }
                     }
 
                     if viewModel.catalogIsLoadingMore {
@@ -1694,6 +1689,19 @@ private struct CatalogDetailMediaPreview: View {
 
             if let player = model.player {
                 VideoPreview(player: player, videoGravity: .resizeAspectFill)
+            }
+
+            if let streamingVideoURL = model.streamingVideoURL {
+                CatalogStreamingVideoPreview(
+                    url: streamingVideoURL,
+                    referer: wallpaper.sourcePageURL,
+                    onStarted: {
+                        model.streamingPreviewDidStart(url: streamingVideoURL)
+                    },
+                    onFailed: {
+                        model.streamingPreviewDidFail(url: streamingVideoURL, wallpaper: wallpaper)
+                    }
+                )
             }
 
             CatalogPreviewImage(
