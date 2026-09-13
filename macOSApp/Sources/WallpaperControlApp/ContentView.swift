@@ -64,6 +64,17 @@ private extension AdaptiveTextTone {
         }
     }
 
+    /// Disabled controls should read as quiet, inactive glass instead of
+    /// catching a bright system highlight over light wallpaper.
+    var disabledControlSurfaceColor: Color {
+        switch self {
+        case .dark:
+            return Color.black.opacity(0.08)
+        case .light:
+            return Color.black.opacity(0.20)
+        }
+    }
+
     var textShadowColor: Color {
         switch self {
         case .dark:
@@ -109,10 +120,12 @@ struct ContentView: View {
             let availableHeight = max(proxy.size.height - 48, 0)
             let controlPanelMaxWidth: CGFloat = 1440
             let controlPanelWidth = min(availableWidth, controlPanelMaxWidth)
-            let catalogMaxWidth: CGFloat = 1040
-            let overlayWidth = viewModel.isCatalogOpen ? min(availableWidth, catalogMaxWidth) : controlPanelWidth
             let isCompactBySize = controlPanelWidth < 1080 || availableHeight < 620
             let isVeryCompactByHeight = availableHeight < 560
+            let catalogMaxWidth: CGFloat = 1040
+            let overlayWidth = viewModel.isCatalogOpen
+                ? min(availableWidth, catalogMaxWidth)
+                : controlPanelWidth
             let topOverlayPadding = resolvedTopOverlayPadding()
             let bottomOverlayPadding = resolvedBottomOverlayPadding()
 
@@ -297,7 +310,10 @@ struct ContentView: View {
                 }
 
                 if viewModel.isCatalogOpen {
-                    WallpaperCatalogView(viewModel: viewModel)
+                    WallpaperCatalogView(
+                        viewModel: viewModel,
+                        isCompactLayout: isCompactBySize
+                    )
                 } else {
                     ControlPanel(
                         viewModel: viewModel,
@@ -1325,6 +1341,7 @@ struct ControlButtons: View {
 
 struct WallpaperCatalogView: View {
     @ObservedObject var viewModel: AppViewModel
+    let isCompactLayout: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
@@ -1336,37 +1353,45 @@ struct WallpaperCatalogView: View {
         let filteredCount = viewModel.filteredCatalogWallpapers.count
         if let selectedGroup = viewModel.selectedCatalogGroup {
             let groupCount = viewModel.catalogWallpaperCount(in: selectedGroup)
-            guard filteredCount != groupCount else { return "\(groupCount) \(selectedGroup.title)" }
-            return "\(filteredCount)/\(groupCount) \(selectedGroup.title)"
+            let moreSuffix = selectedGroup == .anime && viewModel.catalogHasMoreWallpapers ? "+" : ""
+            guard filteredCount != groupCount else {
+                return "\(groupCount)\(moreSuffix) \(selectedGroup.title)"
+            }
+            return "\(filteredCount)/\(groupCount)\(moreSuffix) \(selectedGroup.title)"
         }
 
         let totalCount = viewModel.catalogWallpapers.count
-        guard filteredCount != totalCount else { return "\(totalCount)" }
-        return "\(filteredCount)/\(totalCount)"
+        let moreSuffix = viewModel.catalogHasMoreWallpapers ? "+" : ""
+        guard filteredCount != totalCount else { return "\(totalCount)\(moreSuffix)" }
+        return "\(filteredCount)/\(totalCount)\(moreSuffix)"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                Button {
-                    viewModel.navigateBackFromCatalog()
-                } label: {
-                    Label(
-                        isDetailOpened ? "Back" : "Close",
-                        systemImage: isDetailOpened ? "chevron.left" : "xmark"
-                    )
-                }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .keyboardShortcut(.escape, modifiers: [])
+        VStack(alignment: .leading, spacing: isDetailOpened ? 0 : 14) {
+            if let wallpaper = viewModel.selectedCatalogWallpaper {
+                WallpaperCatalogDetailView(
+                    viewModel: viewModel,
+                    wallpaper: wallpaper,
+                    isCompactLayout: isCompactLayout
+                )
+                .zIndex(0)
+            } else {
+                HStack(spacing: 12) {
+                    Button {
+                        viewModel.navigateBackFromCatalog()
+                    } label: {
+                        Label("Close", systemImage: "xmark")
+                    }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                    .keyboardShortcut(.escape, modifiers: [])
 
-                Text(viewModel.selectedCatalogWallpaper?.title ?? "Wallpaper Catalog")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                    Text("Wallpaper Catalog")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
 
-                Spacer()
+                    Spacer()
 
-                if viewModel.selectedCatalogWallpaper == nil {
-                    if viewModel.catalogIsRefreshing {
+                    if viewModel.catalogIsRefreshing || viewModel.catalogIsSearching {
                         ProgressView()
                             .controlSize(.small)
                     }
@@ -1374,10 +1399,8 @@ struct WallpaperCatalogView: View {
                         .font(.caption2)
                         .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                 }
-            }
-            .zIndex(10)
+                .zIndex(10)
 
-            if viewModel.selectedCatalogWallpaper == nil {
                 HStack(spacing: 10) {
                     catalogGroupFilterButtons
 
@@ -1386,19 +1409,21 @@ struct WallpaperCatalogView: View {
                     catalogSearchField
                 }
                 .zIndex(9)
-            }
 
-            if let wallpaper = viewModel.selectedCatalogWallpaper {
-                WallpaperCatalogDetailView(viewModel: viewModel, wallpaper: wallpaper)
-                    .zIndex(0)
-            } else {
                 WallpaperCatalogGridView(viewModel: viewModel)
                     .zIndex(0)
             }
         }
-        .padding(.vertical, 14)
-        .padding(.horizontal, 18)
-        .frame(maxWidth: .infinity, maxHeight: 320, alignment: .topLeading)
+        .padding(
+            .vertical,
+            isDetailOpened ? (isCompactLayout ? 8 : 10) : 14
+        )
+        .padding(.horizontal, isDetailOpened && isCompactLayout ? 16 : 18)
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: isDetailOpened ? (isCompactLayout ? 300 : 350) : 320,
+            alignment: .topLeading
+        )
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 14,
@@ -1543,6 +1568,15 @@ struct WallpaperCatalogGridView: View {
                         }
                         .buttonStyle(AuraPlainPressButtonStyle())
                         .id(wallpaper.id)
+                        .onAppear {
+                            viewModel.loadMoreCatalogIfNeeded(after: wallpaper.id)
+                        }
+                    }
+
+                    if viewModel.catalogIsLoadingMore {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity, minHeight: 40)
                     }
                 }
                 .padding(.vertical, 2)
@@ -1560,51 +1594,148 @@ struct WallpaperCatalogGridView: View {
 struct WallpaperCatalogDetailView: View {
     @ObservedObject var viewModel: AppViewModel
     let wallpaper: CatalogWallpaper
+    let isCompactLayout: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            CatalogPreviewImage(
-                url: wallpaper.previewImageURL,
-                title: wallpaper.title,
-                referer: wallpaper.sourcePageURL
-            )
-                .frame(height: 150)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-            Text(wallpaper.title)
-                .font(.headline)
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-
-            Text("Category: \(wallpaper.category) • Source: \(wallpaper.attribution)")
-                .font(.caption)
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-
-            HStack(spacing: 10) {
-                Button {
-                    viewModel.applyCatalogWallpaper(wallpaper)
-                } label: {
-                    if viewModel.isDownloading(wallpaper) {
-                        Label("Downloading…", systemImage: "arrow.down.circle")
-                    } else {
-                        Label("Download to Preview", systemImage: "arrow.down.circle")
-                    }
-                }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .disabled(!viewModel.canDownloadCatalogWallpaper)
-
-                if let sourceURL = wallpaper.sourcePageURL {
+        HStack(alignment: .top, spacing: isCompactLayout ? 12 : 14) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 8) {
                     Button {
-                        NSWorkspace.shared.open(sourceURL)
+                        viewModel.navigateBackFromCatalog()
                     } label: {
-                        Label("Open Source", systemImage: "link")
+                        Label("Back", systemImage: "chevron.left")
                     }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                }
+                    .keyboardShortcut(.escape, modifiers: [])
 
-                Spacer()
+                    Text("Wallpaper Preview")
+                        .font(
+                            isCompactLayout
+                                ? .subheadline.weight(.semibold)
+                                : .headline.weight(.semibold)
+                        )
+                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                        .lineLimit(1)
+                }
+                .zIndex(10)
+
+                VStack(alignment: .leading, spacing: isCompactLayout ? 8 : 10) {
+                    Label(
+                        isStaticImage ? "Image Wallpaper" : "Live Wallpaper",
+                        systemImage: isStaticImage ? "photo" : "play.rectangle.fill"
+                    )
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+
+                    Text(wallpaper.title)
+                        .font(
+                            isCompactLayout
+                                ? .subheadline.weight(.semibold)
+                                : .headline.weight(.semibold)
+                        )
+                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                        .lineLimit(isCompactLayout ? 2 : 3)
+
+                    metadataRow(label: "Category", value: wallpaper.category)
+                    metadataRow(label: "Source", value: wallpaper.attribution)
+
+                    HStack(spacing: 8) {
+                        Button {
+                            viewModel.applyCatalogWallpaper(wallpaper)
+                        } label: {
+                            if viewModel.isDownloading(wallpaper) {
+                                Label("Downloading…", systemImage: "arrow.down.circle")
+                            } else {
+                                Label("Download to Preview", systemImage: "arrow.down.circle")
+                            }
+                        }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
+                        .disabled(!viewModel.canDownloadCatalogWallpaper)
+
+                        if let sourceURL = wallpaper.sourcePageURL {
+                            Button {
+                                NSWorkspace.shared.open(sourceURL)
+                            } label: {
+                                Image(systemName: "link")
+                            }
+                            .accessibilityLabel("Open Source")
+                            .help("Open Source")
+                            .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
+                        }
+                    }
+                    .padding(.top, isCompactLayout ? 4 : 8)
+                }
+                .frame(maxHeight: .infinity, alignment: .center)
             }
+            .padding(.vertical, isCompactLayout ? 2 : 4)
+            .frame(width: isCompactLayout ? 240 : 270)
+            .frame(maxHeight: .infinity, alignment: .top)
+
+            CatalogDetailMediaPreview(wallpaper: wallpaper)
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                .layoutPriority(1)
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: isCompactLayout ? 230 : 260,
+            maxHeight: isCompactLayout ? 280 : 320
+        )
+    }
+
+    private var isStaticImage: Bool {
+        wallpaper.sources.contains { source in
+            WallpaperMediaKind.forURL(source.url).isStaticImage
+        }
+    }
+
+    private func metadataRow(label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+            Spacer(minLength: 8)
+            Text(value)
+                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                .lineLimit(1)
+        }
+        .font(.caption)
+    }
+}
+
+private struct CatalogDetailMediaPreview: View {
+    let wallpaper: CatalogWallpaper
+    @StateObject private var model = CatalogDetailMediaPreviewModel()
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Color.black.opacity(0.72)
+
+            CatalogPreviewImage(
+                url: model.imageURL ?? wallpaper.previewImageURL,
+                title: wallpaper.title,
+                referer: wallpaper.sourcePageURL,
+                contentMode: .fit
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if let player = model.player {
+                VideoPreview(player: player, videoGravity: .resizeAspectFill)
+                    .opacity(model.isVideoVisible ? 1 : 0)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.14), lineWidth: 1)
+        )
+        .task(id: wallpaper.id) {
+            await model.load(wallpaper)
+        }
+        .onDisappear {
+            model.stop()
         }
     }
 }
@@ -1613,6 +1744,7 @@ struct CatalogPreviewImage: View {
     let url: URL?
     let title: String
     let referer: URL?
+    var contentMode: ContentMode = .fill
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @StateObject private var loader = CatalogPreviewImageLoader()
 
@@ -1621,7 +1753,7 @@ struct CatalogPreviewImage: View {
             if let image = loader.image {
                 Image(nsImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .aspectRatio(contentMode: contentMode)
             } else {
                 previewFallback
             }
@@ -2153,23 +2285,23 @@ private struct AuraPanelButton: View {
             .background {
                 ZStack {
                     #if compiler(>=6.2)
-                    if #available(macOS 26.0, *) {
+                    if !isEnabled {
+                        shape.fill(textTone.disabledControlSurfaceColor)
+                    } else if #available(macOS 26.0, *) {
                         shape
                             .fill(Color.clear)
                             .glassEffect(.clear.interactive(), in: shape)
                         shape.fill(
                             textTone.contrastSurfaceColor.opacity(
-                                isEnabled
-                                    ? min(
-                                        0.34,
-                                        0.035
-                                            + boundedAdaptiveSurfaceProtectionOpacity(
-                                                adaptiveGlassAppearance.bottomButtonProtectionOpacity
-                                            )
-                                            + (configuration.isPressed ? 0.025 : 0.0)
-                                            + (selected ? 0.018 : (emphasized ? 0.010 : 0.0))
+                                min(
+                                    0.34,
+                                    0.035
+                                        + boundedAdaptiveSurfaceProtectionOpacity(
+                                            adaptiveGlassAppearance.bottomButtonProtectionOpacity
+                                        )
+                                        + (configuration.isPressed ? 0.025 : 0.0)
+                                        + (selected ? 0.018 : (emphasized ? 0.010 : 0.0))
                                     )
-                                    : 0.012
                             )
                         )
                     } else {
@@ -2187,18 +2319,22 @@ private struct AuraPanelButton: View {
                         .clipShape(shape)
                     }
                     #else
-                    shape.fill(textTone.contrastSurfaceColor.opacity(protectionOpacity))
-                    shape.fill(textTone.contrastHighlightColor.opacity(baseSurfaceOpacity))
-                    LinearGradient(
-                        colors: [
-                            textTone.contrastHighlightColor.opacity(topHighlightOpacity),
-                            textTone.contrastHighlightColor.opacity(isEnabled ? 0.045 : 0.018),
-                            textTone.contrastSurfaceColor.opacity(isEnabled ? 0.035 : 0.06),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .clipShape(shape)
+                    if !isEnabled {
+                        shape.fill(textTone.disabledControlSurfaceColor)
+                    } else {
+                        shape.fill(textTone.contrastSurfaceColor.opacity(protectionOpacity))
+                        shape.fill(textTone.contrastHighlightColor.opacity(baseSurfaceOpacity))
+                        LinearGradient(
+                            colors: [
+                                textTone.contrastHighlightColor.opacity(topHighlightOpacity),
+                                textTone.contrastHighlightColor.opacity(0.045),
+                                textTone.contrastSurfaceColor.opacity(0.035),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .clipShape(shape)
+                    }
                     #endif
                 }
             }
@@ -2244,6 +2380,7 @@ struct AuraGlassButtonStyle: ButtonStyle {
 
     var tone: Tone = .secondary
     var fillWidth = true
+    var compact = false
 
     func makeBody(configuration: Configuration) -> some View {
         // A separate live glass surface for every button multiplies the number of
@@ -2252,7 +2389,8 @@ struct AuraGlassButtonStyle: ButtonStyle {
         AuraGlassButton(
             configuration: configuration,
             tone: tone,
-            fillWidth: fillWidth
+            fillWidth: fillWidth,
+            compact: compact
         )
     }
 }
@@ -2267,6 +2405,7 @@ private struct AuraGlassButton: View {
     let configuration: ButtonStyle.Configuration
     let tone: AuraGlassButtonStyle.Tone
     let fillWidth: Bool
+    let compact: Bool
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.colorScheme) private var colorScheme
@@ -2352,7 +2491,7 @@ private struct AuraGlassButton: View {
 
     var body: some View {
         labelContent
-            .font(.body.weight(.semibold))
+            .font(compact ? .subheadline.weight(.semibold) : .body.weight(.semibold))
             .foregroundStyle(foregroundColor)
             .shadow(
                 color: adaptiveGlassAppearance.centerTextTone.textShadowColor.opacity(tone == .secondary ? 0.55 : 0.80),
@@ -2360,27 +2499,27 @@ private struct AuraGlassButton: View {
                 x: 0,
                 y: 1
             )
-            .padding(.vertical, 3)
-            .padding(.horizontal, 12)
+            .padding(.vertical, compact ? 2 : 3)
+            .padding(.horizontal, compact ? 10 : 12)
             .background {
                 ZStack {
                     #if compiler(>=6.2)
-                    if #available(macOS 26.0, *) {
+                    if !isEnabled {
+                        shape.fill(adaptiveGlassAppearance.centerTextTone.disabledControlSurfaceColor)
+                    } else if #available(macOS 26.0, *) {
                         shape
                             .fill(Color.clear)
                             .glassEffect(.clear.interactive(), in: shape)
                         shape.fill(
                             adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(
-                                isEnabled
-                                    ? min(
-                                        0.34,
-                                        0.045
-                                            + (boundedAdaptiveSurfaceProtectionOpacity(
-                                                adaptiveGlassAppearance.centerProtectionOverlayOpacity
-                                            ) * 0.80)
-                                            + (configuration.isPressed ? 0.025 : 0.0)
+                                min(
+                                    0.34,
+                                    0.045
+                                        + (boundedAdaptiveSurfaceProtectionOpacity(
+                                            adaptiveGlassAppearance.centerProtectionOverlayOpacity
+                                        ) * 0.80)
+                                        + (configuration.isPressed ? 0.025 : 0.0)
                                     )
-                                    : 0.016
                             )
                         )
                     } else {
@@ -2400,20 +2539,26 @@ private struct AuraGlassButton: View {
                         .clipShape(shape)
                     }
                     #else
-                    shape.fill(backdropColor)
-                    shape.fill(baseTint.opacity(tintOpacity))
-                    LinearGradient(
-                        colors: [
-                            adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.12),
-                            adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.04),
-                            adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(0.025),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .clipShape(shape)
+                    if !isEnabled {
+                        shape.fill(adaptiveGlassAppearance.centerTextTone.disabledControlSurfaceColor)
+                    } else {
+                        shape.fill(backdropColor)
+                        shape.fill(baseTint.opacity(tintOpacity))
+                        LinearGradient(
+                            colors: [
+                                adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.12),
+                                adaptiveGlassAppearance.centerTextTone.contrastHighlightColor.opacity(0.04),
+                                adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor.opacity(0.025),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .clipShape(shape)
+                    }
                     #endif
-                    shape.fill(pressedOverlayColor)
+                    if isEnabled {
+                        shape.fill(pressedOverlayColor)
+                    }
                 }
                 .clipShape(shape)
             }

@@ -79,6 +79,45 @@ import Testing
     #expect(page.wallpapers[1].resolution == MoeWallsResolution(width: 2560, height: 1440))
 }
 
+@Test func moewallsCatalogPagesLoadIncrementallyAndDeduplicate() async throws {
+    let firstCard = """
+    * [![Image](https://moewalls.com/wp-content/uploads/2026/03/first-thumb.jpg)](https://moewalls.com/anime/first-live-wallpaper/ \"First Live Wallpaper\") [3840x2160](https://moewalls.com/resolution/3840x2160/)
+    """
+    let secondCard = """
+    * [![Image](https://moewalls.com/wp-content/uploads/2026/03/second-thumb.jpg)](https://moewalls.com/anime/second-live-wallpaper/ \"Second Live Wallpaper\") [2560x1440](https://moewalls.com/resolution/2560x1440/)
+    """
+    MoeWallsPaginationURLProtocol.configure(pages: [
+        1: firstCard,
+        2: firstCard + "\n" + secondCard,
+        3: "No more wallpapers",
+    ])
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MoeWallsPaginationURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlow-MoeWalls-Paging-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let source = MoeWallsSource(
+        client: MoeWallsHTTPClient(session: session, timeout: 2, maxRetries: 0),
+        catalogDirectoryURL: directory
+    )
+
+    let firstPage = try await source.fetchNextCatalogPage()
+    let secondPage = try await source.fetchNextCatalogPage()
+    let finalPage = try await source.fetchNextCatalogPage()
+
+    #expect(firstPage.wallpapers.map(\.id) == ["moewalls-first-live-wallpaper"])
+    #expect(secondPage.wallpapers.map(\.id) == ["moewalls-second-live-wallpaper"])
+    #expect(finalPage.wallpapers.isEmpty)
+    #expect(!finalPage.hasMore)
+    #expect(MoeWallsPaginationURLProtocol.requestedPages == [1, 2, 3])
+    #expect(FileManager.default.fileExists(
+        atPath: directory.appendingPathComponent("moewalls-cache.json").path
+    ))
+}
+
 @Test func moewallsDetailPageIsParsed() throws {
     let html = try loadFixture(named: "moewalls_detail_neon_ruins", ext: "html")
     let wallpaper = MoeWallsParser.parseWallpaperDetail(
@@ -303,6 +342,64 @@ private final class MoeWallsRedirectURLProtocol: URLProtocol, @unchecked Sendabl
             headerFields: ["Content-Type": "application/json"]
         )!
         let body = Data((requestedURL.host == "moewalls.com" ? "redirected" : "{\"proxied\":true}").utf8)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class MoeWallsPaginationURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var pageBodies: [Int: Data] = [:]
+    private static var pages: [Int] = []
+
+    static var requestedPages: [Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        return pages
+    }
+
+    static func configure(pages: [Int: String]) {
+        lock.lock()
+        pageBodies = pages.mapValues { Data($0.utf8) }
+        self.pages = []
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "moewalls.com"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let components = url.pathComponents
+        let page: Int
+        if let pageComponentIndex = components.firstIndex(of: "page"),
+           components.indices.contains(pageComponentIndex + 1),
+           let parsed = Int(components[pageComponentIndex + 1]) {
+            page = parsed
+        } else {
+            page = 1
+        }
+
+        Self.lock.lock()
+        Self.pages.append(page)
+        let body = Self.pageBodies[page] ?? Data()
+        Self.lock.unlock()
+
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/plain"]
+        )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: body)
         client?.urlProtocolDidFinishLoading(self)

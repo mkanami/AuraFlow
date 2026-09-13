@@ -1,6 +1,6 @@
 import Foundation
 
-actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearing {
+actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogSearching {
     private let baseURL = URL(string: "https://motionbgs.com/")!
     private let startPath = "tag:anime-nature/"
     private let session: URLSession
@@ -65,6 +65,34 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
             throw URLError(.fileDoesNotExist)
         }
         return source.url
+    }
+
+    func searchCatalog(query rawQuery: String) async throws -> [CatalogWallpaper] {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+
+        var components = URLComponents(
+            url: baseURL.appending(path: "search"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "q", value: query)]
+        guard let searchURL = components?.url else {
+            throw URLError(.badURL)
+        }
+
+        let data = try await fetchData(searchURL)
+        guard let html = String(data: data, encoding: .utf8) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+
+        let page = MotionBGSParser.parseListingPage(html: html, baseURL: baseURL)
+        let exactMatches = page.items.filter { item in
+            WallpaperSearchMatcher.matches(
+                query: query,
+                fields: [item.title, item.pageURL.lastPathComponent.replacingOccurrences(of: "-", with: " ")]
+            )
+        }
+        return Self.placeholderWallpapers(from: exactMatches)
     }
 
     private func fetchListingItems(
@@ -236,6 +264,38 @@ enum MotionBGSParser {
                 ($0.width * $0.height) > ($1.width * $1.height)
             }
         )
+    }
+
+    static func previewVideoURL(html: String, baseURL: URL) -> URL? {
+        let normalized = decodeHTMLEntities(html)
+        let value = firstMatch(
+            in: normalized,
+            pattern: #"<meta[^>]+content=[\"']?([^\"' >]+)[\"']?[^>]+property=[\"']?og:video[\"']?"#
+        ) ?? firstMatch(
+            in: normalized,
+            pattern: #"<meta[^>]+property=[\"']?og:video[\"']?[^>]+content=[\"']?([^\"' >]+)[\"']?"#
+        ) ?? firstMatch(
+            in: normalized,
+            pattern: #"<source[^>]+src=[\"']?([^\"' >]+\.mp4)[\"']?"#
+        )
+        return value.flatMap { absoluteURL(from: $0, baseURL: baseURL) }
+    }
+
+    static func fullResolutionPreviewURL(from previewURL: URL?) -> URL? {
+        guard let previewURL,
+              previewURL.host?.localizedCaseInsensitiveContains("motionbgs.com") == true,
+              var components = URLComponents(url: previewURL, resolvingAgainstBaseURL: false) else {
+            return previewURL
+        }
+
+        let fullResolutionPath = components.path.replacingOccurrences(
+            of: #"^/i/c/\d+x\d+/"#,
+            with: "/",
+            options: .regularExpression
+        )
+        guard fullResolutionPath != components.path else { return previewURL }
+        components.path = fullResolutionPath
+        return components.url ?? previewURL
     }
 
     private static func firstMatch(in text: String, pattern: String) -> String? {

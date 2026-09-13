@@ -4,7 +4,7 @@ protocol CatalogCacheClearing: Sendable {
     func clearCache() async
 }
 
-actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing {
+actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPaging, WallpaperCatalogSearching {
     private let animeProvider: WallpaperCatalogProviding
     private let animeNatureProvider: WallpaperCatalogProviding
     private let scenicProvider: WallpaperCatalogProviding
@@ -115,6 +115,21 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         }
     }
 
+    func fetchNextCatalogPage() async throws -> CatalogPage {
+        guard let pagedAnimeProvider = animeProvider as? any WallpaperCatalogPaging else {
+            return CatalogPage(wallpapers: [], hasMore: false)
+        }
+        return try await pagedAnimeProvider.fetchNextCatalogPage()
+    }
+
+    func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
+        async let animeResults = Self.searchProvider(animeProvider, query: query)
+        async let animeNatureResults = Self.searchProvider(animeNatureProvider, query: query)
+        async let scenicResults = Self.searchProvider(scenicProvider, query: query)
+        let results = await (animeResults, animeNatureResults, scenicResults)
+        return Self.mergeSearchResults([results.0, results.1, results.2])
+    }
+
     func clearCache() async {
         if let cacheClearingProvider = animeProvider as? CatalogCacheClearing {
             await cacheClearingProvider.clearCache()
@@ -168,9 +183,48 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
             )
         }
     }
+
+    private static func searchProvider(
+        _ provider: WallpaperCatalogProviding,
+        query: String
+    ) async -> [CatalogWallpaper] {
+        guard let searchableProvider = provider as? any WallpaperCatalogSearching else {
+            return []
+        }
+        return (try? await searchableProvider.searchCatalog(query: query)) ?? []
+    }
+
+    private static func mergeSearchResults(_ catalogs: [[CatalogWallpaper]]) -> [CatalogWallpaper] {
+        var seenIDs = Set<String>()
+        var seenTitles = Set<String>()
+        var merged: [CatalogWallpaper] = []
+        let maxCount = catalogs.map(\.count).max() ?? 0
+
+        for index in 0..<maxCount {
+            for catalog in catalogs where index < catalog.count {
+                let wallpaper = catalog[index]
+                let titleKey = wallpaper.title
+                    .folding(
+                        options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                        locale: Locale(identifier: "en_US_POSIX")
+                    )
+                    .lowercased()
+                    .replacingOccurrences(of: " live wallpaper", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard seenIDs.insert(wallpaper.id).inserted,
+                      seenTitles.insert(titleKey).inserted else {
+                    continue
+                }
+                merged.append(wallpaper)
+            }
+        }
+
+        return merged
+    }
 }
 
 extension MoeWallsSource: CatalogCacheClearing {}
+extension MoeWallsSource: WallpaperCatalogSearching {}
 
 private struct ProviderCatalogFetchResult: Sendable {
     let wallpapers: [CatalogWallpaper]

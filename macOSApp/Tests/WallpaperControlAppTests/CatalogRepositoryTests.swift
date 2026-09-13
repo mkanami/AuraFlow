@@ -18,6 +18,32 @@ private struct CatalogRepositoryTestProvider: WallpaperCatalogProviding {
     }
 }
 
+private actor CatalogRepositoryPagedTestProvider: WallpaperCatalogProviding, WallpaperCatalogPaging {
+    let cached: [CatalogWallpaper]?
+    private var pages: [CatalogPage]
+    private(set) var pageRequestCount = 0
+
+    init(cached: [CatalogWallpaper]?, pages: [CatalogPage]) {
+        self.cached = cached
+        self.pages = pages
+    }
+
+    func loadCachedCatalog() async -> [CatalogWallpaper]? { cached }
+    func fetchCatalog() async throws -> [CatalogWallpaper] { cached ?? [] }
+
+    func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/wallpaper.mp4")
+    }
+
+    func fetchNextCatalogPage() async throws -> CatalogPage {
+        pageRequestCount += 1
+        guard !pages.isEmpty else {
+            return CatalogPage(wallpapers: [], hasMore: false)
+        }
+        return pages.removeFirst()
+    }
+}
+
 private func repositoryTestWallpaper(id: String) -> CatalogWallpaper {
     CatalogWallpaper(
         id: id,
@@ -283,4 +309,31 @@ private func repositoryTestDownloadedWallpaper(
     #expect(!FileManager.default.fileExists(
         atPath: directory.appendingPathComponent("catalog-cache.json").path
     ))
+}
+
+@Test func catalogRepositoryAppendsAndPersistsNextPageWithoutDuplicates() async throws {
+    let first = repositoryTestWallpaper(id: "first")
+    let second = repositoryTestWallpaper(id: "second")
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("auraflow-catalog-page-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let provider = CatalogRepositoryPagedTestProvider(
+        cached: [first],
+        pages: [CatalogPage(wallpapers: [first, second], hasMore: true)]
+    )
+    let repository = CatalogRepository(provider: provider, catalogDirectoryURL: directory)
+
+    let result = try await repository.loadNextCatalogPage(existing: [first])
+
+    #expect(result.wallpapers.map(\.id) == ["first", "second"])
+    #expect(result.hasMore)
+    #expect(result.persistenceStatus.didPersist)
+    #expect(await provider.pageRequestCount == 1)
+    let persisted = try JSONDecoder().decode(
+        [CatalogWallpaper].self,
+        from: Data(contentsOf: directory.appendingPathComponent("catalog-cache.json"))
+    )
+    #expect(persisted.map(\.id) == ["first", "second"])
 }
