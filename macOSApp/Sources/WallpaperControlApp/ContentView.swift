@@ -1367,30 +1367,30 @@ struct WallpaperCatalogView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                Button {
-                    viewModel.navigateBackFromCatalog()
-                } label: {
-                    Label(
-                        isDetailOpened ? "Back" : "Close",
-                        systemImage: isDetailOpened ? "chevron.left" : "xmark"
-                    )
-                }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .keyboardShortcut(.escape, modifiers: [])
+        VStack(alignment: .leading, spacing: isDetailOpened ? 0 : 14) {
+            if let wallpaper = viewModel.selectedCatalogWallpaper {
+                WallpaperCatalogDetailView(
+                    viewModel: viewModel,
+                    wallpaper: wallpaper,
+                    isCompactLayout: isCompactLayout
+                )
+                .zIndex(0)
+            } else {
+                HStack(spacing: 12) {
+                    Button {
+                        viewModel.navigateBackFromCatalog()
+                    } label: {
+                        Label("Close", systemImage: "xmark")
+                    }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                    .keyboardShortcut(.escape, modifiers: [])
 
-                Text(isDetailOpened ? "Wallpaper Preview" : "Wallpaper Catalog")
-                    .font(
-                        isDetailOpened && isCompactLayout
-                            ? .subheadline.weight(.semibold)
-                            : .headline.weight(.semibold)
-                    )
-                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                    Text("Wallpaper Catalog")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
 
-                Spacer()
+                    Spacer()
 
-                if viewModel.selectedCatalogWallpaper == nil {
                     if viewModel.catalogIsRefreshing || viewModel.catalogIsSearching {
                         ProgressView()
                             .controlSize(.small)
@@ -1399,10 +1399,8 @@ struct WallpaperCatalogView: View {
                         .font(.caption2)
                         .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                 }
-            }
-            .zIndex(10)
+                .zIndex(10)
 
-            if viewModel.selectedCatalogWallpaper == nil {
                 HStack(spacing: 10) {
                     catalogGroupFilterButtons
 
@@ -1411,25 +1409,19 @@ struct WallpaperCatalogView: View {
                     catalogSearchField
                 }
                 .zIndex(9)
-            }
 
-            if let wallpaper = viewModel.selectedCatalogWallpaper {
-                WallpaperCatalogDetailView(
-                    viewModel: viewModel,
-                    wallpaper: wallpaper,
-                    isCompactLayout: isCompactLayout
-                )
-                    .zIndex(0)
-            } else {
                 WallpaperCatalogGridView(viewModel: viewModel)
                     .zIndex(0)
             }
         }
-        .padding(.vertical, isDetailOpened && isCompactLayout ? 12 : 14)
+        .padding(
+            .vertical,
+            isDetailOpened ? (isCompactLayout ? 8 : 10) : 14
+        )
         .padding(.horizontal, isDetailOpened && isCompactLayout ? 16 : 18)
         .frame(
             maxWidth: .infinity,
-            maxHeight: isDetailOpened ? (isCompactLayout ? 350 : 400) : 320,
+            maxHeight: isDetailOpened ? (isCompactLayout ? 300 : 350) : 320,
             alignment: .topLeading
         )
         .background(
@@ -1608,55 +1600,78 @@ struct WallpaperCatalogDetailView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: isCompactLayout ? 12 : 14) {
-            VStack(alignment: .leading, spacing: isCompactLayout ? 8 : 10) {
-                Label(
-                    isStaticImage ? "Image Wallpaper" : "Live Wallpaper",
-                    systemImage: isStaticImage ? "photo" : "play.rectangle.fill"
-                )
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-
-                Text(wallpaper.title)
-                    .font(
-                        isCompactLayout
-                            ? .subheadline.weight(.semibold)
-                            : .headline.weight(.semibold)
-                    )
-                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-                    .lineLimit(isCompactLayout ? 2 : 3)
-
-                metadataRow(label: "Category", value: wallpaper.category)
-                metadataRow(label: "Source", value: wallpaper.attribution)
-
+            VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 8) {
                     Button {
-                        viewModel.applyCatalogWallpaper(wallpaper)
+                        viewModel.navigateBackFromCatalog()
                     } label: {
-                        if viewModel.isDownloading(wallpaper) {
-                            Label("Downloading…", systemImage: "arrow.down.circle")
-                        } else {
-                            Label("Download to Preview", systemImage: "arrow.down.circle")
-                        }
+                        Label("Back", systemImage: "chevron.left")
                     }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
-                    .disabled(!viewModel.canDownloadCatalogWallpaper)
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                    .keyboardShortcut(.escape, modifiers: [])
 
-                    if let sourceURL = wallpaper.sourcePageURL {
-                        Button {
-                            NSWorkspace.shared.open(sourceURL)
-                        } label: {
-                            Image(systemName: "link")
-                        }
-                        .accessibilityLabel("Open Source")
-                        .help("Open Source")
-                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
-                    }
+                    Text("Wallpaper Preview")
+                        .font(
+                            isCompactLayout
+                                ? .subheadline.weight(.semibold)
+                                : .headline.weight(.semibold)
+                        )
+                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                        .lineLimit(1)
                 }
-                .padding(.top, isCompactLayout ? 4 : 8)
+                .zIndex(10)
+
+                VStack(alignment: .leading, spacing: isCompactLayout ? 8 : 10) {
+                    Label(
+                        isStaticImage ? "Image Wallpaper" : "Live Wallpaper",
+                        systemImage: isStaticImage ? "photo" : "play.rectangle.fill"
+                    )
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+
+                    Text(wallpaper.title)
+                        .font(
+                            isCompactLayout
+                                ? .subheadline.weight(.semibold)
+                                : .headline.weight(.semibold)
+                        )
+                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                        .lineLimit(isCompactLayout ? 2 : 3)
+
+                    metadataRow(label: "Category", value: wallpaper.category)
+                    metadataRow(label: "Source", value: wallpaper.attribution)
+
+                    HStack(spacing: 8) {
+                        Button {
+                            viewModel.applyCatalogWallpaper(wallpaper)
+                        } label: {
+                            if viewModel.isDownloading(wallpaper) {
+                                Label("Downloading…", systemImage: "arrow.down.circle")
+                            } else {
+                                Label("Download to Preview", systemImage: "arrow.down.circle")
+                            }
+                        }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
+                        .disabled(!viewModel.canDownloadCatalogWallpaper)
+
+                        if let sourceURL = wallpaper.sourcePageURL {
+                            Button {
+                                NSWorkspace.shared.open(sourceURL)
+                            } label: {
+                                Image(systemName: "link")
+                            }
+                            .accessibilityLabel("Open Source")
+                            .help("Open Source")
+                            .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
+                        }
+                    }
+                    .padding(.top, isCompactLayout ? 4 : 8)
+                }
+                .frame(maxHeight: .infinity, alignment: .center)
             }
-            .padding(.vertical, isCompactLayout ? 6 : 8)
+            .padding(.vertical, isCompactLayout ? 2 : 4)
             .frame(width: isCompactLayout ? 240 : 270)
-            .frame(maxHeight: .infinity, alignment: .center)
+            .frame(maxHeight: .infinity, alignment: .top)
 
             CatalogDetailMediaPreview(wallpaper: wallpaper)
                 .aspectRatio(16.0 / 9.0, contentMode: .fit)
