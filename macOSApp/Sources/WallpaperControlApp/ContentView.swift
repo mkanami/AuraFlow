@@ -1598,44 +1598,55 @@ struct WallpaperCatalogDetailView: View {
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
-        HStack(alignment: .top, spacing: isCompactLayout ? 12 : 14) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 8) {
-                    Button {
-                        viewModel.navigateBackFromCatalog()
-                    } label: {
-                        Label("Back", systemImage: "chevron.left")
+        GeometryReader { geometry in
+            let spacing: CGFloat = isCompactLayout ? 12 : 14
+            let sidebarWidth: CGFloat = isCompactLayout ? 240 : 270
+            let previewWidth = max(0, geometry.size.width - sidebarWidth - spacing)
+            let previewHeight = min(geometry.size.height, previewWidth * 9.0 / 16.0)
+            let previewVerticalInset = max(0, (geometry.size.height - previewHeight) / 2.0)
+
+            HStack(alignment: .top, spacing: spacing) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 8) {
+                        Button {
+                            viewModel.navigateBackFromCatalog()
+                        } label: {
+                            Label("Back", systemImage: "chevron.left")
+                        }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                        .keyboardShortcut(.escape, modifiers: [])
+
+                        Text("Wallpaper Preview")
+                            .font(
+                                isCompactLayout
+                                    ? .subheadline.weight(.semibold)
+                                    : .headline.weight(.semibold)
+                            )
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                            .lineLimit(1)
                     }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                    .keyboardShortcut(.escape, modifiers: [])
+                    .zIndex(10)
 
-                    Text("Wallpaper Preview")
-                        .font(
-                            isCompactLayout
-                                ? .subheadline.weight(.semibold)
-                                : .headline.weight(.semibold)
-                        )
-                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-                        .lineLimit(1)
-                }
-                .zIndex(10)
+                    VStack(alignment: .center, spacing: isCompactLayout ? 8 : 10) {
+                        Text(wallpaper.title)
+                            .font(
+                                isCompactLayout
+                                    ? .subheadline.weight(.semibold)
+                                    : .headline.weight(.semibold)
+                            )
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                            .lineLimit(isCompactLayout ? 2 : 3)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
 
-                VStack(alignment: .center, spacing: isCompactLayout ? 8 : 10) {
-                    Text(wallpaper.title)
-                        .font(
-                            isCompactLayout
-                                ? .subheadline.weight(.semibold)
-                                : .headline.weight(.semibold)
-                        )
-                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-                        .lineLimit(isCompactLayout ? 2 : 3)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
+                        Text(wallpaper.category)
+                            .font(.caption)
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                            .lineLimit(1)
+                    }
+                    .padding(.top, isCompactLayout ? 20 : 28)
 
-                    Text(wallpaper.category)
-                        .font(.caption)
-                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-                        .lineLimit(1)
+                    Spacer(minLength: isCompactLayout ? 8 : 10)
 
                     Button {
                         viewModel.applyCatalogWallpaper(wallpaper)
@@ -1645,20 +1656,19 @@ struct WallpaperCatalogDetailView: View {
                     }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
                     .frame(width: isCompactLayout ? 170 : 190)
+                    .frame(maxWidth: .infinity)
                     .disabled(!viewModel.canDownloadCatalogWallpaper)
-                    .padding(.top, isCompactLayout ? 12 : 16)
                 }
-                .padding(.top, isCompactLayout ? 20 : 28)
+                .padding(.top, isCompactLayout ? 2 : 4)
+                .padding(.bottom, previewVerticalInset)
+                .frame(width: sidebarWidth)
                 .frame(maxHeight: .infinity, alignment: .top)
-            }
-            .padding(.vertical, isCompactLayout ? 2 : 4)
-            .frame(width: isCompactLayout ? 240 : 270)
-            .frame(maxHeight: .infinity, alignment: .top)
 
-            CatalogDetailMediaPreview(wallpaper: wallpaper)
-                .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                .layoutPriority(1)
+                CatalogDetailMediaPreview(wallpaper: wallpaper)
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .layoutPriority(1)
+            }
         }
         .frame(
             maxWidth: .infinity,
@@ -1666,7 +1676,6 @@ struct WallpaperCatalogDetailView: View {
             maxHeight: isCompactLayout ? 280 : 320
         )
     }
-
 }
 
 private struct CatalogDetailMediaPreview: View {
