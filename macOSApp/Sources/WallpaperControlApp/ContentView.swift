@@ -1571,6 +1571,11 @@ struct WallpaperCatalogGridView: View {
                         .onAppear {
                             viewModel.loadMoreCatalogIfNeeded(after: wallpaper.id)
                         }
+                        .onHover { isHovering in
+                            if isHovering {
+                                CatalogDetailMediaPreviewModel.preload(wallpaper)
+                            }
+                        }
                     }
 
                     if viewModel.catalogIsLoadingMore {
@@ -1687,18 +1692,19 @@ private struct CatalogDetailMediaPreview: View {
         ZStack(alignment: .bottomTrailing) {
             Color.black.opacity(0.72)
 
+            if let player = model.player {
+                VideoPreview(player: player, videoGravity: .resizeAspectFill)
+            }
+
             CatalogPreviewImage(
                 url: model.imageURL ?? wallpaper.previewImageURL,
                 title: wallpaper.title,
                 referer: wallpaper.sourcePageURL,
-                contentMode: .fit
+                contentMode: .fit,
+                fallbackURL: wallpaper.previewImageURL
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if let player = model.player {
-                VideoPreview(player: player, videoGravity: .resizeAspectFill)
-                    .opacity(model.isVideoVisible ? 1 : 0)
-            }
+            .opacity(model.isVideoVisible ? 0 : 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
@@ -1719,6 +1725,7 @@ struct CatalogPreviewImage: View {
     let title: String
     let referer: URL?
     var contentMode: ContentMode = .fill
+    var fallbackURL: URL? = nil
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @StateObject private var loader = CatalogPreviewImageLoader()
 
@@ -1733,7 +1740,7 @@ struct CatalogPreviewImage: View {
             }
         }
         .task(id: cacheKey) {
-            loader.load(url: url, referer: referer)
+            loader.load(url: url, fallbackURL: fallbackURL, referer: referer)
         }
         .onDisappear {
             loader.cancel()
@@ -1743,6 +1750,7 @@ struct CatalogPreviewImage: View {
     private var cacheKey: String {
         [
             url?.absoluteString ?? "nil",
+            fallbackURL?.absoluteString ?? "nil",
             referer?.absoluteString ?? "nil",
         ].joined(separator: "|")
     }
@@ -1784,7 +1792,7 @@ final class CatalogPreviewImageLoader: ObservableObject {
         cache.removeAllObjects()
     }
 
-    func load(url: URL?, referer: URL?) {
+    func load(url: URL?, fallbackURL: URL? = nil, referer: URL?) {
         task?.cancel()
         task = nil
         image = nil
@@ -1796,6 +1804,11 @@ final class CatalogPreviewImageLoader: ObservableObject {
         if let cached = Self.cache.object(forKey: url as NSURL) {
             image = cached
             return
+        }
+
+        if let fallbackURL,
+           let cachedFallback = Self.cache.object(forKey: fallbackURL as NSURL) {
+            image = cachedFallback
         }
 
         task = Task { [weak self] in
