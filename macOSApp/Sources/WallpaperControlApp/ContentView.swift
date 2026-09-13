@@ -1595,7 +1595,6 @@ struct WallpaperCatalogDetailView: View {
     @ObservedObject var viewModel: AppViewModel
     let wallpaper: CatalogWallpaper
     let isCompactLayout: Bool
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
@@ -1621,14 +1620,7 @@ struct WallpaperCatalogDetailView: View {
                 }
                 .zIndex(10)
 
-                VStack(alignment: .leading, spacing: isCompactLayout ? 8 : 10) {
-                    Label(
-                        isStaticImage ? "Image Wallpaper" : "Live Wallpaper",
-                        systemImage: isStaticImage ? "photo" : "play.rectangle.fill"
-                    )
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-
+                VStack(alignment: .center, spacing: isCompactLayout ? 8 : 10) {
                     Text(wallpaper.title)
                         .font(
                             isCompactLayout
@@ -1637,37 +1629,26 @@ struct WallpaperCatalogDetailView: View {
                         )
                         .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
                         .lineLimit(isCompactLayout ? 2 : 3)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
 
-                    metadataRow(label: "Category", value: wallpaper.category)
-                    metadataRow(label: "Source", value: wallpaper.attribution)
+                    Text(wallpaper.category)
+                        .font(.caption)
+                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                        .lineLimit(1)
 
-                    HStack(spacing: 8) {
-                        Button {
-                            viewModel.applyCatalogWallpaper(wallpaper)
-                        } label: {
-                            if viewModel.isDownloading(wallpaper) {
-                                Label("Downloading…", systemImage: "arrow.down.circle")
-                            } else {
-                                Label("Download to Preview", systemImage: "arrow.down.circle")
-                            }
-                        }
-                        .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
-                        .disabled(!viewModel.canDownloadCatalogWallpaper)
-
-                        if let sourceURL = wallpaper.sourcePageURL {
-                            Button {
-                                NSWorkspace.shared.open(sourceURL)
-                            } label: {
-                                Image(systemName: "link")
-                            }
-                            .accessibilityLabel("Open Source")
-                            .help("Open Source")
-                            .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
-                        }
+                    Button {
+                        viewModel.applyCatalogWallpaper(wallpaper)
+                    } label: {
+                        Text("Download")
                     }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
+                    .frame(width: isCompactLayout ? 140 : 160)
+                    .disabled(!viewModel.canDownloadCatalogWallpaper)
                     .padding(.top, isCompactLayout ? 4 : 8)
                 }
-                .frame(maxHeight: .infinity, alignment: .center)
+                .padding(.top, isCompactLayout ? 20 : 28)
+                .frame(maxHeight: .infinity, alignment: .top)
             }
             .padding(.vertical, isCompactLayout ? 2 : 4)
             .frame(width: isCompactLayout ? 240 : 270)
@@ -1685,23 +1666,6 @@ struct WallpaperCatalogDetailView: View {
         )
     }
 
-    private var isStaticImage: Bool {
-        wallpaper.sources.contains { source in
-            WallpaperMediaKind.forURL(source.url).isStaticImage
-        }
-    }
-
-    private func metadataRow(label: String, value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-            Spacer(minLength: 8)
-            Text(value)
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-                .lineLimit(1)
-        }
-        .font(.caption)
-    }
 }
 
 private struct CatalogDetailMediaPreview: View {
