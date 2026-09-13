@@ -1636,7 +1636,7 @@ struct WallpaperCatalogDetailView: View {
                     }
                     .zIndex(10)
 
-                    VStack(alignment: .center, spacing: isCompactLayout ? 8 : 10) {
+                    VStack(alignment: .leading, spacing: isCompactLayout ? 8 : 10) {
                         Text(wallpaper.title)
                             .font(
                                 isCompactLayout
@@ -1645,15 +1645,16 @@ struct WallpaperCatalogDetailView: View {
                             )
                             .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
                             .lineLimit(isCompactLayout ? 2 : 3)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                         Text(wallpaper.category)
                             .font(.caption)
                             .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(.top, isCompactLayout ? 20 : 28)
+                    .padding(.top, isCompactLayout ? 14 : 18)
 
                     Spacer(minLength: isCompactLayout ? 8 : 10)
 
@@ -1664,8 +1665,7 @@ struct WallpaperCatalogDetailView: View {
                             .padding(.vertical, isCompactLayout ? 2 : 3)
                     }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
-                    .frame(width: isCompactLayout ? 170 : 190)
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .disabled(!viewModel.canDownloadCatalogWallpaper)
                 }
                 .padding(.top, isCompactLayout ? 2 : 4)
