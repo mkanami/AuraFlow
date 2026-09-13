@@ -30,6 +30,7 @@ enum CatalogPreviewEvent: Sendable, Equatable {
 actor CatalogPreviewPermitPool {
     private struct Waiter {
         let id: UUID
+        let key: String?
         let priority: CatalogPreviewPriority
         let order: UInt64
         let continuation: CheckedContinuation<Void, Error>
@@ -43,7 +44,7 @@ actor CatalogPreviewPermitPool {
         available = max(1, limit)
     }
 
-    func acquire(priority: CatalogPreviewPriority) async throws {
+    func acquire(priority: CatalogPreviewPriority, key: String? = nil) async throws {
         try Task.checkCancellation()
         if available > 0 {
             available -= 1
@@ -54,14 +55,33 @@ actor CatalogPreviewPermitPool {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 order &+= 1
-                waiters.append(Waiter(id: id, priority: priority, order: order, continuation: continuation))
-                waiters.sort {
-                    $0.priority == $1.priority ? $0.order < $1.order : $0.priority > $1.priority
-                }
+                waiters.append(Waiter(
+                    id: id,
+                    key: key,
+                    priority: priority,
+                    order: order,
+                    continuation: continuation
+                ))
+                sortWaiters()
             }
         } onCancel: {
             Task { await self.cancel(id: id) }
         }
+    }
+
+    func promote(key: String, to priority: CatalogPreviewPriority) {
+        guard waiters.contains(where: { $0.key == key && $0.priority < priority }) else { return }
+        waiters = waiters.map { waiter in
+            guard waiter.key == key, waiter.priority < priority else { return waiter }
+            return Waiter(
+                id: waiter.id,
+                key: waiter.key,
+                priority: priority,
+                order: waiter.order,
+                continuation: waiter.continuation
+            )
+        }
+        sortWaiters()
     }
 
     func release() {
@@ -77,6 +97,12 @@ actor CatalogPreviewPermitPool {
         guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
         let waiter = waiters.remove(at: index)
         waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func sortWaiters() {
+        waiters.sort {
+            $0.priority == $1.priority ? $0.order < $1.order : $0.priority > $1.priority
+        }
     }
 }
 
@@ -101,6 +127,7 @@ actor CatalogPreviewPipeline {
     }
 
     private struct Job {
+        let token: UUID
         var priority: CatalogPreviewPriority
         var state: CatalogPreviewState
         var directURL: URL?
@@ -114,6 +141,9 @@ actor CatalogPreviewPipeline {
     private let cacheDirectory: URL
     private let manifestURL: URL
     private let metadataPermits = CatalogPreviewPermitPool(limit: 4)
+    // Range probes must never wait behind full preview downloads. A slow CDN
+    // download used to make a newly selected card appear stuck after scrolling.
+    private let probePermits = CatalogPreviewPermitPool(limit: 4)
     private let downloadPermits = CatalogPreviewPermitPool(limit: 2)
     private let conversionPermits = CatalogPreviewPermitPool(limit: 1)
     private let logger = Logger(
@@ -125,6 +155,7 @@ actor CatalogPreviewPipeline {
     private var jobs: [String: Job] = [:]
     private var failures: [String: Date] = [:]
     private var subscribers: [String: [UUID: AsyncStream<CatalogPreviewEvent>.Continuation]] = [:]
+    private var manifestSaveTask: Task<Void, Never>?
 
     init(
         resolver: (any WallpaperCatalogPreviewResolving)?,
@@ -189,6 +220,8 @@ actor CatalogPreviewPipeline {
 
     func clear() throws {
         cancelAll()
+        manifestSaveTask?.cancel()
+        manifestSaveTask = nil
         failures.removeAll()
         manifest = Manifest()
         try? FileManager.default.removeItem(at: cacheDirectory)
@@ -207,31 +240,50 @@ actor CatalogPreviewPipeline {
             return
         }
         if var existing = jobs[wallpaper.id] {
-            existing.priority = max(existing.priority, priority)
+            let previousPriority = existing.priority
+            let promotedPriority = max(existing.priority, priority)
+            existing.priority = promotedPriority
             jobs[wallpaper.id] = existing
+            if promotedPriority > previousPriority {
+                promoteQueuedWork(for: wallpaper.id, to: promotedPriority)
+            }
             return
         }
 
-        jobs[wallpaper.id] = Job(priority: priority, state: .resolving, directURL: nil, task: nil)
+        let token = UUID()
+        jobs[wallpaper.id] = Job(
+            token: token,
+            priority: priority,
+            state: .resolving,
+            directURL: nil,
+            task: nil
+        )
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.run(wallpaper, priority: priority)
+            await self.run(wallpaper, priority: priority, token: token)
         }
         jobs[wallpaper.id]?.task = task
     }
 
-    private func run(_ wallpaper: CatalogWallpaper, priority: CatalogPreviewPriority) async {
+    private func run(
+        _ wallpaper: CatalogWallpaper,
+        priority: CatalogPreviewPriority,
+        token: UUID
+    ) async {
         let startedAt = Date()
         do {
             if let localCandidate = existingLocalCandidate(for: wallpaper) {
+                try ensureCurrentJob(wallpaper.id, token: token)
                 jobs[wallpaper.id]?.directURL = localCandidate.url
                 emit(.direct(localCandidate.url), for: wallpaper.id)
                 let cachedURL = try await prepare(
                     localCandidate,
                     wallpaperID: wallpaper.id,
                     referer: wallpaper.sourcePageURL,
-                    priority: priority
+                    priority: priority,
+                    token: token
                 )
+                try ensureCurrentJob(wallpaper.id, token: token)
                 jobs[wallpaper.id] = nil
                 failures[wallpaper.id] = nil
                 emit(.state(.ready), for: wallpaper.id)
@@ -239,8 +291,11 @@ actor CatalogPreviewPipeline {
                 return
             }
 
-            emit(.state(.resolving), for: wallpaper.id)
-            try await metadataPermits.acquire(priority: priority)
+            setState(.resolving, wallpaperID: wallpaper.id, token: token)
+            try await metadataPermits.acquire(
+                priority: currentPriority(for: wallpaper.id, fallback: priority),
+                key: wallpaper.id
+            )
             let sources: [CatalogVideoSource]
             do {
                 if let resolver {
@@ -253,16 +308,29 @@ actor CatalogPreviewPipeline {
                 await metadataPermits.release()
                 throw error
             }
-            try Task.checkCancellation()
+            try ensureCurrentJob(wallpaper.id, token: token)
 
             var seen = Set<String>()
             var cachedURL: URL?
             var lastCandidateError: Error?
             for candidate in sources where seen.insert(candidate.url.absoluteString).inserted {
-                try Task.checkCancellation()
+                try ensureCurrentJob(wallpaper.id, token: token)
+                let candidatePriority = currentPriority(for: wallpaper.id, fallback: priority)
+
+                // The selected card can try the resolved stream immediately.
+                // Probe and local preparation continue in parallel as fallback.
+                if candidatePriority == .selected, !candidate.url.isFileURL {
+                    jobs[wallpaper.id]?.directURL = candidate.url
+                    emit(.direct(candidate.url), for: wallpaper.id)
+                }
                 let reachable = candidate.url.isFileURL
                     ? FileManager.default.fileExists(atPath: candidate.url.path)
-                    : try await probe(candidate.url, referer: wallpaper.sourcePageURL, priority: priority)
+                    : try await probe(
+                        candidate.url,
+                        wallpaperID: wallpaper.id,
+                        referer: wallpaper.sourcePageURL,
+                        priority: candidatePriority
+                    )
                 guard reachable else { continue }
 
                 jobs[wallpaper.id]?.directURL = candidate.url
@@ -272,7 +340,8 @@ actor CatalogPreviewPipeline {
                         candidate,
                         wallpaperID: wallpaper.id,
                         referer: wallpaper.sourcePageURL,
-                        priority: priority
+                        priority: currentPriority(for: wallpaper.id, fallback: priority),
+                        token: token
                     )
                     break
                 } catch is CancellationError {
@@ -285,6 +354,7 @@ actor CatalogPreviewPipeline {
             guard let cachedURL else {
                 throw lastCandidateError ?? URLError(.resourceUnavailable)
             }
+            try ensureCurrentJob(wallpaper.id, token: token)
             jobs[wallpaper.id] = nil
             failures[wallpaper.id] = nil
             emit(.state(.ready), for: wallpaper.id)
@@ -292,8 +362,11 @@ actor CatalogPreviewPipeline {
             let milliseconds = Int(Date().timeIntervalSince(startedAt) * 1_000)
             logger.info("provider=\(wallpaper.attribution, privacy: .public) stage=ready elapsed_ms=\(milliseconds)")
         } catch is CancellationError {
-            jobs[wallpaper.id] = nil
+            if jobs[wallpaper.id]?.token == token {
+                jobs[wallpaper.id] = nil
+            }
         } catch {
+            guard jobs[wallpaper.id]?.token == token else { return }
             jobs[wallpaper.id] = nil
             failures[wallpaper.id] = Date()
             emit(.state(.failed), for: wallpaper.id)
@@ -306,10 +379,12 @@ actor CatalogPreviewPipeline {
         _ candidate: CatalogVideoSource,
         wallpaperID: String,
         referer: URL?,
-        priority: CatalogPreviewPriority
+        priority: CatalogPreviewPriority,
+        token: UUID
     ) async throws -> URL {
-        setState(.downloading, wallpaperID: wallpaperID)
-        try await downloadPermits.acquire(priority: priority)
+        try ensureCurrentJob(wallpaperID, token: token)
+        setState(.downloading, wallpaperID: wallpaperID, token: token)
+        try await downloadPermits.acquire(priority: priority, key: wallpaperID)
         let downloadedURL: URL
         do {
             downloadedURL = try await download(candidate.url, referer: referer)
@@ -323,12 +398,16 @@ actor CatalogPreviewPipeline {
                 try? FileManager.default.removeItem(at: downloadedURL)
             }
         }
+        try ensureCurrentJob(wallpaperID, token: token)
 
         var preparedURL = downloadedURL
         let sourceExtension = candidate.url.pathExtension.lowercased()
         if sourceExtension == "webm" || sourceExtension == "mkv" {
-            setState(.preparing, wallpaperID: wallpaperID)
-            try await conversionPermits.acquire(priority: priority)
+            setState(.preparing, wallpaperID: wallpaperID, token: token)
+            try await conversionPermits.acquire(
+                priority: currentPriority(for: wallpaperID, fallback: priority),
+                key: wallpaperID
+            )
             do {
                 preparedURL = try await convertToMP4(downloadedURL)
                 await conversionPermits.release()
@@ -338,7 +417,7 @@ actor CatalogPreviewPipeline {
             }
         }
 
-        try Task.checkCancellation()
+        try ensureCurrentJob(wallpaperID, token: token)
         guard await mediaPreparer.containsPlayableVideo(preparedURL) else {
             throw URLError(.cannotDecodeContentData)
         }
@@ -349,9 +428,14 @@ actor CatalogPreviewPipeline {
         )
     }
 
-    private func probe(_ url: URL, referer: URL?, priority: CatalogPreviewPriority) async throws -> Bool {
-        try await downloadPermits.acquire(priority: priority)
-        defer { Task { await downloadPermits.release() } }
+    private func probe(
+        _ url: URL,
+        wallpaperID: String,
+        referer: URL?,
+        priority: CatalogPreviewPriority
+    ) async throws -> Bool {
+        try await probePermits.acquire(priority: priority, key: wallpaperID)
+        defer { Task { await probePermits.release() } }
         var request = Self.request(url: url, referer: referer)
         request.timeoutInterval = 12
         // A tiny real media range is enough to reject HTML/404 responses and
@@ -447,8 +531,38 @@ actor CatalogPreviewPipeline {
         }
         entry.lastAccessedAt = Date()
         manifest.entries[wallpaperID] = entry
-        try? persistManifest()
+        scheduleManifestPersistence()
         return entry
+    }
+
+    private func currentPriority(
+        for wallpaperID: String,
+        fallback: CatalogPreviewPriority
+    ) -> CatalogPreviewPriority {
+        jobs[wallpaperID]?.priority ?? fallback
+    }
+
+    private func promoteQueuedWork(for wallpaperID: String, to priority: CatalogPreviewPriority) {
+        Task {
+            await metadataPermits.promote(key: wallpaperID, to: priority)
+            await probePermits.promote(key: wallpaperID, to: priority)
+            await downloadPermits.promote(key: wallpaperID, to: priority)
+            await conversionPermits.promote(key: wallpaperID, to: priority)
+        }
+    }
+
+    private func scheduleManifestPersistence() {
+        guard manifestSaveTask == nil else { return }
+        manifestSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 750_000_000)
+            guard !Task.isCancelled, let self else { return }
+            await self.persistScheduledManifest()
+        }
+    }
+
+    private func persistScheduledManifest() {
+        manifestSaveTask = nil
+        try? persistManifest()
     }
 
     private func enforceCacheLimit(protecting protectedFileNames: Set<String>) throws {
@@ -468,9 +582,15 @@ actor CatalogPreviewPipeline {
         try data.write(to: manifestURL, options: .atomic)
     }
 
-    private func setState(_ state: CatalogPreviewState, wallpaperID: String) {
+    private func setState(_ state: CatalogPreviewState, wallpaperID: String, token: UUID) {
+        guard jobs[wallpaperID]?.token == token else { return }
         jobs[wallpaperID]?.state = state
         emit(.state(state), for: wallpaperID)
+    }
+
+    private func ensureCurrentJob(_ wallpaperID: String, token: UUID) throws {
+        try Task.checkCancellation()
+        guard jobs[wallpaperID]?.token == token else { throw CancellationError() }
     }
 
     private func emit(_ event: CatalogPreviewEvent, for wallpaperID: String) {

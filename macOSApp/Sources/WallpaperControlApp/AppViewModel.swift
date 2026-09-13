@@ -2074,6 +2074,9 @@ final class AppViewModel: ObservableObject {
     private var catalogSearchTask: Task<Void, Never>?
     private var catalogSearchGeneration = 0
     private var catalogDownloadTask: Task<Void, Never>?
+    private var catalogPreviewViewportTask: Task<Void, Never>?
+    private var visibleCatalogPreviewIDs = Set<String>()
+    private var previousCatalogPreviewCenterIndex: Int?
     private var localWallpaperImportTask: Task<Void, Never>?
     private var localWallpaperImportGeneration = 0
     private var catalogNavigationLockedUntil: Date = .distantPast
@@ -2438,6 +2441,7 @@ final class AppViewModel: ObservableObject {
         catalogLoadMoreTask?.cancel()
         catalogSearchTask?.cancel()
         catalogDownloadTask?.cancel()
+        catalogPreviewViewportTask?.cancel()
         localWallpaperImportTask?.cancel()
         controllerBootstrapTask?.cancel()
         glassAnalysisTask?.cancel()
@@ -2982,6 +2986,7 @@ final class AppViewModel: ObservableObject {
         selectedCatalogWallpaper = nil
         catalogScrollTargetID = nil
         isCatalogOpen = false
+        resetCatalogPreviewViewport()
         Task { await catalogPreviewPipeline.cancelAll() }
         catalogNavigationLockedUntil = Date().addingTimeInterval(0.2)
     }
@@ -2992,21 +2997,25 @@ final class AppViewModel: ObservableObject {
 
     func toggleCatalogGroup(_ group: CatalogWallpaperGroup) {
         catalogViewModel.toggleGroup(group)
+        resetCatalogPreviewViewport()
         Task { await catalogPreviewPipeline.cancelPending() }
     }
 
     func prefetchCatalogPreview(_ wallpaper: CatalogWallpaper, hovered: Bool = false) {
         let priority: CatalogPreviewPriority = hovered ? .hovered : .visible
         Task { await catalogPreviewPipeline.prefetch(wallpaper, priority: priority) }
-        guard !hovered,
-              let index = filteredCatalogWallpapers.firstIndex(where: { $0.id == wallpaper.id }) else {
-            return
+    }
+
+    func catalogPreviewVisibilityChanged(_ wallpaper: CatalogWallpaper, isVisible: Bool) {
+        if isVisible {
+            visibleCatalogPreviewIDs.insert(wallpaper.id)
+            // Start the newly visible card immediately. The short viewport
+            // debounce below only batches cancellation and directional lookahead.
+            prefetchCatalogPreview(wallpaper)
+        } else {
+            visibleCatalogPreviewIDs.remove(wallpaper.id)
         }
-        let lookaheadEnd = min(filteredCatalogWallpapers.count, index + 4)
-        guard index + 1 < lookaheadEnd else { return }
-        for candidate in filteredCatalogWallpapers[(index + 1)..<lookaheadEnd] {
-            Task { await catalogPreviewPipeline.prefetch(candidate, priority: .lookahead) }
-        }
+        scheduleCatalogPreviewViewportUpdate()
     }
 
     func catalogWallpaperCount(in group: CatalogWallpaperGroup) -> Int {
@@ -4024,6 +4033,7 @@ final class AppViewModel: ObservableObject {
         catalogSearchGeneration &+= 1
         let generation = catalogSearchGeneration
         catalogSearchTask?.cancel()
+        resetCatalogPreviewViewport()
         Task { await catalogPreviewPipeline.cancelPending() }
 
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4075,6 +4085,50 @@ final class AppViewModel: ObservableObject {
                 // the remote source is temporarily unreachable.
             }
         }
+    }
+
+    private func scheduleCatalogPreviewViewportUpdate() {
+        catalogPreviewViewportTask?.cancel()
+        catalogPreviewViewportTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.applyCatalogPreviewViewport()
+        }
+    }
+
+    private func applyCatalogPreviewViewport() {
+        let wallpapers = filteredCatalogWallpapers
+        let wallpapersByID = Dictionary(uniqueKeysWithValues: wallpapers.map { ($0.id, $0) })
+        visibleCatalogPreviewIDs.formIntersection(wallpapersByID.keys)
+        guard let plan = CatalogPreviewViewportPlan.make(
+            wallpaperIDs: wallpapers.map(\.id),
+            visibleIDs: visibleCatalogPreviewIDs,
+            previousCenterIndex: previousCatalogPreviewCenterIndex
+        ) else { return }
+
+        previousCatalogPreviewCenterIndex = plan.centerIndex
+        var protectedIDs = plan.protectedIDs
+        if let selectedCatalogWallpaper {
+            protectedIDs.insert(selectedCatalogWallpaper.id)
+        }
+        let visible = plan.visibleIDs.compactMap { wallpapersByID[$0] }
+        let lookahead = plan.lookaheadIDs.compactMap { wallpapersByID[$0] }
+        Task { [catalogPreviewPipeline] in
+            await catalogPreviewPipeline.cancelPending(except: protectedIDs)
+            for wallpaper in visible {
+                await catalogPreviewPipeline.prefetch(wallpaper, priority: .visible)
+            }
+            for wallpaper in lookahead {
+                await catalogPreviewPipeline.prefetch(wallpaper, priority: .lookahead)
+            }
+        }
+    }
+
+    private func resetCatalogPreviewViewport() {
+        catalogPreviewViewportTask?.cancel()
+        catalogPreviewViewportTask = nil
+        visibleCatalogPreviewIDs.removeAll()
+        previousCatalogPreviewCenterIndex = nil
     }
 
     private func mergeDownloadedCatalogSearchMatches(for query: String) {

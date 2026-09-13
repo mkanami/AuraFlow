@@ -128,6 +128,61 @@ struct CatalogPreviewPipelineTests {
 
     #expect(await recorder.values == ["selected", "lookahead"])
 }
+
+@Test func catalogPreviewPermitPoolPromotesQueuedCardAfterSelection() async throws {
+    let pool = CatalogPreviewPermitPool(limit: 1)
+    try await pool.acquire(priority: .visible)
+    let recorder = CatalogPreviewOrderRecorder()
+
+    let promoted = Task {
+        try await pool.acquire(priority: .lookahead, key: "promoted")
+        await recorder.append("promoted")
+        await pool.release()
+    }
+    try await Task.sleep(nanoseconds: 20_000_000)
+    let ordinary = Task {
+        try await pool.acquire(priority: .visible, key: "ordinary")
+        await recorder.append("ordinary")
+        await pool.release()
+    }
+    try await Task.sleep(nanoseconds: 20_000_000)
+    await pool.promote(key: "promoted", to: .selected)
+    await pool.release()
+    try await promoted.value
+    try await ordinary.value
+
+    #expect(await recorder.values == ["promoted", "ordinary"])
+}
+
+@Test func catalogPreviewViewportFollowsFastForwardScrollAndDropsOldCards() throws {
+    let ids = (0..<60).map { "wallpaper-\($0)" }
+    let visible = Set((24...31).map { "wallpaper-\($0)" })
+    let plan = try #require(CatalogPreviewViewportPlan.make(
+        wallpaperIDs: ids,
+        visibleIDs: visible,
+        previousCenterIndex: 5
+    ))
+
+    #expect(plan.visibleIDs == Array(ids[24...31]))
+    #expect(plan.lookaheadIDs.first == "wallpaper-32")
+    #expect(plan.lookaheadIDs.contains("wallpaper-39"))
+    #expect(!plan.protectedIDs.contains("wallpaper-5"))
+    #expect(plan.protectedIDs.count <= 20)
+}
+
+@Test func catalogPreviewViewportLooksBackwardWhenUserScrollsUp() throws {
+    let ids = (0..<60).map { "wallpaper-\($0)" }
+    let visible = Set((20...27).map { "wallpaper-\($0)" })
+    let plan = try #require(CatalogPreviewViewportPlan.make(
+        wallpaperIDs: ids,
+        visibleIDs: visible,
+        previousCenterIndex: 45
+    ))
+
+    #expect(plan.lookaheadIDs.first == "wallpaper-19")
+    #expect(plan.lookaheadIDs.contains("wallpaper-12"))
+    #expect(!plan.protectedIDs.contains("wallpaper-45"))
+}
 }
 
 private actor CatalogPreviewResolverSpy: WallpaperCatalogPreviewResolving {

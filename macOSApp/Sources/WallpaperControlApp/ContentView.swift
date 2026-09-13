@@ -1570,7 +1570,10 @@ struct WallpaperCatalogGridView: View {
                         .id(wallpaper.id)
                         .onAppear {
                             viewModel.loadMoreCatalogIfNeeded(after: wallpaper.id)
-                            viewModel.prefetchCatalogPreview(wallpaper)
+                            viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: true)
+                        }
+                        .onDisappear {
+                            viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: false)
                         }
                         .onHover { isHovering in
                             if isHovering {
