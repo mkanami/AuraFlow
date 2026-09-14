@@ -651,6 +651,63 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func nativeCatalogDownloadWarmsLockScreenImmediatelyAndStartsWithoutRescan() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("native-catalog-fast-start-\(UUID().uuidString)", isDirectory: true)
+    let catalogDirectory = root.appendingPathComponent("Catalog", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: catalogDirectory,
+        withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let localURL = catalogDirectory.appendingPathComponent("wallpaper.mp4")
+    // The controller mock accepts the selected file. Keeping the fixture
+    // deliberately minimal makes this test fail if Start reintroduces an
+    // AVFoundation scan or compatibility conversion before the controller.
+    try Data([0, 1, 2, 3]).write(to: localURL)
+
+    let controller = MockNativeWallpaperController()
+    let viewModel = AppViewModel(
+        controller: controller,
+        appSupportDirectoryURL: root
+    )
+    let wallpaper = CatalogWallpaper(
+        id: "native-catalog-fast-start",
+        title: "Native Catalog Fast Start",
+        category: "Anime",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://example.com/native-catalog-fast-start"),
+        sources: [
+            CatalogVideoSource(
+                url: URL(string: "https://example.com/native-catalog-fast-start.mp4")!,
+                width: 1920,
+                height: 1080
+            )
+        ]
+    )
+
+    viewModel.stageCatalogWallpaperForPreview(wallpaper, localURL: localURL)
+    for _ in 0..<20 {
+        if controller.prepareLockScreenMediaCallCount == 1 { break }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    #expect(controller.prepareLockScreenMediaCallCount == 1)
+
+    viewModel.start()
+    for _ in 0..<40 {
+        if controller.startCallCount == 1 && viewModel.isPlaybackActive { break }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+
+    #expect(controller.startCallCount == 1)
+    #expect(controller.lastConfiguredVideoURL == localURL.standardizedFileURL)
+    #expect(viewModel.isPlaybackActive)
+    #expect(viewModel.alertMessage == nil)
+}
+
+@MainActor
 @Test func switchingPreviewReusesPlayerAndReplacesItemWithoutDetachingLayer() throws {
     let controller = MockNativeWallpaperController()
     let viewModel = AppViewModel(controller: controller)

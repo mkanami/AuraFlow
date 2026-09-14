@@ -2664,6 +2664,16 @@ final class AppViewModel: ObservableObject {
         let isNativeContainer = isNativePlaybackContainer(url)
         if isNativeContainer {
             configurePreview(for: url)
+            // Native catalog downloads are already complete local files by
+            // the time they reach preview. Do not wait for AVFoundation to
+            // scan a large movie before starting the Lock Screen warm-up:
+            // files with a tail-located movie index can otherwise begin that
+            // work only after the user presses Start.
+            scheduleLockScreenMediaPreparation(
+                for: url,
+                previewGeneration: previewPreparationGeneration
+            )
+            return
         } else if previewPlayer == nil {
             // Keep the view attached to a real player while compatibility
             // conversion runs. Unsupported containers must never be handed to
@@ -3658,11 +3668,13 @@ final class AppViewModel: ObservableObject {
         // for reliable looping.
         let isGIF = sourceURL.pathExtension.lowercased() == "gif"
         if !isGIF,
-           isNativePlaybackContainer(sourceURL),
-           await isPreviewPlayableVideo(at: sourceURL) {
+           isNativePlaybackContainer(sourceURL) {
             // A native MP4/MOV/M4V source is already ready to render. Do not
-            // make a catalog download wait for the user's optional HEVC or
-            // 1080p optimization pass.
+            // rescan a complete managed download on every Start. Some large
+            // MP4 files keep their movie index at the end, making this probe
+            // take several seconds even though the same local file is already
+            // playing in preview. The download transaction validates the
+            // response and publishes the file atomically before this path.
             return (sourceURL.standardizedFileURL, nil)
         }
 

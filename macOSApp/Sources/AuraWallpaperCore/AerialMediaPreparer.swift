@@ -139,10 +139,6 @@ internal final class AerialMediaPreparer {
             return sourceURL
         }
 
-        guard !(try await isCompatible(at: sourceURL)) else {
-            return sourceURL
-        }
-
         try fileManager.createDirectory(
             at: preparedCacheDirectoryURL,
             withIntermediateDirectories: true
@@ -158,6 +154,15 @@ internal final class AerialMediaPreparer {
         if fileManager.fileExists(atPath: cacheURL.path),
            try await isCompatible(at: cacheURL) {
             return cacheURL
+        }
+
+        // Check the signature cache before asking AVFoundation to inspect the
+        // source. Large MP4 files can keep their movie index at the tail, so a
+        // repeated source probe is noticeably slower than validating the
+        // fast-start QuickTime file AuraFlow already prepared for this exact
+        // content.
+        guard !(try await isCompatible(at: sourceURL)) else {
+            return sourceURL
         }
 
         let outputURL = preparedCacheDirectoryURL.appendingPathComponent(
