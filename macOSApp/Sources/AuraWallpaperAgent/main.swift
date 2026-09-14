@@ -1345,21 +1345,28 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 restoreDesktopStoreAfterSession()
             }
         case .resume:
-            nativeLockScreenBridge.resumeAfterPause()
-            if !lockScreenOnlyMode {
+            if lockScreenOnlyMode {
+                // Keep the native presentation frozen on its last valid frame
+                // until the paused Aerial asset has been replaced by the
+                // animated generation and its provider has finished rearming.
+                // Releasing it first exposes the provider's empty transition
+                // frame as a visible grey flash.
+                manualPaused = false
+                store.markPaused(false)
+                restoreLockScreenOnlyPlaybackAfterResume(
+                    resumeNativeSurfaceWhenReady: true
+                )
+            } else {
+                nativeLockScreenBridge.resumeAfterPause()
                 showWindows()
-            }
-            manualPaused = false
-            store.markPaused(false)
-            if !lockScreenOnlyMode {
+                manualPaused = false
+                store.markPaused(false)
                 applyPlaybackRate()
                 if config.show_on_lock_screen == true,
                    lockScreenPlatform.capabilities.supportsSecureLockScreen,
                    lockScreenPlatform.isInstalled {
                     restoreLockScreenOnlyPlaybackAfterResume()
                 }
-            } else {
-                restoreLockScreenOnlyPlaybackAfterResume()
             }
         case .pause:
             nativeLockScreenBridge.pause()
@@ -1420,7 +1427,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func restoreLockScreenOnlyPlaybackAfterResume() {
+    private func restoreLockScreenOnlyPlaybackAfterResume(
+        resumeNativeSurfaceWhenReady: Bool = false
+    ) {
         lockScreenPlaybackMutationTask?.cancel()
         guard let videoURL = effectiveLockScreenVideoURL() else {
             writeHealth(reason: "resume-source-missing")
@@ -1429,14 +1438,39 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let platformExecutor = lockScreenPlatformExecutor
         lockScreenPlaybackMutationTask = Task { @MainActor [weak self] in
             do {
-                _ = try await platformExecutor.resumeLockScreenOnlyPlayback(
-                    videoURL: videoURL
-                )
+                if resumeNativeSurfaceWhenReady {
+                    _ = try await LockScreenPlaybackResumeHandoff.complete(
+                        restoreAnimatedGeneration: {
+                            try await platformExecutor
+                                .resumeLockScreenOnlyPlayback(videoURL: videoURL)
+                        },
+                        isCurrent: { [weak self] in
+                            guard let self else { return false }
+                            return !self.isTerminating && !self.manualPaused
+                        },
+                        revealAnimatedSurface: { [weak self] in
+                            self?.nativeLockScreenBridge.resumeAfterPause()
+                        }
+                    )
+                } else {
+                    _ = try await platformExecutor
+                        .resumeLockScreenOnlyPlayback(videoURL: videoURL)
+                }
                 guard let self, !self.isTerminating else { return }
                 self.writeHealth(reason: "resumed")
             } catch is CancellationError {
                 return
             } catch {
+                if resumeNativeSurfaceWhenReady,
+                   let self,
+                   !self.isTerminating,
+                   !self.manualPaused {
+                    // The animated generation never became safe to reveal.
+                    // Keep Stop's valid frame and state instead of publishing
+                    // an empty provider surface or reporting false playback.
+                    self.manualPaused = true
+                    self.store.markPaused(true)
+                }
                 self?.writeHealth(
                     reason: "lock-screen-resume-failed: "
                         + error.localizedDescription
