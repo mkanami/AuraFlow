@@ -2987,6 +2987,18 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func revealDownloadedCatalogWallpaperInFinder(
+        _ wallpaper: DownloadedCatalogWallpaper
+    ) {
+        let url = wallpaper.localURL.standardizedFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            loadDownloadedCatalogWallpapers()
+            alertMessage = "Downloaded wallpaper file is missing"
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     func openCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
         guard Date() >= catalogNavigationLockedUntil else { return }
         catalogScrollTargetID = wallpaper.id

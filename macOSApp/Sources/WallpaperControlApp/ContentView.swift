@@ -1222,12 +1222,22 @@ struct DownloadedWallpapersCard: View {
 
                                 Spacer(minLength: 10)
 
-                                Button {
-                                    viewModel.applyDownloadedCatalogWallpaper(wallpaper)
-                                } label: {
-                                    Label("Preview", systemImage: "play.rectangle")
+                                VStack(spacing: 6) {
+                                    Button {
+                                        viewModel.applyDownloadedCatalogWallpaper(wallpaper)
+                                    } label: {
+                                        Label("Preview", systemImage: "play.rectangle")
+                                    }
+                                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
+
+                                    Button {
+                                        viewModel.revealDownloadedCatalogWallpaperInFinder(wallpaper)
+                                    } label: {
+                                        Label("Open in Finder", systemImage: "folder")
+                                    }
+                                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
                                 }
-                                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                                .frame(width: 142)
                             }
                             .padding(8)
                             .background(AuraGlassInsetCard())
