@@ -127,7 +127,7 @@ actor CatalogPreviewPipeline {
     }
 
     private struct MetadataManifest: Codable {
-        var version = 1
+        var version = 2
         var entries: [String: CatalogResolvedMedia] = [:]
     }
 
@@ -194,7 +194,8 @@ actor CatalogPreviewPipeline {
             manifest = Manifest()
         }
         if let data = try? Data(contentsOf: metadataManifestURL),
-           let decoded = try? JSONDecoder().decode(MetadataManifest.self, from: data) {
+           let decoded = try? JSONDecoder().decode(MetadataManifest.self, from: data),
+           decoded.version == MetadataManifest().version {
             metadataManifest = decoded
         } else {
             metadataManifest = MetadataManifest()
@@ -482,7 +483,9 @@ actor CatalogPreviewPipeline {
                 previewSources: resolved.previewSources,
                 originalSources: resolved.originalSources,
                 provider: resolved.provider,
-                validUntil: min(resolved.validUntil, maximumValidUntil)
+                validUntil: min(resolved.validUntil, maximumValidUntil),
+                fileSizeMB: resolved.fileSizeMB,
+                framesPerSecond: resolved.framesPerSecond
             )
             metadataManifest.entries[wallpaper.id] = cached
             scheduleMetadataManifestPersistence()

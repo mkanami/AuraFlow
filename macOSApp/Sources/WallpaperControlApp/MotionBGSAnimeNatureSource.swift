@@ -101,7 +101,9 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
             previewSources: previewSources,
             originalSources: originalSources,
             provider: "MotionBGS",
-            validUntil: Date().addingTimeInterval(24 * 60 * 60)
+            validUntil: Date().addingTimeInterval(24 * 60 * 60),
+            fileSizeMB: MotionBGSParser.fileSizeMB(html: html),
+            framesPerSecond: MotionBGSParser.framesPerSecond(html: html)
         )
     }
 
@@ -317,6 +319,27 @@ enum MotionBGSParser {
             pattern: #"<source[^>]+src=[\"']?([^\"' >]+\.mp4)[\"']?"#
         )
         return value.flatMap { absoluteURL(from: $0, baseURL: baseURL) }
+    }
+
+    static func fileSizeMB(html: String) -> Double? {
+        let normalized = decodeHTMLEntities(html)
+        let labeledSize = firstMatch(
+            in: normalized,
+            pattern: #"(?:File Size|Filesize)\s*(?:—|-|:)?\s*([0-9]+(?:\.[0-9]+)?)\s*MB"#
+        )
+        let downloadSize = firstMatch(
+            in: normalized,
+            pattern: #"\(([0-9]+(?:\.[0-9]+)?)\s*M[Bb]\)"#
+        )
+        return (labeledSize ?? downloadSize).flatMap(Double.init)
+    }
+
+    static func framesPerSecond(html: String) -> Double? {
+        let normalized = decodeHTMLEntities(html)
+        return firstMatch(
+            in: normalized,
+            pattern: #"(?:Frame Rate|Framerate|FPS)\s*(?:—|-|:)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:FPS)?"#
+        ).flatMap(Double.init)
     }
 
     static func fullResolutionPreviewURL(from previewURL: URL?) -> URL? {

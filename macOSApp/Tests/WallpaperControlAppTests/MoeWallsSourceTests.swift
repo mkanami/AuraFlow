@@ -132,6 +132,7 @@ import Testing
     #expect(wallpaper.resolution == MoeWallsResolution(width: 3840, height: 2160))
     #expect(wallpaper.resolution?.isSupportedForAuraFlow == true)
     #expect(wallpaper.fileSizeMB == 24.5)
+    #expect(wallpaper.framesPerSecond == 60)
     #expect(wallpaper.sourceName == "Original Artist")
     #expect(wallpaper.downloadURL?.absoluteString == "https://media.moewalls.com/videos/neon-ruins-3840x2160.mp4")
 }
@@ -240,6 +241,7 @@ import Testing
         tags: [],
         resolution: nil,
         fileSizeMB: nil,
+        framesPerSecond: nil,
         sourceName: "MoeWalls",
         publishedAt: nil,
         downloadURL: nil,

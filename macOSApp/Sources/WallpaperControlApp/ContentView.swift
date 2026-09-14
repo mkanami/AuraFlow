@@ -1605,6 +1605,7 @@ struct WallpaperCatalogDetailView: View {
     let wallpaper: CatalogWallpaper
     let isCompactLayout: Bool
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+    @State private var resolvedMedia: CatalogResolvedMedia?
 
     var body: some View {
         GeometryReader { geometry in
@@ -1616,27 +1617,16 @@ struct WallpaperCatalogDetailView: View {
 
             HStack(alignment: .top, spacing: spacing) {
                 VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 8) {
-                        Button {
-                            viewModel.navigateBackFromCatalog()
-                        } label: {
-                            Label("Back", systemImage: "chevron.left")
-                        }
-                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                        .keyboardShortcut(.escape, modifiers: [])
-
-                        Text("Wallpaper Preview")
-                            .font(
-                                isCompactLayout
-                                    ? .subheadline.weight(.semibold)
-                                    : .headline.weight(.semibold)
-                            )
-                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-                            .lineLimit(1)
+                    Button {
+                        viewModel.navigateBackFromCatalog()
+                    } label: {
+                        Label("Back", systemImage: "chevron.left")
                     }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                    .keyboardShortcut(.escape, modifiers: [])
                     .zIndex(10)
 
-                    VStack(alignment: .leading, spacing: isCompactLayout ? 8 : 10) {
+                    VStack(alignment: .leading, spacing: isCompactLayout ? 6 : 8) {
                         Text(wallpaper.title)
                             .font(
                                 isCompactLayout
@@ -1649,12 +1639,29 @@ struct WallpaperCatalogDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
 
                         Text(wallpaper.category)
-                            .font(.caption)
+                            .font(.subheadline.weight(.medium))
                             .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             .lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Text(resolutionSummary ?? " ")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                            .lineLimit(1)
+
+                        Text(mediaSummary)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                            .lineLimit(1)
+
+                        Text("by \(wallpaper.attribution)")
+                            .font(.caption)
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                            .lineLimit(1)
                     }
-                    .padding(.top, isCompactLayout ? 14 : 18)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
+                    .padding(.top, isCompactLayout ? 12 : 16)
 
                     Spacer(minLength: isCompactLayout ? 8 : 10)
 
@@ -1688,6 +1695,56 @@ struct WallpaperCatalogDetailView: View {
             minHeight: isCompactLayout ? 230 : 260,
             maxHeight: isCompactLayout ? 280 : 320
         )
+        .task(id: wallpaper.id) {
+            resolvedMedia = nil
+            resolvedMedia = try? await viewModel.catalogPreviewPipeline
+                .resolvedMediaForForegroundDownload(wallpaper)
+        }
+    }
+
+    private var preferredOriginalSource: CatalogVideoSource? {
+        let resolvedSources = resolvedMedia?.originalSources ?? []
+        let candidates = resolvedSources.isEmpty ? wallpaper.sources : resolvedSources
+        return candidates.max {
+            ($0.width * $0.height) < ($1.width * $1.height)
+        }
+    }
+
+    private var resolutionSummary: String? {
+        guard let source = preferredOriginalSource,
+              source.width > 0,
+              source.height > 0 else {
+            return nil
+        }
+        var parts = ["\(source.width)×\(source.height)"]
+        if let framesPerSecond = resolvedMedia?.framesPerSecond,
+           framesPerSecond > 0 {
+            parts.append("\(Self.compactNumber(framesPerSecond)) FPS")
+        }
+        return parts.joined(separator: "   ")
+    }
+
+    private var mediaSummary: String {
+        var parts = [mediaKind]
+        if let fileSizeMB = resolvedMedia?.fileSizeMB,
+           fileSizeMB > 0 {
+            parts.append("\(Self.compactNumber(fileSizeMB)) MB")
+        }
+        return parts.joined(separator: "   ")
+    }
+
+    private var mediaKind: String {
+        let imageExtensions: Set<String> = [
+            "bmp", "gif", "heic", "heif", "jpeg", "jpg", "png", "tif", "tiff", "webp",
+        ]
+        guard let source = preferredOriginalSource else { return "Video" }
+        return imageExtensions.contains(source.url.pathExtension.lowercased()) ? "Image" : "Video"
+    }
+
+    private static func compactNumber(_ value: Double) -> String {
+        value.rounded() == value
+            ? String(Int(value))
+            : String(format: "%.1f", value)
     }
 }
 

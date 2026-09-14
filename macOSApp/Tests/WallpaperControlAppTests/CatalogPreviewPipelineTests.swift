@@ -46,6 +46,26 @@ struct CatalogPreviewPipelineTests {
     #expect(await resolver.callCount == 1)
 }
 
+@Test func resolvedMediaDecodesMetadataCachedBeforeDetailFieldsWereAdded() throws {
+    let original = CatalogResolvedMedia(
+        previewSources: [],
+        originalSources: [],
+        provider: "MoeWalls",
+        validUntil: Date(timeIntervalSinceReferenceDate: 1_000)
+    )
+    let encoded = try JSONEncoder().encode(original)
+    var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    object.removeValue(forKey: "fileSizeMB")
+    object.removeValue(forKey: "framesPerSecond")
+    let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+    let decoded = try JSONDecoder().decode(CatalogResolvedMedia.self, from: legacyData)
+
+    #expect(decoded.provider == "MoeWalls")
+    #expect(decoded.fileSizeMB == nil)
+    #expect(decoded.framesPerSecond == nil)
+}
+
 @Test func foregroundDownloadBlocksPreviewBodiesUntilLeaseEnds() async throws {
     CatalogPreviewURLProtocol.configure(statusCode: 206, byteCount: 4_096)
     let session = previewTestSession()

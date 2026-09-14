@@ -138,8 +138,9 @@ import Testing
 @Test func motionBGSPreviewResolverSelectsLightweightOGVideo() async throws {
     MotionBGSPreviewURLProtocol.configure(html: """
     <meta property="og:video" content="https://motionbgs.com/media/9806/miku-nakano.960x540.mp4">
+    <div>FPS: 60</div>
     <a href=/dl/4k/9806 rel=nofollow target=_blank>
-      <div class="text-lg mb-1"><span class=font-bold>4K</span> Wallpaper</div>
+      <div class="text-lg mb-1"><span class=font-bold>4K</span> Wallpaper (38.2Mb)</div>
       <div class=text-xs>3840x2160 mp4 file</div>
     </a>
     """)
@@ -169,6 +170,8 @@ import Testing
     #expect(media.originalSources.map(\.url.absoluteString) == [
         "https://motionbgs.com/dl/4k/9806"
     ])
+    #expect(media.fileSizeMB == 38.2)
+    #expect(media.framesPerSecond == 60)
 }
 
 private final class MotionBGSPreviewURLProtocol: URLProtocol, @unchecked Sendable {

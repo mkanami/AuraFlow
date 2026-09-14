@@ -198,9 +198,11 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wallpap
     }
 
     func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
-        let dimensions = wallpaper.sources.first.map { ($0.width, $0.height) } ?? (0, 0)
+        var dimensions = wallpaper.sources.first.map { ($0.width, $0.height) } ?? (0, 0)
         var urls = wallpaper.sources.map(\.url)
         var explicitDownloadURL: URL?
+        var fileSizeMB: Double?
+        var framesPerSecond: Double?
 
         // Listing data can contain a derived URL. Refresh the detail page when
         // possible so stale CDN routes do not poison the prepared cache.
@@ -208,6 +210,11 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wallpap
            let details = try? await fetchDetails(pageURL: pageURL) {
             urls.append(contentsOf: details.previewCandidateURLs)
             explicitDownloadURL = details.downloadURL
+            fileSizeMB = details.fileSizeMB
+            framesPerSecond = details.framesPerSecond
+            if let resolution = details.resolution {
+                dimensions = (resolution.width, resolution.height)
+            }
         }
 
         var seen = Set<String>()
@@ -242,7 +249,9 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wallpap
             previewSources: previewSources,
             originalSources: originalSources,
             provider: "MoeWalls",
-            validUntil: Date().addingTimeInterval(24 * 60 * 60)
+            validUntil: Date().addingTimeInterval(24 * 60 * 60),
+            fileSizeMB: fileSizeMB,
+            framesPerSecond: framesPerSecond
         )
     }
 
@@ -672,6 +681,7 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wallpap
             tags: tags,
             resolution: resolution,
             fileSizeMB: nil,
+            framesPerSecond: nil,
             sourceName: "MoeWalls",
             publishedAt: publishedAt,
             downloadURL: nil,

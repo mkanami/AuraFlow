@@ -40,6 +40,24 @@ struct CatalogResolvedMedia: Codable, Sendable, Equatable {
     let originalSources: [CatalogVideoSource]
     let provider: String
     let validUntil: Date
+    let fileSizeMB: Double?
+    let framesPerSecond: Double?
+
+    init(
+        previewSources: [CatalogVideoSource],
+        originalSources: [CatalogVideoSource],
+        provider: String,
+        validUntil: Date,
+        fileSizeMB: Double? = nil,
+        framesPerSecond: Double? = nil
+    ) {
+        self.previewSources = previewSources
+        self.originalSources = originalSources
+        self.provider = provider
+        self.validUntil = validUntil
+        self.fileSizeMB = fileSizeMB
+        self.framesPerSecond = framesPerSecond
+    }
 }
 
 protocol WallpaperCatalogMediaResolving: Sendable {
