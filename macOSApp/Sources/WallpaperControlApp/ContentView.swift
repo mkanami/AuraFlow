@@ -752,6 +752,8 @@ struct SettingsPopupOverlay: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let popupHeight = min(520, max(proxy.size.height - 48, 1))
+
             ZStack {
                 Color.black.opacity(colorScheme == .dark ? 0.42 : 0.28)
                     .ignoresSafeArea()
@@ -762,7 +764,7 @@ struct SettingsPopupOverlay: View {
                 SettingsPopupCard(viewModel: viewModel)
                     .frame(
                         maxWidth: min(620, max(proxy.size.width - 48, 1)),
-                        maxHeight: max(proxy.size.height - 48, 1)
+                        maxHeight: popupHeight
                     )
                     .padding(.horizontal, 24)
                     .padding(.vertical, 24)
