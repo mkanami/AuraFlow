@@ -321,6 +321,35 @@ enum MotionBGSParser {
         return value.flatMap { absoluteURL(from: $0, baseURL: baseURL) }
     }
 
+    /// Listing cards already contain the stable media id and slug in their
+    /// poster path. Build the lightweight preview route without waiting for a
+    /// second HTML request; the normal resolver still validates and supplies
+    /// the original download routes in parallel.
+    static func derivedPreviewVideoURL(from previewURL: URL?) -> URL? {
+        guard let previewURL,
+              previewURL.host?.localizedCaseInsensitiveContains("motionbgs.com") == true else {
+            return nil
+        }
+        let normalizedPath = previewURL.path.replacingOccurrences(
+            of: #"^/i/c/\d+x\d+/"#,
+            with: "/",
+            options: .regularExpression
+        )
+        let pattern = #"^/media/(\d+)/(.+?)(?:\.\d{3,5}x\d{3,5})?\.(?:jpe?g|png|webp)$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let match = regex.firstMatch(
+                in: normalizedPath,
+                range: NSRange(normalizedPath.startIndex..<normalizedPath.endIndex, in: normalizedPath)
+              ),
+              let mediaIDRange = Range(match.range(at: 1), in: normalizedPath),
+              let slugRange = Range(match.range(at: 2), in: normalizedPath) else {
+            return nil
+        }
+        let mediaID = normalizedPath[mediaIDRange]
+        let slug = normalizedPath[slugRange]
+        return URL(string: "https://motionbgs.com/media/\(mediaID)/\(slug).960x540.mp4")
+    }
+
     static func fileSizeMB(html: String) -> Double? {
         let normalized = decodeHTMLEntities(html)
         let labeledSize = firstMatch(

@@ -80,7 +80,7 @@ struct CatalogPreviewPipelineTests {
     )
     let wallpaper = previewPipelineWallpaper(id: "foreground-priority")
 
-    let lease = await pipeline.beginForegroundDownload()
+    let lease = await pipeline.beginForegroundDownload(for: wallpaper.id)
     await pipeline.prefetch(wallpaper, priority: .selected)
     try await Task.sleep(nanoseconds: 250_000_000)
     #expect(CatalogPreviewURLProtocol.fullRequestCount == 0)
@@ -88,6 +88,109 @@ struct CatalogPreviewPipelineTests {
     await pipeline.endForegroundDownload(lease)
     _ = try await awaitReadyURL(await pipeline.events(for: wallpaper))
     #expect(CatalogPreviewURLProtocol.fullRequestCount == 1)
+}
+
+@Test func selectedPreviewPreemptsActiveViewportMetadata() async throws {
+    let directory = previewTestDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let resolver = CatalogPreemptibleMediaResolver()
+    let pipeline = CatalogPreviewPipeline(
+        resolver: nil,
+        mediaResolver: resolver,
+        catalogDirectoryURL: directory,
+        mediaPreparer: CatalogPreviewMediaPreparerStub()
+    )
+
+    for index in 0..<4 {
+        await pipeline.prefetchMetadata(
+            previewPipelineWallpaper(id: "background-\(index)"),
+            priority: .visible
+        )
+    }
+    try await waitUntil { await resolver.activeBackgroundCount == 4 }
+
+    let selected = previewPipelineWallpaper(id: "selected")
+    await pipeline.prefetch(selected, priority: .selected)
+    try await waitUntil { await resolver.didResolveSelected }
+
+    #expect(await resolver.cancelledBackgroundCount == 4)
+}
+
+@Test func motionBGSSelectedPreviewPublishesDirectRouteBeforeMetadataFinishes() async throws {
+    let directory = previewTestDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let resolver = CatalogBlockingMediaResolver()
+    let pipeline = CatalogPreviewPipeline(
+        resolver: nil,
+        mediaResolver: resolver,
+        catalogDirectoryURL: directory,
+        mediaPreparer: CatalogPreviewMediaPreparerStub()
+    )
+    let wallpaper = CatalogWallpaper(
+        id: "motion-fast-route",
+        title: "Fast Route",
+        category: "Anime Nature",
+        attribution: "MotionBGS",
+        previewImageURL: URL(
+            string: "https://motionbgs.com/i/c/364x205/media/9964/summer-mountain-paradise.3840x2160.jpg"
+        ),
+        sourcePageURL: URL(string: "https://motionbgs.com/summer-mountain-paradise"),
+        sources: []
+    )
+
+    let stream = await pipeline.events(for: wallpaper)
+    let directURL = try await firstDirectURL(stream)
+    await pipeline.confirmDirectPlayback(wallpaperID: wallpaper.id, url: directURL)
+
+    #expect(
+        directURL.absoluteString ==
+            "https://motionbgs.com/media/9964/summer-mountain-paradise.960x540.mp4"
+    )
+    #expect(await resolver.isStillResolving)
+}
+
+@Test func movingDirectPreviewCancelsDuplicateMediaDownload() async throws {
+    CatalogPreviewURLProtocol.configure(statusCode: 206, byteCount: 4_096)
+    let session = previewTestSession()
+    defer { session.invalidateAndCancel() }
+    let directory = previewTestDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let pipeline = CatalogPreviewPipeline(
+        resolver: CatalogPreviewResolverSpy(),
+        catalogDirectoryURL: directory,
+        session: session,
+        mediaPreparer: CatalogPreviewMediaPreparerStub()
+    )
+    let wallpaper = previewPipelineWallpaper(id: "direct-winner")
+
+    let directURL = try await firstDirectURL(await pipeline.events(for: wallpaper))
+    await pipeline.confirmDirectPlayback(wallpaperID: wallpaper.id, url: directURL)
+    try await Task.sleep(nanoseconds: 1_350_000_000)
+
+    #expect(CatalogPreviewURLProtocol.fullRequestCount == 0)
+}
+
+@Test func foregroundDownloadReusesSelectedMetadataAlreadyInFlight() async throws {
+    let directory = previewTestDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let resolver = CatalogGateMediaResolver()
+    let pipeline = CatalogPreviewPipeline(
+        resolver: nil,
+        mediaResolver: resolver,
+        catalogDirectoryURL: directory,
+        mediaPreparer: CatalogPreviewMediaPreparerStub()
+    )
+    let wallpaper = previewPipelineWallpaper(id: "foreground-route")
+
+    await pipeline.prefetch(wallpaper, priority: .selected)
+    try await waitUntil { await resolver.callCount == 1 }
+    let lease = await pipeline.beginForegroundDownload(for: wallpaper.id)
+    let mediaTask = Task { try await pipeline.resolvedMediaForForegroundDownload(wallpaper) }
+    await resolver.release()
+    _ = try await mediaTask.value
+    await pipeline.endForegroundDownload(lease)
+
+    #expect(await resolver.callCount == 1)
 }
 
 @Test func catalogPreviewPipelineDeduplicatesPreparationAndReusesDiskCache() async throws {
@@ -296,6 +399,54 @@ private actor CatalogMediaResolverSpy: WallpaperCatalogMediaResolving {
     func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {}
 }
 
+private actor CatalogPreemptibleMediaResolver: WallpaperCatalogMediaResolving {
+    private(set) var activeBackgroundCount = 0
+    private(set) var cancelledBackgroundCount = 0
+    private(set) var didResolveSelected = false
+
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
+        if wallpaper.id.hasPrefix("background-") {
+            activeBackgroundCount += 1
+            do {
+                try await Task.sleep(nanoseconds: 30_000_000_000)
+            } catch {
+                activeBackgroundCount -= 1
+                cancelledBackgroundCount += 1
+                throw error
+            }
+        } else {
+            didResolveSelected = true
+        }
+        return resolvedTestMedia(for: wallpaper)
+    }
+}
+
+private actor CatalogBlockingMediaResolver: WallpaperCatalogMediaResolving {
+    private(set) var isStillResolving = false
+
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
+        isStillResolving = true
+        try await Task.sleep(nanoseconds: 30_000_000_000)
+        return resolvedTestMedia(for: wallpaper)
+    }
+}
+
+private actor CatalogGateMediaResolver: WallpaperCatalogMediaResolving {
+    private(set) var callCount = 0
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
+        callCount += 1
+        await withCheckedContinuation { continuation = $0 }
+        return resolvedTestMedia(for: wallpaper)
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 private actor CatalogPreviewOrderRecorder {
     private(set) var values: [String] = []
     func append(_ value: String) { values.append(value) }
@@ -353,6 +504,36 @@ private func firstTerminalEvent(_ stream: AsyncStream<CatalogPreviewEvent>) asyn
         return event
     }
     throw CancellationError()
+}
+
+private func firstDirectURL(_ stream: AsyncStream<CatalogPreviewEvent>) async throws -> URL {
+    for await event in stream {
+        if case let .direct(url) = event { return url }
+        if event == .failed { throw URLError(.resourceUnavailable) }
+    }
+    throw CancellationError()
+}
+
+private func waitUntil(
+    timeoutNanoseconds: UInt64 = 2_000_000_000,
+    condition: @escaping @Sendable () async -> Bool
+) async throws {
+    let startedAt = ContinuousClock.now
+    while !(await condition()) {
+        if ContinuousClock.now - startedAt > .nanoseconds(Int64(timeoutNanoseconds)) {
+            throw URLError(.timedOut)
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+}
+
+private func resolvedTestMedia(for wallpaper: CatalogWallpaper) -> CatalogResolvedMedia {
+    CatalogResolvedMedia(
+        previewSources: wallpaper.sources,
+        originalSources: wallpaper.sources,
+        provider: wallpaper.attribution,
+        validUntil: Date().addingTimeInterval(86_400)
+    )
 }
 
 private final class CatalogPreviewURLProtocol: URLProtocol, @unchecked Sendable {

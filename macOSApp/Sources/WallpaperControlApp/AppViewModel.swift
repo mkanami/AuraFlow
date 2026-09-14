@@ -4180,7 +4180,7 @@ final class AppViewModel: ObservableObject {
             return existingURL
         }
 
-        let lease = await catalogPreviewPipeline.beginForegroundDownload()
+        let lease = await catalogPreviewPipeline.beginForegroundDownload(for: wallpaper.id)
         let startedAt = Date()
         do {
             let resolveStartedAt = Date()

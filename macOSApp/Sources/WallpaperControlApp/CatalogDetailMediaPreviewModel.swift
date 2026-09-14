@@ -27,6 +27,7 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
     private var winner: Winner?
     private var attemptedURLs = Set<URL>()
     private var isNetworkSuspended = false
+    private var activeWallpaperID: String?
 
     init(pipeline: CatalogPreviewPipeline? = nil) {
         self.pipeline = pipeline
@@ -37,6 +38,7 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         generation &+= 1
         let requestedGeneration = generation
         stopPlayback()
+        activeWallpaperID = wallpaper.id
         imageURL = Self.preferredImageURL(for: wallpaper)
 
         if let immediate = Self.immediatePreviewSource(for: wallpaper) {
@@ -62,6 +64,7 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         nativeAttemptTask = nil
         clearAVPlayback()
         withAnimation(.easeInOut(duration: 0.16)) { isVideoVisible = true }
+        confirmDirectPlayback(url: url)
     }
 
     func streamingPreviewDidFail(url: URL, wallpaper: CatalogWallpaper) {
@@ -168,6 +171,7 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
                     winner = .native
                     streamingVideoURL = nil
                     withAnimation(.easeInOut(duration: 0.16)) { isVideoVisible = true }
+                    confirmDirectPlayback(url: videoURL)
                     return true
                 }
             case .failed:
@@ -193,6 +197,13 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         nativeAttemptTask = nil
         nativeAttemptGeneration &+= 1
         clearAVPlayback()
+    }
+
+    private func confirmDirectPlayback(url: URL) {
+        guard let pipeline, let activeWallpaperID else { return }
+        Task {
+            await pipeline.confirmDirectPlayback(wallpaperID: activeWallpaperID, url: url)
+        }
     }
 
     private func clearAVPlayback() {

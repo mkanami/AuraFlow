@@ -203,6 +203,9 @@ actor CatalogPreviewPipeline {
     }
 
     func prefetch(_ wallpaper: CatalogWallpaper, priority: CatalogPreviewPriority) {
+        if priority == .selected {
+            preemptBackgroundMetadata(except: wallpaper.id)
+        }
         startIfNeeded(wallpaper, priority: priority)
     }
 
@@ -225,10 +228,10 @@ actor CatalogPreviewPipeline {
         await mediaResolver?.invalidateResolvedMedia(for: wallpaper)
     }
 
-    func beginForegroundDownload() async -> CatalogForegroundDownloadLease {
+    func beginForegroundDownload(for wallpaperID: String) async -> CatalogForegroundDownloadLease {
         let lease = await transferCoordinator.beginForegroundDownload()
         let cancelledCount = jobs.count
-        cancelAll()
+        cancelPreviewJobs(preservingMetadataFor: wallpaperID)
         transferLogger.info("stage=foreground-priority cancelled_background_tasks=\(cancelledCount)")
         return lease
     }
@@ -296,6 +299,18 @@ actor CatalogPreviewPipeline {
         return cacheDirectory.appendingPathComponent(entry.fileName)
     }
 
+    /// Once a direct stream has produced a moving frame, downloading the same
+    /// preview in parallel only competes with playback. Keep the stream and
+    /// stop the duplicate cache preparation. Foreground Download remains able
+    /// to reuse the independently resolved metadata route.
+    func confirmDirectPlayback(wallpaperID: String, url: URL) {
+        guard let job = jobs[wallpaperID], job.directURL == url else { return }
+        job.task?.cancel()
+        jobs[wallpaperID] = nil
+        failures[wallpaperID] = nil
+        logger.info("stage=direct-ready wallpaper=\(Self.digest(wallpaperID).prefix(12), privacy: .public)")
+    }
+
     private func startIfNeeded(_ wallpaper: CatalogWallpaper, priority: CatalogPreviewPriority) {
         if reusableEntry(for: wallpaper.id) != nil { return }
         if let failedAt = failures[wallpaper.id],
@@ -352,6 +367,12 @@ actor CatalogPreviewPipeline {
                 return
             }
 
+            if currentPriority(for: wallpaper.id, fallback: priority) == .selected,
+               let fastURL = Self.fastDirectPreviewURL(for: wallpaper) {
+                try ensureCurrentJob(wallpaper.id, token: token)
+                publishDirectURL(fastURL, wallpaperID: wallpaper.id, token: token)
+            }
+
             setState(.resolving, wallpaperID: wallpaper.id, token: token)
             let media = try await resolvedMedia(
                 for: wallpaper,
@@ -381,12 +402,13 @@ actor CatalogPreviewPipeline {
                     throw CancellationError()
                 }
                 if !candidate.url.isFileURL {
-                    jobs[wallpaper.id]?.directURL = candidate.url
-                    emit(.direct(candidate.url), for: wallpaper.id)
-                    // Give the direct stream a brief head start. If the user
-                    // presses Download or leaves, this task is cancelled before
-                    // it consumes the entire preview file.
-                    try await Task.sleep(nanoseconds: 150_000_000)
+                    publishDirectURL(candidate.url, wallpaperID: wallpaper.id, token: token)
+                    // Do not immediately start a second transfer for the same
+                    // media. A successful direct player confirms its first
+                    // moving frame and cancels this fallback before it can
+                    // consume bandwidth. If direct playback stalls, local
+                    // preparation still starts as the compatibility route.
+                    try await Task.sleep(nanoseconds: 1_200_000_000)
                 }
                 do {
                     cachedURL = try await prepare(
@@ -569,6 +591,49 @@ actor CatalogPreviewPipeline {
                 Self.videoExtensions.contains($0.pathExtension.lowercased())
         }) else { return nil }
         return CatalogVideoSource(url: url, width: 0, height: 0)
+    }
+
+    private func preemptBackgroundMetadata(except selectedWallpaperID: String) {
+        let backgroundIDs = jobs.compactMap { id, job in
+            id != selectedWallpaperID && job.priority < .selected ? id : nil
+        }
+        for id in backgroundIDs {
+            jobs[id]?.task?.cancel()
+            jobs[id] = nil
+            metadataResolutionTasks[id]?.cancel()
+            metadataResolutionTasks[id] = nil
+        }
+        guard !backgroundIDs.isEmpty else { return }
+        logger.info("stage=selected-preempt cancelled_metadata=\(backgroundIDs.count)")
+    }
+
+    private func cancelPreviewJobs(preservingMetadataFor wallpaperID: String) {
+        for job in jobs.values { job.task?.cancel() }
+        jobs.removeAll()
+        let staleMetadataIDs = metadataResolutionTasks.keys.filter { $0 != wallpaperID }
+        for id in staleMetadataIDs {
+            metadataResolutionTasks[id]?.cancel()
+            metadataResolutionTasks[id] = nil
+        }
+    }
+
+    private func publishDirectURL(_ url: URL, wallpaperID: String, token: UUID) {
+        guard jobs[wallpaperID]?.token == token,
+              jobs[wallpaperID]?.directURL != url else { return }
+        jobs[wallpaperID]?.directURL = url
+        emit(.direct(url), for: wallpaperID)
+    }
+
+    private static func fastDirectPreviewURL(for wallpaper: CatalogWallpaper) -> URL? {
+        if wallpaper.attribution.localizedCaseInsensitiveContains("MoeWalls") {
+            return wallpaper.sources.map(\.url).first { url in
+                !url.isFileURL && ["webm", "mkv"].contains(url.pathExtension.lowercased())
+            }
+        }
+        if wallpaper.attribution.localizedCaseInsensitiveContains("MotionBGS") {
+            return MotionBGSParser.derivedPreviewVideoURL(from: wallpaper.previewImageURL)
+        }
+        return nil
     }
 
     private func download(_ url: URL, referer: URL?) async throws -> URL {

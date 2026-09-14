@@ -135,6 +135,24 @@ import Testing
     )
 }
 
+@Test func motionBGSListingPosterDerivesLightweightPreviewWithoutDetailRequest() {
+    let modernPoster = URL(
+        string: "https://motionbgs.com/i/c/364x205/media/9964/summer-mountain-paradise.3840x2160.jpg"
+    )!
+    let legacyPoster = URL(
+        string: "https://motionbgs.com/i/c/364x205/media/2763/samurai-spirit-under-the-moon.jpg"
+    )!
+
+    #expect(
+        MotionBGSParser.derivedPreviewVideoURL(from: modernPoster)?.absoluteString ==
+            "https://motionbgs.com/media/9964/summer-mountain-paradise.960x540.mp4"
+    )
+    #expect(
+        MotionBGSParser.derivedPreviewVideoURL(from: legacyPoster)?.absoluteString ==
+            "https://motionbgs.com/media/2763/samurai-spirit-under-the-moon.960x540.mp4"
+    )
+}
+
 @Test func motionBGSPreviewResolverSelectsLightweightOGVideo() async throws {
     MotionBGSPreviewURLProtocol.configure(html: """
     <meta property="og:video" content="https://motionbgs.com/media/9806/miku-nakano.960x540.mp4">
