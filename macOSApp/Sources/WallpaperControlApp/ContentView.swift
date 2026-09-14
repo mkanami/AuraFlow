@@ -1349,6 +1349,10 @@ struct WallpaperCatalogView: View {
         viewModel.selectedCatalogWallpaper != nil
     }
 
+    private var detailBottomTrim: CGFloat {
+        isCompactLayout ? 18 : 20
+    }
+
     private var catalogCountText: String {
         let filteredCount = viewModel.filteredCatalogWallpapers.count
         if let selectedGroup = viewModel.selectedCatalogGroup {
@@ -1424,7 +1428,7 @@ struct WallpaperCatalogView: View {
             maxHeight: isDetailOpened ? (isCompactLayout ? 300 : 350) : 320,
             alignment: .topLeading
         )
-        .background(
+        .background(alignment: .top) {
             AuraGlassRoundedSurface(
                 cornerRadius: 14,
                 material: .clear,
@@ -1432,11 +1436,13 @@ struct WallpaperCatalogView: View {
                 protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity,
                 protectionOverlayColor: adaptiveGlassAppearance.bottomTextTone.contrastSurfaceColor
             )
-        )
-        .overlay(
+            .padding(.bottom, isDetailOpened ? detailBottomTrim : 0)
+        }
+        .overlay(alignment: .top) {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
-        )
+                .padding(.bottom, isDetailOpened ? detailBottomTrim : 0)
+        }
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: Color.black.opacity(0.26), radius: 12, x: 0, y: 7)
         .environment(\.colorScheme, .dark)
