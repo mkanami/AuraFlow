@@ -1425,10 +1425,12 @@ struct WallpaperCatalogView: View {
         .padding(.horizontal, isDetailOpened && isCompactLayout ? 16 : 18)
         .frame(
             maxWidth: .infinity,
-            maxHeight: isDetailOpened ? (isCompactLayout ? 300 : 350) : 320,
+            maxHeight: isDetailOpened
+                ? (isCompactLayout ? 300 : 350) - detailBottomTrim
+                : 320,
             alignment: .topLeading
         )
-        .background(alignment: .top) {
+        .background {
             AuraGlassRoundedSurface(
                 cornerRadius: 14,
                 material: .clear,
@@ -1436,12 +1438,10 @@ struct WallpaperCatalogView: View {
                 protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity,
                 protectionOverlayColor: adaptiveGlassAppearance.bottomTextTone.contrastSurfaceColor
             )
-            .padding(.bottom, isDetailOpened ? detailBottomTrim : 0)
         }
-        .overlay(alignment: .top) {
+        .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
-                .padding(.bottom, isDetailOpened ? detailBottomTrim : 0)
         }
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: Color.black.opacity(0.26), radius: 12, x: 0, y: 7)
