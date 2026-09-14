@@ -1665,15 +1665,30 @@ struct WallpaperCatalogDetailView: View {
 
                     Spacer(minLength: isCompactLayout ? 8 : 10)
 
-                    Button {
-                        viewModel.applyCatalogWallpaper(wallpaper)
-                    } label: {
-                        Text("Download")
-                            .padding(.vertical, isCompactLayout ? 2 : 3)
+                    HStack(spacing: 8) {
+                        Button {
+                            viewModel.applyCatalogWallpaper(wallpaper)
+                        } label: {
+                            Text("Download")
+                                .padding(.vertical, isCompactLayout ? 2 : 3)
+                        }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
+                        .frame(maxWidth: .infinity)
+                        .disabled(!viewModel.canDownloadCatalogWallpaper)
+
+                        if let sourceURL = wallpaper.sourcePageURL {
+                            Button {
+                                NSWorkspace.shared.open(sourceURL)
+                            } label: {
+                                Image(systemName: "link")
+                                    .padding(.vertical, isCompactLayout ? 2 : 3)
+                            }
+                            .accessibilityLabel("Open Source")
+                            .help("Open Source")
+                            .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
+                        }
                     }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .disabled(!viewModel.canDownloadCatalogWallpaper)
                 }
                 .padding(.top, isCompactLayout ? 2 : 4)
                 .padding(.bottom, previewVerticalInset)
