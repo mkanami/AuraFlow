@@ -1616,7 +1616,15 @@ struct WallpaperCatalogDetailView: View {
     var body: some View {
         GeometryReader { geometry in
             let spacing: CGFloat = isCompactLayout ? 12 : 14
-            let sidebarWidth: CGFloat = isCompactLayout ? 240 : 270
+            let minimumSidebarWidth: CGFloat = isCompactLayout ? 240 : 270
+            let fittedPreviewWidth = geometry.size.height * 16.0 / 9.0
+            let adaptiveSidebarWidth = geometry.size.width
+                - spacing
+                - fittedPreviewWidth
+            let sidebarWidth = min(
+                max(minimumSidebarWidth, adaptiveSidebarWidth),
+                geometry.size.width * 0.45
+            )
             let previewWidth = max(0, geometry.size.width - sidebarWidth - spacing)
             let previewHeight = min(geometry.size.height, previewWidth * 9.0 / 16.0)
             let previewVerticalInset = max(0, (geometry.size.height - previewHeight) / 2.0)
@@ -1676,7 +1684,6 @@ struct WallpaperCatalogDetailView: View {
                             viewModel.applyCatalogWallpaper(wallpaper)
                         } label: {
                             Text("Download")
-                                .padding(.vertical, isCompactLayout ? 2 : 3)
                         }
                         .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
                         .frame(maxWidth: .infinity)
@@ -1687,11 +1694,11 @@ struct WallpaperCatalogDetailView: View {
                                 NSWorkspace.shared.open(sourceURL)
                             } label: {
                                 Image(systemName: "link")
-                                    .padding(.vertical, isCompactLayout ? 2 : 3)
                             }
                             .accessibilityLabel("Open Source")
                             .help("Open Source")
                             .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
+                            .fixedSize(horizontal: true, vertical: false)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
