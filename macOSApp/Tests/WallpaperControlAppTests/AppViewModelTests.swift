@@ -554,6 +554,68 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func legacyDownloadedWallpaperMigrationRemapsSavedRuntimePaths() throws {
+    let appSupportURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("auraflow-runtime-path-migration-\(UUID().uuidString)")
+    let catalogURL = appSupportURL.appendingPathComponent("Catalog", isDirectory: true)
+    try FileManager.default.createDirectory(at: catalogURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: appSupportURL) }
+
+    let legacyURL = catalogURL.appendingPathComponent("legacy-runtime.mp4")
+    try Data("legacy-wallpaper".utf8).write(to: legacyURL, options: .atomic)
+    let wallpaper = DownloadedCatalogWallpaper(
+        id: "legacy-runtime",
+        wallpaperID: "legacy-runtime",
+        title: "Legacy Runtime",
+        category: "Anime",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        localPreviewPath: nil,
+        sourcePageURL: nil,
+        localPath: legacyURL.path,
+        downloadedAt: Date()
+    )
+    try JSONEncoder().encode([wallpaper]).write(
+        to: catalogURL.appendingPathComponent("downloaded-catalog.json"),
+        options: .atomic
+    )
+
+    let runtimeStore = WallpaperRuntimeStore(appSupportURL: appSupportURL)
+    try runtimeStore.saveConfig(
+        ControlConfig(video_path: legacyURL.path, playback_speed: 1.25)
+    )
+    try runtimeStore.saveLockScreenOnlySource(legacyURL)
+    let previewStateURL = appSupportURL.appendingPathComponent("last_preview.json")
+    try JSONEncoder().encode(
+        WallpaperPreviewSeed(
+            video_path: legacyURL.path,
+            playback_speed: 1.25,
+            scale_mode: WallpaperScaleMode.fit.rawValue
+        )
+    ).write(to: previewStateURL, options: .atomic)
+
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        appSupportDirectoryURL: appSupportURL,
+        previewStateURL: previewStateURL
+    )
+    let migratedURL = catalogURL
+        .appendingPathComponent("Downloaded Wallpapers", isDirectory: true)
+        .appendingPathComponent("legacy-runtime.mp4")
+
+    #expect(viewModel.currentVideoURL == migratedURL.standardizedFileURL)
+    #expect(runtimeStore.loadConfig().video_path == migratedURL.path)
+    #expect(runtimeStore.loadLockScreenOnlySource() == migratedURL.standardizedFileURL)
+    #expect(
+        PreviewViewModel.validPreviewURL(
+            for: try #require(viewModel.previewViewModel.loadSavedSeed())
+        ) == migratedURL.standardizedFileURL
+    )
+    #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
+    #expect(FileManager.default.fileExists(atPath: migratedURL.path))
+}
+
+@MainActor
 @Test func pausedWallpaperCanResumeOnlyThroughPlay() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.paused-start-resume")!
@@ -655,13 +717,15 @@ private func pngData(for image: CGImage) -> Data {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("native-catalog-fast-start-\(UUID().uuidString)", isDirectory: true)
     let catalogDirectory = root.appendingPathComponent("Catalog", isDirectory: true)
+    let downloadedDirectory = catalogDirectory
+        .appendingPathComponent("Downloaded Wallpapers", isDirectory: true)
     try FileManager.default.createDirectory(
-        at: catalogDirectory,
+        at: downloadedDirectory,
         withIntermediateDirectories: true
     )
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let localURL = catalogDirectory.appendingPathComponent("wallpaper.mp4")
+    let localURL = downloadedDirectory.appendingPathComponent("wallpaper.mp4")
     // The controller mock accepts the selected file. Keeping the fixture
     // deliberately minimal makes this test fail if Start reintroduces an
     // AVFoundation scan or compatibility conversion before the controller.

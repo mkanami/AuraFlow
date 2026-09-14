@@ -8,6 +8,16 @@ private let catalogPersistenceLogger = Logger(
     category: "CatalogPersistence"
 )
 
+enum CatalogStorageLayout {
+    static let downloadedWallpapersDirectoryName = "Downloaded Wallpapers"
+
+    static func downloadedWallpapersDirectory(in catalogDirectoryURL: URL) -> URL {
+        catalogDirectoryURL
+            .appendingPathComponent(downloadedWallpapersDirectoryName, isDirectory: true)
+            .standardizedFileURL
+    }
+}
+
 enum CatalogPersistenceStatus: Equatable, Sendable {
     case notAttempted
     case persisted
@@ -97,6 +107,16 @@ final class CatalogRepository: @unchecked Sendable {
         let created: Bool
     }
 
+    struct DownloadedWallpaperFileMigration: Equatable, Sendable {
+        let previousURL: URL
+        let currentURL: URL
+    }
+
+    struct DownloadedStoragePreparationResult: Sendable {
+        let migrations: [DownloadedWallpaperFileMigration]
+        let persistenceStatus: CatalogPersistenceStatus
+    }
+
     private let provider: WallpaperCatalogProviding
     private let atomicDataWriter: AtomicDataWriter
     let catalogDirectoryURL: URL
@@ -111,6 +131,76 @@ final class CatalogRepository: @unchecked Sendable {
         self.provider = provider
         self.atomicDataWriter = atomicDataWriter
         self.catalogDirectoryURL = catalogDirectoryURL.standardizedFileURL
+    }
+
+    /// Moves legacy media files out of the cache root before the rest of the
+    /// app restores its persisted video paths. Cache JSON and generated
+    /// previews intentionally remain in the catalog root.
+    func prepareDownloadedWallpaperStorage() -> DownloadedStoragePreparationResult {
+        do {
+            try ensureDownloadedWallpapersDirectory()
+        } catch {
+            return DownloadedStoragePreparationResult(
+                migrations: [],
+                persistenceStatus: .failed(
+                    operation: "downloaded wallpaper directory",
+                    reason: error.localizedDescription
+                )
+            )
+        }
+
+        let manifestEntries: [DownloadedCatalogWallpaper]?
+        if let data = try? Data(contentsOf: downloadedManifestURL) {
+            manifestEntries = try? JSONDecoder().decode(
+                [DownloadedCatalogWallpaper].self,
+                from: data
+            )
+        } else {
+            manifestEntries = nil
+        }
+
+        let migrations: [DownloadedWallpaperFileMigration]
+        do {
+            migrations = try moveLegacyDownloadedWallpaperFiles()
+        } catch {
+            return DownloadedStoragePreparationResult(
+                migrations: [],
+                persistenceStatus: .failed(
+                    operation: "downloaded wallpaper migration",
+                    reason: error.localizedDescription
+                )
+            )
+        }
+
+        guard !migrations.isEmpty else {
+            return DownloadedStoragePreparationResult(
+                migrations: [],
+                persistenceStatus: .notAttempted
+            )
+        }
+        guard let manifestEntries else {
+            return DownloadedStoragePreparationResult(
+                migrations: migrations,
+                persistenceStatus: .notAttempted
+            )
+        }
+
+        let migratedEntries = remapDownloadedWallpapers(
+            manifestEntries,
+            using: migrations
+        )
+        let persistenceStatus = persistDownloadedWallpapers(migratedEntries)
+        guard persistenceStatus.didPersist else {
+            rollbackDownloadedWallpaperMigrations(migrations)
+            return DownloadedStoragePreparationResult(
+                migrations: [],
+                persistenceStatus: persistenceStatus
+            )
+        }
+        return DownloadedStoragePreparationResult(
+            migrations: migrations,
+            persistenceStatus: persistenceStatus
+        )
     }
 
     // MARK: Catalog cache
@@ -501,11 +591,11 @@ final class CatalogRepository: @unchecked Sendable {
             )
         }
 
-        try ensureCatalogDirectory()
+        try ensureDownloadedWallpapersDirectory()
         let extensionName = normalizedSourceURL.pathExtension.isEmpty
             ? "mp4"
             : normalizedSourceURL.pathExtension.lowercased()
-        let destinationURL = catalogDirectoryURL.appendingPathComponent(
+        let destinationURL = downloadedWallpapersDirectoryURL.appendingPathComponent(
             "local-\(UUID().uuidString.lowercased()).\(extensionName)"
         )
         let accessedSecurityScopedResource = normalizedSourceURL.startAccessingSecurityScopedResource()
@@ -680,6 +770,10 @@ final class CatalogRepository: @unchecked Sendable {
         catalogDirectoryURL.appendingPathComponent("downloaded-catalog.json")
     }
 
+    private var downloadedWallpapersDirectoryURL: URL {
+        CatalogStorageLayout.downloadedWallpapersDirectory(in: catalogDirectoryURL)
+    }
+
     private func ensureCatalogDirectory() throws {
         try FileManager.default.createDirectory(
             at: catalogDirectoryURL,
@@ -690,6 +784,13 @@ final class CatalogRepository: @unchecked Sendable {
     private func ensurePreviewDirectory() throws {
         try FileManager.default.createDirectory(
             at: catalogDirectoryURL.appendingPathComponent("PreviewImages", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+    }
+
+    private func ensureDownloadedWallpapersDirectory() throws {
+        try FileManager.default.createDirectory(
+            at: downloadedWallpapersDirectoryURL,
             withIntermediateDirectories: true
         )
     }
@@ -755,16 +856,16 @@ final class CatalogRepository: @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: catalogDirectoryURL.path) else {
             return []
         }
-        let files = try FileManager.default.contentsOfDirectory(
-            at: catalogDirectoryURL,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        )
+        let directories = [downloadedWallpapersDirectoryURL, catalogDirectoryURL]
+        let files = try directories.flatMap { directory in
+            guard FileManager.default.fileExists(atPath: directory.path) else { return [URL]() }
+            return try FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )
+        }
 
-        let validExtensions = Set([
-            "mp4", "mov", "m4v", "webm", "mkv", "avi", "flv", "ts", "m2ts", "gif",
-            "png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "bmp", "webp"
-        ])
         let ignoredNames: Set<String> = [
             "catalog-cache.json",
             "waifu-anime-cache.json",
@@ -775,7 +876,7 @@ final class CatalogRepository: @unchecked Sendable {
         return files.compactMap { fileURL in
             let name = fileURL.lastPathComponent
             guard !ignoredNames.contains(name),
-                  validExtensions.contains(fileURL.pathExtension.lowercased())
+                  Self.downloadedWallpaperExtensions.contains(fileURL.pathExtension.lowercased())
             else { return nil }
 
             let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey])
@@ -797,6 +898,116 @@ final class CatalogRepository: @unchecked Sendable {
             )
         }.sorted(by: newerFirst)
     }
+
+    private func moveLegacyDownloadedWallpaperFiles() throws
+        -> [DownloadedWallpaperFileMigration] {
+        let files = try FileManager.default.contentsOfDirectory(
+            at: catalogDirectoryURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        var migrations: [DownloadedWallpaperFileMigration] = []
+        do {
+            for sourceURL in files {
+                let normalizedSourceURL = sourceURL.standardizedFileURL
+                guard Self.downloadedWallpaperExtensions.contains(
+                    normalizedSourceURL.pathExtension.lowercased()
+                ),
+                (try? normalizedSourceURL.resourceValues(forKeys: [.isRegularFileKey]))?
+                    .isRegularFile == true
+                else {
+                    continue
+                }
+
+                let destinationURL = uniqueDownloadedWallpaperDestination(
+                    for: normalizedSourceURL
+                )
+                try FileManager.default.moveItem(
+                    at: normalizedSourceURL,
+                    to: destinationURL
+                )
+                migrations.append(
+                    DownloadedWallpaperFileMigration(
+                        previousURL: normalizedSourceURL,
+                        currentURL: destinationURL.standardizedFileURL
+                    )
+                )
+            }
+        } catch {
+            rollbackDownloadedWallpaperMigrations(migrations)
+            throw error
+        }
+        return migrations
+    }
+
+    private func uniqueDownloadedWallpaperDestination(for sourceURL: URL) -> URL {
+        let initialURL = downloadedWallpapersDirectoryURL
+            .appendingPathComponent(sourceURL.lastPathComponent)
+        guard FileManager.default.fileExists(atPath: initialURL.path) else {
+            return initialURL
+        }
+
+        let stem = sourceURL.deletingPathExtension().lastPathComponent
+        let pathExtension = sourceURL.pathExtension
+        var suffix = 2
+        while true {
+            let fileName = pathExtension.isEmpty
+                ? "\(stem)-\(suffix)"
+                : "\(stem)-\(suffix).\(pathExtension)"
+            let candidate = downloadedWallpapersDirectoryURL
+                .appendingPathComponent(fileName)
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+            suffix += 1
+        }
+    }
+
+    private func rollbackDownloadedWallpaperMigrations(
+        _ migrations: [DownloadedWallpaperFileMigration]
+    ) {
+        for migration in migrations.reversed()
+        where FileManager.default.fileExists(atPath: migration.currentURL.path)
+            && !FileManager.default.fileExists(atPath: migration.previousURL.path) {
+            try? FileManager.default.moveItem(
+                at: migration.currentURL,
+                to: migration.previousURL
+            )
+        }
+    }
+
+    private func remapDownloadedWallpapers(
+        _ wallpapers: [DownloadedCatalogWallpaper],
+        using migrations: [DownloadedWallpaperFileMigration]
+    ) -> [DownloadedCatalogWallpaper] {
+        let paths = Dictionary(
+            uniqueKeysWithValues: migrations.map {
+                ($0.previousURL.standardizedFileURL.path, $0.currentURL.standardizedFileURL.path)
+            }
+        )
+        return wallpapers.map { item in
+            guard let migratedPath = paths[item.localURL.standardizedFileURL.path] else {
+                return item
+            }
+            return DownloadedCatalogWallpaper(
+                id: item.id,
+                wallpaperID: item.wallpaperID,
+                title: item.title,
+                category: item.category,
+                attribution: item.attribution,
+                previewImageURL: item.previewImageURL,
+                localPreviewPath: item.localPreviewPath,
+                sourcePageURL: item.sourcePageURL,
+                localPath: migratedPath,
+                downloadedAt: item.downloadedAt
+            )
+        }
+    }
+
+    private static let downloadedWallpaperExtensions = Set([
+        "mp4", "mov", "m4v", "webm", "mkv", "avi", "flv", "ts", "m2ts", "gif",
+        "png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "bmp", "webp",
+    ])
 
     private func previewImageURL(for previewKey: String) throws -> URL {
         try ensurePreviewDirectory()

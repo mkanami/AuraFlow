@@ -40,9 +40,16 @@ import Testing
         }
     )
 
-    _ = try await service.download(wallpaper, preferredSources: [original])
+    let downloadedURL = try await service.download(
+        wallpaper,
+        preferredSources: [original]
+    )
 
     #expect(await recorder.urls == [original.url])
+    #expect(
+        downloadedURL.deletingLastPathComponent().lastPathComponent
+            == "Downloaded Wallpapers"
+    )
 }
 
 @Test func catalogDownloadReusesItsURLSessionAcrossTransfers() async throws {

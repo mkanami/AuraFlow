@@ -17,6 +17,10 @@ final class CatalogDownloadService: @unchecked Sendable {
     private let standardSession: URLSession
     private let browserSession: URLSession
 
+    private var downloadedWallpapersDirectoryURL: URL {
+        CatalogStorageLayout.downloadedWallpapersDirectory(in: catalogDirectoryURL)
+    }
+
     init(
         provider: WallpaperCatalogProviding,
         catalogDirectoryURL: URL,
@@ -42,7 +46,7 @@ final class CatalogDownloadService: @unchecked Sendable {
     ) async throws -> URL {
         try Task.checkCancellation()
         try FileManager.default.createDirectory(
-            at: catalogDirectoryURL,
+            at: downloadedWallpapersDirectoryURL,
             withIntermediateDirectories: true
         )
 
@@ -90,7 +94,7 @@ final class CatalogDownloadService: @unchecked Sendable {
     func download(_ wallpaper: CatalogWallpaper) async throws -> URL {
         try Task.checkCancellation()
         try FileManager.default.createDirectory(
-            at: catalogDirectoryURL,
+            at: downloadedWallpapersDirectoryURL,
             withIntermediateDirectories: true
         )
 
@@ -212,7 +216,7 @@ final class CatalogDownloadService: @unchecked Sendable {
         let widthLabel = source.width > 0 ? String(source.width) : "auto"
         let heightLabel = source.height > 0 ? String(source.height) : "auto"
         let fileStem = "\(wallpaper.id)-\(widthLabel)x\(heightLabel)"
-        let cachedDestination = catalogDirectoryURL.appendingPathComponent(
+        let cachedDestination = downloadedWallpapersDirectoryURL.appendingPathComponent(
             "\(fileStem).\(downloadFileExtension(for: source.url))"
         )
 
@@ -272,7 +276,7 @@ final class CatalogDownloadService: @unchecked Sendable {
             throw CatalogDownloadError.unsupportedResponse(url: source.url)
         }
 
-        let destination = catalogDirectoryURL.appendingPathComponent(
+        let destination = downloadedWallpapersDirectoryURL.appendingPathComponent(
             "\(fileStem).\(downloadFileExtension(for: source.url, response: response))"
         )
         if destination != cachedDestination {
@@ -288,7 +292,7 @@ final class CatalogDownloadService: @unchecked Sendable {
     ) async throws -> URL {
         try Task.checkCancellation()
         let resolver = await MainActor.run { MoeWallsBrowserResolver() }
-        let destination = catalogDirectoryURL.appendingPathComponent(
+        let destination = downloadedWallpapersDirectoryURL.appendingPathComponent(
             "\(wallpaper.id).mp4"
         )
         try? FileManager.default.removeItem(at: destination)

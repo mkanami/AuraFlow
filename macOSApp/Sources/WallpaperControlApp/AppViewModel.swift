@@ -2332,6 +2332,17 @@ final class AppViewModel: ObservableObject {
             self.controllerAvailable = false
             self.isControllerBootstrapInProgress = true
         }
+        let downloadedStoragePreparation = catalogRepository
+            .prepareDownloadedWallpaperStorage()
+        Self.remapPersistedWallpaperReferences(
+            downloadedStoragePreparation.migrations,
+            appSupportDirectoryURL: resolvedAppSupportURL,
+            previewViewModel: previewViewModel
+        )
+        if let warningMessage = downloadedStoragePreparation
+            .persistenceStatus.warningMessage {
+            statusMessage = warningMessage
+        }
         configureLifecycleViewModel()
         optimizationHardwareAV1DecodeAvailable = optimizer.supportsHardwareAV1Decode()
         applyOptimizationSettings(optimizationStore.load())
@@ -2379,6 +2390,47 @@ final class AppViewModel: ObservableObject {
         }
         bootstrapControllerIfNeeded()
         startHealthMonitor()
+    }
+
+    private static func remapPersistedWallpaperReferences(
+        _ migrations: [CatalogRepository.DownloadedWallpaperFileMigration],
+        appSupportDirectoryURL: URL,
+        previewViewModel: PreviewViewModel
+    ) {
+        guard !migrations.isEmpty else { return }
+        let pathMap = Dictionary(
+            uniqueKeysWithValues: migrations.map {
+                ($0.previousURL.standardizedFileURL.path, $0.currentURL.standardizedFileURL.path)
+            }
+        )
+        let runtimeStore = WallpaperRuntimeStore(
+            appSupportURL: appSupportDirectoryURL
+        )
+
+        if FileManager.default.fileExists(atPath: runtimeStore.configURL.path) {
+            var config = runtimeStore.loadConfig()
+            if let migratedPath = pathMap[config.video_path] {
+                config.video_path = migratedPath
+                try? runtimeStore.saveConfig(config)
+            }
+        }
+
+        if let lockScreenSource = runtimeStore.loadLockScreenOnlySource(),
+           let migratedPath = pathMap[lockScreenSource.standardizedFileURL.path] {
+            try? runtimeStore.saveLockScreenOnlySource(
+                URL(fileURLWithPath: migratedPath)
+            )
+        }
+
+        if let previewSeed = previewViewModel.loadSavedSeed(),
+           let migratedPath = pathMap[previewSeed.video_path] {
+            previewViewModel.saveSeed(
+                for: URL(fileURLWithPath: migratedPath),
+                playbackSpeed: previewSeed.playback_speed,
+                scaleMode: previewSeed.scale_mode.flatMap(WallpaperScaleMode.init(rawValue:))
+                    ?? .fill
+            )
+        }
     }
 
     private func configureLifecycleViewModel() {
