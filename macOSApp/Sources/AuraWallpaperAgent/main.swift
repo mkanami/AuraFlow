@@ -1013,11 +1013,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Hide immediately, even if CGSession never reached the locked state.
-        // This cancels an early shield handoff after a quick unlock and keeps
-        // the next Lock on the already-warm bridge instead of timing out it.
         let hadEarlyLockScreenHandoff = earlyLockScreenHandoffArmed
-        if hadEarlyLockScreenHandoff {
+        // An unconfirmed quick lock must still cancel its queued native show.
+        // For a real shared session, keep the secure surface until the Aura
+        // Desktop window has been presented below it during the unlock path.
+        if hadEarlyLockScreenHandoff,
+           lockScreenOnlyMode || !sessionInactive {
             cancelEarlyLockScreenHandoff()
         }
         guard sessionInactive else { return }
@@ -1045,12 +1046,18 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 reason: "session-unlocked"
             )
         } else {
-            if lockScreenPlatform.capabilities.supportsSecureLockScreen,
-               !hadEarlyLockScreenHandoff {
-                nativeLockScreenBridge.hideAfterUnlock()
+            LockScreenTransitionHandoff.completeSharedUnlock {
+                showWindows(forceOrder: true)
+                applyPlaybackRate()
+            } releaseNativeLockSurface: {
+                guard lockScreenPlatform.capabilities.supportsSecureLockScreen
+                else { return }
+                if hadEarlyLockScreenHandoff {
+                    cancelEarlyLockScreenHandoff()
+                } else {
+                    nativeLockScreenBridge.hideAfterUnlock()
+                }
             }
-            showWindows(forceOrder: true)
-            applyPlaybackRate()
         }
         writeHealth(reason: "session-active")
         scheduleDesktopStoreRestoration()
@@ -2053,11 +2060,17 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         _ window: NSWindow,
         as mode: WallpaperPresentationMode
     ) {
-        // The secure Lock Screen is rendered by macOS's Aerial/legacy saver
-        // route. An app-owned .screenSaver window is not composited reliably
-        // by loginwindow and can cover the real wallpaper with black. Keep
-        // the app window available for the in-app preview, but never place it
-        // above the actual authentication surface.
+        // macOS renders the secure surface through its Aerial/legacy route.
+        // In shared Start, leave the already-visible Aura Desktop window at
+        // its existing desktop level underneath that surface. Ordering it out
+        // exposes the user's system wallpaper for a compositor frame on both
+        // lock and unlock. Never raise it to screenSaver level here.
+        if LockScreenTransitionHandoff.retainsDesktopSurface(
+            sessionIsLocked: lockScreenState.sessionState == .locked,
+            lockScreenOnlyMode: lockScreenOnlyMode
+        ) {
+            return
+        }
         guard lockScreenState.sessionState != .locked else {
             window.orderOut(nil)
             return
