@@ -139,6 +139,11 @@ actor CatalogPreviewPipeline {
         var task: Task<Void, Never>?
     }
 
+    private struct MetadataEnrichmentJob {
+        let token: UUID
+        let task: Task<CatalogResolvedMedia, Error>
+    }
+
     private let resolver: (any WallpaperCatalogPreviewResolving)?
     private let mediaResolver: (any WallpaperCatalogMediaResolving)?
     private let transferCoordinator: CatalogTransferCoordinator
@@ -165,6 +170,7 @@ actor CatalogPreviewPipeline {
     private var jobs: [String: Job] = [:]
     private var failures: [String: Date] = [:]
     private var metadataResolutionTasks: [String: Task<CatalogResolvedMedia, Error>] = [:]
+    private var metadataEnrichmentTasks: [String: MetadataEnrichmentJob] = [:]
     private var subscribers: [String: [UUID: AsyncStream<CatalogPreviewEvent>.Continuation]] = [:]
     private var manifestSaveTask: Task<Void, Never>?
     private var metadataManifestSaveTask: Task<Void, Never>?
@@ -219,9 +225,64 @@ actor CatalogPreviewPipeline {
         try await resolvedMedia(for: wallpaper, priority: .selected)
     }
 
+    /// Returns immediately-resolved routes first; callers can publish those
+    /// to the UI before awaiting this optional one-byte metadata follow-up.
+    func enrichResolvedMediaForDisplay(
+        _ wallpaper: CatalogWallpaper,
+        resolvedMedia: CatalogResolvedMedia
+    ) async throws -> CatalogResolvedMedia {
+        guard resolvedMedia.fileSizeMB == nil,
+              let enricher = mediaResolver
+                as? any WallpaperCatalogMediaMetadataEnriching,
+              await transferCoordinator.permitsBackgroundMedia()
+        else {
+            return resolvedMedia
+        }
+        if let job = metadataEnrichmentTasks[wallpaper.id] {
+            return try await job.task.value
+        }
+
+        let token = UUID()
+        let task = Task<CatalogResolvedMedia, Error> {
+            try await enricher.enrichMediaMetadata(
+                for: wallpaper,
+                media: resolvedMedia
+            )
+        }
+        metadataEnrichmentTasks[wallpaper.id] = MetadataEnrichmentJob(
+            token: token,
+            task: task
+        )
+        do {
+            let enriched = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            let isCurrent = metadataEnrichmentTasks[wallpaper.id]?.token == token
+            if isCurrent {
+                metadataEnrichmentTasks[wallpaper.id] = nil
+            }
+            if isCurrent,
+               await transferCoordinator.permitsBackgroundMedia() {
+                metadataManifest.entries[wallpaper.id] = enriched
+                scheduleMetadataManifestPersistence()
+            }
+            return enriched
+        } catch {
+            task.cancel()
+            if metadataEnrichmentTasks[wallpaper.id]?.token == token {
+                metadataEnrichmentTasks[wallpaper.id] = nil
+            }
+            throw error
+        }
+    }
+
     func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {
         metadataResolutionTasks[wallpaper.id]?.cancel()
         metadataResolutionTasks[wallpaper.id] = nil
+        metadataEnrichmentTasks[wallpaper.id]?.task.cancel()
+        metadataEnrichmentTasks[wallpaper.id] = nil
         metadataManifest.entries[wallpaper.id] = nil
         failures[wallpaper.id] = nil
         try? persistMetadataManifest()
@@ -232,6 +293,8 @@ actor CatalogPreviewPipeline {
         let lease = await transferCoordinator.beginForegroundDownload()
         let cancelledCount = jobs.count
         cancelPreviewJobs(preservingMetadataFor: wallpaperID)
+        metadataEnrichmentTasks.values.forEach { $0.task.cancel() }
+        metadataEnrichmentTasks.removeAll()
         transferLogger.info("stage=foreground-priority cancelled_background_tasks=\(cancelledCount)")
         return lease
     }
@@ -278,6 +341,8 @@ actor CatalogPreviewPipeline {
         jobs.removeAll()
         metadataResolutionTasks.values.forEach { $0.cancel() }
         metadataResolutionTasks.removeAll()
+        metadataEnrichmentTasks.values.forEach { $0.task.cancel() }
+        metadataEnrichmentTasks.removeAll()
     }
 
     func clear() throws {
@@ -289,6 +354,8 @@ actor CatalogPreviewPipeline {
         failures.removeAll()
         metadataResolutionTasks.values.forEach { $0.cancel() }
         metadataResolutionTasks.removeAll()
+        metadataEnrichmentTasks.values.forEach { $0.task.cancel() }
+        metadataEnrichmentTasks.removeAll()
         manifest = Manifest()
         metadataManifest = MetadataManifest()
         try? FileManager.default.removeItem(at: cacheDirectory)

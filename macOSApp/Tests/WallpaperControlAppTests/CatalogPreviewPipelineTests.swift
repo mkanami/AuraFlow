@@ -66,6 +66,63 @@ struct CatalogPreviewPipelineTests {
     #expect(decoded.framesPerSecond == nil)
 }
 
+@Test func displayMetadataEnrichmentUpdatesSizeWithoutResolvingRoutesAgain() async throws {
+    let directory = previewTestDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let resolver = CatalogMetadataEnricherSpy(blocksEnrichment: false)
+    let pipeline = CatalogPreviewPipeline(
+        resolver: nil,
+        mediaResolver: resolver,
+        catalogDirectoryURL: directory,
+        mediaPreparer: CatalogPreviewMediaPreparerStub()
+    )
+    let wallpaper = previewPipelineWallpaper(id: "display-metadata")
+
+    let resolved = try await pipeline.resolvedMediaForForegroundDownload(
+        wallpaper
+    )
+    #expect(resolved.fileSizeMB == nil)
+    let enriched = try await pipeline.enrichResolvedMediaForDisplay(
+        wallpaper,
+        resolvedMedia: resolved
+    )
+
+    #expect(enriched.fileSizeMB == 17.7)
+    #expect(await resolver.resolveCount == 1)
+    #expect(await resolver.enrichmentCount == 1)
+}
+
+@Test func foregroundDownloadCancelsDisplayMetadataEnrichment() async throws {
+    let directory = previewTestDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let resolver = CatalogMetadataEnricherSpy(blocksEnrichment: true)
+    let pipeline = CatalogPreviewPipeline(
+        resolver: nil,
+        mediaResolver: resolver,
+        catalogDirectoryURL: directory,
+        mediaPreparer: CatalogPreviewMediaPreparerStub()
+    )
+    let wallpaper = previewPipelineWallpaper(id: "cancel-display-metadata")
+    let resolved = try await pipeline.resolvedMediaForForegroundDownload(
+        wallpaper
+    )
+    let enrichment = Task {
+        try await pipeline.enrichResolvedMediaForDisplay(
+            wallpaper,
+            resolvedMedia: resolved
+        )
+    }
+    try await waitUntil { await resolver.enrichmentStarted }
+
+    let lease = await pipeline.beginForegroundDownload(for: wallpaper.id)
+    await #expect(throws: CancellationError.self) {
+        _ = try await enrichment.value
+    }
+    await pipeline.endForegroundDownload(lease)
+
+    #expect(await resolver.enrichmentCancelled)
+}
+
 @Test func foregroundDownloadBlocksPreviewBodiesUntilLeaseEnds() async throws {
     CatalogPreviewURLProtocol.configure(statusCode: 206, byteCount: 4_096)
     let session = previewTestSession()
@@ -397,6 +454,52 @@ private actor CatalogMediaResolverSpy: WallpaperCatalogMediaResolving {
     }
 
     func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {}
+}
+
+private actor CatalogMetadataEnricherSpy:
+    WallpaperCatalogMediaResolving,
+    WallpaperCatalogMediaMetadataEnriching
+{
+    private let blocksEnrichment: Bool
+    private(set) var resolveCount = 0
+    private(set) var enrichmentCount = 0
+    private(set) var enrichmentStarted = false
+    private(set) var enrichmentCancelled = false
+
+    init(blocksEnrichment: Bool) {
+        self.blocksEnrichment = blocksEnrichment
+    }
+
+    func resolveMedia(
+        for wallpaper: CatalogWallpaper
+    ) async throws -> CatalogResolvedMedia {
+        resolveCount += 1
+        return resolvedTestMedia(for: wallpaper)
+    }
+
+    func enrichMediaMetadata(
+        for wallpaper: CatalogWallpaper,
+        media: CatalogResolvedMedia
+    ) async throws -> CatalogResolvedMedia {
+        enrichmentCount += 1
+        enrichmentStarted = true
+        if blocksEnrichment {
+            do {
+                try await Task.sleep(nanoseconds: 30_000_000_000)
+            } catch {
+                enrichmentCancelled = true
+                throw error
+            }
+        }
+        return CatalogResolvedMedia(
+            previewSources: media.previewSources,
+            originalSources: media.originalSources,
+            provider: media.provider,
+            validUntil: media.validUntil,
+            fileSizeMB: 17.7,
+            framesPerSecond: media.framesPerSecond
+        )
+    }
 }
 
 private actor CatalogPreemptibleMediaResolver: WallpaperCatalogMediaResolving {

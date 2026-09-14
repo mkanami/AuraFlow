@@ -65,6 +65,16 @@ protocol WallpaperCatalogMediaResolving: Sendable {
     func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async
 }
 
+/// Optional lightweight follow-up for metadata that is not present on a
+/// provider's detail page. It must not download the media body; foreground
+/// wallpaper downloads always take priority over this enrichment.
+protocol WallpaperCatalogMediaMetadataEnriching: Sendable {
+    func enrichMediaMetadata(
+        for wallpaper: CatalogWallpaper,
+        media: CatalogResolvedMedia
+    ) async throws -> CatalogResolvedMedia
+}
+
 extension WallpaperCatalogMediaResolving {
     func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {}
 }

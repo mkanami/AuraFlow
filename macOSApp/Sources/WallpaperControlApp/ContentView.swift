@@ -1727,8 +1727,20 @@ struct WallpaperCatalogDetailView: View {
         )
         .task(id: wallpaper.id) {
             resolvedMedia = nil
-            resolvedMedia = try? await viewModel.catalogPreviewPipeline
+            guard let media = try? await viewModel.catalogPreviewPipeline
                 .resolvedMediaForForegroundDownload(wallpaper)
+            else {
+                return
+            }
+            resolvedMedia = media
+            if let enriched = try? await viewModel.catalogPreviewPipeline
+                .enrichResolvedMediaForDisplay(
+                    wallpaper,
+                    resolvedMedia: media
+                ),
+               !Task.isCancelled {
+                resolvedMedia = enriched
+            }
         }
     }
 
