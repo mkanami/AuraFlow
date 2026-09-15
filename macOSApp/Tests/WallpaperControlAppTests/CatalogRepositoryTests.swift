@@ -163,6 +163,110 @@ private func repositoryTestDownloadedWallpaper(
     ))
 }
 
+@Test func catalogRepositoryMigratesLegacyDownloadsIntoUserFolder() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("auraflow-catalog-migration-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let legacyURL = directory.appendingPathComponent("legacy-wallpaper.mp4")
+    try Data([1, 2, 3]).write(to: legacyURL, options: .atomic)
+    let manifestURL = directory.appendingPathComponent("downloaded-catalog.json")
+    try JSONEncoder().encode([
+        repositoryTestDownloadedWallpaper(id: "legacy", localURL: legacyURL),
+    ]).write(to: manifestURL, options: .atomic)
+    let repository = CatalogRepository(
+        provider: CatalogRepositoryTestProvider(cached: nil),
+        catalogDirectoryURL: directory
+    )
+
+    let result = repository.prepareDownloadedWallpaperStorage()
+    let migratedURL = directory
+        .appendingPathComponent("Downloaded Wallpapers", isDirectory: true)
+        .appendingPathComponent("legacy-wallpaper.mp4")
+
+    #expect(result.migrations == [
+        CatalogRepository.DownloadedWallpaperFileMigration(
+            previousURL: legacyURL.standardizedFileURL,
+            currentURL: migratedURL.standardizedFileURL
+        ),
+    ])
+    #expect(result.persistenceStatus.didPersist)
+    #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
+    #expect(FileManager.default.fileExists(atPath: migratedURL.path))
+
+    let persisted = try JSONDecoder().decode(
+        [DownloadedCatalogWallpaper].self,
+        from: Data(contentsOf: manifestURL)
+    )
+    #expect(persisted.first?.localURL == migratedURL.standardizedFileURL)
+    #expect(repository.prepareDownloadedWallpaperStorage().migrations.isEmpty)
+}
+
+@Test func downloadedWallpaperMigrationRollsBackWhenManifestWriteFails() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("auraflow-catalog-migration-rollback-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let legacyURL = directory.appendingPathComponent("keep-in-place.mp4")
+    try Data([7, 8, 9]).write(to: legacyURL, options: .atomic)
+    let manifestURL = directory.appendingPathComponent("downloaded-catalog.json")
+    let originalManifest = try JSONEncoder().encode([
+        repositoryTestDownloadedWallpaper(id: "rollback", localURL: legacyURL),
+    ])
+    try originalManifest.write(to: manifestURL, options: .atomic)
+    let repository = CatalogRepository(
+        provider: CatalogRepositoryTestProvider(cached: nil),
+        catalogDirectoryURL: directory,
+        atomicDataWriter: { _, _ in
+            throw CatalogRepositoryPersistenceTestError(
+                description: "simulated migration write failure"
+            )
+        }
+    )
+
+    let result = repository.prepareDownloadedWallpaperStorage()
+    let migratedURL = directory
+        .appendingPathComponent("Downloaded Wallpapers", isDirectory: true)
+        .appendingPathComponent("keep-in-place.mp4")
+
+    #expect(result.migrations.isEmpty)
+    #expect(!result.persistenceStatus.didPersist)
+    #expect(FileManager.default.fileExists(atPath: legacyURL.path))
+    #expect(!FileManager.default.fileExists(atPath: migratedURL.path))
+    #expect(try Data(contentsOf: manifestURL) == originalManifest)
+}
+
+@Test func catalogRepositoryCopiesLocalWallpaperIntoUserFolder() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("auraflow-catalog-local-folder-\(UUID().uuidString)")
+    let sourceURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("auraflow-local-source-\(UUID().uuidString).mp4")
+    try Data([4, 5, 6]).write(to: sourceURL, options: .atomic)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+        try? FileManager.default.removeItem(at: sourceURL)
+    }
+    let repository = CatalogRepository(
+        provider: CatalogRepositoryTestProvider(cached: nil),
+        catalogDirectoryURL: directory
+    )
+
+    let result = try await repository.copyLocalWallpaper(
+        from: sourceURL,
+        existing: []
+    )
+
+    #expect(result.created)
+    #expect(
+        result.url.deletingLastPathComponent().lastPathComponent
+            == "Downloaded Wallpapers"
+    )
+    #expect(FileManager.default.fileExists(atPath: result.url.path))
+    #expect(FileManager.default.fileExists(atPath: sourceURL.path))
+}
+
 @Test func corruptDownloadedManifestIsRecoveredAndRewritten() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("auraflow-catalog-corrupt-manifest-\(UUID().uuidString)")

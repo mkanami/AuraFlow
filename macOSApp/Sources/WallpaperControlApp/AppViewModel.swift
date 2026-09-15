@@ -15,6 +15,10 @@ private let adaptiveContrastLogger = Logger(
     subsystem: "com.andrijvergeles.auraflow",
     category: "AdaptiveContrast"
 )
+private let catalogTransferLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "CatalogTransfer"
+)
 
 enum AdaptiveTextTone: Equatable {
     case dark
@@ -2048,6 +2052,7 @@ final class AppViewModel: ObservableObject {
     private var controller: WallpaperControlling?
     private let catalogRepository: CatalogRepository
     private let catalogDownloadService: CatalogDownloadService
+    let catalogPreviewPipeline: CatalogPreviewPipeline
     private var featureViewModelCancellables = Set<AnyCancellable>()
     private let optimizer = VideoOptimizer()
     private let optimizationStore: VideoOptimizationStore
@@ -2072,7 +2077,12 @@ final class AppViewModel: ObservableObject {
     private var catalogLoadMoreTask: Task<Void, Never>?
     private var catalogSearchTask: Task<Void, Never>?
     private var catalogSearchGeneration = 0
+    private var catalogPaginationBoundaryIsVisible = false
+    private var catalogPaginationContinuationTask: Task<Void, Never>?
     private var catalogDownloadTask: Task<Void, Never>?
+    private var catalogPreviewViewportTask: Task<Void, Never>?
+    private var visibleCatalogPreviewIDs = Set<String>()
+    private var previousCatalogPreviewCenterIndex: Int?
     private var localWallpaperImportTask: Task<Void, Never>?
     private var localWallpaperImportGeneration = 0
     private var catalogNavigationLockedUntil: Date = .distantPast
@@ -2307,6 +2317,13 @@ final class AppViewModel: ObservableObject {
             provider: catalogProvider,
             catalogDirectoryURL: catalogDirectoryURL
         )
+        let catalogTransferCoordinator = CatalogTransferCoordinator()
+        self.catalogPreviewPipeline = CatalogPreviewPipeline(
+            resolver: catalogProvider as? any WallpaperCatalogPreviewResolving,
+            mediaResolver: catalogProvider as? any WallpaperCatalogMediaResolving,
+            catalogDirectoryURL: catalogDirectoryURL,
+            transferCoordinator: catalogTransferCoordinator
+        )
         self.appSupportDirectoryURL = resolvedAppSupportURL
         if let controller {
             self.controller = controller
@@ -2316,6 +2333,17 @@ final class AppViewModel: ObservableObject {
             self.controller = nil
             self.controllerAvailable = false
             self.isControllerBootstrapInProgress = true
+        }
+        let downloadedStoragePreparation = catalogRepository
+            .prepareDownloadedWallpaperStorage()
+        Self.remapPersistedWallpaperReferences(
+            downloadedStoragePreparation.migrations,
+            appSupportDirectoryURL: resolvedAppSupportURL,
+            previewViewModel: previewViewModel
+        )
+        if let warningMessage = downloadedStoragePreparation
+            .persistenceStatus.warningMessage {
+            statusMessage = warningMessage
         }
         configureLifecycleViewModel()
         optimizationHardwareAV1DecodeAvailable = optimizer.supportsHardwareAV1Decode()
@@ -2364,6 +2392,47 @@ final class AppViewModel: ObservableObject {
         }
         bootstrapControllerIfNeeded()
         startHealthMonitor()
+    }
+
+    private static func remapPersistedWallpaperReferences(
+        _ migrations: [CatalogRepository.DownloadedWallpaperFileMigration],
+        appSupportDirectoryURL: URL,
+        previewViewModel: PreviewViewModel
+    ) {
+        guard !migrations.isEmpty else { return }
+        let pathMap = Dictionary(
+            uniqueKeysWithValues: migrations.map {
+                ($0.previousURL.standardizedFileURL.path, $0.currentURL.standardizedFileURL.path)
+            }
+        )
+        let runtimeStore = WallpaperRuntimeStore(
+            appSupportURL: appSupportDirectoryURL
+        )
+
+        if FileManager.default.fileExists(atPath: runtimeStore.configURL.path) {
+            var config = runtimeStore.loadConfig()
+            if let migratedPath = pathMap[config.video_path] {
+                config.video_path = migratedPath
+                try? runtimeStore.saveConfig(config)
+            }
+        }
+
+        if let lockScreenSource = runtimeStore.loadLockScreenOnlySource(),
+           let migratedPath = pathMap[lockScreenSource.standardizedFileURL.path] {
+            try? runtimeStore.saveLockScreenOnlySource(
+                URL(fileURLWithPath: migratedPath)
+            )
+        }
+
+        if let previewSeed = previewViewModel.loadSavedSeed(),
+           let migratedPath = pathMap[previewSeed.video_path] {
+            previewViewModel.saveSeed(
+                for: URL(fileURLWithPath: migratedPath),
+                playbackSpeed: previewSeed.playback_speed,
+                scaleMode: previewSeed.scale_mode.flatMap(WallpaperScaleMode.init(rawValue:))
+                    ?? .fill
+            )
+        }
     }
 
     private func configureLifecycleViewModel() {
@@ -2433,6 +2502,7 @@ final class AppViewModel: ObservableObject {
         catalogLoadMoreTask?.cancel()
         catalogSearchTask?.cancel()
         catalogDownloadTask?.cancel()
+        catalogPreviewViewportTask?.cancel()
         localWallpaperImportTask?.cancel()
         controllerBootstrapTask?.cancel()
         glassAnalysisTask?.cancel()
@@ -2648,6 +2718,16 @@ final class AppViewModel: ObservableObject {
         let isNativeContainer = isNativePlaybackContainer(url)
         if isNativeContainer {
             configurePreview(for: url)
+            // Native catalog downloads are already complete local files by
+            // the time they reach preview. Do not wait for AVFoundation to
+            // scan a large movie before starting the Lock Screen warm-up:
+            // files with a tail-located movie index can otherwise begin that
+            // work only after the user presses Start.
+            scheduleLockScreenMediaPreparation(
+                for: url,
+                previewGeneration: previewPreparationGeneration
+            )
+            return
         } else if previewPlayer == nil {
             // Keep the view attached to a real player while compatibility
             // conversion runs. Unsupported containers must never be handed to
@@ -2961,10 +3041,23 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func revealDownloadedCatalogWallpaperInFinder(
+        _ wallpaper: DownloadedCatalogWallpaper
+    ) {
+        let url = wallpaper.localURL.standardizedFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            loadDownloadedCatalogWallpapers()
+            alertMessage = "Downloaded wallpaper file is missing"
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     func openCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
         guard Date() >= catalogNavigationLockedUntil else { return }
         catalogScrollTargetID = wallpaper.id
         selectedCatalogWallpaper = wallpaper
+        Task { await catalogPreviewPipeline.prefetch(wallpaper, priority: .selected) }
     }
 
     func navigateBackFromCatalog() {
@@ -2976,6 +3069,8 @@ final class AppViewModel: ObservableObject {
         selectedCatalogWallpaper = nil
         catalogScrollTargetID = nil
         isCatalogOpen = false
+        resetCatalogPreviewViewport()
+        Task { await catalogPreviewPipeline.cancelAll() }
         catalogNavigationLockedUntil = Date().addingTimeInterval(0.2)
     }
 
@@ -2985,6 +3080,26 @@ final class AppViewModel: ObservableObject {
 
     func toggleCatalogGroup(_ group: CatalogWallpaperGroup) {
         catalogViewModel.toggleGroup(group)
+        resetCatalogPreviewViewport()
+        Task { await catalogPreviewPipeline.cancelPending() }
+        continueCatalogPaginationIfNeeded()
+    }
+
+    func prefetchCatalogPreview(_ wallpaper: CatalogWallpaper, hovered: Bool = false) {
+        let priority: CatalogPreviewPriority = hovered ? .hovered : .visible
+        Task { await catalogPreviewPipeline.prefetchMetadata(wallpaper, priority: priority) }
+    }
+
+    func catalogPreviewVisibilityChanged(_ wallpaper: CatalogWallpaper, isVisible: Bool) {
+        if isVisible {
+            visibleCatalogPreviewIDs.insert(wallpaper.id)
+            // Start the newly visible card immediately. The short viewport
+            // debounce below only batches cancellation and directional lookahead.
+            prefetchCatalogPreview(wallpaper)
+        } else {
+            visibleCatalogPreviewIDs.remove(wallpaper.id)
+        }
+        scheduleCatalogPreviewViewportUpdate()
     }
 
     func catalogWallpaperCount(in group: CatalogWallpaperGroup) -> Int {
@@ -2992,17 +3107,25 @@ final class AppViewModel: ObservableObject {
     }
 
     func loadMoreCatalogIfNeeded(after wallpaperID: String) {
+        let triggerIDs = Set(filteredCatalogWallpapers.suffix(12).map(\.id))
+        guard triggerIDs.contains(wallpaperID) else { return }
         guard catalogHasMoreWallpapers,
               !catalogIsRefreshing,
               catalogLoadMoreTask == nil,
-              catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               selectedCatalogGroup == nil || selectedCatalogGroup == .anime else {
             return
         }
-
-        let triggerIDs = Set(filteredCatalogWallpapers.suffix(12).map(\.id))
-        guard triggerIDs.contains(wallpaperID) else { return }
         loadNextCatalogPage()
+    }
+
+    func catalogPaginationBoundaryChanged(isVisible: Bool) {
+        catalogPaginationBoundaryIsVisible = isVisible
+        if isVisible {
+            continueCatalogPaginationIfNeeded()
+        } else {
+            catalogPaginationContinuationTask?.cancel()
+            catalogPaginationContinuationTask = nil
+        }
     }
 
     func applyCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
@@ -3015,6 +3138,10 @@ final class AppViewModel: ObservableObject {
             defer {
                 catalogDownloadID = nil
                 catalogDownloadTask = nil
+                if selectedCatalogWallpaper?.id == wallpaper.id {
+                    Task { await self.catalogPreviewPipeline.prefetch(wallpaper, priority: .selected) }
+                }
+                applyCatalogPreviewViewport()
             }
             do {
                 let localURL = try await downloadCatalogVideo(for: wallpaper)
@@ -3464,6 +3591,7 @@ final class AppViewModel: ObservableObject {
                 catalogRefreshTask?.cancel()
                 catalogLoadMoreTask?.cancel()
                 catalogSearchTask?.cancel()
+                catalogPaginationContinuationTask?.cancel()
                 catalogDownloadTask?.cancel()
                 catalogDownloadID = nil
                 let refreshTask = catalogRefreshTask
@@ -3502,6 +3630,7 @@ final class AppViewModel: ObservableObject {
                     configurePreview(for: selectedVideoURL)
                 }
 
+                try await catalogPreviewPipeline.clear()
                 try await catalogRepository.clearCache()
                 try clearOptimizedVideoCache()
                 try clearRuntimePreviewCache()
@@ -3615,11 +3744,13 @@ final class AppViewModel: ObservableObject {
         // for reliable looping.
         let isGIF = sourceURL.pathExtension.lowercased() == "gif"
         if !isGIF,
-           isNativePlaybackContainer(sourceURL),
-           await isPreviewPlayableVideo(at: sourceURL) {
+           isNativePlaybackContainer(sourceURL) {
             // A native MP4/MOV/M4V source is already ready to render. Do not
-            // make a catalog download wait for the user's optional HEVC or
-            // 1080p optimization pass.
+            // rescan a complete managed download on every Start. Some large
+            // MP4 files keep their movie index at the end, making this probe
+            // take several seconds even though the same local file is already
+            // playing in preview. The download transaction validates the
+            // response and publishes the file atomically before this path.
             return (sourceURL.standardizedFileURL, nil)
         }
 
@@ -3928,6 +4059,7 @@ final class AppViewModel: ObservableObject {
             defer {
                 catalogIsRefreshing = false
                 catalogRefreshTask = nil
+                scheduleCatalogPaginationContinuationIfNeeded()
             }
 
             do {
@@ -3975,6 +4107,7 @@ final class AppViewModel: ObservableObject {
             defer {
                 catalogIsLoadingMore = false
                 catalogLoadMoreTask = nil
+                scheduleCatalogPaginationContinuationIfNeeded()
             }
 
             do {
@@ -4001,11 +4134,14 @@ final class AppViewModel: ObservableObject {
         catalogSearchGeneration &+= 1
         let generation = catalogSearchGeneration
         catalogSearchTask?.cancel()
+        resetCatalogPreviewViewport()
+        Task { await catalogPreviewPipeline.cancelPending() }
 
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard query.count >= 2 else {
             catalogIsSearching = false
             catalogSearchTask = nil
+            continueCatalogPaginationIfNeeded()
             return
         }
 
@@ -4031,7 +4167,19 @@ final class AppViewModel: ObservableObject {
 
                 let result = try await catalogRepository.searchCatalog(
                     query: query,
-                    existing: catalogWallpapers
+                    existing: catalogWallpapers,
+                    progress: { [weak self] partial in
+                        guard let self else { return }
+                        await MainActor.run {
+                            guard !Task.isCancelled,
+                                  generation == self.catalogSearchGeneration,
+                                  self.catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .localizedCaseInsensitiveCompare(query) == .orderedSame else {
+                                return
+                            }
+                            self.mergeCatalogWallpapers(partial)
+                        }
+                    }
                 )
                 guard !Task.isCancelled,
                       generation == catalogSearchGeneration,
@@ -4039,10 +4187,11 @@ final class AppViewModel: ObservableObject {
                         .localizedCaseInsensitiveCompare(query) == .orderedSame else {
                     return
                 }
-                catalogWallpapers = result.wallpapers
+                mergeCatalogWallpapers(result.wallpapers)
                 if let warningMessage = result.persistenceStatus.warningMessage {
                     statusMessage = warningMessage
                 }
+                continueCatalogPaginationIfNeeded()
             } catch is CancellationError {
                 return
             } catch {
@@ -4051,6 +4200,82 @@ final class AppViewModel: ObservableObject {
                 // the remote source is temporarily unreachable.
             }
         }
+    }
+
+    private func continueCatalogPaginationIfNeeded() {
+        guard catalogPaginationBoundaryIsVisible,
+              catalogHasMoreWallpapers,
+              !catalogIsRefreshing,
+              catalogLoadMoreTask == nil,
+              selectedCatalogGroup == nil || selectedCatalogGroup == .anime else {
+            return
+        }
+        loadNextCatalogPage()
+    }
+
+    private func mergeCatalogWallpapers(_ additions: [CatalogWallpaper]) {
+        var seen = Set(catalogWallpapers.map(\.id))
+        catalogWallpapers.append(contentsOf: additions.filter { seen.insert($0.id).inserted })
+    }
+
+    private func scheduleCatalogPaginationContinuationIfNeeded() {
+        catalogPaginationContinuationTask?.cancel()
+        guard catalogPaginationBoundaryIsVisible, catalogHasMoreWallpapers else {
+            catalogPaginationContinuationTask = nil
+            return
+        }
+        catalogPaginationContinuationTask = Task { [weak self] in
+            // Give LazyVGrid one layout pass. If newly appended cards pushed
+            // the boundary below the viewport, onDisappear cancels this task.
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard let self, !Task.isCancelled else { return }
+            catalogPaginationContinuationTask = nil
+            continueCatalogPaginationIfNeeded()
+        }
+    }
+
+    private func scheduleCatalogPreviewViewportUpdate() {
+        catalogPreviewViewportTask?.cancel()
+        catalogPreviewViewportTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.applyCatalogPreviewViewport()
+        }
+    }
+
+    private func applyCatalogPreviewViewport() {
+        let wallpapers = filteredCatalogWallpapers
+        let wallpapersByID = Dictionary(uniqueKeysWithValues: wallpapers.map { ($0.id, $0) })
+        visibleCatalogPreviewIDs.formIntersection(wallpapersByID.keys)
+        guard let plan = CatalogPreviewViewportPlan.make(
+            wallpaperIDs: wallpapers.map(\.id),
+            visibleIDs: visibleCatalogPreviewIDs,
+            previousCenterIndex: previousCatalogPreviewCenterIndex
+        ) else { return }
+
+        previousCatalogPreviewCenterIndex = plan.centerIndex
+        var protectedIDs = plan.protectedIDs
+        if let selectedCatalogWallpaper {
+            protectedIDs.insert(selectedCatalogWallpaper.id)
+        }
+        let visible = plan.visibleIDs.compactMap { wallpapersByID[$0] }
+        let lookahead = plan.lookaheadIDs.compactMap { wallpapersByID[$0] }
+        Task { [catalogPreviewPipeline] in
+            await catalogPreviewPipeline.cancelPending(except: protectedIDs)
+            for wallpaper in visible {
+                await catalogPreviewPipeline.prefetchMetadata(wallpaper, priority: .visible)
+            }
+            for wallpaper in lookahead {
+                await catalogPreviewPipeline.prefetchMetadata(wallpaper, priority: .lookahead)
+            }
+        }
+    }
+
+    private func resetCatalogPreviewViewport() {
+        catalogPreviewViewportTask?.cancel()
+        catalogPreviewViewportTask = nil
+        visibleCatalogPreviewIDs.removeAll()
+        previousCatalogPreviewCenterIndex = nil
     }
 
     private func mergeDownloadedCatalogSearchMatches(for query: String) {
@@ -4090,7 +4315,60 @@ final class AppViewModel: ObservableObject {
         ) {
             return existingURL
         }
-        return try await catalogDownloadService.download(wallpaper)
+
+        let lease = await catalogPreviewPipeline.beginForegroundDownload(for: wallpaper.id)
+        let startedAt = Date()
+        do {
+            let resolveStartedAt = Date()
+            var media = try await catalogPreviewPipeline.resolvedMediaForForegroundDownload(wallpaper)
+            let resolveMilliseconds = Int(Date().timeIntervalSince(resolveStartedAt) * 1_000)
+            catalogTransferLogger.info(
+                "provider=\(media.provider, privacy: .public) stage=resolved elapsed_ms=\(resolveMilliseconds)"
+            )
+
+            let localURL: URL
+            do {
+                catalogTransferLogger.info(
+                    "provider=\(media.provider, privacy: .public) stage=transfer-start route=original"
+                )
+                localURL = try await catalogDownloadService.download(
+                    wallpaper,
+                    preferredSources: media.originalSources,
+                    allowProviderFallbackAfterStaleRoute: false
+                )
+            } catch {
+                guard Self.catalogRouteNeedsRefresh(error) else { throw error }
+                await catalogPreviewPipeline.invalidateResolvedMedia(for: wallpaper)
+                media = try await catalogPreviewPipeline.resolvedMediaForForegroundDownload(wallpaper)
+                localURL = try await catalogDownloadService.download(
+                    wallpaper,
+                    preferredSources: media.originalSources
+                )
+            }
+
+            await catalogPreviewPipeline.endForegroundDownload(lease)
+            let attributes = try? FileManager.default.attributesOfItem(atPath: localURL.path)
+            let bytes = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+            let elapsedMilliseconds = Int(Date().timeIntervalSince(startedAt) * 1_000)
+            catalogTransferLogger.info(
+                "provider=\(media.provider, privacy: .public) stage=complete bytes=\(bytes) elapsed_ms=\(elapsedMilliseconds) route=original"
+            )
+            return localURL
+        } catch {
+            await catalogPreviewPipeline.endForegroundDownload(lease)
+            catalogTransferLogger.notice(
+                "provider=\(wallpaper.attribution, privacy: .public) stage=failed reason=\(String(describing: type(of: error)), privacy: .public)"
+            )
+            throw error
+        }
+    }
+
+    private static func catalogRouteNeedsRefresh(_ error: Error) -> Bool {
+        guard let downloadError = error as? CatalogDownloadError else { return false }
+        if case let .badStatus(_, statusCode) = downloadError {
+            return statusCode == 403 || statusCode == 404
+        }
+        return false
     }
 
     private func hasUsableCatalogFile(at url: URL) -> Bool {

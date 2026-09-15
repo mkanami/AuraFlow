@@ -130,6 +130,45 @@ import Testing
     #expect(resolvedURL.absoluteString == "https://stream.mux.com/yEnOBy3oVkXppC8GAG2x5SWLy7lzud701Njc39IOiN1o/high.mp4")
 }
 
+@Test func darefulPreviewResolverSelectsLowMuxRendition() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [DarefulMetadataURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+    let wallpaper = CatalogWallpaper(
+        id: "dareful-1",
+        title: "Lake",
+        category: "Scenic",
+        attribution: "Dareful",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://dareful.test/lake")!,
+        sources: []
+    )
+
+    let media = try await DarefulSource(session: session).resolveMedia(for: wallpaper)
+    let sources = media.previewSources
+
+    #expect(sources.first?.url.absoluteString == "https://stream.mux.com/preview123/low.mp4")
+    #expect(media.originalSources.first?.url.absoluteString == "https://stream.mux.com/preview123/high.mp4")
+    #expect(media.framesPerSecond == 29.97)
+
+    let cachedBeforeScenicMetadata = CatalogResolvedMedia(
+        previewSources: media.previewSources,
+        originalSources: media.originalSources,
+        provider: media.provider,
+        validUntil: media.validUntil
+    )
+    let enriched = try await DarefulSource(session: session)
+        .enrichMediaMetadata(
+            for: wallpaper,
+            media: cachedBeforeScenicMetadata
+        )
+    #expect(enriched.fileSizeMB == 17.7)
+    #expect(enriched.framesPerSecond == 29.97)
+    #expect(DarefulMetadataURLProtocol.lastRangeHeader == "bytes=0-0")
+    #expect(DarefulMetadataURLProtocol.mediaProbeCount == 1)
+}
+
 @Test func darefulParserRejectsPeopleTextLogoAndVerticalVideos() {
     #expect(darefulWallpaper(title: "Person Walking Near Waterfall", tags: ["nature"]) == nil)
     #expect(darefulWallpaper(title: "Nature Text Overlay", tags: ["forest"]) == nil)
@@ -231,4 +270,97 @@ private final class DarefulDetailURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+}
+
+private final class DarefulMetadataURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var _lastRangeHeader: String?
+    private static var _mediaProbeCount = 0
+
+    static var lastRangeHeader: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _lastRangeHeader
+    }
+
+    static var mediaProbeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _mediaProbeCount
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "dareful.test"
+            || request.url?.host == "stream.mux.com"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        if url.host == "stream.mux.com" {
+            Self.lock.lock()
+            Self._lastRangeHeader = request.value(
+                forHTTPHeaderField: "Range"
+            )
+            Self._mediaProbeCount += 1
+            Self.lock.unlock()
+            sendResponse(
+                url: url,
+                statusCode: 206,
+                headers: [
+                    "Content-Type": "video/mp4",
+                    "Content-Range": "bytes 0-0/17700000",
+                    "Content-Length": "1",
+                ],
+                body: Data([0])
+            )
+            return
+        }
+
+        sendResponse(
+            url: url,
+            statusCode: 200,
+            headers: ["Content-Type": "text/html; charset=utf-8"],
+            body: Data("""
+            <mux-player metadata-video-title="Lake" playback-id="preview123"></mux-player>
+            Resolution — 3840 x 2160
+            Framerate — 29.97
+            """.utf8)
+        )
+    }
+
+    override func stopLoading() {}
+
+    private func sendResponse(
+        url: URL,
+        statusCode: Int,
+        headers: [String: String],
+        body: Data
+    ) {
+        guard let response = HTTPURLResponse(
+            url: url,
+            statusCode: statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: headers
+        ) else {
+            client?.urlProtocol(
+                self,
+                didFailWithError: URLError(.badServerResponse)
+            )
+            return
+        }
+        client?.urlProtocol(
+            self,
+            didReceive: response,
+            cacheStoragePolicy: .notAllowed
+        )
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogSearching {
+actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogSearching, WallpaperCatalogPreviewResolving, WallpaperCatalogMediaResolving {
     private let baseURL = URL(string: "https://motionbgs.com/")!
     private let startPath = "tag:anime-nature/"
     private let session: URLSession
@@ -67,7 +67,54 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
         return source.url
     }
 
+    func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
+        try await resolveMedia(for: wallpaper).previewSources
+    }
+
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
+        guard let pageURL = wallpaper.sourcePageURL else {
+            return CatalogResolvedMedia(
+                previewSources: wallpaper.sources,
+                originalSources: wallpaper.sources,
+                provider: "MotionBGS",
+                validUntil: Date().addingTimeInterval(24 * 60 * 60)
+            )
+        }
+        let data = try await fetchData(pageURL)
+        guard let html = String(data: data, encoding: .utf8) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        let item = MotionBGSListItem(
+            title: wallpaper.title,
+            pageURL: pageURL,
+            previewImageURL: wallpaper.previewImageURL
+        )
+        let originalSources = MotionBGSParser.parseDetailPage(
+            html: html,
+            item: item,
+            baseURL: baseURL
+        )?.sources ?? wallpaper.sources
+        let previewSources = MotionBGSParser.previewVideoURL(html: html, baseURL: baseURL).map {
+            [CatalogVideoSource(url: $0, width: 960, height: 540)]
+        } ?? originalSources
+        return CatalogResolvedMedia(
+            previewSources: previewSources,
+            originalSources: originalSources,
+            provider: "MotionBGS",
+            validUntil: Date().addingTimeInterval(24 * 60 * 60),
+            fileSizeMB: MotionBGSParser.fileSizeMB(html: html),
+            framesPerSecond: MotionBGSParser.framesPerSecond(html: html)
+        )
+    }
+
     func searchCatalog(query rawQuery: String) async throws -> [CatalogWallpaper] {
+        try await searchCatalog(query: rawQuery, progress: { _ in })
+    }
+
+    func searchCatalog(
+        query rawQuery: String,
+        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
+    ) async throws -> [CatalogWallpaper] {
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return [] }
 
@@ -76,23 +123,31 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
             resolvingAgainstBaseURL: false
         )
         components?.queryItems = [URLQueryItem(name: "q", value: query)]
-        guard let searchURL = components?.url else {
+        guard let firstSearchURL = components?.url else {
             throw URLError(.badURL)
         }
 
-        let data = try await fetchData(searchURL)
-        guard let html = String(data: data, encoding: .utf8) else {
-            throw URLError(.cannotDecodeContentData)
-        }
+        var nextURL: URL? = firstSearchURL
+        var matches: [MotionBGSListItem] = []
+        while let pageURL = nextURL {
+            try Task.checkCancellation()
+            let data = try await fetchData(pageURL)
+            guard let html = String(data: data, encoding: .utf8) else {
+                throw URLError(.cannotDecodeContentData)
+            }
 
-        let page = MotionBGSParser.parseListingPage(html: html, baseURL: baseURL)
-        let exactMatches = page.items.filter { item in
-            WallpaperSearchMatcher.matches(
-                query: query,
-                fields: [item.title, item.pageURL.lastPathComponent.replacingOccurrences(of: "-", with: " ")]
-            )
+            let page = MotionBGSParser.parseListingPage(html: html, baseURL: baseURL)
+            matches.append(contentsOf: page.items.filter { item in
+                WallpaperSearchMatcher.matches(
+                    query: query,
+                    fields: [item.title, item.pageURL.lastPathComponent.replacingOccurrences(of: "-", with: " ")]
+                )
+            })
+            matches = Self.deduplicateItems(matches)
+            await progress(Self.placeholderWallpapers(from: matches))
+            nextURL = page.nextPath.flatMap { URL(string: $0, relativeTo: baseURL)?.absoluteURL }
         }
-        return Self.placeholderWallpapers(from: exactMatches)
+        return Self.placeholderWallpapers(from: matches)
     }
 
     private func fetchListingItems(
@@ -214,8 +269,27 @@ enum MotionBGSParser {
             return MotionBGSListItem(title: title, pageURL: pageURL, previewImageURL: previewImageURL)
         }
 
-        let nextPath = firstMatch(in: normalized, pattern: #"<link href=https://motionbgs\.com/([^" ]+) rel=next>"#)
-            ?? firstMatch(in: normalized, pattern: #"<a href=/(tag:anime-nature/\d+/)> Next"#)
+        let rawNextPath = firstMatch(
+            in: normalized,
+            pattern: #"<link[^>]+href=[\"']?([^\"' >]+)[\"']?[^>]+rel=[\"']?next[\"']?"#
+        ) ?? firstMatch(
+            in: normalized,
+            pattern: #"<a href=[\"']?(/?tag:anime-nature/\d+/)[\"']?[^>]*>\s*Next"#
+        )
+        let nextPath = rawNextPath.map { rawValue in
+            guard let url = URL(string: rawValue, relativeTo: baseURL)?.absoluteURL,
+                  url.host?.lowercased() == baseURL.host?.lowercased() else {
+                return rawValue
+            }
+            var value = url.path.hasPrefix("/") ? String(url.path.dropFirst()) : url.path
+            if rawValue.hasSuffix("/"), !value.hasSuffix("/") {
+                value += "/"
+            }
+            if let query = url.query, !query.isEmpty {
+                value += "?\(query)"
+            }
+            return value
+        }
 
         return ListingPage(items: items, nextPath: nextPath)
     }
@@ -279,6 +353,56 @@ enum MotionBGSParser {
             pattern: #"<source[^>]+src=[\"']?([^\"' >]+\.mp4)[\"']?"#
         )
         return value.flatMap { absoluteURL(from: $0, baseURL: baseURL) }
+    }
+
+    /// Listing cards already contain the stable media id and slug in their
+    /// poster path. Build the lightweight preview route without waiting for a
+    /// second HTML request; the normal resolver still validates and supplies
+    /// the original download routes in parallel.
+    static func derivedPreviewVideoURL(from previewURL: URL?) -> URL? {
+        guard let previewURL,
+              previewURL.host?.localizedCaseInsensitiveContains("motionbgs.com") == true else {
+            return nil
+        }
+        let normalizedPath = previewURL.path.replacingOccurrences(
+            of: #"^/i/c/\d+x\d+/"#,
+            with: "/",
+            options: .regularExpression
+        )
+        let pattern = #"^/media/(\d+)/(.+?)(?:\.\d{3,5}x\d{3,5})?\.(?:jpe?g|png|webp)$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let match = regex.firstMatch(
+                in: normalizedPath,
+                range: NSRange(normalizedPath.startIndex..<normalizedPath.endIndex, in: normalizedPath)
+              ),
+              let mediaIDRange = Range(match.range(at: 1), in: normalizedPath),
+              let slugRange = Range(match.range(at: 2), in: normalizedPath) else {
+            return nil
+        }
+        let mediaID = normalizedPath[mediaIDRange]
+        let slug = normalizedPath[slugRange]
+        return URL(string: "https://motionbgs.com/media/\(mediaID)/\(slug).960x540.mp4")
+    }
+
+    static func fileSizeMB(html: String) -> Double? {
+        let normalized = decodeHTMLEntities(html)
+        let labeledSize = firstMatch(
+            in: normalized,
+            pattern: #"(?:File Size|Filesize)\s*(?:—|-|:)?\s*([0-9]+(?:\.[0-9]+)?)\s*MB"#
+        )
+        let downloadSize = firstMatch(
+            in: normalized,
+            pattern: #"\(([0-9]+(?:\.[0-9]+)?)\s*M[Bb]\)"#
+        )
+        return (labeledSize ?? downloadSize).flatMap(Double.init)
+    }
+
+    static func framesPerSecond(html: String) -> Double? {
+        let normalized = decodeHTMLEntities(html)
+        return firstMatch(
+            in: normalized,
+            pattern: #"(?:Frame Rate|Framerate|FPS)\s*(?:—|-|:)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:FPS)?"#
+        ).flatMap(Double.init)
     }
 
     static func fullResolutionPreviewURL(from previewURL: URL?) -> URL? {

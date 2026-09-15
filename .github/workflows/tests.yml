@@ -489,3 +489,9 @@ jobs:
         env:
           AURAFLOW_LIVE_BROWSER_DOWNLOAD_SMOKE: "1"
         run: swift test --filter liveMoeWallsBrowserDownloadSmoke
+
+      - name: Run opt-in preview media smoke test
+        working-directory: macOSApp
+        env:
+          AURAFLOW_LIVE_PREVIEW_SMOKE: "1"
+        run: swift test --filter liveCatalogPreviewMediaRangesEveryProvider

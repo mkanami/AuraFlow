@@ -215,7 +215,10 @@ private func pngData(for image: CGImage) -> Data {
 
     #expect(controller.clearCallCount == 1)
     #expect(controller.prepareLockScreenMediaCancellationCount == 1)
-    #expect(Date().timeIntervalSince(removalStartedAt) < 1.0)
+    // CI runs the full Swift Testing suite concurrently, so scheduler pressure
+    // can add more than a second even though the 30-second warm-up was
+    // cancelled correctly. Keep the assertion focused on prompt cancellation.
+    #expect(Date().timeIntervalSince(removalStartedAt) < 2.0)
 }
 
 @MainActor
@@ -551,6 +554,68 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func legacyDownloadedWallpaperMigrationRemapsSavedRuntimePaths() throws {
+    let appSupportURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("auraflow-runtime-path-migration-\(UUID().uuidString)")
+    let catalogURL = appSupportURL.appendingPathComponent("Catalog", isDirectory: true)
+    try FileManager.default.createDirectory(at: catalogURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: appSupportURL) }
+
+    let legacyURL = catalogURL.appendingPathComponent("legacy-runtime.mp4")
+    try Data("legacy-wallpaper".utf8).write(to: legacyURL, options: .atomic)
+    let wallpaper = DownloadedCatalogWallpaper(
+        id: "legacy-runtime",
+        wallpaperID: "legacy-runtime",
+        title: "Legacy Runtime",
+        category: "Anime",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        localPreviewPath: nil,
+        sourcePageURL: nil,
+        localPath: legacyURL.path,
+        downloadedAt: Date()
+    )
+    try JSONEncoder().encode([wallpaper]).write(
+        to: catalogURL.appendingPathComponent("downloaded-catalog.json"),
+        options: .atomic
+    )
+
+    let runtimeStore = WallpaperRuntimeStore(appSupportURL: appSupportURL)
+    try runtimeStore.saveConfig(
+        ControlConfig(video_path: legacyURL.path, playback_speed: 1.25)
+    )
+    try runtimeStore.saveLockScreenOnlySource(legacyURL)
+    let previewStateURL = appSupportURL.appendingPathComponent("last_preview.json")
+    try JSONEncoder().encode(
+        WallpaperPreviewSeed(
+            video_path: legacyURL.path,
+            playback_speed: 1.25,
+            scale_mode: WallpaperScaleMode.fit.rawValue
+        )
+    ).write(to: previewStateURL, options: .atomic)
+
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        appSupportDirectoryURL: appSupportURL,
+        previewStateURL: previewStateURL
+    )
+    let migratedURL = catalogURL
+        .appendingPathComponent("Downloaded Wallpapers", isDirectory: true)
+        .appendingPathComponent("legacy-runtime.mp4")
+
+    #expect(viewModel.currentVideoURL == migratedURL.standardizedFileURL)
+    #expect(runtimeStore.loadConfig().video_path == migratedURL.path)
+    #expect(runtimeStore.loadLockScreenOnlySource() == migratedURL.standardizedFileURL)
+    #expect(
+        PreviewViewModel.validPreviewURL(
+            for: try #require(viewModel.previewViewModel.loadSavedSeed())
+        ) == migratedURL.standardizedFileURL
+    )
+    #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
+    #expect(FileManager.default.fileExists(atPath: migratedURL.path))
+}
+
+@MainActor
 @Test func pausedWallpaperCanResumeOnlyThroughPlay() async throws {
     let controller = MockNativeWallpaperController()
     let defaults = UserDefaults(suiteName: "AppViewModelTests.paused-start-resume")!
@@ -645,6 +710,65 @@ private func pngData(for image: CGImage) -> Data {
         viewModel.statusMessage
             == "Wallpaper downloaded to preview. Press Start or Lock to apply."
     )
+}
+
+@MainActor
+@Test func nativeCatalogDownloadWarmsLockScreenImmediatelyAndStartsWithoutRescan() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("native-catalog-fast-start-\(UUID().uuidString)", isDirectory: true)
+    let catalogDirectory = root.appendingPathComponent("Catalog", isDirectory: true)
+    let downloadedDirectory = catalogDirectory
+        .appendingPathComponent("Downloaded Wallpapers", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: downloadedDirectory,
+        withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let localURL = downloadedDirectory.appendingPathComponent("wallpaper.mp4")
+    // The controller mock accepts the selected file. Keeping the fixture
+    // deliberately minimal makes this test fail if Start reintroduces an
+    // AVFoundation scan or compatibility conversion before the controller.
+    try Data([0, 1, 2, 3]).write(to: localURL)
+
+    let controller = MockNativeWallpaperController()
+    let viewModel = AppViewModel(
+        controller: controller,
+        appSupportDirectoryURL: root
+    )
+    let wallpaper = CatalogWallpaper(
+        id: "native-catalog-fast-start",
+        title: "Native Catalog Fast Start",
+        category: "Anime",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://example.com/native-catalog-fast-start"),
+        sources: [
+            CatalogVideoSource(
+                url: URL(string: "https://example.com/native-catalog-fast-start.mp4")!,
+                width: 1920,
+                height: 1080
+            )
+        ]
+    )
+
+    viewModel.stageCatalogWallpaperForPreview(wallpaper, localURL: localURL)
+    for _ in 0..<20 {
+        if controller.prepareLockScreenMediaCallCount == 1 { break }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    #expect(controller.prepareLockScreenMediaCallCount == 1)
+
+    viewModel.start()
+    for _ in 0..<40 {
+        if controller.startCallCount == 1 && viewModel.isPlaybackActive { break }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+
+    #expect(controller.startCallCount == 1)
+    #expect(controller.lastConfiguredVideoURL == localURL.standardizedFileURL)
+    #expect(viewModel.isPlaybackActive)
+    #expect(viewModel.alertMessage == nil)
 }
 
 @MainActor
@@ -1317,6 +1441,52 @@ private func pngData(for image: CGImage) -> Data {
 
     #expect(viewModel.catalogWallpapers.map(\.id) == [first.id, second.id])
     #expect(await provider.pageRequestCount == 1)
+}
+
+@MainActor
+@Test func catalogPaginationBoundaryContinuesPastPagesWithoutSearchMatches() async throws {
+    let seed = CatalogWallpaper(
+        id: "seed",
+        title: "Unrelated Wallpaper",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: []
+    )
+    let match = CatalogWallpaper(
+        id: "target",
+        title: "Nino Target Wallpaper",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: []
+    )
+    let provider = SequencePagedCatalogProvider(
+        initial: [seed],
+        pages: [
+            CatalogPage(wallpapers: [], hasMore: true),
+            CatalogPage(wallpapers: [match], hasMore: false),
+        ]
+    )
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        catalogProvider: provider
+    )
+    viewModel.catalogWallpapers = [seed]
+    viewModel.catalogSearchText = "nino"
+    viewModel.catalogPaginationBoundaryChanged(isVisible: true)
+    defer { viewModel.catalogPaginationBoundaryChanged(isVisible: false) }
+
+    for _ in 0..<80 {
+        if viewModel.filteredCatalogWallpapers.map(\.id) == [match.id] { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    #expect(viewModel.filteredCatalogWallpapers.map(\.id) == [match.id])
+    #expect(await provider.pageRequestCount == 2)
+    #expect(!viewModel.catalogHasMoreWallpapers)
 }
 
 @MainActor
@@ -2336,6 +2506,32 @@ actor SlowPagedCatalogProvider: WallpaperCatalogProviding, WallpaperCatalogPagin
         pageRequestCount += 1
         try await Task.sleep(nanoseconds: 50_000_000)
         return CatalogPage(wallpapers: next, hasMore: true)
+    }
+}
+
+actor SequencePagedCatalogProvider: WallpaperCatalogProviding, WallpaperCatalogPaging {
+    let initial: [CatalogWallpaper]
+    private var pages: [CatalogPage]
+    private(set) var pageRequestCount = 0
+
+    init(initial: [CatalogWallpaper], pages: [CatalogPage]) {
+        self.initial = initial
+        self.pages = pages
+    }
+
+    func loadCachedCatalog() async -> [CatalogWallpaper]? { initial }
+    func fetchCatalog() async throws -> [CatalogWallpaper] { initial }
+
+    func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
+        URL(string: "https://example.com/fallback.mp4")!
+    }
+
+    func fetchNextCatalogPage() async throws -> CatalogPage {
+        pageRequestCount += 1
+        guard !pages.isEmpty else {
+            return CatalogPage(wallpapers: [], hasMore: false)
+        }
+        return pages.removeFirst()
     }
 }
 

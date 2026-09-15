@@ -132,6 +132,7 @@ import Testing
     #expect(wallpaper.resolution == MoeWallsResolution(width: 3840, height: 2160))
     #expect(wallpaper.resolution?.isSupportedForAuraFlow == true)
     #expect(wallpaper.fileSizeMB == 24.5)
+    #expect(wallpaper.framesPerSecond == 60)
     #expect(wallpaper.sourceName == "Original Artist")
     #expect(wallpaper.downloadURL?.absoluteString == "https://media.moewalls.com/videos/neon-ruins-3840x2160.mp4")
 }
@@ -159,6 +160,29 @@ import Testing
 
     #expect(wallpaper.previewVideoURL?.absoluteString == "https://moewalls.com/wp-content/uploads/preview/2026/makima-chainsaw-man-preview.webm")
     #expect(wallpaper.downloadURL == nil)
+}
+
+@Test func moewallsPreviewResolverDoesNotPrioritizeSyntheticMP4() async throws {
+    let mp4 = URL(string: "https://moewalls.com/wp-content/uploads/preview/test.mp4")!
+    let webm = URL(string: "https://moewalls.com/wp-content/uploads/preview/test.webm")!
+    let wallpaper = CatalogWallpaper(
+        id: "moewalls-test",
+        title: "Test",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: [
+            CatalogVideoSource(url: mp4, width: 1920, height: 1080),
+            CatalogVideoSource(url: webm, width: 1920, height: 1080),
+        ]
+    )
+
+    let media = try await MoeWallsSource().resolveMedia(for: wallpaper)
+    let sources = media.previewSources
+
+    #expect(sources.map(\.url) == [webm, mp4])
+    #expect(media.originalSources.map(\.url) == [mp4, webm])
 }
 
 @Test func moewallsDetailPageResolvesTokenDownloadURL() {
@@ -217,6 +241,7 @@ import Testing
         tags: [],
         resolution: nil,
         fileSizeMB: nil,
+        framesPerSecond: nil,
         sourceName: "MoeWalls",
         publishedAt: nil,
         downloadURL: nil,

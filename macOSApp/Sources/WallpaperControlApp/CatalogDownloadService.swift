@@ -14,10 +14,18 @@ final class CatalogDownloadService: @unchecked Sendable {
     private let provider: WallpaperCatalogProviding
     private let catalogDirectoryURL: URL
     private let fileDownloader: FileDownload
+    private let standardSession: URLSession
+    private let browserSession: URLSession
+
+    private var downloadedWallpapersDirectoryURL: URL {
+        CatalogStorageLayout.downloadedWallpapersDirectory(in: catalogDirectoryURL)
+    }
 
     init(
         provider: WallpaperCatalogProviding,
         catalogDirectoryURL: URL,
+        standardSession: URLSession? = nil,
+        browserSession: URLSession? = nil,
         fileDownloader: @escaping FileDownload = { request, session in
             try await CatalogFileDownloader.download(request: request, session: session)
         }
@@ -25,12 +33,68 @@ final class CatalogDownloadService: @unchecked Sendable {
         self.provider = provider
         self.catalogDirectoryURL = catalogDirectoryURL
         self.fileDownloader = fileDownloader
+        self.standardSession = standardSession ?? Self.makeSession(browserStyle: false)
+        self.browserSession = browserSession ?? Self.makeSession(browserStyle: true)
+    }
+
+    /// Uses already-resolved original routes and never tries preview or
+    /// synthetic URLs before the full-quality file.
+    func download(
+        _ wallpaper: CatalogWallpaper,
+        preferredSources: [CatalogVideoSource],
+        allowProviderFallbackAfterStaleRoute: Bool = true
+    ) async throws -> URL {
+        try Task.checkCancellation()
+        try FileManager.default.createDirectory(
+            at: downloadedWallpapersDirectoryURL,
+            withIntermediateDirectories: true
+        )
+
+        var seen = Set<String>()
+        var lastError: Error?
+        var staleRouteError: Error?
+        for source in preferredSources where seen.insert(source.url.absoluteString).inserted {
+            do {
+                return try await downloadSource(source, for: wallpaper)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                if Self.isStaleRouteError(error) {
+                    staleRouteError = staleRouteError ?? error
+                }
+            }
+        }
+
+        if !allowProviderFallbackAfterStaleRoute,
+           let staleRouteError {
+            throw staleRouteError
+        }
+
+        if isMoeWallsWallpaper(wallpaper), let pageURL = wallpaper.sourcePageURL {
+            do {
+                return try await downloadMoeWallsVideo(for: wallpaper, pageURL: pageURL)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? URLError(.badURL)
+    }
+
+    private static func isStaleRouteError(_ error: Error) -> Bool {
+        guard let downloadError = error as? CatalogDownloadError else { return false }
+        if case let .badStatus(_, statusCode) = downloadError {
+            return statusCode == 403 || statusCode == 404
+        }
+        return false
     }
 
     func download(_ wallpaper: CatalogWallpaper) async throws -> URL {
         try Task.checkCancellation()
         try FileManager.default.createDirectory(
-            at: catalogDirectoryURL,
+            at: downloadedWallpapersDirectoryURL,
             withIntermediateDirectories: true
         )
 
@@ -152,7 +216,7 @@ final class CatalogDownloadService: @unchecked Sendable {
         let widthLabel = source.width > 0 ? String(source.width) : "auto"
         let heightLabel = source.height > 0 ? String(source.height) : "auto"
         let fileStem = "\(wallpaper.id)-\(widthLabel)x\(heightLabel)"
-        let cachedDestination = catalogDirectoryURL.appendingPathComponent(
+        let cachedDestination = downloadedWallpapersDirectoryURL.appendingPathComponent(
             "\(fileStem).\(downloadFileExtension(for: source.url))"
         )
 
@@ -189,23 +253,10 @@ final class CatalogDownloadService: @unchecked Sendable {
             }
         }
 
-        let configuration = useBrowserStyleHeaders
-            ? URLSessionConfiguration.ephemeral
-            : URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 180
-        configuration.httpMaximumConnectionsPerHost = 4
-        configuration.waitsForConnectivity = false
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        if useBrowserStyleHeaders {
-            configuration.httpCookieAcceptPolicy = .always
-            configuration.httpShouldSetCookies = true
-        }
-
         try Task.checkCancellation()
         let (temporaryURL, response) = try await fileDownloader(
             request,
-            URLSession(configuration: configuration)
+            useBrowserStyleHeaders ? browserSession : standardSession
         )
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
         try Task.checkCancellation()
@@ -225,7 +276,7 @@ final class CatalogDownloadService: @unchecked Sendable {
             throw CatalogDownloadError.unsupportedResponse(url: source.url)
         }
 
-        let destination = catalogDirectoryURL.appendingPathComponent(
+        let destination = downloadedWallpapersDirectoryURL.appendingPathComponent(
             "\(fileStem).\(downloadFileExtension(for: source.url, response: response))"
         )
         if destination != cachedDestination {
@@ -241,7 +292,7 @@ final class CatalogDownloadService: @unchecked Sendable {
     ) async throws -> URL {
         try Task.checkCancellation()
         let resolver = await MainActor.run { MoeWallsBrowserResolver() }
-        let destination = catalogDirectoryURL.appendingPathComponent(
+        let destination = downloadedWallpapersDirectoryURL.appendingPathComponent(
             "\(wallpaper.id).mp4"
         )
         try? FileManager.default.removeItem(at: destination)
@@ -398,6 +449,22 @@ final class CatalogDownloadService: @unchecked Sendable {
 
     private func isNativePlaybackContainer(_ url: URL) -> Bool {
         ["mp4", "mov", "m4v"].contains(url.pathExtension.lowercased())
+    }
+
+    private static func makeSession(browserStyle: Bool) -> URLSession {
+        let configuration = browserStyle
+            ? URLSessionConfiguration.ephemeral
+            : URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 180
+        configuration.httpMaximumConnectionsPerHost = 4
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        if browserStyle {
+            configuration.httpCookieAcceptPolicy = .always
+            configuration.httpShouldSetCookies = true
+        }
+        return URLSession(configuration: configuration)
     }
 
     private func shouldUseBrowserStyleHeaders(

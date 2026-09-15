@@ -1,6 +1,6 @@
 import Foundation
 
-actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
+actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPreviewResolving, WallpaperCatalogMediaResolving, WallpaperCatalogMediaMetadataEnriching {
     private let baseURL = URL(string: "https://dareful.com/")!
     private let tagSlugs = [
         "nature",
@@ -91,6 +91,64 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
             throw URLError(.fileDoesNotExist)
         }
         return source.url
+    }
+
+    func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
+        try await resolveMedia(for: wallpaper).previewSources
+    }
+
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
+        let details = try await fetchResolvedDetails(for: wallpaper)
+        let sources = details?.wallpaper.sources ?? wallpaper.sources
+        let previewSources = sources.sorted { lhs, rhs in
+            Self.previewRenditionRank(lhs.url) < Self.previewRenditionRank(rhs.url)
+        }
+        let originalSources = sources.sorted { lhs, rhs in
+            if lhs.width != rhs.width { return lhs.width > rhs.width }
+            if lhs.height != rhs.height { return lhs.height > rhs.height }
+            return Self.previewRenditionRank(lhs.url) > Self.previewRenditionRank(rhs.url)
+        }
+        return CatalogResolvedMedia(
+            previewSources: previewSources,
+            originalSources: originalSources,
+            provider: "Dareful",
+            validUntil: Date().addingTimeInterval(24 * 60 * 60),
+            framesPerSecond: details?.framesPerSecond
+        )
+    }
+
+    func enrichMediaMetadata(
+        for wallpaper: CatalogWallpaper,
+        media: CatalogResolvedMedia
+    ) async throws -> CatalogResolvedMedia {
+        guard media.fileSizeMB == nil,
+              let source = media.originalSources.first,
+              source.url.host?.lowercased() == "stream.mux.com"
+        else {
+            return media
+        }
+        async let fileSizeMB = probeFileSizeMB(at: source.url)
+        async let framesPerSecond = resolvedFramesPerSecond(
+            for: wallpaper,
+            fallback: media.framesPerSecond
+        )
+        return CatalogResolvedMedia(
+            previewSources: media.previewSources,
+            originalSources: media.originalSources,
+            provider: media.provider,
+            validUntil: media.validUntil,
+            fileSizeMB: try await fileSizeMB,
+            framesPerSecond: try await framesPerSecond
+        )
+    }
+
+    private static func previewRenditionRank(_ url: URL) -> Int {
+        switch url.deletingPathExtension().lastPathComponent.lowercased() {
+        case "low": return 0
+        case "medium": return 1
+        case "high": return 2
+        default: return 3
+        }
     }
 
     private func fetchTags() async throws -> [DarefulTag] {
@@ -201,6 +259,12 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
     }
 
     private func fetchWallpaperDetails(for wallpaper: CatalogWallpaper) async throws -> CatalogWallpaper? {
+        try await fetchResolvedDetails(for: wallpaper)?.wallpaper
+    }
+
+    private func fetchResolvedDetails(
+        for wallpaper: CatalogWallpaper
+    ) async throws -> ResolvedDetails? {
         guard let pageURL = wallpaper.sourcePageURL else {
             return nil
         }
@@ -208,13 +272,65 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
         guard let html = String(data: data, encoding: .utf8) else {
             return nil
         }
-        return DarefulParser.parseDetailPage(
+        guard let resolvedWallpaper = DarefulParser.parseDetailPage(
             html: html,
             postID: Self.postID(from: wallpaper.id) ?? 0,
             fallbackTitle: wallpaper.title,
             pageURL: pageURL,
             enforceScenicFilter: false
+        ) else {
+            return nil
+        }
+        return ResolvedDetails(
+            wallpaper: resolvedWallpaper,
+            framesPerSecond: DarefulParser.framesPerSecond(in: html)
         )
+    }
+
+    private func probeFileSizeMB(at url: URL) async throws -> Double? {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard data.count <= 1,
+              let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 206,
+              let contentRange = httpResponse.value(
+                  forHTTPHeaderField: "Content-Range"
+              ),
+              let totalText = contentRange.split(separator: "/").last,
+              let totalBytes = Int64(totalText),
+              totalBytes > 0
+        else {
+            return nil
+        }
+        return Double(totalBytes) / 1_000_000
+    }
+
+    private func resolvedFramesPerSecond(
+        for wallpaper: CatalogWallpaper,
+        fallback: Double?
+    ) async throws -> Double? {
+        if let fallback {
+            return fallback
+        }
+        guard let pageURL = wallpaper.sourcePageURL else {
+            return nil
+        }
+        do {
+            let data = try await fetchData(pageURL)
+            try Task.checkCancellation()
+            guard let html = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return DarefulParser.framesPerSecond(in: html)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
     }
 
     private func fetchMediaByID(for posts: [DarefulPost]) async throws -> [Int: DarefulMedia] {
@@ -396,6 +512,11 @@ actor DarefulSource: WallpaperCatalogProviding, CatalogCacheClearing {
         return Int(rawValue)
     }
 
+    private struct ResolvedDetails {
+        let wallpaper: CatalogWallpaper
+        let framesPerSecond: Double?
+    }
+
     private static func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
@@ -549,6 +670,14 @@ enum DarefulParser {
     static func resolution(in html: String) -> MoeWallsResolution? {
         firstMatch(in: html, pattern: #"Resolution\s*(?:—|&mdash;|-|:)?\s*(\d{3,5}\s*x\s*\d{3,5})"#)
             .flatMap(MoeWallsResolution.parse)
+    }
+
+    static func framesPerSecond(in html: String) -> Double? {
+        let normalized = decodeHTMLEntities(html)
+        return firstMatch(
+            in: normalized,
+            pattern: #"(?:Frame Rate|Framerate|FPS)\s*(?:—|-|:)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:FPS)?"#
+        ).flatMap(Double.init)
     }
 
     static func isSupportedResolution(_ resolution: MoeWallsResolution?) -> Bool {

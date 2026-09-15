@@ -752,6 +752,8 @@ struct SettingsPopupOverlay: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let popupHeight = min(520, max(proxy.size.height - 48, 1))
+
             ZStack {
                 Color.black.opacity(colorScheme == .dark ? 0.42 : 0.28)
                     .ignoresSafeArea()
@@ -762,7 +764,7 @@ struct SettingsPopupOverlay: View {
                 SettingsPopupCard(viewModel: viewModel)
                     .frame(
                         maxWidth: min(620, max(proxy.size.width - 48, 1)),
-                        maxHeight: max(proxy.size.height - 48, 1)
+                        maxHeight: popupHeight
                     )
                     .padding(.horizontal, 24)
                     .padding(.vertical, 24)
@@ -1220,12 +1222,22 @@ struct DownloadedWallpapersCard: View {
 
                                 Spacer(minLength: 10)
 
-                                Button {
-                                    viewModel.applyDownloadedCatalogWallpaper(wallpaper)
-                                } label: {
-                                    Label("Preview", systemImage: "play.rectangle")
+                                VStack(spacing: 6) {
+                                    Button {
+                                        viewModel.applyDownloadedCatalogWallpaper(wallpaper)
+                                    } label: {
+                                        Label("Preview", systemImage: "play.rectangle")
+                                    }
+                                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
+
+                                    Button {
+                                        viewModel.revealDownloadedCatalogWallpaperInFinder(wallpaper)
+                                    } label: {
+                                        Label("Open in Finder", systemImage: "folder")
+                                    }
+                                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
                                 }
-                                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                                .frame(width: 142)
                             }
                             .padding(8)
                             .background(AuraGlassInsetCard())
@@ -1349,8 +1361,16 @@ struct WallpaperCatalogView: View {
         viewModel.selectedCatalogWallpaper != nil
     }
 
+    private var detailBottomTrim: CGFloat {
+        isCompactLayout ? 18 : 20
+    }
+
     private var catalogCountText: String {
         let filteredCount = viewModel.filteredCatalogWallpapers.count
+        let query = viewModel.catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty {
+            return "\(filteredCount)"
+        }
         if let selectedGroup = viewModel.selectedCatalogGroup {
             let groupCount = viewModel.catalogWallpaperCount(in: selectedGroup)
             let moreSuffix = selectedGroup == .anime && viewModel.catalogHasMoreWallpapers ? "+" : ""
@@ -1421,10 +1441,12 @@ struct WallpaperCatalogView: View {
         .padding(.horizontal, isDetailOpened && isCompactLayout ? 16 : 18)
         .frame(
             maxWidth: .infinity,
-            maxHeight: isDetailOpened ? (isCompactLayout ? 300 : 350) : 320,
+            maxHeight: isDetailOpened
+                ? (isCompactLayout ? 300 : 350) - detailBottomTrim
+                : 320,
             alignment: .topLeading
         )
-        .background(
+        .background {
             AuraGlassRoundedSurface(
                 cornerRadius: 14,
                 material: .clear,
@@ -1432,11 +1454,11 @@ struct WallpaperCatalogView: View {
                 protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity,
                 protectionOverlayColor: adaptiveGlassAppearance.bottomTextTone.contrastSurfaceColor
             )
-        )
-        .overlay(
+        }
+        .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
-        )
+        }
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: Color.black.opacity(0.26), radius: 12, x: 0, y: 7)
         .environment(\.colorScheme, .dark)
@@ -1564,22 +1586,28 @@ struct WallpaperCatalogGridView: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(10)
-                            .background(AuraGlassInsetCard())
+                            .background(AuraGlassInsetCard(isInteractive: false))
+                            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         }
                         .buttonStyle(AuraPlainPressButtonStyle())
                         .id(wallpaper.id)
                         .onAppear {
-                            viewModel.loadMoreCatalogIfNeeded(after: wallpaper.id)
+                            viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: true)
+                        }
+                        .onDisappear {
+                            viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: false)
+                        }
+                        .onHover { isHovering in
+                            if isHovering {
+                                viewModel.prefetchCatalogPreview(wallpaper, hovered: true)
+                            }
                         }
                     }
 
-                    if viewModel.catalogIsLoadingMore {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(maxWidth: .infinity, minHeight: 40)
-                    }
                 }
                 .padding(.vertical, 2)
+
+                CatalogPaginationBoundary(viewModel: viewModel)
             }
             .onAppear {
                 restoreCatalogScrollPosition(using: proxy)
@@ -1591,17 +1619,54 @@ struct WallpaperCatalogGridView: View {
     }
 }
 
+private struct CatalogPaginationBoundary: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
+        Group {
+            if viewModel.catalogIsLoadingMore {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Color.clear
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 28)
+        .contentShape(Rectangle())
+        .onAppear {
+            viewModel.catalogPaginationBoundaryChanged(isVisible: true)
+        }
+        .onDisappear {
+            viewModel.catalogPaginationBoundaryChanged(isVisible: false)
+        }
+    }
+}
+
 struct WallpaperCatalogDetailView: View {
     @ObservedObject var viewModel: AppViewModel
     let wallpaper: CatalogWallpaper
     let isCompactLayout: Bool
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+    @State private var resolvedMedia: CatalogResolvedMedia?
 
     var body: some View {
-        HStack(alignment: .top, spacing: isCompactLayout ? 12 : 14) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 8) {
+        GeometryReader { geometry in
+            let spacing: CGFloat = isCompactLayout ? 12 : 14
+            let minimumSidebarWidth: CGFloat = isCompactLayout ? 240 : 270
+            let fittedPreviewWidth = geometry.size.height * 16.0 / 9.0
+            let adaptiveSidebarWidth = geometry.size.width
+                - spacing
+                - fittedPreviewWidth
+            let sidebarWidth = min(
+                max(minimumSidebarWidth, adaptiveSidebarWidth),
+                geometry.size.width * 0.45
+            )
+            let previewWidth = max(0, geometry.size.width - sidebarWidth - spacing)
+            let previewHeight = min(geometry.size.height, previewWidth * 9.0 / 16.0)
+            let previewVerticalInset = max(0, (geometry.size.height - previewHeight) / 2.0)
+
+            HStack(alignment: .top, spacing: spacing) {
+                VStack(alignment: .leading, spacing: 0) {
                     Button {
                         viewModel.navigateBackFromCatalog()
                     } label: {
@@ -1609,49 +1674,55 @@ struct WallpaperCatalogDetailView: View {
                     }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                     .keyboardShortcut(.escape, modifiers: [])
+                    .zIndex(10)
 
-                    Text("Wallpaper Preview")
-                        .font(
-                            isCompactLayout
-                                ? .subheadline.weight(.semibold)
-                                : .headline.weight(.semibold)
-                        )
-                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-                        .lineLimit(1)
-                }
-                .zIndex(10)
+                    VStack(alignment: .leading, spacing: isCompactLayout ? 6 : 8) {
+                        Text(wallpaper.title)
+                            .font(
+                                isCompactLayout
+                                    ? .subheadline.weight(.semibold)
+                                    : .headline.weight(.semibold)
+                            )
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                            .lineLimit(isCompactLayout ? 2 : 3)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
-                VStack(alignment: .leading, spacing: isCompactLayout ? 8 : 10) {
-                    Label(
-                        isStaticImage ? "Image Wallpaper" : "Live Wallpaper",
-                        systemImage: isStaticImage ? "photo" : "play.rectangle.fill"
-                    )
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                        Text(wallpaper.category)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Text(wallpaper.title)
-                        .font(
-                            isCompactLayout
-                                ? .subheadline.weight(.semibold)
-                                : .headline.weight(.semibold)
-                        )
-                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-                        .lineLimit(isCompactLayout ? 2 : 3)
+                        Text(resolutionSummary ?? " ")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                            .lineLimit(1)
 
-                    metadataRow(label: "Category", value: wallpaper.category)
-                    metadataRow(label: "Source", value: wallpaper.attribution)
+                        Text(mediaSummary)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                            .lineLimit(1)
+
+                        Text("by \(wallpaper.attribution)")
+                            .font(.caption)
+                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                            .lineLimit(1)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
+                    .padding(.top, isCompactLayout ? 12 : 16)
+
+                    Spacer(minLength: isCompactLayout ? 8 : 10)
 
                     HStack(spacing: 8) {
                         Button {
                             viewModel.applyCatalogWallpaper(wallpaper)
                         } label: {
-                            if viewModel.isDownloading(wallpaper) {
-                                Label("Downloading…", systemImage: "arrow.down.circle")
-                            } else {
-                                Label("Download to Preview", systemImage: "arrow.down.circle")
-                            }
+                            Text("Download")
                         }
                         .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
+                        .frame(maxWidth: .infinity)
                         .disabled(!viewModel.canDownloadCatalogWallpaper)
 
                         if let sourceURL = wallpaper.sourcePageURL {
@@ -1663,68 +1734,142 @@ struct WallpaperCatalogDetailView: View {
                             .accessibilityLabel("Open Source")
                             .help("Open Source")
                             .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
+                            .fixedSize(horizontal: true, vertical: false)
                         }
                     }
-                    .padding(.top, isCompactLayout ? 4 : 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: .infinity, alignment: .center)
-            }
-            .padding(.vertical, isCompactLayout ? 2 : 4)
-            .frame(width: isCompactLayout ? 240 : 270)
-            .frame(maxHeight: .infinity, alignment: .top)
+                .padding(.top, isCompactLayout ? 2 : 4)
+                .padding(.bottom, previewVerticalInset)
+                .frame(width: sidebarWidth)
+                .frame(maxHeight: .infinity, alignment: .top)
 
-            CatalogDetailMediaPreview(wallpaper: wallpaper)
-                .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                .layoutPriority(1)
+                CatalogDetailMediaPreview(
+                    wallpaper: wallpaper,
+                    pipeline: viewModel.catalogPreviewPipeline,
+                    isDownloadActive: viewModel.isDownloading(wallpaper)
+                )
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .layoutPriority(1)
+            }
         }
         .frame(
             maxWidth: .infinity,
             minHeight: isCompactLayout ? 230 : 260,
             maxHeight: isCompactLayout ? 280 : 320
         )
-    }
-
-    private var isStaticImage: Bool {
-        wallpaper.sources.contains { source in
-            WallpaperMediaKind.forURL(source.url).isStaticImage
+        .task(id: wallpaper.id) {
+            resolvedMedia = nil
+            guard let media = try? await viewModel.catalogPreviewPipeline
+                .resolvedMediaForForegroundDownload(wallpaper)
+            else {
+                return
+            }
+            resolvedMedia = media
+            if let enriched = try? await viewModel.catalogPreviewPipeline
+                .enrichResolvedMediaForDisplay(
+                    wallpaper,
+                    resolvedMedia: media
+                ),
+               !Task.isCancelled {
+                resolvedMedia = enriched
+            }
         }
     }
 
-    private func metadataRow(label: String, value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-            Spacer(minLength: 8)
-            Text(value)
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-                .lineLimit(1)
+    private var preferredOriginalSource: CatalogVideoSource? {
+        let resolvedSources = resolvedMedia?.originalSources ?? []
+        let candidates = resolvedSources.isEmpty ? wallpaper.sources : resolvedSources
+        return candidates.max {
+            ($0.width * $0.height) < ($1.width * $1.height)
         }
-        .font(.caption)
+    }
+
+    private var resolutionSummary: String? {
+        guard let source = preferredOriginalSource,
+              source.width > 0,
+              source.height > 0 else {
+            return nil
+        }
+        var parts = ["\(source.width)×\(source.height)"]
+        if let framesPerSecond = resolvedMedia?.framesPerSecond,
+           framesPerSecond > 0 {
+            parts.append("\(Self.compactNumber(framesPerSecond)) FPS")
+        }
+        return parts.joined(separator: "   ")
+    }
+
+    private var mediaSummary: String {
+        var parts = [mediaKind]
+        if let fileSizeMB = resolvedMedia?.fileSizeMB,
+           fileSizeMB > 0 {
+            parts.append("\(Self.compactNumber(fileSizeMB)) MB")
+        }
+        return parts.joined(separator: "   ")
+    }
+
+    private var mediaKind: String {
+        let imageExtensions: Set<String> = [
+            "bmp", "gif", "heic", "heif", "jpeg", "jpg", "png", "tif", "tiff", "webp",
+        ]
+        guard let source = preferredOriginalSource else { return "Video" }
+        return imageExtensions.contains(source.url.pathExtension.lowercased()) ? "Image" : "Video"
+    }
+
+    private static func compactNumber(_ value: Double) -> String {
+        value.rounded() == value
+            ? String(Int(value))
+            : String(format: "%.1f", value)
     }
 }
 
 private struct CatalogDetailMediaPreview: View {
     let wallpaper: CatalogWallpaper
-    @StateObject private var model = CatalogDetailMediaPreviewModel()
+    let isDownloadActive: Bool
+    @StateObject private var model: CatalogDetailMediaPreviewModel
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+
+    init(
+        wallpaper: CatalogWallpaper,
+        pipeline: CatalogPreviewPipeline,
+        isDownloadActive: Bool
+    ) {
+        self.wallpaper = wallpaper
+        self.isDownloadActive = isDownloadActive
+        _model = StateObject(wrappedValue: CatalogDetailMediaPreviewModel(pipeline: pipeline))
+    }
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             Color.black.opacity(0.72)
 
+            if let player = model.player {
+                VideoPreview(player: player, videoGravity: .resizeAspectFill)
+            }
+
+            if let streamingVideoURL = model.streamingVideoURL {
+                CatalogStreamingVideoPreview(
+                    url: streamingVideoURL,
+                    referer: wallpaper.sourcePageURL,
+                    onStarted: {
+                        model.streamingPreviewDidStart(url: streamingVideoURL)
+                    },
+                    onFailed: {
+                        model.streamingPreviewDidFail(url: streamingVideoURL, wallpaper: wallpaper)
+                    }
+                )
+            }
+
             CatalogPreviewImage(
                 url: model.imageURL ?? wallpaper.previewImageURL,
                 title: wallpaper.title,
                 referer: wallpaper.sourcePageURL,
-                contentMode: .fit
+                contentMode: .fit,
+                fallbackURL: wallpaper.previewImageURL
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if let player = model.player {
-                VideoPreview(player: player, videoGravity: .resizeAspectFill)
-                    .opacity(model.isVideoVisible ? 1 : 0)
-            }
+            .opacity(model.isVideoVisible ? 0 : 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
@@ -1732,7 +1877,12 @@ private struct CatalogDetailMediaPreview: View {
                 .stroke(adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.14), lineWidth: 1)
         )
         .task(id: wallpaper.id) {
-            await model.load(wallpaper)
+            if !isDownloadActive {
+                await model.load(wallpaper)
+            }
+        }
+        .onChange(of: isDownloadActive) { downloading in
+            model.setNetworkSuspended(downloading, wallpaper: wallpaper)
         }
         .onDisappear {
             model.stop()
@@ -1745,6 +1895,7 @@ struct CatalogPreviewImage: View {
     let title: String
     let referer: URL?
     var contentMode: ContentMode = .fill
+    var fallbackURL: URL? = nil
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @StateObject private var loader = CatalogPreviewImageLoader()
 
@@ -1759,7 +1910,7 @@ struct CatalogPreviewImage: View {
             }
         }
         .task(id: cacheKey) {
-            loader.load(url: url, referer: referer)
+            loader.load(url: url, fallbackURL: fallbackURL, referer: referer)
         }
         .onDisappear {
             loader.cancel()
@@ -1769,6 +1920,7 @@ struct CatalogPreviewImage: View {
     private var cacheKey: String {
         [
             url?.absoluteString ?? "nil",
+            fallbackURL?.absoluteString ?? "nil",
             referer?.absoluteString ?? "nil",
         ].joined(separator: "|")
     }
@@ -1810,7 +1962,7 @@ final class CatalogPreviewImageLoader: ObservableObject {
         cache.removeAllObjects()
     }
 
-    func load(url: URL?, referer: URL?) {
+    func load(url: URL?, fallbackURL: URL? = nil, referer: URL?) {
         task?.cancel()
         task = nil
         image = nil
@@ -1822,6 +1974,11 @@ final class CatalogPreviewImageLoader: ObservableObject {
         if let cached = Self.cache.object(forKey: url as NSURL) {
             image = cached
             return
+        }
+
+        if let fallbackURL,
+           let cachedFallback = Self.cache.object(forKey: fallbackURL as NSURL) {
+            image = cachedFallback
         }
 
         task = Task { [weak self] in
@@ -2736,6 +2893,7 @@ private extension AuraSurfaceMaterial {
 struct AuraGlassInsetCard: View {
     var cornerRadius: CGFloat = 10
     var emphasized: Bool = false
+    var isInteractive: Bool = true
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
@@ -2750,7 +2908,7 @@ struct AuraGlassInsetCard: View {
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
-                    .glassEffect(.clear.interactive(), in: shape)
+                    .glassEffect(isInteractive ? .clear.interactive() : .clear, in: shape)
                 shape.fill(
                     textTone.contrastSurfaceColor.opacity(
                         min(
@@ -2798,6 +2956,7 @@ struct AuraGlassInsetCard: View {
                 .stroke(textTone.primaryTextColor.opacity(emphasized ? 0.14 : 0.10), lineWidth: 0.9)
         )
         .clipShape(shape)
+        .allowsHitTesting(isInteractive)
     }
 }
 

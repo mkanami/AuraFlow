@@ -78,7 +78,7 @@ struct MoeWallsTaxonomyTerm: Decodable, Sendable {
     let slug: String
 }
 
-actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
+actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, WallpaperCatalogPreviewResolving, WallpaperCatalogMediaResolving {
     private let baseURL = URL(string: "https://moewalls.com/")!
     private let client: MoeWallsHTTPClient
     private let probeService: MoeWallsProbeService
@@ -95,6 +95,7 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
 
     private var probeResult: MoeWallsProbeResult?
     private var detailCache: [String: MoeWallsWallpaper] = [:]
+    private var detailCacheDates: [String: Date] = [:]
     private var detailCacheOrder: [String] = []
     private var loadedCatalog: [MoeWallsWallpaper] = []
     private var nextArchiveCatalogPage = 1
@@ -111,6 +112,7 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
 
     func clearCache() async {
         detailCache.removeAll()
+        detailCacheDates.removeAll()
         detailCacheOrder.removeAll()
         probeResult = nil
         loadedCatalog.removeAll()
@@ -191,6 +193,75 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
         throw MoeWallsSourceError.missingDownloadURL
     }
 
+    func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
+        try await resolveMedia(for: wallpaper).previewSources
+    }
+
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
+        var dimensions = wallpaper.sources.first.map { ($0.width, $0.height) } ?? (0, 0)
+        var urls = wallpaper.sources.map(\.url)
+        var explicitDownloadURL: URL?
+        var fileSizeMB: Double?
+        var framesPerSecond: Double?
+
+        // Listing data can contain a derived URL. Refresh the detail page when
+        // possible so stale CDN routes do not poison the prepared cache.
+        if let pageURL = wallpaper.sourcePageURL,
+           let details = try? await fetchDetails(pageURL: pageURL) {
+            urls.append(contentsOf: details.previewCandidateURLs)
+            explicitDownloadURL = details.downloadURL
+            fileSizeMB = details.fileSizeMB
+            framesPerSecond = details.framesPerSecond
+            if let resolution = details.resolution {
+                dimensions = (resolution.width, resolution.height)
+            }
+        }
+
+        var seen = Set<String>()
+        let unique = urls.filter { seen.insert($0.absoluteString).inserted }
+        let ordered = unique.enumerated().sorted { lhs, rhs in
+            let lhsExtension = lhs.element.pathExtension.lowercased()
+            let rhsExtension = rhs.element.pathExtension.lowercased()
+            let lhsRank = (lhsExtension == "webm" || lhsExtension == "mkv") ? 0 : 1
+            let rhsRank = (rhsExtension == "webm" || rhsExtension == "mkv") ? 0 : 1
+            return lhsRank == rhsRank ? lhs.offset < rhs.offset : lhsRank < rhsRank
+        }.map(\.element)
+        let previewSources = ordered.map {
+            CatalogVideoSource(url: $0, width: dimensions.0, height: dimensions.1)
+        }
+        let originalSources: [CatalogVideoSource]
+        if let explicitDownloadURL {
+            originalSources = [CatalogVideoSource(
+                url: explicitDownloadURL,
+                width: dimensions.0,
+                height: dimensions.1
+            )]
+        } else if wallpaper.sourcePageURL == nil {
+            originalSources = wallpaper.sources
+        } else {
+            // Catalog entries carry preview candidates in `sources`. If the
+            // detail route cannot be resolved, leave originals empty so the
+            // foreground browser-token fallback is used instead of saving a
+            // low-resolution preview as the wallpaper.
+            originalSources = []
+        }
+        return CatalogResolvedMedia(
+            previewSources: previewSources,
+            originalSources: originalSources,
+            provider: "MoeWalls",
+            validUntil: Date().addingTimeInterval(24 * 60 * 60),
+            fileSizeMB: fileSizeMB,
+            framesPerSecond: framesPerSecond
+        )
+    }
+
+    func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {
+        guard let key = wallpaper.sourcePageURL?.absoluteString else { return }
+        detailCache[key] = nil
+        detailCacheDates[key] = nil
+        detailCacheOrder.removeAll { $0 == key }
+    }
+
     func fetchLatest(page: Int) async throws -> [MoeWallsWallpaper] {
         let probe = try await usableStrategy()
         switch probe {
@@ -259,12 +330,65 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
     }
 
     func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
-        try await search(query: query, page: 1).map(\.asCatalogWallpaper)
+        try await searchCatalog(query: query, progress: { _ in })
+    }
+
+    func searchCatalog(
+        query rawQuery: String,
+        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
+    ) async throws -> [CatalogWallpaper] {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+
+        let strategy = try await usableStrategy()
+        guard strategy == .rest else {
+            let wallpapers = try await search(query: query, page: 1).map(\.asCatalogWallpaper)
+            await progress(wallpapers)
+            return wallpapers
+        }
+
+        var aggregated: [MoeWallsWallpaper] = []
+        let firstPage = try await fetchSearchRESTPage(query: query, page: 1)
+        aggregated.append(contentsOf: firstPage.wallpapers)
+        await progress(deduplicate(aggregated).map(\.asCatalogWallpaper))
+
+        let totalPages = max(1, firstPage.totalPages ?? 1)
+        var nextPage = 2
+        while nextPage <= totalPages {
+            try Task.checkCancellation()
+            let upperBound = min(totalPages, nextPage + catalogRESTBatchSize - 1)
+            let pageRange = Array(nextPage...upperBound)
+            let batch = try await withThrowingTaskGroup(
+                of: (Int, [MoeWallsWallpaper]).self
+            ) { group in
+                for page in pageRange {
+                    group.addTask { [self] in
+                        let result = try await fetchSearchRESTPage(query: query, page: page)
+                        return (page, result.wallpapers)
+                    }
+                }
+                var collected: [(Int, [MoeWallsWallpaper])] = []
+                for try await result in group {
+                    collected.append(result)
+                }
+                return collected
+            }
+
+            for (_, wallpapers) in batch.sorted(by: { $0.0 < $1.0 }) {
+                aggregated.append(contentsOf: wallpapers)
+            }
+            await progress(deduplicate(aggregated).map(\.asCatalogWallpaper))
+            nextPage = upperBound + 1
+        }
+
+        return deduplicate(aggregated).map(\.asCatalogWallpaper)
     }
 
     func fetchDetails(pageURL: URL) async throws -> MoeWallsWallpaper {
         let cacheKey = pageURL.absoluteString
-        if let cached = detailCache[cacheKey] {
+        if let cached = detailCache[cacheKey],
+           let cachedAt = detailCacheDates[cacheKey],
+           Date().timeIntervalSince(cachedAt) < 24 * 60 * 60 {
             touchDetailCacheKey(cacheKey)
             return cached
         }
@@ -282,11 +406,13 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
 
     private func cacheDetailWallpaper(_ wallpaper: MoeWallsWallpaper, for key: String) {
         detailCache[key] = wallpaper
+        detailCacheDates[key] = Date()
         touchDetailCacheKey(key)
 
         while detailCacheOrder.count > detailCacheLimit {
             let oldestKey = detailCacheOrder.removeFirst()
             detailCache.removeValue(forKey: oldestKey)
+            detailCacheDates.removeValue(forKey: oldestKey)
         }
     }
 
@@ -332,13 +458,20 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
     }
 
     private func searchViaREST(query: String, page: Int) async throws -> [MoeWallsWallpaper] {
-        let posts = try await fetchRESTPosts(queryItems: [
+        try await fetchSearchRESTPage(query: query, page: page).wallpapers
+    }
+
+    private func fetchSearchRESTPage(
+        query: String,
+        page: Int
+    ) async throws -> (wallpapers: [MoeWallsWallpaper], totalPages: Int?) {
+        let (posts, totalPages) = try await fetchRESTPostsPage(queryItems: [
             URLQueryItem(name: "search", value: query),
             URLQueryItem(name: "page", value: String(page)),
             URLQueryItem(name: "per_page", value: String(restPageSize)),
             URLQueryItem(name: "_fields", value: "slug,link,title,date,categories,tags,resolutions,class_list,yoast_head_json"),
         ])
-        return try await hydrateAndFilter(posts: posts)
+        return (try await hydrateAndFilter(posts: posts), totalPages)
     }
 
     private func fetchRESTPostsPage(queryItems: [URLQueryItem]) async throws -> ([MoeWallsRESTPost], Int?) {
@@ -606,6 +739,7 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging {
             tags: tags,
             resolution: resolution,
             fileSizeMB: nil,
+            framesPerSecond: nil,
             sourceName: "MoeWalls",
             publishedAt: publishedAt,
             downloadURL: nil,

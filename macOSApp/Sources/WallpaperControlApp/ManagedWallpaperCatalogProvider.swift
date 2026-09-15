@@ -4,7 +4,7 @@ protocol CatalogCacheClearing: Sendable {
     func clearCache() async
 }
 
-actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPaging, WallpaperCatalogSearching {
+actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPaging, WallpaperCatalogSearching, WallpaperCatalogPreviewResolving, WallpaperCatalogMediaResolving, WallpaperCatalogMediaMetadataEnriching {
     private let animeProvider: WallpaperCatalogProviding
     private let animeNatureProvider: WallpaperCatalogProviding
     private let scenicProvider: WallpaperCatalogProviding
@@ -115,6 +115,75 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         }
     }
 
+    func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
+        try await resolveMedia(for: wallpaper).previewSources
+    }
+
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
+        let provider: WallpaperCatalogProviding
+        switch wallpaper.catalogGroup {
+        case .anime:
+            provider = animeProvider
+        case .animeNature:
+            provider = animeNatureProvider
+        case .scenic:
+            provider = scenicProvider
+        }
+        if let mediaProvider = provider as? any WallpaperCatalogMediaResolving {
+            return try await mediaProvider.resolveMedia(for: wallpaper)
+        }
+        let previewSources: [CatalogVideoSource]
+        if let previewProvider = provider as? any WallpaperCatalogPreviewResolving {
+            previewSources = try await previewProvider.resolvePreviewSources(for: wallpaper)
+        } else {
+            previewSources = wallpaper.sources
+        }
+        let originalURL = try await provider.resolveDownloadURL(for: wallpaper)
+        return CatalogResolvedMedia(
+            previewSources: previewSources,
+            originalSources: [CatalogVideoSource(url: originalURL, width: 0, height: 0)],
+            provider: wallpaper.attribution,
+            validUntil: Date().addingTimeInterval(24 * 60 * 60)
+        )
+    }
+
+    func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {
+        let provider: WallpaperCatalogProviding
+        switch wallpaper.catalogGroup {
+        case .anime:
+            provider = animeProvider
+        case .animeNature:
+            provider = animeNatureProvider
+        case .scenic:
+            provider = scenicProvider
+        }
+        if let mediaProvider = provider as? any WallpaperCatalogMediaResolving {
+            await mediaProvider.invalidateResolvedMedia(for: wallpaper)
+        }
+    }
+
+    func enrichMediaMetadata(
+        for wallpaper: CatalogWallpaper,
+        media: CatalogResolvedMedia
+    ) async throws -> CatalogResolvedMedia {
+        let provider: WallpaperCatalogProviding
+        switch wallpaper.catalogGroup {
+        case .anime:
+            provider = animeProvider
+        case .animeNature:
+            provider = animeNatureProvider
+        case .scenic:
+            provider = scenicProvider
+        }
+        guard let enricher = provider as? any WallpaperCatalogMediaMetadataEnriching else {
+            return media
+        }
+        return try await enricher.enrichMediaMetadata(
+            for: wallpaper,
+            media: media
+        )
+    }
+
     func fetchNextCatalogPage() async throws -> CatalogPage {
         guard let pagedAnimeProvider = animeProvider as? any WallpaperCatalogPaging else {
             return CatalogPage(wallpapers: [], hasMore: false)
@@ -123,11 +192,31 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
     }
 
     func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
-        async let animeResults = Self.searchProvider(animeProvider, query: query)
-        async let animeNatureResults = Self.searchProvider(animeNatureProvider, query: query)
-        async let scenicResults = Self.searchProvider(scenicProvider, query: query)
+        try await searchCatalog(query: query, progress: { _ in })
+    }
+
+    func searchCatalog(
+        query: String,
+        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
+    ) async throws -> [CatalogWallpaper] {
+        let progressState = CatalogSearchProgressState(progress: progress)
+        async let animeResults = Self.searchProvider(
+            animeProvider,
+            query: query,
+            progress: { partial in await progressState.replace(partial, at: 0) }
+        )
+        async let animeNatureResults = Self.searchProvider(
+            animeNatureProvider,
+            query: query,
+            progress: { partial in await progressState.replace(partial, at: 1) }
+        )
+        async let scenicResults = Self.searchProvider(
+            scenicProvider,
+            query: query,
+            progress: { partial in await progressState.replace(partial, at: 2) }
+        )
         let results = await (animeResults, animeNatureResults, scenicResults)
-        return Self.mergeSearchResults([results.0, results.1, results.2])
+        return await progressState.finish(with: [results.0, results.1, results.2])
     }
 
     func clearCache() async {
@@ -186,15 +275,16 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
 
     private static func searchProvider(
         _ provider: WallpaperCatalogProviding,
-        query: String
+        query: String,
+        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
     ) async -> [CatalogWallpaper] {
         guard let searchableProvider = provider as? any WallpaperCatalogSearching else {
             return []
         }
-        return (try? await searchableProvider.searchCatalog(query: query)) ?? []
+        return (try? await searchableProvider.searchCatalog(query: query, progress: progress)) ?? []
     }
 
-    private static func mergeSearchResults(_ catalogs: [[CatalogWallpaper]]) -> [CatalogWallpaper] {
+    fileprivate static func mergeSearchResults(_ catalogs: [[CatalogWallpaper]]) -> [CatalogWallpaper] {
         var seenIDs = Set<String>()
         var seenTitles = Set<String>()
         var merged: [CatalogWallpaper] = []
@@ -220,6 +310,40 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         }
 
         return merged
+    }
+}
+
+private actor CatalogSearchProgressState {
+    private let progress: @Sendable ([CatalogWallpaper]) async -> Void
+    private var catalogs = Array(repeating: [CatalogWallpaper](), count: 3)
+    private var lastEmittedIDs: [String] = []
+
+    init(progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) {
+        self.progress = progress
+    }
+
+    func replace(_ wallpapers: [CatalogWallpaper], at index: Int) async {
+        guard catalogs.indices.contains(index) else { return }
+        catalogs[index] = wallpapers
+        await emitIfNeeded()
+    }
+
+    func finish(with finalCatalogs: [[CatalogWallpaper]]) async -> [CatalogWallpaper] {
+        for index in catalogs.indices where finalCatalogs.indices.contains(index) {
+            if !finalCatalogs[index].isEmpty || catalogs[index].isEmpty {
+                catalogs[index] = finalCatalogs[index]
+            }
+        }
+        await emitIfNeeded()
+        return ManagedWallpaperCatalogProvider.mergeSearchResults(catalogs)
+    }
+
+    private func emitIfNeeded() async {
+        let merged = ManagedWallpaperCatalogProvider.mergeSearchResults(catalogs)
+        let ids = merged.map(\.id)
+        guard ids != lastEmittedIDs else { return }
+        lastEmittedIDs = ids
+        await progress(merged)
     }
 }
 

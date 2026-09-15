@@ -41,6 +41,7 @@ struct MoeWallsWallpaper: Codable, Hashable, Sendable {
     let tags: [String]
     let resolution: MoeWallsResolution?
     let fileSizeMB: Double?
+    let framesPerSecond: Double?
     let sourceName: String?
     let publishedAt: Date?
     let downloadURL: URL?
@@ -203,6 +204,11 @@ enum MoeWallsParser {
 
         let fileSizeText = firstMatch(in: normalized, pattern: #"File Size(?:</[^>]+>|:|\s)+([0-9]+(?:\.[0-9]+)?)\s*MB"#)
         let fileSizeMB = fileSizeText.flatMap(Double.init)
+        let frameRateText = firstMatch(
+            in: normalized,
+            pattern: #"(?:Frame Rate|Framerate|FPS)(?:</[^>]+>|:|\s)+([0-9]+(?:\.[0-9]+)?)\s*(?:FPS)?"#
+        )
+        let framesPerSecond = frameRateText.flatMap(Double.init)
 
         let sourceName = firstMatch(in: normalized, pattern: #"Source(?:</[^>]+>|:|\s)+([^<\n\r]+)"#)
         let publishedAt = parseDate(
@@ -223,6 +229,7 @@ enum MoeWallsParser {
             tags: tags,
             resolution: resolution,
             fileSizeMB: fileSizeMB,
+            framesPerSecond: framesPerSecond,
             sourceName: sourceName?.nonEmpty,
             publishedAt: publishedAt,
             downloadURL: downloadURL,
@@ -308,6 +315,7 @@ enum MoeWallsParser {
                 tags: [],
                 resolution: resolution,
                 fileSizeMB: nil,
+                framesPerSecond: nil,
                 sourceName: "MoeWalls",
                 publishedAt: nil,
                 downloadURL: nil,
