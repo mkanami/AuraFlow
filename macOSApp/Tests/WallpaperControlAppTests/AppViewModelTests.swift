@@ -1444,19 +1444,10 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
-@Test func catalogPaginationBoundaryContinuesPastPagesWithoutSearchMatches() async throws {
+@Test func activeCatalogSearchDoesNotStartBackgroundPagination() async throws {
     let seed = CatalogWallpaper(
         id: "seed",
         title: "Unrelated Wallpaper",
-        category: "Anime",
-        attribution: "MoeWalls",
-        previewImageURL: nil,
-        sourcePageURL: nil,
-        sources: []
-    )
-    let match = CatalogWallpaper(
-        id: "target",
-        title: "Nino Target Wallpaper",
         category: "Anime",
         attribution: "MoeWalls",
         previewImageURL: nil,
@@ -1467,7 +1458,6 @@ private func pngData(for image: CGImage) -> Data {
         initial: [seed],
         pages: [
             CatalogPage(wallpapers: [], hasMore: true),
-            CatalogPage(wallpapers: [match], hasMore: false),
         ]
     )
     let viewModel = AppViewModel(
@@ -1479,14 +1469,10 @@ private func pngData(for image: CGImage) -> Data {
     viewModel.catalogPaginationBoundaryChanged(isVisible: true)
     defer { viewModel.catalogPaginationBoundaryChanged(isVisible: false) }
 
-    for _ in 0..<80 {
-        if viewModel.filteredCatalogWallpapers.map(\.id) == [match.id] { break }
-        try? await Task.sleep(nanoseconds: 10_000_000)
-    }
+    try? await Task.sleep(nanoseconds: 250_000_000)
 
-    #expect(viewModel.filteredCatalogWallpapers.map(\.id) == [match.id])
-    #expect(await provider.pageRequestCount == 2)
-    #expect(!viewModel.catalogHasMoreWallpapers)
+    #expect(viewModel.filteredCatalogWallpapers.isEmpty)
+    #expect(await provider.pageRequestCount == 0)
 }
 
 @MainActor
@@ -1527,7 +1513,96 @@ private func pngData(for image: CGImage) -> Data {
     }
 
     #expect(viewModel.filteredCatalogWallpapers.map(\.id) == [rei.id])
-    #expect(await provider.queries == ["rEi"])
+    #expect(await provider.queries == ["rei"])
+}
+
+@MainActor
+@Test func catalogSearchPreemptsSlowRefreshAndKeepsItsResults() async throws {
+    let refreshWallpaper = CatalogWallpaper(
+        id: "refresh-only",
+        title: "Unrelated Refresh Wallpaper",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: []
+    )
+    let searchWallpaper = CatalogWallpaper(
+        id: "nino-search",
+        title: "Nino Rides in the City",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: []
+    )
+    let provider = SlowRefreshSearchableCatalogProvider(
+        refreshWallpaper: refreshWallpaper,
+        searchWallpaper: searchWallpaper
+    )
+    let appSupportURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("auraflow-search-refresh-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: appSupportURL) }
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        catalogProvider: provider,
+        appSupportDirectoryURL: appSupportURL
+    )
+
+    viewModel.openCatalog()
+    for _ in 0..<50 {
+        if await provider.refreshStarted { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    viewModel.catalogSearchText = "NiNo"
+    for _ in 0..<80 {
+        if viewModel.filteredCatalogWallpapers.map(\.id) == [searchWallpaper.id] { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    #expect(viewModel.filteredCatalogWallpapers.map(\.id) == [searchWallpaper.id])
+    #expect(await provider.queries == ["nino"])
+    #expect(await provider.refreshWasCancelled)
+}
+
+@MainActor
+@Test func openingCatalogUsesFreshUnifiedCacheWithoutStartingFullRefresh() async throws {
+    let wallpaper = CatalogWallpaper(
+        id: "fresh-cache",
+        title: "Fresh Cached Wallpaper",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: []
+    )
+    let appSupportURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("auraflow-fresh-cache-\(UUID().uuidString)")
+    let catalogURL = appSupportURL.appendingPathComponent("Catalog", isDirectory: true)
+    try FileManager.default.createDirectory(at: catalogURL, withIntermediateDirectories: true)
+    try JSONEncoder().encode([wallpaper]).write(
+        to: catalogURL.appendingPathComponent("catalog-cache.json"),
+        options: .atomic
+    )
+    defer { try? FileManager.default.removeItem(at: appSupportURL) }
+
+    let provider = RefreshCountingCatalogProvider(wallpaper: wallpaper)
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        catalogProvider: provider,
+        appSupportDirectoryURL: appSupportURL
+    )
+
+    viewModel.openCatalog()
+    for _ in 0..<50 {
+        if viewModel.catalogWallpapers.map(\.id) == [wallpaper.id] { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    try? await Task.sleep(nanoseconds: 100_000_000)
+
+    #expect(viewModel.catalogWallpapers.map(\.id) == [wallpaper.id])
+    #expect(await provider.fetchCount == 0)
 }
 
 @MainActor
@@ -2555,6 +2630,68 @@ actor SearchableCatalogProvider: WallpaperCatalogProviding, WallpaperCatalogSear
     func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
         queries.append(query)
         return searchResults
+    }
+}
+
+actor SlowRefreshSearchableCatalogProvider: WallpaperCatalogProviding, WallpaperCatalogSearching {
+    let refreshWallpaper: CatalogWallpaper
+    let searchWallpaper: CatalogWallpaper
+    private(set) var refreshStarted = false
+    private(set) var refreshWasCancelled = false
+    private(set) var queries: [String] = []
+
+    init(refreshWallpaper: CatalogWallpaper, searchWallpaper: CatalogWallpaper) {
+        self.refreshWallpaper = refreshWallpaper
+        self.searchWallpaper = searchWallpaper
+    }
+
+    func loadCachedCatalog() async -> [CatalogWallpaper]? { nil }
+
+    func fetchCatalog() async throws -> [CatalogWallpaper] {
+        try await fetchCatalog(progress: { _ in })
+    }
+
+    func fetchCatalog(
+        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
+    ) async throws -> [CatalogWallpaper] {
+        refreshStarted = true
+        await progress([refreshWallpaper])
+        do {
+            try await Task.sleep(nanoseconds: 3_000_000_000)
+            return [refreshWallpaper]
+        } catch is CancellationError {
+            refreshWasCancelled = true
+            throw CancellationError()
+        }
+    }
+
+    func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
+        URL(string: "https://example.com/fallback.mp4")!
+    }
+
+    func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
+        queries.append(query)
+        return [searchWallpaper]
+    }
+}
+
+actor RefreshCountingCatalogProvider: WallpaperCatalogProviding {
+    let wallpaper: CatalogWallpaper
+    private(set) var fetchCount = 0
+
+    init(wallpaper: CatalogWallpaper) {
+        self.wallpaper = wallpaper
+    }
+
+    func loadCachedCatalog() async -> [CatalogWallpaper]? { nil }
+
+    func fetchCatalog() async throws -> [CatalogWallpaper] {
+        fetchCount += 1
+        return [wallpaper]
+    }
+
+    func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
+        URL(string: "https://example.com/fallback.mp4")!
     }
 }
 

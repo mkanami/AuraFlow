@@ -156,27 +156,29 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wallpap
     }
 
     func fetchNextCatalogPage() async throws -> CatalogPage {
-        guard hasMoreArchiveCatalogPages else {
-            return CatalogPage(wallpapers: [], hasMore: false)
-        }
+        while hasMoreArchiveCatalogPages {
+            try Task.checkCancellation()
+            let page = nextArchiveCatalogPage
+            let fetched = try await fetchArchive(path: archivePath(categorySlug: "anime", page: page))
+            guard !fetched.isEmpty else {
+                hasMoreArchiveCatalogPages = false
+                try persistCatalog(loadedCatalog)
+                return CatalogPage(wallpapers: [], hasMore: false)
+            }
 
-        let page = nextArchiveCatalogPage
-        let fetched = try await fetchArchive(path: archivePath(categorySlug: "anime", page: page))
-        guard !fetched.isEmpty else {
-            hasMoreArchiveCatalogPages = false
+            let knownIDs = Set(loadedCatalog.map(\.id))
+            let additions = fetched.filter { !knownIDs.contains($0.id) }
+            loadedCatalog = deduplicate(loadedCatalog + fetched)
+            nextArchiveCatalogPage = page + 1
+            guard !additions.isEmpty else { continue }
+
             try persistCatalog(loadedCatalog)
-            return CatalogPage(wallpapers: [], hasMore: false)
+            return CatalogPage(
+                wallpapers: additions.map(\.asCatalogWallpaper),
+                hasMore: true
+            )
         }
-
-        let knownIDs = Set(loadedCatalog.map(\.id))
-        let additions = fetched.filter { !knownIDs.contains($0.id) }
-        loadedCatalog = deduplicate(loadedCatalog + fetched)
-        nextArchiveCatalogPage = page + 1
-        try persistCatalog(loadedCatalog)
-        return CatalogPage(
-            wallpapers: additions.map(\.asCatalogWallpaper),
-            hasMore: true
-        )
+        return CatalogPage(wallpapers: [], hasMore: false)
     }
 
     func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {

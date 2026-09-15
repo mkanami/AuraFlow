@@ -87,6 +87,37 @@ func catalogSearchMatchesCaseAndPartialWordsWithoutFuzzyResults() {
 }
 
 @Test @MainActor
+func catalogSearchCombinesRemoteResultsWithoutLosingCaseInsensitiveLocalMatches() {
+    let viewModel = CatalogViewModel()
+    viewModel.wallpapers = [
+        CatalogWallpaper(
+            id: "nino-local",
+            title: "Nino Rides in the City",
+            category: "Anime",
+            attribution: "MotionBGS",
+            previewImageURL: nil,
+            sourcePageURL: nil,
+            sources: []
+        ),
+    ]
+    viewModel.searchResults = [
+        CatalogWallpaper(
+            id: "nino-remote",
+            title: "Nakano Nino Live Wallpaper",
+            category: "Anime",
+            attribution: "MoeWalls",
+            previewImageURL: nil,
+            sourcePageURL: nil,
+            sources: []
+        ),
+    ]
+
+    viewModel.searchText = "nino"
+
+    #expect(viewModel.filteredWallpapers.map(\.id) == ["nino-local", "nino-remote"])
+}
+
+@Test @MainActor
 func previewViewModelPersistsAndRestoresItsSeed() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("AuraFlow-FeatureViewModelTests")

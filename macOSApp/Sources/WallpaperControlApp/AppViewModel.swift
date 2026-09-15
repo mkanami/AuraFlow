@@ -2024,6 +2024,11 @@ final class AppViewModel: ObservableObject {
         set { catalogViewModel.wallpapers = newValue }
     }
 
+    private var catalogSearchResults: [CatalogWallpaper] {
+        get { catalogViewModel.searchResults }
+        set { catalogViewModel.searchResults = newValue }
+    }
+
     var catalogIsRefreshing: Bool {
         get { catalogViewModel.isRefreshing }
         set { catalogViewModel.isRefreshing = newValue }
@@ -2073,12 +2078,12 @@ final class AppViewModel: ObservableObject {
     private var monitoringTask: Task<Void, Never>?
     private var terminationObserver: ObserverToken?
     private var isShuttingDown = false
+    private var catalogCacheLoadTask: Task<Void, Never>?
     private var catalogRefreshTask: Task<Void, Never>?
     private var catalogLoadMoreTask: Task<Void, Never>?
     private var catalogSearchTask: Task<Void, Never>?
     private var catalogSearchGeneration = 0
     private var catalogPaginationBoundaryIsVisible = false
-    private var catalogPaginationContinuationTask: Task<Void, Never>?
     private var catalogDownloadTask: Task<Void, Never>?
     private var catalogPreviewViewportTask: Task<Void, Never>?
     private var visibleCatalogPreviewIDs = Set<String>()
@@ -2384,10 +2389,11 @@ final class AppViewModel: ObservableObject {
                 }
             }
         )
-        Task { [weak self] in
+        catalogCacheLoadTask = Task { [weak self] in
             await self?.loadCatalogFromCache()
             await MainActor.run {
                 self?.loadDownloadedCatalogWallpapers()
+                self?.catalogCacheLoadTask = nil
             }
         }
         bootstrapControllerIfNeeded()
@@ -2498,6 +2504,7 @@ final class AppViewModel: ObservableObject {
     deinit {
         healthMonitorTask?.cancel()
         monitoringTask?.cancel()
+        catalogCacheLoadTask?.cancel()
         catalogRefreshTask?.cancel()
         catalogLoadMoreTask?.cancel()
         catalogSearchTask?.cancel()
@@ -3082,7 +3089,9 @@ final class AppViewModel: ObservableObject {
         catalogViewModel.toggleGroup(group)
         resetCatalogPreviewViewport()
         Task { await catalogPreviewPipeline.cancelPending() }
-        continueCatalogPaginationIfNeeded()
+        if catalogPaginationBoundaryIsVisible {
+            loadMoreCatalogIfNeededAtBoundary()
+        }
     }
 
     func prefetchCatalogPreview(_ wallpaper: CatalogWallpaper, hovered: Bool = false) {
@@ -3109,7 +3118,8 @@ final class AppViewModel: ObservableObject {
     func loadMoreCatalogIfNeeded(after wallpaperID: String) {
         let triggerIDs = Set(filteredCatalogWallpapers.suffix(12).map(\.id))
         guard triggerIDs.contains(wallpaperID) else { return }
-        guard catalogHasMoreWallpapers,
+        guard catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              catalogHasMoreWallpapers,
               !catalogIsRefreshing,
               catalogLoadMoreTask == nil,
               selectedCatalogGroup == nil || selectedCatalogGroup == .anime else {
@@ -3121,10 +3131,7 @@ final class AppViewModel: ObservableObject {
     func catalogPaginationBoundaryChanged(isVisible: Bool) {
         catalogPaginationBoundaryIsVisible = isVisible
         if isVisible {
-            continueCatalogPaginationIfNeeded()
-        } else {
-            catalogPaginationContinuationTask?.cancel()
-            catalogPaginationContinuationTask = nil
+            loadMoreCatalogIfNeededAtBoundary()
         }
     }
 
@@ -3591,7 +3598,6 @@ final class AppViewModel: ObservableObject {
                 catalogRefreshTask?.cancel()
                 catalogLoadMoreTask?.cancel()
                 catalogSearchTask?.cancel()
-                catalogPaginationContinuationTask?.cancel()
                 catalogDownloadTask?.cancel()
                 catalogDownloadID = nil
                 let refreshTask = catalogRefreshTask
@@ -3641,6 +3647,7 @@ final class AppViewModel: ObservableObject {
                 downloadedCatalogWallpapers = []
 
                 catalogWallpapers = []
+                catalogSearchResults = []
                 catalogHasMoreWallpapers = true
                 selectedCatalogWallpaper = nil
                 lastCatalogRefreshAt = nil
@@ -4026,6 +4033,7 @@ final class AppViewModel: ObservableObject {
         let result = await catalogRepository.loadCatalogCache()
         if let cached = result.wallpapers, !cached.isEmpty {
             catalogWallpapers = cached
+            lastCatalogRefreshAt = catalogRepository.unifiedCatalogCacheModificationDate()
         }
         if let warningMessage = result.persistenceStatus.warningMessage {
             statusMessage = warningMessage
@@ -4044,6 +4052,14 @@ final class AppViewModel: ObservableObject {
     }
 
     private func refreshCatalogIfNeeded(force: Bool = false) {
+        if let catalogCacheLoadTask {
+            Task { [weak self] in
+                await catalogCacheLoadTask.value
+                guard let self, self.isCatalogOpen else { return }
+                self.refreshCatalogIfNeeded(force: force)
+            }
+            return
+        }
         if catalogRefreshTask != nil {
             return
         }
@@ -4059,7 +4075,9 @@ final class AppViewModel: ObservableObject {
             defer {
                 catalogIsRefreshing = false
                 catalogRefreshTask = nil
-                scheduleCatalogPaginationContinuationIfNeeded()
+                if catalogPaginationBoundaryIsVisible {
+                    loadMoreCatalogIfNeededAtBoundary()
+                }
             }
 
             do {
@@ -4107,7 +4125,6 @@ final class AppViewModel: ObservableObject {
             defer {
                 catalogIsLoadingMore = false
                 catalogLoadMoreTask = nil
-                scheduleCatalogPaginationContinuationIfNeeded()
             }
 
             do {
@@ -4134,22 +4151,29 @@ final class AppViewModel: ObservableObject {
         catalogSearchGeneration &+= 1
         let generation = catalogSearchGeneration
         catalogSearchTask?.cancel()
+        catalogSearchResults = []
         resetCatalogPreviewViewport()
         Task { await catalogPreviewPipeline.cancelPending() }
 
-        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = WallpaperSearchMatcher.normalizedQuery(rawQuery)
         guard query.count >= 2 else {
             catalogIsSearching = false
             catalogSearchTask = nil
-            continueCatalogPaginationIfNeeded()
+            if query.isEmpty, catalogPaginationBoundaryIsVisible {
+                loadMoreCatalogIfNeededAtBoundary()
+            }
             return
         }
+
+        // A targeted search must never sit behind a multi-page catalog refresh
+        // or compete with it for provider actors and network connections.
+        catalogRefreshTask?.cancel()
 
         mergeDownloadedCatalogSearchMatches(for: query)
 
         catalogSearchTask = Task { [weak self] in
             do {
-                try await Task.sleep(nanoseconds: 220_000_000)
+                try await Task.sleep(nanoseconds: 140_000_000)
                 guard let self, !Task.isCancelled,
                       generation == catalogSearchGeneration else { return }
                 catalogIsSearching = true
@@ -4160,38 +4184,30 @@ final class AppViewModel: ObservableObject {
                     }
                 }
 
-                let refreshTask = catalogRefreshTask
-                await refreshTask?.value
-                guard !Task.isCancelled,
-                      generation == catalogSearchGeneration else { return }
-
                 let result = try await catalogRepository.searchCatalog(
                     query: query,
-                    existing: catalogWallpapers,
+                    existing: [],
                     progress: { [weak self] partial in
                         guard let self else { return }
                         await MainActor.run {
                             guard !Task.isCancelled,
                                   generation == self.catalogSearchGeneration,
-                                  self.catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    .localizedCaseInsensitiveCompare(query) == .orderedSame else {
+                                  WallpaperSearchMatcher.normalizedQuery(self.catalogSearchText) == query else {
                                 return
                             }
-                            self.mergeCatalogWallpapers(partial)
+                            self.mergeCatalogSearchResults(partial)
                         }
                     }
                 )
                 guard !Task.isCancelled,
                       generation == catalogSearchGeneration,
-                      catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        .localizedCaseInsensitiveCompare(query) == .orderedSame else {
+                      WallpaperSearchMatcher.normalizedQuery(catalogSearchText) == query else {
                     return
                 }
-                mergeCatalogWallpapers(result.wallpapers)
+                mergeCatalogSearchResults(result.wallpapers)
                 if let warningMessage = result.persistenceStatus.warningMessage {
                     statusMessage = warningMessage
                 }
-                continueCatalogPaginationIfNeeded()
             } catch is CancellationError {
                 return
             } catch {
@@ -4202,8 +4218,8 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func continueCatalogPaginationIfNeeded() {
-        guard catalogPaginationBoundaryIsVisible,
+    private func loadMoreCatalogIfNeededAtBoundary() {
+        guard catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               catalogHasMoreWallpapers,
               !catalogIsRefreshing,
               catalogLoadMoreTask == nil,
@@ -4213,25 +4229,9 @@ final class AppViewModel: ObservableObject {
         loadNextCatalogPage()
     }
 
-    private func mergeCatalogWallpapers(_ additions: [CatalogWallpaper]) {
-        var seen = Set(catalogWallpapers.map(\.id))
-        catalogWallpapers.append(contentsOf: additions.filter { seen.insert($0.id).inserted })
-    }
-
-    private func scheduleCatalogPaginationContinuationIfNeeded() {
-        catalogPaginationContinuationTask?.cancel()
-        guard catalogPaginationBoundaryIsVisible, catalogHasMoreWallpapers else {
-            catalogPaginationContinuationTask = nil
-            return
-        }
-        catalogPaginationContinuationTask = Task { [weak self] in
-            // Give LazyVGrid one layout pass. If newly appended cards pushed
-            // the boundary below the viewport, onDisappear cancels this task.
-            try? await Task.sleep(nanoseconds: 80_000_000)
-            guard let self, !Task.isCancelled else { return }
-            catalogPaginationContinuationTask = nil
-            continueCatalogPaginationIfNeeded()
-        }
+    private func mergeCatalogSearchResults(_ additions: [CatalogWallpaper]) {
+        var seen = Set(catalogSearchResults.map(\.id))
+        catalogSearchResults.append(contentsOf: additions.filter { seen.insert($0.id).inserted })
     }
 
     private func scheduleCatalogPreviewViewportUpdate() {
@@ -4279,7 +4279,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func mergeDownloadedCatalogSearchMatches(for query: String) {
-        var seen = Set(catalogWallpapers.map(\.id))
+        var seen = Set(catalogSearchResults.map(\.id))
         let additions = downloadedCatalogWallpapers.compactMap { wallpaper -> CatalogWallpaper? in
             guard WallpaperSearchMatcher.matches(
                 query: query,
@@ -4305,7 +4305,7 @@ final class AppViewModel: ObservableObject {
             )
         }
         guard !additions.isEmpty else { return }
-        catalogWallpapers.append(contentsOf: additions)
+        catalogSearchResults.append(contentsOf: additions)
     }
 
     private func downloadCatalogVideo(for wallpaper: CatalogWallpaper) async throws -> URL {
