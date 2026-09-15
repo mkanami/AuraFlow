@@ -322,6 +322,14 @@ struct ContentView: View {
                         isCompactBySize: isCompactBySize,
                         isVeryCompactByHeight: isVeryCompactByHeight
                     )
+                    .disabled(!viewModel.isControllerAvailable)
+                    .overlay(
+                        Group {
+                            if !viewModel.isControllerAvailable {
+                                DisabledOverlay()
+                            }
+                        }
+                    )
                 }
             }
             .frame(width: overlayWidth, alignment: .leading)
@@ -659,6 +667,7 @@ struct ControlPanel: View {
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(AuraPanelButtonStyle())
+        .disabled(!viewModel.canClearWallpaper)
     }
 
     private var downloadedWallpapersButton: some View {
@@ -672,6 +681,7 @@ struct ControlPanel: View {
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(AuraPanelButtonStyle())
+        .disabled(!viewModel.canClearWallpaper)
     }
 
     private var changeWallpaperButton: some View {
@@ -685,6 +695,7 @@ struct ControlPanel: View {
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(AuraPanelButtonStyle())
+        .disabled(!viewModel.canClearWallpaper)
     }
 
     private var settingsButton: some View {
@@ -2306,6 +2317,25 @@ struct VisualEffectView: NSViewRepresentable {
         nsView.material = material
         nsView.blendingMode = blendingMode
         nsView.state = state
+    }
+}
+
+struct DisabledOverlay: View {
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .fill(Color.black.opacity(0.5))
+            .overlay(
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.title3.weight(.semibold))
+                    Text("Native wallpaper runtime unavailable")
+                        .font(.callout)
+                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
+                }
+                .padding(14)
+            )
     }
 }
 

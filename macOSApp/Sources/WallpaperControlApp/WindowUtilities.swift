@@ -23,8 +23,6 @@ func configureWindowForClientDecorations(_ window: NSWindow) {
     window.delegate = auraFlowMainWindowDelegate
     window.animationBehavior = .none
     window.tabbingMode = .disallowed
-    window.ignoresMouseEvents = false
-    window.acceptsMouseMovedEvents = true
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.styleMask.insert(.titled)
