@@ -16,7 +16,6 @@ final class CatalogViewModel: ObservableObject {
     @Published var selectedGroup: CatalogWallpaperGroup?
     @Published var downloadID: String?
     @Published var wallpapers: [CatalogWallpaper] = []
-    @Published var searchResults: [CatalogWallpaper] = []
     @Published var isRefreshing = false
     @Published var isLoadingMore = false
     @Published var isSearching = false
@@ -24,20 +23,11 @@ final class CatalogViewModel: ObservableObject {
     @Published var downloadedWallpapers: [DownloadedCatalogWallpaper] = []
 
     var filteredWallpapers: [CatalogWallpaper] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let availableWallpapers: [CatalogWallpaper]
-        if query.isEmpty {
-            availableWallpapers = wallpapers
-        } else {
-            var seen = Set<String>()
-            availableWallpapers = (wallpapers + searchResults).filter {
-                seen.insert($0.id).inserted
-            }
-        }
-        let groupFiltered = availableWallpapers.filter { wallpaper in
+        let groupFiltered = wallpapers.filter { wallpaper in
             guard let selectedGroup else { return true }
             return wallpaper.catalogGroup == selectedGroup
         }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return groupFiltered }
         return groupFiltered.filter { wallpaper in
             WallpaperSearchMatcher.matches(

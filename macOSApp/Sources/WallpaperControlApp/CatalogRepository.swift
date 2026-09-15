@@ -244,15 +244,6 @@ final class CatalogRepository: @unchecked Sendable {
         )
     }
 
-    func unifiedCatalogCacheModificationDate() -> Date? {
-        guard FileManager.default.fileExists(atPath: catalogCacheURL.path) else {
-            return nil
-        }
-        return try? catalogCacheURL
-            .resourceValues(forKeys: [.contentModificationDateKey])
-            .contentModificationDate
-    }
-
     func refreshCatalog(
         progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
     ) async throws -> CatalogRefreshResult {

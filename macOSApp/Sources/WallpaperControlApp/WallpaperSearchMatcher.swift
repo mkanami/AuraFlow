@@ -2,12 +2,12 @@ import Foundation
 
 enum WallpaperSearchMatcher {
     static func matches(query rawQuery: String, fields: [String]) -> Bool {
-        let query = normalizedQuery(rawQuery)
+        let query = normalized(rawQuery)
         guard !query.isEmpty else { return true }
-        return fields.contains { normalizedQuery($0).contains(query) }
+        return fields.contains { normalized($0).contains(query) }
     }
 
-    static func normalizedQuery(_ value: String) -> String {
+    private static func normalized(_ value: String) -> String {
         value
             .folding(
                 options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
