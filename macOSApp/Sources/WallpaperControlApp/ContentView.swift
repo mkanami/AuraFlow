@@ -1587,8 +1587,11 @@ struct WallpaperCatalogGridView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(10)
                             .background(AuraGlassInsetCard())
+                            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         }
-                        .buttonStyle(AuraPlainPressButtonStyle())
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .id(wallpaper.id)
                         .onAppear {
                             viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: true)
