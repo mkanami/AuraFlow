@@ -10,6 +10,7 @@ import AppKit
         backing: .buffered,
         defer: false
     )
+    window.ignoresMouseEvents = true
 
     configureWindowForClientDecorations(window)
 
@@ -18,6 +19,8 @@ import AppKit
     #expect(window.isOpaque == true)
     #expect(window.backgroundColor == .black)
     #expect(window.animationBehavior == .none)
+    #expect(window.ignoresMouseEvents == false)
+    #expect(window.acceptsMouseMovedEvents == true)
     #expect((window.standardWindowButton(.closeButton)?.isHidden ?? true) == false)
     #expect((window.standardWindowButton(.miniaturizeButton)?.isHidden ?? true) == false)
     #expect((window.standardWindowButton(.zoomButton)?.isHidden ?? true) == false)
