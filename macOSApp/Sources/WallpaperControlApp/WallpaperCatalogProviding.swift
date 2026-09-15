@@ -23,6 +23,21 @@ protocol WallpaperCatalogPaging: Sendable {
 /// pages. This lets search find older entries without downloading every card.
 protocol WallpaperCatalogSearching: Sendable {
     func searchCatalog(query: String) async throws -> [CatalogWallpaper]
+    func searchCatalog(
+        query: String,
+        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
+    ) async throws -> [CatalogWallpaper]
+}
+
+extension WallpaperCatalogSearching {
+    func searchCatalog(
+        query: String,
+        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
+    ) async throws -> [CatalogWallpaper] {
+        let wallpapers = try await searchCatalog(query: query)
+        await progress(wallpapers)
+        return wallpapers
+    }
 }
 
 /// Optional provider capability used by the catalog preview pipeline. Preview

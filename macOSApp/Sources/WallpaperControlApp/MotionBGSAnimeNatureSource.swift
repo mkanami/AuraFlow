@@ -108,6 +108,13 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
     }
 
     func searchCatalog(query rawQuery: String) async throws -> [CatalogWallpaper] {
+        try await searchCatalog(query: rawQuery, progress: { _ in })
+    }
+
+    func searchCatalog(
+        query rawQuery: String,
+        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
+    ) async throws -> [CatalogWallpaper] {
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return [] }
 
@@ -116,23 +123,31 @@ actor MotionBGSAnimeNatureSource: WallpaperCatalogProviding, CatalogCacheClearin
             resolvingAgainstBaseURL: false
         )
         components?.queryItems = [URLQueryItem(name: "q", value: query)]
-        guard let searchURL = components?.url else {
+        guard let firstSearchURL = components?.url else {
             throw URLError(.badURL)
         }
 
-        let data = try await fetchData(searchURL)
-        guard let html = String(data: data, encoding: .utf8) else {
-            throw URLError(.cannotDecodeContentData)
-        }
+        var nextURL: URL? = firstSearchURL
+        var matches: [MotionBGSListItem] = []
+        while let pageURL = nextURL {
+            try Task.checkCancellation()
+            let data = try await fetchData(pageURL)
+            guard let html = String(data: data, encoding: .utf8) else {
+                throw URLError(.cannotDecodeContentData)
+            }
 
-        let page = MotionBGSParser.parseListingPage(html: html, baseURL: baseURL)
-        let exactMatches = page.items.filter { item in
-            WallpaperSearchMatcher.matches(
-                query: query,
-                fields: [item.title, item.pageURL.lastPathComponent.replacingOccurrences(of: "-", with: " ")]
-            )
+            let page = MotionBGSParser.parseListingPage(html: html, baseURL: baseURL)
+            matches.append(contentsOf: page.items.filter { item in
+                WallpaperSearchMatcher.matches(
+                    query: query,
+                    fields: [item.title, item.pageURL.lastPathComponent.replacingOccurrences(of: "-", with: " ")]
+                )
+            })
+            matches = Self.deduplicateItems(matches)
+            await progress(Self.placeholderWallpapers(from: matches))
+            nextURL = page.nextPath.flatMap { URL(string: $0, relativeTo: baseURL)?.absoluteURL }
         }
-        return Self.placeholderWallpapers(from: exactMatches)
+        return Self.placeholderWallpapers(from: matches)
     }
 
     private func fetchListingItems(
@@ -254,8 +269,27 @@ enum MotionBGSParser {
             return MotionBGSListItem(title: title, pageURL: pageURL, previewImageURL: previewImageURL)
         }
 
-        let nextPath = firstMatch(in: normalized, pattern: #"<link href=https://motionbgs\.com/([^" ]+) rel=next>"#)
-            ?? firstMatch(in: normalized, pattern: #"<a href=/(tag:anime-nature/\d+/)> Next"#)
+        let rawNextPath = firstMatch(
+            in: normalized,
+            pattern: #"<link[^>]+href=[\"']?([^\"' >]+)[\"']?[^>]+rel=[\"']?next[\"']?"#
+        ) ?? firstMatch(
+            in: normalized,
+            pattern: #"<a href=[\"']?(/?tag:anime-nature/\d+/)[\"']?[^>]*>\s*Next"#
+        )
+        let nextPath = rawNextPath.map { rawValue in
+            guard let url = URL(string: rawValue, relativeTo: baseURL)?.absoluteURL,
+                  url.host?.lowercased() == baseURL.host?.lowercased() else {
+                return rawValue
+            }
+            var value = url.path.hasPrefix("/") ? String(url.path.dropFirst()) : url.path
+            if rawValue.hasSuffix("/"), !value.hasSuffix("/") {
+                value += "/"
+            }
+            if let query = url.query, !query.isEmpty {
+                value += "?\(query)"
+            }
+            return value
+        }
 
         return ListingPage(items: items, nextPath: nextPath)
     }

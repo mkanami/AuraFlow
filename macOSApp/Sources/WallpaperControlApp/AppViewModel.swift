@@ -2077,6 +2077,8 @@ final class AppViewModel: ObservableObject {
     private var catalogLoadMoreTask: Task<Void, Never>?
     private var catalogSearchTask: Task<Void, Never>?
     private var catalogSearchGeneration = 0
+    private var catalogPaginationBoundaryIsVisible = false
+    private var catalogPaginationContinuationTask: Task<Void, Never>?
     private var catalogDownloadTask: Task<Void, Never>?
     private var catalogPreviewViewportTask: Task<Void, Never>?
     private var visibleCatalogPreviewIDs = Set<String>()
@@ -3080,6 +3082,7 @@ final class AppViewModel: ObservableObject {
         catalogViewModel.toggleGroup(group)
         resetCatalogPreviewViewport()
         Task { await catalogPreviewPipeline.cancelPending() }
+        continueCatalogPaginationIfNeeded()
     }
 
     func prefetchCatalogPreview(_ wallpaper: CatalogWallpaper, hovered: Bool = false) {
@@ -3104,17 +3107,25 @@ final class AppViewModel: ObservableObject {
     }
 
     func loadMoreCatalogIfNeeded(after wallpaperID: String) {
+        let triggerIDs = Set(filteredCatalogWallpapers.suffix(12).map(\.id))
+        guard triggerIDs.contains(wallpaperID) else { return }
         guard catalogHasMoreWallpapers,
               !catalogIsRefreshing,
               catalogLoadMoreTask == nil,
-              catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               selectedCatalogGroup == nil || selectedCatalogGroup == .anime else {
             return
         }
-
-        let triggerIDs = Set(filteredCatalogWallpapers.suffix(12).map(\.id))
-        guard triggerIDs.contains(wallpaperID) else { return }
         loadNextCatalogPage()
+    }
+
+    func catalogPaginationBoundaryChanged(isVisible: Bool) {
+        catalogPaginationBoundaryIsVisible = isVisible
+        if isVisible {
+            continueCatalogPaginationIfNeeded()
+        } else {
+            catalogPaginationContinuationTask?.cancel()
+            catalogPaginationContinuationTask = nil
+        }
     }
 
     func applyCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
@@ -3580,6 +3591,7 @@ final class AppViewModel: ObservableObject {
                 catalogRefreshTask?.cancel()
                 catalogLoadMoreTask?.cancel()
                 catalogSearchTask?.cancel()
+                catalogPaginationContinuationTask?.cancel()
                 catalogDownloadTask?.cancel()
                 catalogDownloadID = nil
                 let refreshTask = catalogRefreshTask
@@ -4047,6 +4059,7 @@ final class AppViewModel: ObservableObject {
             defer {
                 catalogIsRefreshing = false
                 catalogRefreshTask = nil
+                scheduleCatalogPaginationContinuationIfNeeded()
             }
 
             do {
@@ -4094,6 +4107,7 @@ final class AppViewModel: ObservableObject {
             defer {
                 catalogIsLoadingMore = false
                 catalogLoadMoreTask = nil
+                scheduleCatalogPaginationContinuationIfNeeded()
             }
 
             do {
@@ -4127,6 +4141,7 @@ final class AppViewModel: ObservableObject {
         guard query.count >= 2 else {
             catalogIsSearching = false
             catalogSearchTask = nil
+            continueCatalogPaginationIfNeeded()
             return
         }
 
@@ -4152,7 +4167,19 @@ final class AppViewModel: ObservableObject {
 
                 let result = try await catalogRepository.searchCatalog(
                     query: query,
-                    existing: catalogWallpapers
+                    existing: catalogWallpapers,
+                    progress: { [weak self] partial in
+                        guard let self else { return }
+                        await MainActor.run {
+                            guard !Task.isCancelled,
+                                  generation == self.catalogSearchGeneration,
+                                  self.catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .localizedCaseInsensitiveCompare(query) == .orderedSame else {
+                                return
+                            }
+                            self.mergeCatalogWallpapers(partial)
+                        }
+                    }
                 )
                 guard !Task.isCancelled,
                       generation == catalogSearchGeneration,
@@ -4160,10 +4187,11 @@ final class AppViewModel: ObservableObject {
                         .localizedCaseInsensitiveCompare(query) == .orderedSame else {
                     return
                 }
-                catalogWallpapers = result.wallpapers
+                mergeCatalogWallpapers(result.wallpapers)
                 if let warningMessage = result.persistenceStatus.warningMessage {
                     statusMessage = warningMessage
                 }
+                continueCatalogPaginationIfNeeded()
             } catch is CancellationError {
                 return
             } catch {
@@ -4171,6 +4199,38 @@ final class AppViewModel: ObservableObject {
                 // Local case-insensitive substring matches remain available if
                 // the remote source is temporarily unreachable.
             }
+        }
+    }
+
+    private func continueCatalogPaginationIfNeeded() {
+        guard catalogPaginationBoundaryIsVisible,
+              catalogHasMoreWallpapers,
+              !catalogIsRefreshing,
+              catalogLoadMoreTask == nil,
+              selectedCatalogGroup == nil || selectedCatalogGroup == .anime else {
+            return
+        }
+        loadNextCatalogPage()
+    }
+
+    private func mergeCatalogWallpapers(_ additions: [CatalogWallpaper]) {
+        var seen = Set(catalogWallpapers.map(\.id))
+        catalogWallpapers.append(contentsOf: additions.filter { seen.insert($0.id).inserted })
+    }
+
+    private func scheduleCatalogPaginationContinuationIfNeeded() {
+        catalogPaginationContinuationTask?.cancel()
+        guard catalogPaginationBoundaryIsVisible, catalogHasMoreWallpapers else {
+            catalogPaginationContinuationTask = nil
+            return
+        }
+        catalogPaginationContinuationTask = Task { [weak self] in
+            // Give LazyVGrid one layout pass. If newly appended cards pushed
+            // the boundary below the viewport, onDisappear cancels this task.
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard let self, !Task.isCancelled else { return }
+            catalogPaginationContinuationTask = nil
+            continueCatalogPaginationIfNeeded()
         }
     }
 

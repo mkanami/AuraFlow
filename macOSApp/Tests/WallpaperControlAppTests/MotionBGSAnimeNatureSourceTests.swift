@@ -31,6 +31,24 @@ import Testing
     #expect(page.nextPath == "tag:anime-nature/2/")
 }
 
+@Test func motionBGSSearchPaginationPreservesQueryParameters() {
+    let html = """
+    <html>
+      <head>
+        <link href="https://motionbgs.com/search?q=miku&amp;page=2" rel="next">
+      </head>
+      <body></body>
+    </html>
+    """
+
+    let page = MotionBGSParser.parseListingPage(
+        html: html,
+        baseURL: URL(string: "https://motionbgs.com/")!
+    )
+
+    #expect(page.nextPath == "search?q=miku&page=2")
+}
+
 @Test func motionBGSDetailPageBuildsDownloadableWallpaper() {
     let item = MotionBGSListItem(
         title: "Calm Blue Lake",

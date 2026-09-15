@@ -1444,6 +1444,52 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func catalogPaginationBoundaryContinuesPastPagesWithoutSearchMatches() async throws {
+    let seed = CatalogWallpaper(
+        id: "seed",
+        title: "Unrelated Wallpaper",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: []
+    )
+    let match = CatalogWallpaper(
+        id: "target",
+        title: "Nino Target Wallpaper",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: []
+    )
+    let provider = SequencePagedCatalogProvider(
+        initial: [seed],
+        pages: [
+            CatalogPage(wallpapers: [], hasMore: true),
+            CatalogPage(wallpapers: [match], hasMore: false),
+        ]
+    )
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        catalogProvider: provider
+    )
+    viewModel.catalogWallpapers = [seed]
+    viewModel.catalogSearchText = "nino"
+    viewModel.catalogPaginationBoundaryChanged(isVisible: true)
+    defer { viewModel.catalogPaginationBoundaryChanged(isVisible: false) }
+
+    for _ in 0..<80 {
+        if viewModel.filteredCatalogWallpapers.map(\.id) == [match.id] { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    #expect(viewModel.filteredCatalogWallpapers.map(\.id) == [match.id])
+    #expect(await provider.pageRequestCount == 2)
+    #expect(!viewModel.catalogHasMoreWallpapers)
+}
+
+@MainActor
 @Test func catalogSearchFetchesMatchesOutsideLoadedPages() async throws {
     let first = CatalogWallpaper(
         id: "first",
@@ -2460,6 +2506,32 @@ actor SlowPagedCatalogProvider: WallpaperCatalogProviding, WallpaperCatalogPagin
         pageRequestCount += 1
         try await Task.sleep(nanoseconds: 50_000_000)
         return CatalogPage(wallpapers: next, hasMore: true)
+    }
+}
+
+actor SequencePagedCatalogProvider: WallpaperCatalogProviding, WallpaperCatalogPaging {
+    let initial: [CatalogWallpaper]
+    private var pages: [CatalogPage]
+    private(set) var pageRequestCount = 0
+
+    init(initial: [CatalogWallpaper], pages: [CatalogPage]) {
+        self.initial = initial
+        self.pages = pages
+    }
+
+    func loadCachedCatalog() async -> [CatalogWallpaper]? { initial }
+    func fetchCatalog() async throws -> [CatalogWallpaper] { initial }
+
+    func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
+        URL(string: "https://example.com/fallback.mp4")!
+    }
+
+    func fetchNextCatalogPage() async throws -> CatalogPage {
+        pageRequestCount += 1
+        guard !pages.isEmpty else {
+            return CatalogPage(wallpapers: [], hasMore: false)
+        }
+        return pages.removeFirst()
     }
 }
 

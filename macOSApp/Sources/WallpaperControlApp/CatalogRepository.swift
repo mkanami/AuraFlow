@@ -282,7 +282,8 @@ final class CatalogRepository: @unchecked Sendable {
 
     func searchCatalog(
         query: String,
-        existing: [CatalogWallpaper]
+        existing: [CatalogWallpaper],
+        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void = { _ in }
     ) async throws -> CatalogRefreshResult {
         guard let searchableProvider = provider as? any WallpaperCatalogSearching else {
             return CatalogRefreshResult(
@@ -291,14 +292,22 @@ final class CatalogRepository: @unchecked Sendable {
             )
         }
 
-        let matches = try await searchableProvider.searchCatalog(query: query)
-        var seen = Set(existing.map(\.id))
-        let additions = matches.filter { seen.insert($0.id).inserted }
-        let merged = existing + additions
+        let matches = try await searchableProvider.searchCatalog(query: query) { partial in
+            await progress(Self.merging(existing: existing, additions: partial))
+        }
+        let merged = Self.merging(existing: existing, additions: matches)
         return CatalogRefreshResult(
             wallpapers: merged,
             persistenceStatus: .notAttempted
         )
+    }
+
+    private static func merging(
+        existing: [CatalogWallpaper],
+        additions: [CatalogWallpaper]
+    ) -> [CatalogWallpaper] {
+        var seen = Set(existing.map(\.id))
+        return existing + additions.filter { seen.insert($0.id).inserted }
     }
 
     // MARK: Downloaded manifest

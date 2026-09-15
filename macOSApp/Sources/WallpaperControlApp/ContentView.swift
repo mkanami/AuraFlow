@@ -1367,6 +1367,10 @@ struct WallpaperCatalogView: View {
 
     private var catalogCountText: String {
         let filteredCount = viewModel.filteredCatalogWallpapers.count
+        let query = viewModel.catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty {
+            return "\(filteredCount)"
+        }
         if let selectedGroup = viewModel.selectedCatalogGroup {
             let groupCount = viewModel.catalogWallpaperCount(in: selectedGroup)
             let moreSuffix = selectedGroup == .anime && viewModel.catalogHasMoreWallpapers ? "+" : ""
@@ -1587,7 +1591,6 @@ struct WallpaperCatalogGridView: View {
                         .buttonStyle(AuraPlainPressButtonStyle())
                         .id(wallpaper.id)
                         .onAppear {
-                            viewModel.loadMoreCatalogIfNeeded(after: wallpaper.id)
                             viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: true)
                         }
                         .onDisappear {
@@ -1600,13 +1603,10 @@ struct WallpaperCatalogGridView: View {
                         }
                     }
 
-                    if viewModel.catalogIsLoadingMore {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(maxWidth: .infinity, minHeight: 40)
-                    }
                 }
                 .padding(.vertical, 2)
+
+                CatalogPaginationBoundary(viewModel: viewModel)
             }
             .onAppear {
                 restoreCatalogScrollPosition(using: proxy)
@@ -1614,6 +1614,29 @@ struct WallpaperCatalogGridView: View {
             .onChange(of: viewModel.catalogScrollTargetID) { _ in
                 restoreCatalogScrollPosition(using: proxy)
             }
+        }
+    }
+}
+
+private struct CatalogPaginationBoundary: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
+        Group {
+            if viewModel.catalogIsLoadingMore {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Color.clear
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 28)
+        .contentShape(Rectangle())
+        .onAppear {
+            viewModel.catalogPaginationBoundaryChanged(isVisible: true)
+        }
+        .onDisappear {
+            viewModel.catalogPaginationBoundaryChanged(isVisible: false)
         }
     }
 }

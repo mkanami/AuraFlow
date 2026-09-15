@@ -330,7 +330,58 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wallpap
     }
 
     func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
-        try await search(query: query, page: 1).map(\.asCatalogWallpaper)
+        try await searchCatalog(query: query, progress: { _ in })
+    }
+
+    func searchCatalog(
+        query rawQuery: String,
+        progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
+    ) async throws -> [CatalogWallpaper] {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+
+        let strategy = try await usableStrategy()
+        guard strategy == .rest else {
+            let wallpapers = try await search(query: query, page: 1).map(\.asCatalogWallpaper)
+            await progress(wallpapers)
+            return wallpapers
+        }
+
+        var aggregated: [MoeWallsWallpaper] = []
+        let firstPage = try await fetchSearchRESTPage(query: query, page: 1)
+        aggregated.append(contentsOf: firstPage.wallpapers)
+        await progress(deduplicate(aggregated).map(\.asCatalogWallpaper))
+
+        let totalPages = max(1, firstPage.totalPages ?? 1)
+        var nextPage = 2
+        while nextPage <= totalPages {
+            try Task.checkCancellation()
+            let upperBound = min(totalPages, nextPage + catalogRESTBatchSize - 1)
+            let pageRange = Array(nextPage...upperBound)
+            let batch = try await withThrowingTaskGroup(
+                of: (Int, [MoeWallsWallpaper]).self
+            ) { group in
+                for page in pageRange {
+                    group.addTask { [self] in
+                        let result = try await fetchSearchRESTPage(query: query, page: page)
+                        return (page, result.wallpapers)
+                    }
+                }
+                var collected: [(Int, [MoeWallsWallpaper])] = []
+                for try await result in group {
+                    collected.append(result)
+                }
+                return collected
+            }
+
+            for (_, wallpapers) in batch.sorted(by: { $0.0 < $1.0 }) {
+                aggregated.append(contentsOf: wallpapers)
+            }
+            await progress(deduplicate(aggregated).map(\.asCatalogWallpaper))
+            nextPage = upperBound + 1
+        }
+
+        return deduplicate(aggregated).map(\.asCatalogWallpaper)
     }
 
     func fetchDetails(pageURL: URL) async throws -> MoeWallsWallpaper {
@@ -407,13 +458,20 @@ actor MoeWallsSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wallpap
     }
 
     private func searchViaREST(query: String, page: Int) async throws -> [MoeWallsWallpaper] {
-        let posts = try await fetchRESTPosts(queryItems: [
+        try await fetchSearchRESTPage(query: query, page: page).wallpapers
+    }
+
+    private func fetchSearchRESTPage(
+        query: String,
+        page: Int
+    ) async throws -> (wallpapers: [MoeWallsWallpaper], totalPages: Int?) {
+        let (posts, totalPages) = try await fetchRESTPostsPage(queryItems: [
             URLQueryItem(name: "search", value: query),
             URLQueryItem(name: "page", value: String(page)),
             URLQueryItem(name: "per_page", value: String(restPageSize)),
             URLQueryItem(name: "_fields", value: "slug,link,title,date,categories,tags,resolutions,class_list,yoast_head_json"),
         ])
-        return try await hydrateAndFilter(posts: posts)
+        return (try await hydrateAndFilter(posts: posts), totalPages)
     }
 
     private func fetchRESTPostsPage(queryItems: [URLQueryItem]) async throws -> ([MoeWallsRESTPost], Int?) {
