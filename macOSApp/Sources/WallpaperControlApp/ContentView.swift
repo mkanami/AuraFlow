@@ -1576,8 +1576,10 @@ struct WallpaperCatalogGridView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(10)
                             .background(AuraGlassInsetCard())
+                            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         }
-                        .buttonStyle(AuraPlainPressButtonStyle())
+                        .buttonStyle(.plain)
+                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .id(wallpaper.id)
                         .onAppear {
                             viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: true)
@@ -2876,7 +2878,7 @@ struct AuraGlassInsetCard: View {
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
-                    .glassEffect(.clear.interactive(), in: shape)
+                    .glassEffect(.clear, in: shape)
                 shape.fill(
                     textTone.contrastSurfaceColor.opacity(
                         min(
@@ -2924,6 +2926,7 @@ struct AuraGlassInsetCard: View {
                 .stroke(textTone.primaryTextColor.opacity(emphasized ? 0.14 : 0.10), lineWidth: 0.9)
         )
         .clipShape(shape)
+        .allowsHitTesting(false)
     }
 }
 
