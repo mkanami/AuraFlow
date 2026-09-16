@@ -875,6 +875,7 @@ struct SettingsPopupCard: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
+                .controlSize(.small)
                 .disabled(!viewModel.canToggleScaleMode)
                 .scaleAlgorithmGlassControl()
             }
@@ -988,10 +989,10 @@ private struct ScaleAlgorithmGlassControlModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .padding(.vertical, 2)
-            .padding(.horizontal, 3)
+            .padding(.vertical, 1)
+            .padding(.horizontal, 2)
             .background(
-                AuraGlassInsetCard(cornerRadius: 8)
+                AuraGlassInsetCard(cornerRadius: 12)
                     .opacity(isEnabled ? 1.0 : 0.62)
                     .allowsHitTesting(false)
             )
