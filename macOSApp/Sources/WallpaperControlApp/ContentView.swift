@@ -862,20 +862,9 @@ struct SettingsPopupCard: View {
             HStack(spacing: 8) {
                 Text("Scale Algorithm")
 
-                Picker(
-                    "",
-                    selection: Binding(
-                        get: { viewModel.scaleMode },
-                        set: { viewModel.setScaleMode($0) }
-                    )
-                ) {
-                    ForEach(WallpaperScaleMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
+                ScaleAlgorithmSegmentedControl(selection: viewModel.scaleMode) { mode in
+                    viewModel.setScaleMode(mode)
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .controlSize(.small)
                 .disabled(!viewModel.canToggleScaleMode)
                 .scaleAlgorithmGlassControl()
             }
@@ -981,6 +970,63 @@ struct SettingsPopupCard: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
+    }
+}
+
+private struct ScaleAlgorithmSegmentedControl: View {
+    let selection: WallpaperScaleMode
+    let onSelect: (WallpaperScaleMode) -> Void
+
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+    @Environment(\.isEnabled) private var isEnabled
+    @Namespace private var selectionAnimation
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(WallpaperScaleMode.allCases) { mode in
+                Button {
+                    guard mode != selection else { return }
+                    onSelect(mode)
+                } label: {
+                    ZStack {
+                        if mode == selection {
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .fill(Color.accentColor)
+                                .padding(2)
+                                .matchedGeometryEffect(
+                                    id: "scale-algorithm-selection",
+                                    in: selectionAnimation
+                                )
+                        }
+
+                        Text(mode.title)
+                            .font(.callout.weight(mode == selection ? .semibold : .medium))
+                            .foregroundStyle(
+                                mode == selection
+                                    ? Color.white
+                                    : adaptiveGlassAppearance.centerTextTone.primaryTextColor
+                            )
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 10)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(AuraPlainPressButtonStyle())
+                .accessibilityValue(mode == selection ? "Selected" : "")
+
+                if mode != WallpaperScaleMode.allCases.last {
+                    Rectangle()
+                        .fill(
+                            adaptiveGlassAppearance.centerTextTone.primaryTextColor.opacity(0.18)
+                        )
+                        .frame(width: 1, height: 16)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+        .opacity(isEnabled ? 1.0 : 0.62)
+        .animation(.easeInOut(duration: 0.18), value: selection)
     }
 }
 
