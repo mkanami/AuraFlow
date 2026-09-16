@@ -1352,13 +1352,20 @@ struct ControlButtons: View {
 }
 
 struct WallpaperCatalogView: View {
-    @ObservedObject var viewModel: AppViewModel
+    let viewModel: AppViewModel
     let isCompactLayout: Bool
+    @ObservedObject private var catalogViewModel: CatalogViewModel
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
+    init(viewModel: AppViewModel, isCompactLayout: Bool) {
+        self.viewModel = viewModel
+        self.isCompactLayout = isCompactLayout
+        _catalogViewModel = ObservedObject(wrappedValue: viewModel.catalogViewModel)
+    }
+
     private var isDetailOpened: Bool {
-        viewModel.selectedCatalogWallpaper != nil
+        catalogViewModel.selectedWallpaper != nil
     }
 
     private var detailBottomTrim: CGFloat {
@@ -1366,72 +1373,40 @@ struct WallpaperCatalogView: View {
     }
 
     private var catalogCountText: String {
-        let filteredCount = viewModel.filteredCatalogWallpapers.count
-        let query = viewModel.catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filteredCount = catalogViewModel.filteredWallpapers.count
+        let query = catalogViewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty {
             return "\(filteredCount)"
         }
-        if let selectedGroup = viewModel.selectedCatalogGroup {
-            let groupCount = viewModel.catalogWallpaperCount(in: selectedGroup)
-            let moreSuffix = selectedGroup == .anime && viewModel.catalogHasMoreWallpapers ? "+" : ""
+        if let selectedGroup = catalogViewModel.selectedGroup {
+            let groupCount = catalogViewModel.count(in: selectedGroup)
+            let moreSuffix = selectedGroup == .anime && catalogViewModel.hasMoreWallpapers ? "+" : ""
             guard filteredCount != groupCount else {
                 return "\(groupCount)\(moreSuffix) \(selectedGroup.title)"
             }
             return "\(filteredCount)/\(groupCount)\(moreSuffix) \(selectedGroup.title)"
         }
 
-        let totalCount = viewModel.catalogWallpapers.count
-        let moreSuffix = viewModel.catalogHasMoreWallpapers ? "+" : ""
+        let totalCount = catalogViewModel.wallpapers.count
+        let moreSuffix = catalogViewModel.hasMoreWallpapers ? "+" : ""
         guard filteredCount != totalCount else { return "\(totalCount)\(moreSuffix)" }
         return "\(filteredCount)/\(totalCount)\(moreSuffix)"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: isDetailOpened ? 0 : 14) {
-            if let wallpaper = viewModel.selectedCatalogWallpaper {
+        ZStack(alignment: .topLeading) {
+            catalogBrowser
+                .opacity(isDetailOpened ? 0 : 1)
+                .allowsHitTesting(!isDetailOpened)
+                .accessibilityHidden(isDetailOpened)
+
+            if let wallpaper = catalogViewModel.selectedWallpaper {
                 WallpaperCatalogDetailView(
                     viewModel: viewModel,
                     wallpaper: wallpaper,
                     isCompactLayout: isCompactLayout
                 )
                 .zIndex(0)
-            } else {
-                HStack(spacing: 12) {
-                    Button {
-                        viewModel.navigateBackFromCatalog()
-                    } label: {
-                        Label("Close", systemImage: "xmark")
-                    }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                    .keyboardShortcut(.escape, modifiers: [])
-
-                    Text("Wallpaper Catalog")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-
-                    Spacer()
-
-                    if viewModel.catalogIsRefreshing || viewModel.catalogIsSearching {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                    Text(catalogCountText)
-                        .font(.caption2)
-                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-                }
-                .zIndex(10)
-
-                HStack(spacing: 10) {
-                    catalogGroupFilterButtons
-
-                    Spacer(minLength: 8)
-
-                    catalogSearchField
-                }
-                .zIndex(9)
-
-                WallpaperCatalogGridView(viewModel: viewModel)
-                    .zIndex(0)
             }
         }
         .padding(
@@ -1464,6 +1439,50 @@ struct WallpaperCatalogView: View {
         .environment(\.colorScheme, .dark)
     }
 
+    private var catalogBrowser: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Button {
+                    viewModel.navigateBackFromCatalog()
+                } label: {
+                    Label("Close", systemImage: "xmark")
+                }
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                .keyboardShortcut(.escape, modifiers: [])
+
+                Text("Wallpaper Catalog")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+
+                Spacer()
+
+                if catalogViewModel.isRefreshing || catalogViewModel.isSearching {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(catalogCountText)
+                    .font(.caption2)
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+            }
+            .zIndex(10)
+
+            HStack(spacing: 10) {
+                catalogGroupFilterButtons
+
+                Spacer(minLength: 8)
+
+                catalogSearchField
+            }
+            .zIndex(9)
+
+            WallpaperCatalogGridView(
+                viewModel: viewModel,
+                catalogViewModel: catalogViewModel
+            )
+            .zIndex(0)
+        }
+    }
+
     private var catalogSearchField: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
@@ -1471,12 +1490,18 @@ struct WallpaperCatalogView: View {
                 .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
 
             ZStack(alignment: .leading) {
-                TextField("", text: $viewModel.catalogSearchText)
+                TextField(
+                    "",
+                    text: Binding(
+                        get: { catalogViewModel.searchText },
+                        set: { viewModel.catalogSearchText = $0 }
+                    )
+                )
                     .textFieldStyle(.plain)
                     .font(.body.weight(.medium))
                     .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
 
-                if viewModel.catalogSearchText.isEmpty {
+                if catalogViewModel.searchText.isEmpty {
                     Text("Search catalog")
                         .font(.body.weight(.medium))
                         .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
@@ -1504,8 +1529,8 @@ struct WallpaperCatalogView: View {
         ForEach(CatalogWallpaperGroup.allCases) { group in
             CatalogGroupFilterButton(
                 group: group,
-                count: viewModel.catalogWallpaperCount(in: group),
-                isSelected: viewModel.selectedCatalogGroup == group
+                count: catalogViewModel.count(in: group),
+                isSelected: catalogViewModel.selectedGroup == group
             ) {
                 viewModel.toggleCatalogGroup(group)
             }
@@ -1542,102 +1567,70 @@ struct CatalogGroupFilterButton: View {
 }
 
 struct WallpaperCatalogGridView: View {
-    @ObservedObject var viewModel: AppViewModel
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+    let viewModel: AppViewModel
+    @ObservedObject var catalogViewModel: CatalogViewModel
 
     private let columns = [GridItem(.adaptive(minimum: 220), spacing: 12)]
 
-    private func restoreCatalogScrollPosition(using proxy: ScrollViewProxy) {
-        guard viewModel.selectedCatalogWallpaper == nil,
-              let targetID = viewModel.catalogScrollTargetID else {
-            return
-        }
-
-        DispatchQueue.main.async {
-            proxy.scrollTo(targetID, anchor: .center)
-        }
-    }
-
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(viewModel.filteredCatalogWallpapers) { wallpaper in
-                        Button {
-                            viewModel.openCatalogWallpaper(wallpaper)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 8) {
-                                CatalogPreviewImage(
-                                    url: wallpaper.previewImageURL,
-                                    title: wallpaper.title,
-                                    referer: wallpaper.sourcePageURL
-                                )
-                                    .frame(height: 96)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-                                Text(wallpaper.title)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-                                    .lineLimit(1)
-                                Text(wallpaper.category)
-                                    .font(.caption)
-                                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(10)
-                            .background(AuraGlassInsetCard())
-                        }
-                        .buttonStyle(AuraPlainPressButtonStyle())
-                        .id(wallpaper.id)
-                        .onAppear {
-                            viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: true)
-                        }
-                        .onDisappear {
-                            viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: false)
-                        }
-                        .onHover { isHovering in
-                            if isHovering {
-                                viewModel.prefetchCatalogPreview(wallpaper, hovered: true)
-                            }
-                        }
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(catalogViewModel.filteredWallpapers) { wallpaper in
+                    CatalogWallpaperCard(wallpaper: wallpaper) {
+                        viewModel.openCatalogWallpaper(wallpaper)
                     }
-
+                    .id(wallpaper.id)
+                    .onAppear {
+                        viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: true)
+                        viewModel.catalogTrailingWallpaperBecameVisible(wallpaper.id)
+                    }
+                    .onDisappear {
+                        viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: false)
+                    }
                 }
-                .padding(.vertical, 2)
+            }
+            .padding(.vertical, 2)
 
-                CatalogPaginationBoundary(viewModel: viewModel)
-            }
-            .onAppear {
-                restoreCatalogScrollPosition(using: proxy)
-            }
-            .onChange(of: viewModel.catalogScrollTargetID) { _ in
-                restoreCatalogScrollPosition(using: proxy)
+            if catalogViewModel.isLoadingMore {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, minHeight: 28)
             }
         }
     }
 }
 
-private struct CatalogPaginationBoundary: View {
-    @ObservedObject var viewModel: AppViewModel
+struct CatalogWallpaperCard: View {
+    let wallpaper: CatalogWallpaper
+    let action: () -> Void
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
-        Group {
-            if viewModel.catalogIsLoadingMore {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Color.clear
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                CatalogPreviewImage(
+                    url: wallpaper.previewImageURL,
+                    title: wallpaper.title,
+                    referer: wallpaper.sourcePageURL
+                )
+                .frame(height: 96)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                Text(wallpaper.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                    .lineLimit(1)
+                Text(wallpaper.category)
+                    .font(.caption)
+                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(AuraGlassInsetCard())
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity, minHeight: 28)
-        .contentShape(Rectangle())
-        .onAppear {
-            viewModel.catalogPaginationBoundaryChanged(isVisible: true)
-        }
-        .onDisappear {
-            viewModel.catalogPaginationBoundaryChanged(isVisible: false)
-        }
+        .buttonStyle(AuraPlainPressButtonStyle())
+        .accessibilityIdentifier("catalog-card-\(wallpaper.id)")
     }
 }
 

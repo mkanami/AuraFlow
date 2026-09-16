@@ -1416,7 +1416,7 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
-@Test func catalogPaginationCoalescesRapidBottomAppearances() async throws {
+@Test func catalogPaginationRequestsEachTrailingCardOnlyOnce() async throws {
     let first = CatalogWallpaper(
         id: "anime-first",
         title: "First",
@@ -1442,9 +1442,9 @@ private func pngData(for image: CGImage) -> Data {
     )
     viewModel.catalogWallpapers = [first]
 
-    viewModel.loadMoreCatalogIfNeeded(after: first.id)
-    viewModel.loadMoreCatalogIfNeeded(after: first.id)
-    viewModel.loadMoreCatalogIfNeeded(after: first.id)
+    viewModel.catalogTrailingWallpaperBecameVisible(first.id)
+    viewModel.catalogTrailingWallpaperBecameVisible(first.id)
+    viewModel.catalogTrailingWallpaperBecameVisible(first.id)
 
     for _ in 0..<40 {
         if viewModel.catalogWallpapers.count == 2 { break }
@@ -1456,7 +1456,7 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
-@Test func catalogPaginationBoundaryContinuesPastPagesWithoutSearchMatches() async throws {
+@Test func catalogSearchResultsDoNotMutateBrowsingCatalog() async throws {
     let seed = CatalogWallpaper(
         id: "seed",
         title: "Unrelated Wallpaper",
@@ -1475,21 +1475,17 @@ private func pngData(for image: CGImage) -> Data {
         sourcePageURL: nil,
         sources: []
     )
-    let provider = SequencePagedCatalogProvider(
-        initial: [seed],
-        pages: [
-            CatalogPage(wallpapers: [], hasMore: true),
-            CatalogPage(wallpapers: [match], hasMore: false),
-        ]
-    )
+    let provider = SearchableCatalogProvider(initial: [seed], searchResults: [match])
     let viewModel = AppViewModel(
         controller: MockNativeWallpaperController(),
         catalogProvider: provider
     )
-    viewModel.catalogWallpapers = [seed]
+    for _ in 0..<40 {
+        if viewModel.catalogWallpapers.map(\.id) == [seed.id] { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+
     viewModel.catalogSearchText = "nino"
-    viewModel.catalogPaginationBoundaryChanged(isVisible: true)
-    defer { viewModel.catalogPaginationBoundaryChanged(isVisible: false) }
 
     for _ in 0..<80 {
         if viewModel.filteredCatalogWallpapers.map(\.id) == [match.id] { break }
@@ -1497,8 +1493,10 @@ private func pngData(for image: CGImage) -> Data {
     }
 
     #expect(viewModel.filteredCatalogWallpapers.map(\.id) == [match.id])
-    #expect(await provider.pageRequestCount == 2)
-    #expect(!viewModel.catalogHasMoreWallpapers)
+    #expect(viewModel.catalogWallpapers.map(\.id) == [seed.id])
+
+    viewModel.catalogSearchText = ""
+    #expect(viewModel.filteredCatalogWallpapers.map(\.id) == [seed.id])
 }
 
 @MainActor
@@ -1540,6 +1538,48 @@ private func pngData(for image: CGImage) -> Data {
 
     #expect(viewModel.filteredCatalogWallpapers.map(\.id) == [rei.id])
     #expect(await provider.queries == ["rEi"])
+}
+
+@MainActor
+@Test func staleCatalogSearchCannotReplaceNewerResults() async throws {
+    let miku = CatalogWallpaper(
+        id: "miku",
+        title: "Hatsune Miku",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: []
+    )
+    let nino = CatalogWallpaper(
+        id: "nino",
+        title: "Nino Nakano",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: nil,
+        sources: []
+    )
+    let provider = DelayedSearchCatalogProvider(results: [
+        "miku": (350_000_000, [miku]),
+        "nino": (10_000_000, [nino]),
+    ])
+    let viewModel = AppViewModel(
+        controller: MockNativeWallpaperController(),
+        catalogProvider: provider
+    )
+
+    viewModel.catalogSearchText = "miku"
+    try? await Task.sleep(nanoseconds: 220_000_000)
+    viewModel.catalogSearchText = "NINO"
+
+    for _ in 0..<80 {
+        if viewModel.filteredCatalogWallpapers.map(\.id) == [nino.id] { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    try? await Task.sleep(nanoseconds: 250_000_000)
+
+    #expect(viewModel.filteredCatalogWallpapers.map(\.id) == [nino.id])
 }
 
 @MainActor
@@ -2567,6 +2607,28 @@ actor SearchableCatalogProvider: WallpaperCatalogProviding, WallpaperCatalogSear
     func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
         queries.append(query)
         return searchResults
+    }
+}
+
+actor DelayedSearchCatalogProvider: WallpaperCatalogProviding, WallpaperCatalogSearching {
+    let results: [String: (UInt64, [CatalogWallpaper])]
+
+    init(results: [String: (UInt64, [CatalogWallpaper])]) {
+        self.results = results
+    }
+
+    func loadCachedCatalog() async -> [CatalogWallpaper]? { [] }
+    func fetchCatalog() async throws -> [CatalogWallpaper] { [] }
+
+    func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
+        URL(string: "https://example.com/fallback.mp4")!
+    }
+
+    func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
+        let normalized = query.lowercased()
+        guard let (delay, wallpapers) = results[normalized] else { return [] }
+        try? await Task.sleep(nanoseconds: delay)
+        return wallpapers
     }
 }
 
