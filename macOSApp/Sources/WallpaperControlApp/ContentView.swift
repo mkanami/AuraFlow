@@ -988,10 +988,10 @@ private struct ScaleAlgorithmGlassControlModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .padding(.vertical, 4)
-            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .padding(.horizontal, 3)
             .background(
-                AuraGlassInsetCard()
+                AuraGlassInsetCard(cornerRadius: 8)
                     .opacity(isEnabled ? 1.0 : 0.62)
                     .allowsHitTesting(false)
             )
