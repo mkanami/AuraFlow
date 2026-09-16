@@ -1586,8 +1586,7 @@ struct WallpaperCatalogGridView: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(10)
-                            .background(AuraGlassInsetCard(isInteractive: false))
-                            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .background(AuraGlassInsetCard())
                         }
                         .buttonStyle(AuraPlainPressButtonStyle())
                         .id(wallpaper.id)
@@ -2893,7 +2892,6 @@ private extension AuraSurfaceMaterial {
 struct AuraGlassInsetCard: View {
     var cornerRadius: CGFloat = 10
     var emphasized: Bool = false
-    var isInteractive: Bool = true
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
@@ -2908,7 +2906,7 @@ struct AuraGlassInsetCard: View {
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
-                    .glassEffect(isInteractive ? .clear.interactive() : .clear, in: shape)
+                    .glassEffect(.clear.interactive(), in: shape)
                 shape.fill(
                     textTone.contrastSurfaceColor.opacity(
                         min(
@@ -2956,7 +2954,6 @@ struct AuraGlassInsetCard: View {
                 .stroke(textTone.primaryTextColor.opacity(emphasized ? 0.14 : 0.10), lineWidth: 0.9)
         )
         .clipShape(shape)
-        .allowsHitTesting(isInteractive)
     }
 }
 
