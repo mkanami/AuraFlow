@@ -6,6 +6,19 @@ struct WallpaperPreviewSeed: Codable, Equatable {
     let video_path: String
     let playback_speed: Double
     let scale_mode: String?
+    let is_pending: Bool?
+
+    init(
+        video_path: String,
+        playback_speed: Double,
+        scale_mode: String?,
+        is_pending: Bool? = nil
+    ) {
+        self.video_path = video_path
+        self.playback_speed = playback_speed
+        self.scale_mode = scale_mode
+        self.is_pending = is_pending
+    }
 }
 
 /// Presentation state for the wallpaper preview.
@@ -54,17 +67,24 @@ final class PreviewViewModel: ObservableObject {
         return WallpaperPreviewSeed(
             video_path: config.video_path,
             playback_speed: config.playback_speed,
-            scale_mode: config.scale_mode
+            scale_mode: config.scale_mode,
+            is_pending: false
         )
     }
 
-    func saveSeed(for videoURL: URL, playbackSpeed: Double, scaleMode: WallpaperScaleMode) {
+    func saveSeed(
+        for videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode,
+        isPending: Bool? = false
+    ) {
         let normalizedURL = videoURL.standardizedFileURL
         guard FileManager.default.fileExists(atPath: normalizedURL.path) else { return }
         let seed = WallpaperPreviewSeed(
             video_path: normalizedURL.path,
             playback_speed: playbackSpeed,
-            scale_mode: scaleMode.rawValue
+            scale_mode: scaleMode.rawValue,
+            is_pending: isPending
         )
         do {
             try FileManager.default.createDirectory(

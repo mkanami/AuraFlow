@@ -355,6 +355,86 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func downloadedPendingPreviewSurvivesRestartWithAnOlderAppliedWallpaper() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("downloaded-preview-restart-\(UUID().uuidString)", isDirectory: true)
+    let downloadedDirectory = root
+        .appendingPathComponent("Catalog", isDirectory: true)
+        .appendingPathComponent("Downloaded Wallpapers", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: downloadedDirectory,
+        withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let appliedURL = downloadedDirectory.appendingPathComponent("applied.mp4")
+    let downloadedURL = downloadedDirectory.appendingPathComponent("downloaded.mp4")
+    try Data([1, 2, 3]).write(to: appliedURL, options: .atomic)
+    try Data([4, 5, 6]).write(to: downloadedURL, options: .atomic)
+
+    let runtimeStore = WallpaperRuntimeStore(appSupportURL: root)
+    try runtimeStore.saveConfig(
+        ControlConfig(video_path: appliedURL.path, playback_speed: 1.0)
+    )
+    let previewStateURL = root.appendingPathComponent("last_preview.json")
+    let firstController = MockNativeWallpaperController()
+    firstController.configuredVideoURL = appliedURL
+    let firstViewModel = AppViewModel(
+        controller: firstController,
+        appSupportDirectoryURL: root,
+        previewStateURL: previewStateURL
+    )
+    let wallpaper = CatalogWallpaper(
+        id: "downloaded-preview-restart",
+        title: "Downloaded Preview Restart",
+        category: "Anime",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://example.com/downloaded-preview-restart"),
+        sources: [
+            CatalogVideoSource(
+                url: URL(string: "https://example.com/downloaded-preview-restart.mp4")!,
+                width: 1920,
+                height: 1080
+            )
+        ]
+    )
+
+    firstViewModel.stageCatalogWallpaperForPreview(
+        wallpaper,
+        localURL: downloadedURL
+    )
+    #expect(firstViewModel.currentVideoURL == downloadedURL.standardizedFileURL)
+    #expect(firstViewModel.previewViewModel.loadSavedSeed()?.is_pending == true)
+
+    let restartedController = MockNativeWallpaperController()
+    restartedController.configuredVideoURL = appliedURL
+    let restartedViewModel = AppViewModel(
+        controller: restartedController,
+        appSupportDirectoryURL: root,
+        previewStateURL: previewStateURL
+    )
+
+    #expect(restartedViewModel.currentVideoURL == downloadedURL.standardizedFileURL)
+    await restartedViewModel.loadStatus()
+    #expect(restartedViewModel.currentVideoURL == downloadedURL.standardizedFileURL)
+
+    let legacyPreviewState = """
+    {"video_path":\(String(reflecting: downloadedURL.path)),"playback_speed":1.0,"scale_mode":"fill"}
+    """
+    try #require(legacyPreviewState.data(using: .utf8))
+        .write(to: previewStateURL, options: .atomic)
+    let legacyRestartedController = MockNativeWallpaperController()
+    legacyRestartedController.configuredVideoURL = appliedURL
+    let legacyRestartedViewModel = AppViewModel(
+        controller: legacyRestartedController,
+        appSupportDirectoryURL: root,
+        previewStateURL: previewStateURL
+    )
+    #expect(legacyRestartedViewModel.currentVideoURL == downloadedURL.standardizedFileURL)
+}
+
+@MainActor
 @Test func firstLaunchWithoutWallpaperKeepsPreviewEmpty() {
     let previewStateURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("missing-preview-\(UUID().uuidString).json")

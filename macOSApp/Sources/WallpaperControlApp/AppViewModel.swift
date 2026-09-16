@@ -2435,7 +2435,8 @@ final class AppViewModel: ObservableObject {
                 for: URL(fileURLWithPath: migratedPath),
                 playbackSpeed: previewSeed.playback_speed,
                 scaleMode: previewSeed.scale_mode.flatMap(WallpaperScaleMode.init(rawValue:))
-                    ?? .fill
+                    ?? .fill,
+                isPending: previewSeed.is_pending
             )
         }
     }
@@ -2665,17 +2666,39 @@ final class AppViewModel: ObservableObject {
 
     private func restoreInitialPreviewFromSavedConfig() {
         guard pendingPreviewVideoURL == nil else { return }
-        let seeds = [
-            previewViewModel.loadStartupSeed(from: appSupportDirectoryURL),
-            previewViewModel.loadSavedSeed(),
-        ].compactMap { $0 }
-        guard let seed = seeds.first(where: { PreviewViewModel.validPreviewURL(for: $0) != nil }),
-              let videoURL = PreviewViewModel.validPreviewURL(for: seed)
-        else {
+        let startupSeed = previewViewModel.loadStartupSeed(from: appSupportDirectoryURL)
+        let startupURL = startupSeed.flatMap(PreviewViewModel.validPreviewURL(for:))
+        let savedSeed = previewViewModel.loadSavedSeed()
+        let savedURL = savedSeed.flatMap(PreviewViewModel.validPreviewURL(for:))
+
+        let seed: WallpaperPreviewSeed
+        let videoURL: URL
+        if let savedSeed, let savedURL {
+            let savedRepresentsPendingPreview = savedSeed.is_pending
+                ?? startupURL.map { $0 != savedURL }
+                ?? false
+            if savedRepresentsPendingPreview {
+                appliedVideoURL = startupURL
+                pendingPreviewVideoURL = savedURL
+                seed = savedSeed
+                videoURL = savedURL
+            } else if let startupSeed, let startupURL {
+                appliedVideoURL = startupURL
+                seed = startupSeed
+                videoURL = startupURL
+            } else {
+                appliedVideoURL = savedURL
+                seed = savedSeed
+                videoURL = savedURL
+            }
+        } else if let startupSeed, let startupURL {
+            appliedVideoURL = startupURL
+            seed = startupSeed
+            videoURL = startupURL
+        } else {
             return
         }
 
-        appliedVideoURL = videoURL
         playbackSpeed = seed.playback_speed
         if let rawScaleMode = seed.scale_mode,
            let restoredScaleMode = WallpaperScaleMode(rawValue: rawScaleMode) {
@@ -2696,6 +2719,34 @@ final class AppViewModel: ObservableObject {
             appliedVideoURL = savedURL
         }
         if previewChanged || (refreshPreview && previewPlayer?.currentItem == nil) {
+            configurePreviewOrPrepare(for: savedURL)
+        }
+        return true
+    }
+
+    private func refreshPendingPreviewFromSavedSeedIfChanged(
+        refreshPreview: Bool
+    ) -> Bool {
+        guard let pendingURL = pendingPreviewVideoURL?.standardizedFileURL,
+              let seed = previewViewModel.loadSavedSeed(),
+              let savedURL = PreviewViewModel.validPreviewURL(for: seed),
+              savedURL != pendingURL
+        else {
+            return false
+        }
+
+        if seed.is_pending == false {
+            pendingPreviewVideoURL = nil
+            appliedVideoURL = savedURL
+        } else {
+            pendingPreviewVideoURL = savedURL
+        }
+        playbackSpeed = seed.playback_speed
+        if let rawScaleMode = seed.scale_mode,
+           let restoredScaleMode = WallpaperScaleMode(rawValue: rawScaleMode) {
+            scaleMode = restoredScaleMode
+        }
+        if refreshPreview || previewPlayer?.currentItem == nil {
             configurePreviewOrPrepare(for: savedURL)
         }
         return true
@@ -2858,7 +2909,8 @@ final class AppViewModel: ObservableObject {
         previewViewModel.saveSeed(
             for: videoURL,
             playbackSpeed: playbackSpeed,
-            scaleMode: scaleMode
+            scaleMode: scaleMode,
+            isPending: pendingPreviewVideoURL != nil
         )
     }
 
@@ -3881,6 +3933,11 @@ final class AppViewModel: ObservableObject {
                 savePreviewSeed(for: currentURL)
             }
         } else {
+            if pendingPreviewVideoURL != nil {
+                _ = refreshPendingPreviewFromSavedSeedIfChanged(
+                    refreshPreview: refreshPreview
+                )
+            }
             if pendingPreviewVideoURL == nil {
                 if refreshPreviewFromSavedSeedIfNeeded(refreshPreview: refreshPreview) {
                     // Lock-only intentionally keeps config.video_path empty.
