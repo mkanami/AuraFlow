@@ -830,7 +830,6 @@ struct SettingsPopupCard: View {
             }
             .toggleStyle(.switch)
             .disabled(!viewModel.canTogglePauseOnFullscreen)
-            .settingsGlassControl()
 
             Toggle(isOn: Binding(
                 get: { viewModel.showOnLockScreenEnabled },
@@ -843,7 +842,6 @@ struct SettingsPopupCard: View {
             }
             .toggleStyle(.switch)
             .disabled(!viewModel.canToggleShowOnLockScreen)
-            .settingsGlassControl()
 
             Button {
                 viewModel.openScreenSaverSettings()
@@ -860,7 +858,6 @@ struct SettingsPopupCard: View {
             }
             .toggleStyle(.switch)
             .disabled(!viewModel.canToggleBlendInterpolation)
-            .settingsGlassControl()
 
             Picker(
                 "Scale Algorithm",
@@ -875,7 +872,6 @@ struct SettingsPopupCard: View {
             }
             .pickerStyle(.segmented)
             .disabled(!viewModel.canToggleScaleMode)
-            .settingsGlassControl()
 
             Divider().padding(.vertical, 4)
 
@@ -891,7 +887,6 @@ struct SettingsPopupCard: View {
             }
             .toggleStyle(.switch)
             .disabled(!viewModel.canChangeOptimizationSettings)
-            .settingsGlassControl()
 
             HStack(spacing: 12) {
                 Toggle(isOn: Binding(
@@ -902,7 +897,6 @@ struct SettingsPopupCard: View {
                 }
                 .toggleStyle(.checkbox)
                 .disabled(!viewModel.optimizationEnabled || !viewModel.canChangeOptimizationSettings)
-                .settingsGlassControl()
 
                 Toggle(isOn: Binding(
                     get: { viewModel.optimizationAllowAV1Passthrough },
@@ -912,7 +906,6 @@ struct SettingsPopupCard: View {
                 }
                 .toggleStyle(.checkbox)
                 .disabled(!viewModel.optimizationEnabled || !viewModel.canChangeOptimizationSettings)
-                .settingsGlassControl()
             }
 
             Toggle(isOn: Binding(
@@ -927,7 +920,6 @@ struct SettingsPopupCard: View {
                     || !viewModel.canChangeOptimizationSettings
                     || !viewModel.optimizationHardwareAV1DecodeAvailable
             )
-            .settingsGlassControl()
 
             Picker(
                 "Optimization Profile",
@@ -942,7 +934,6 @@ struct SettingsPopupCard: View {
             }
             .pickerStyle(.segmented)
             .disabled(!viewModel.optimizationEnabled || !viewModel.canChangeOptimizationSettings)
-            .settingsGlassControl()
 
             if viewModel.optimizationHardwareAV1DecodeAvailable {
                 Text(UserFacingMessageFormatter.format(
@@ -983,30 +974,6 @@ struct SettingsPopupCard: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
-    }
-}
-
-private struct SettingsGlassControlModifier: ViewModifier {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func body(content: Content) -> some View {
-        content
-            // Keep the native switch/checkbox/segmented-picker geometry and
-            // selection animation. The extra inset only exposes the glass
-            // surface around the control without changing its hit target.
-            .padding(.vertical, 4)
-            .padding(.horizontal, 8)
-            .background(
-                AuraGlassInsetCard()
-                    .opacity(isEnabled ? 1.0 : 0.62)
-                    .allowsHitTesting(false)
-            )
-    }
-}
-
-private extension View {
-    func settingsGlassControl() -> some View {
-        modifier(SettingsGlassControlModifier())
     }
 }
 
