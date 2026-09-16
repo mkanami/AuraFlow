@@ -843,25 +843,12 @@ struct SettingsPopupCard: View {
             .toggleStyle(.switch)
             .disabled(!viewModel.canToggleShowOnLockScreen)
 
-            HStack(spacing: 10) {
-                Button {
-                    viewModel.startSystemScreenSaver()
-                } label: {
-                    Label(
-                        "Test Lock Screen",
-                        systemImage: "play.rectangle.on.rectangle"
-                    )
-                }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .disabled(!viewModel.canPreviewLockScreen)
-
-                Button {
-                    viewModel.openScreenSaverSettings()
-                } label: {
-                    Label("Screen Saver Settings", systemImage: "gear")
-                }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+            Button {
+                viewModel.openScreenSaverSettings()
+            } label: {
+                Label("Screen Saver Settings", systemImage: "gear")
             }
+            .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
 
             Toggle(isOn: Binding(
                 get: { viewModel.blendInterpolationEnabled },
