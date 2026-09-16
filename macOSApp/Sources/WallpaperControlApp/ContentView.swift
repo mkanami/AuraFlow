@@ -859,20 +859,25 @@ struct SettingsPopupCard: View {
             .toggleStyle(.switch)
             .disabled(!viewModel.canToggleBlendInterpolation)
 
-            Picker(
-                "Scale Algorithm",
-                selection: Binding(
-                    get: { viewModel.scaleMode },
-                    set: { viewModel.setScaleMode($0) }
-                )
-            ) {
-                ForEach(WallpaperScaleMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+            HStack(spacing: 8) {
+                Text("Scale Algorithm")
+
+                Picker(
+                    "",
+                    selection: Binding(
+                        get: { viewModel.scaleMode },
+                        set: { viewModel.setScaleMode($0) }
+                    )
+                ) {
+                    ForEach(WallpaperScaleMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .disabled(!viewModel.canToggleScaleMode)
+                .scaleAlgorithmGlassControl()
             }
-            .pickerStyle(.segmented)
-            .disabled(!viewModel.canToggleScaleMode)
-            .scaleAlgorithmGlassControl()
 
             Divider().padding(.vertical, 4)
 
