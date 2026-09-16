@@ -2085,7 +2085,6 @@ final class AppViewModel: ObservableObject {
     private var previousCatalogPreviewCenterIndex: Int?
     private var localWallpaperImportTask: Task<Void, Never>?
     private var localWallpaperImportGeneration = 0
-    private var catalogNavigationLockedUntil: Date = .distantPast
     private var lastCatalogRefreshAt: Date?
     private var successBannerTask: Task<Void, Never>?
     private var controllerBootstrapTask: Task<Void, Never>?
@@ -3054,7 +3053,6 @@ final class AppViewModel: ObservableObject {
     }
 
     func openCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
-        guard Date() >= catalogNavigationLockedUntil else { return }
         catalogScrollTargetID = wallpaper.id
         selectedCatalogWallpaper = wallpaper
         Task { await catalogPreviewPipeline.prefetch(wallpaper, priority: .selected) }
@@ -3063,7 +3061,6 @@ final class AppViewModel: ObservableObject {
     func navigateBackFromCatalog() {
         if selectedCatalogWallpaper != nil {
             selectedCatalogWallpaper = nil
-            catalogNavigationLockedUntil = Date().addingTimeInterval(0.35)
             return
         }
         selectedCatalogWallpaper = nil
@@ -3071,7 +3068,6 @@ final class AppViewModel: ObservableObject {
         isCatalogOpen = false
         resetCatalogPreviewViewport()
         Task { await catalogPreviewPipeline.cancelAll() }
-        catalogNavigationLockedUntil = Date().addingTimeInterval(0.2)
     }
 
     func isDownloading(_ wallpaper: CatalogWallpaper) -> Bool {

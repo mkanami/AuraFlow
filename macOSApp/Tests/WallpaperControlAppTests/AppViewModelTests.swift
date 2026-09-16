@@ -1192,9 +1192,9 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
-@Test func catalogBackNavigatesDetailThenExitsCatalog() async throws {
+@Test func catalogBackAllowsImmediateNextSelectionThenExitsCatalog() async throws {
     let controller = MockNativeWallpaperController()
-    let expectedWallpaper = CatalogWallpaper(
+    let firstWallpaper = CatalogWallpaper(
         id: "test-wallpaper",
         title: "Test Wallpaper",
         category: "Anime",
@@ -1203,24 +1203,36 @@ private func pngData(for image: CGImage) -> Data {
         sourcePageURL: URL(string: "https://example.com/test-wallpaper"),
         sources: [CatalogVideoSource(url: URL(string: "https://example.com/test-wallpaper.mp4")!, width: 1920, height: 1080)]
     )
+    let secondWallpaper = CatalogWallpaper(
+        id: "next-wallpaper",
+        title: "Next Wallpaper",
+        category: "Scenic",
+        attribution: "Fixture",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://example.com/next-wallpaper"),
+        sources: [CatalogVideoSource(url: URL(string: "https://example.com/next-wallpaper.mp4")!, width: 1920, height: 1080)]
+    )
     let viewModel = AppViewModel(
         controller: controller,
-        catalogProvider: MockCatalogProvider(wallpapers: [expectedWallpaper])
+        catalogProvider: MockCatalogProvider(wallpapers: [firstWallpaper, secondWallpaper])
     )
 
     viewModel.openCatalog()
     #expect(viewModel.isCatalogOpen)
 
-    viewModel.openCatalogWallpaper(expectedWallpaper)
-    #expect(viewModel.selectedCatalogWallpaper == expectedWallpaper)
+    viewModel.openCatalogWallpaper(firstWallpaper)
+    #expect(viewModel.selectedCatalogWallpaper == firstWallpaper)
 
     viewModel.navigateBackFromCatalog()
     #expect(viewModel.selectedCatalogWallpaper == nil)
     #expect(viewModel.isCatalogOpen)
 
-    // Immediate retap should be ignored to avoid accidental reopen after Back.
-    viewModel.openCatalogWallpaper(expectedWallpaper)
+    viewModel.openCatalogWallpaper(secondWallpaper)
+    #expect(viewModel.selectedCatalogWallpaper == secondWallpaper)
+
+    viewModel.navigateBackFromCatalog()
     #expect(viewModel.selectedCatalogWallpaper == nil)
+    #expect(viewModel.isCatalogOpen)
 
     viewModel.navigateBackFromCatalog()
     #expect(viewModel.isCatalogOpen == false)
