@@ -125,6 +125,41 @@ private final class PIDPersistenceFailureGate {
     var failedPID: Int?
 }
 
+private final class BlockingDesktopInstallGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var entered = false
+    private var released = false
+
+    func blockUntilReleased() {
+        condition.lock()
+        entered = true
+        condition.broadcast()
+        while !released {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+
+    func waitUntilEntered(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !entered {
+            guard condition.wait(until: deadline) else {
+                return entered
+            }
+        }
+        return true
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
 private func terminateAndReapTestAgent(_ agent: Process) {
     if agent.isRunning {
         kill(agent.processIdentifier, SIGKILL)
@@ -251,6 +286,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     private(set) var installedLockScreenOnlyVideoURL: URL?
     private(set) var sourceAtInstall: URL?
     var sourceProviderAtInstall: (() -> URL?)?
+    var onInstallForDesktopAgent: (() -> Void)?
     var onInstallLockScreenOnly: (() -> Void)?
     private(set) var uninstallCallCount = 0
     private(set) var preservingUninstallCallCount = 0
@@ -281,6 +317,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
 
     func installForDesktopAgent(videoURL: URL) throws {
         desktopAgentInstallCallCount += 1
+        onInstallForDesktopAgent?()
         try install(videoURL: videoURL)
     }
 
@@ -593,6 +630,36 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(command?.config?.video_path == fixture.videoURL.path)
     #expect(installer.installedVideoURL == fixture.videoURL)
     #expect(installer.installedLockScreenOnlyVideoURL == nil)
+}
+
+@Test func nativeStartLaunchesDesktopBeforeLockScreenPreparationCompletes() async throws {
+    let fixture = try NativeRuntimeFixture("start-before-lock-screen-preparation")
+    defer { fixture.cleanup() }
+
+    let installGate = BlockingDesktopInstallGate()
+    let installer = RecordingLockScreenSaverInstaller()
+    installer.onInstallForDesktopAgent = {
+        installGate.blockUntilReleased()
+    }
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+    let startTask = Task.detached {
+        try await controller.start(videoURL: fixture.videoURL, speed: 1.0)
+    }
+    defer { installGate.release() }
+
+    #expect(installGate.waitUntilEntered(timeout: 2.0))
+    let desktopPID = fixture.store.loadPID()
+    #expect(desktopPID != nil)
+    #expect(fixture.store.processIsAlive(pid: desktopPID))
+    #expect(fixture.store.loadCommand()?.action == .reload)
+
+    installGate.release()
+    let status = try await startTask.value
+    #expect(status.running)
 }
 
 @Test func runtimeCommandDecodesLegacyPayloadWithoutOperationID() async throws {

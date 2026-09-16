@@ -900,6 +900,17 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             try store.saveConfig(nextConfig)
             store.clearLockScreenOnlySource()
 
+            // Launch the Desktop route before preparing/installing the Lock
+            // Screen asset. Preparing a newly downloaded video can take many
+            // seconds and may already be running in the background; it must
+            // never hold the visible wallpaper start behind that work. Start
+            // still waits for Lock Screen confirmation before reporting final
+            // success, and rollbackStart restores the previous route if that
+            // later phase fails.
+            store.markPaused(false)
+            try launchAgentIfNeeded()
+            try send(.reload, config: nextConfig)
+
             // Start keeps the original all-surfaces behavior: the selected
             // wallpaper is applied to the Desktop and Lock Screen together.
             // The separate Lock button uses installLockScreenOnly() and is the
@@ -910,9 +921,6 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                     "macOS did not confirm the Desktop and Lock Screen wallpaper configuration."
                 )
             }
-            store.markPaused(false)
-            try launchAgentIfNeeded()
-            try send(.reload, config: nextConfig)
             return store.status()
         } catch {
             let rollbackFailures = await rollbackStart(
@@ -1658,6 +1666,10 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             if !daemonProcessManager.terminate(timeout: 2.0).succeeded {
                 rollbackFailures.append("replacement agent did not stop")
             }
+            // Process termination clears transient runtime markers. Restore
+            // the exact pre-Start pause state before rebuilding the previous
+            // Desktop or Lock Screen route.
+            store.markPaused(previousPaused)
         }
 
         if previousLockScreenOnlyMode {
