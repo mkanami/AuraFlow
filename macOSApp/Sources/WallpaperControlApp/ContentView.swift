@@ -872,6 +872,7 @@ struct SettingsPopupCard: View {
             }
             .pickerStyle(.segmented)
             .disabled(!viewModel.canToggleScaleMode)
+            .scaleAlgorithmGlassControl()
 
             Divider().padding(.vertical, 4)
 
@@ -974,6 +975,27 @@ struct SettingsPopupCard: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
+    }
+}
+
+private struct ScaleAlgorithmGlassControlModifier: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.vertical, 4)
+            .padding(.horizontal, 8)
+            .background(
+                AuraGlassInsetCard()
+                    .opacity(isEnabled ? 1.0 : 0.62)
+                    .allowsHitTesting(false)
+            )
+    }
+}
+
+private extension View {
+    func scaleAlgorithmGlassControl() -> some View {
+        modifier(ScaleAlgorithmGlassControlModifier())
     }
 }
 
