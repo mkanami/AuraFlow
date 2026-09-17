@@ -3236,19 +3236,6 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 at: assetURL
             )
 
-            // `preservingDestinationMetadata` intentionally keeps Apple's
-            // downloader attributes, including the slot's old modification
-            // date. AVFoundation also uses that date when caching an asset by
-            // URL, which could make the first Fit update keep displaying the
-            // previous Fill movie even after WallpaperAerialsExtension was
-            // restarted. Give only this newly installed runtime movie a fresh
-            // identity while leaving SourceURL/LastETag and recovery files
-            // untouched.
-            try fileManager.setAttributes(
-                [.modificationDate: Date()],
-                ofItemAtPath: assetURL.path
-            )
-
             var updatedMarker = currentMarker
             updatedMarker.assetSignature = installedSignature
             updatedMarker.playbackSpeed = normalizedPlaybackSpeed(playbackSpeed)

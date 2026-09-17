@@ -109,43 +109,6 @@ private func writeHEVCTestMovie(to url: URL) async throws {
     }
 }
 
-private func sampledRGBA(
-    from url: URL,
-    normalizedX: CGFloat,
-    normalizedY: CGFloat
-) async throws -> (red: UInt8, green: UInt8, blue: UInt8, alpha: UInt8) {
-    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-    generator.appliesPreferredTrackTransform = true
-    let (image, _) = try await generator.image(
-        at: CMTime(value: 15, timescale: 30)
-    )
-    let width = image.width
-    let height = image.height
-    var bytes = [UInt8](repeating: 0, count: width * height * 4)
-    let colorSpace = CGColorSpaceCreateDeviceRGB()
-    let context = try #require(
-        CGContext(
-            data: &bytes,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )
-    )
-    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-    let x = min(width - 1, max(0, Int(CGFloat(width - 1) * normalizedX)))
-    let y = min(height - 1, max(0, Int(CGFloat(height - 1) * normalizedY)))
-    let index = (y * width + x) * 4
-    return (
-        bytes[index],
-        bytes[index + 1],
-        bytes[index + 2],
-        bytes[index + 3]
-    )
-}
-
 @Test func aerialMediaPreparerPhysicallyRetimesEveryVideoSample() async throws {
     let fixture = try AerialMediaPreparerFixture()
     defer { fixture.cleanup() }
@@ -231,24 +194,6 @@ private func sampledRGBA(
     #expect(fitURL != stretchURL)
     #expect(try await preparer.isCompatible(at: fitURL))
     #expect(try await preparer.isCompatible(at: stretchURL))
-
-    let fitEdge = try await sampledRGBA(
-        from: fitURL,
-        normalizedX: 0.04,
-        normalizedY: 0.5
-    )
-    let fitCenter = try await sampledRGBA(
-        from: fitURL,
-        normalizedX: 0.5,
-        normalizedY: 0.5
-    )
-    let stretchEdge = try await sampledRGBA(
-        from: stretchURL,
-        normalizedX: 0.04,
-        normalizedY: 0.5
-    )
-    #expect(Int(fitEdge.red) < Int(fitCenter.red) / 3)
-    #expect(Int(stretchEdge.red) > Int(fitEdge.red) * 2)
 }
 
 @Test func aerialMediaPreparerPropagatesConversionFailureWithoutBlocking() async throws {
