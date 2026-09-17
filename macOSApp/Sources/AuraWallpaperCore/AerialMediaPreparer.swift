@@ -388,7 +388,7 @@ internal final class AerialMediaPreparer {
         let speedTag = String(format: "%.3f", normalizedPlaybackSpeed(playbackSpeed))
             .replacingOccurrences(of: ".", with: "_")
         let cacheURL = preparedCacheDirectoryURL.appendingPathComponent(
-            "prepared-v4-\(sourceSignature)-rate-\(speedTag)-\(scaleMode.rawValue)-\(Int(canvasSize.width))x\(Int(canvasSize.height)).mov"
+            "prepared-v5-\(sourceSignature)-rate-\(speedTag)-\(scaleMode.rawValue)-\(Int(canvasSize.width))x\(Int(canvasSize.height)).mov"
         )
         if fileManager.fileExists(atPath: cacheURL.path),
            try await isCompatible(at: cacheURL) {

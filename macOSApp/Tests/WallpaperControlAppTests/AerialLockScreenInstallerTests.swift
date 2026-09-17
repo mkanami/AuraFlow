@@ -1385,6 +1385,11 @@ private func writeAerialTestVideo(to url: URL) async throws {
     )
     let recoveryStore = try Data(contentsOf: recoveryStoreURL)
     let recoveryAsset = try Data(contentsOf: recoveryAssetURL)
+    let staleProviderCacheDate = Date(timeIntervalSince1970: 1_000)
+    try FileManager.default.setAttributes(
+        [.modificationDate: staleProviderCacheDate],
+        ofItemAtPath: fixture.assetURL.path
+    )
 
     #expect(
         try await fixture.installer.updateScaleMode(
@@ -1395,6 +1400,12 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(try Data(contentsOf: fixture.storeURL) == installedStore)
     #expect(try Data(contentsOf: recoveryStoreURL) == recoveryStore)
     #expect(try Data(contentsOf: recoveryAssetURL) == recoveryAsset)
+    let refreshedAssetDate = try #require(
+        try FileManager.default.attributesOfItem(
+            atPath: fixture.assetURL.path
+        )[.modificationDate] as? Date
+    )
+    #expect(refreshedAssetDate > staleProviderCacheDate)
     let marker = LockScreenJournal(
         stateDirectoryURL: fixture.stateURL,
         fileManager: .default
