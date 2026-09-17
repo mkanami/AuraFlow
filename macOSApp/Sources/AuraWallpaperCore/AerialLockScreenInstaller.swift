@@ -600,6 +600,66 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 return try await installLocked(
                     videoURL: videoURL,
                     playbackSpeed: normalizedSpeed,
+                    scaleMode: WallpaperScaleMode(
+                        rawValue: marker.scaleMode ?? ""
+                    ) ?? .fill,
+                    forceRefresh: true,
+                    refreshAction: rearmSystem,
+                    scope: isolatedDesktopStore
+                        ? .lockScreenOnly
+                        : .sharedWallpaper,
+                    lockScreenOnlyRoute: lockScreenOnlyRoute,
+                    avoidProviderRestartOnExistingLockOnlySourceChange:
+                        isolatedDesktopStore,
+                    restoreUserSystemWallpaperURLAfterInstall:
+                        isolatedDesktopStore && !lockScreenOnlyRoute,
+                    rollbackAction: refreshSystem,
+                    shouldProceed: { true }
+                )
+            }
+        }
+    }
+
+    /// Updates the movie consumed by Apple's Aerial provider so its fixed
+    /// aspect-fill player presents the same Fit/Fill/Stretch result as the
+    /// AuraFlow Desktop player.
+    public func updateScaleMode(
+        videoURL: URL,
+        mode: WallpaperScaleMode
+    ) async throws -> Bool {
+        try await withMutationCoordinator {
+            try await withCrossProcessLockAsync {
+                guard let marker = loadMarker(),
+                      marker.completed == true,
+                      URL(fileURLWithPath: marker.videoPath)
+                        .standardizedFileURL == videoURL.standardizedFileURL,
+                      fileManager.fileExists(atPath: videoURL.path)
+                else {
+                    return false
+                }
+
+                let currentMode = WallpaperScaleMode(
+                    rawValue: marker.scaleMode ?? ""
+                ) ?? .fill
+                guard currentMode != mode else { return false }
+
+                // Keep Stop's still-frame asset in place. Resume rebuilds the
+                // animated generation using this persisted mode.
+                if marker.state == "paused" {
+                    var updatedMarker = marker
+                    updatedMarker.scaleMode = mode.rawValue
+                    try saveMarker(updatedMarker)
+                    return false
+                }
+
+                let lockScreenOnlyRoute = markerUsesDedicatedLockOnlyRuntime(
+                    marker
+                )
+                let isolatedDesktopStore = marker.desktopIncluded == false
+                return try await installLocked(
+                    videoURL: videoURL,
+                    playbackSpeed: marker.playbackSpeed ?? 1.0,
+                    scaleMode: mode,
                     forceRefresh: true,
                     refreshAction: rearmSystem,
                     scope: isolatedDesktopStore
@@ -747,7 +807,10 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 }
                 let preparedVideoURL = try await mediaPreparer.prepare(
                     from: videoURL,
-                    playbackSpeed: marker.playbackSpeed ?? 1.0
+                    playbackSpeed: marker.playbackSpeed ?? 1.0,
+                    scaleMode: WallpaperScaleMode(
+                        rawValue: marker.scaleMode ?? ""
+                    ) ?? .fill
                 )
                 guard shouldProceed() else {
                     throw AerialLockScreenOperationAbort.sessionChanged
@@ -901,8 +964,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 let dedicatedLockOnly = isLockScreenOnlyInstallation
                 let isolatedDesktopAgent =
                     isDesktopAgentIsolatedInstallation
+                let settings = installedMediaSettings(for: videoURL)
                 return try await installLocked(
                     videoURL: videoURL,
+                    playbackSpeed: settings.speed,
+                    scaleMode: settings.scaleMode,
                     forceRefresh: false,
                     refreshAction: rearmSystem,
                     scope: dedicatedLockOnly || isolatedDesktopAgent
@@ -947,8 +1013,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 let dedicatedLockOnly = isLockScreenOnlyInstallation
                 let isolatedDesktopAgent =
                     isDesktopAgentIsolatedInstallation
+                let settings = installedMediaSettings(for: videoURL)
                 return try await installLocked(
                     videoURL: videoURL,
+                    playbackSpeed: settings.speed,
+                    scaleMode: settings.scaleMode,
                     forceRefresh: true,
                     refreshAction: rearmSystem,
                     scope: dedicatedLockOnly || isolatedDesktopAgent
@@ -1089,7 +1158,10 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
 
         let preparedVideoURL = try await mediaPreparer.prepare(
             from: videoURL,
-            playbackSpeed: marker.playbackSpeed ?? 1.0
+            playbackSpeed: marker.playbackSpeed ?? 1.0,
+            scaleMode: WallpaperScaleMode(
+                rawValue: marker.scaleMode ?? ""
+            ) ?? .fill
         )
         try Task.checkCancellation()
 
@@ -1142,6 +1214,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     private func installLocked(
         videoURL: URL,
         playbackSpeed: Double = 1.0,
+        scaleMode: WallpaperScaleMode = .fill,
         forceRefresh: Bool,
         refreshAction: ConditionalSystemAction,
         scope: AerialWallpaperStoreScope,
@@ -1193,7 +1266,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             assetID: assetID,
             scope: scope,
             lockScreenOnlyRoute: lockScreenOnlyRoute,
-            playbackSpeed: normalizedSpeed
+            playbackSpeed: normalizedSpeed,
+            scaleMode: scaleMode
         ) {
             guard forceRefresh, shouldProceed() else {
                 return false
@@ -1215,7 +1289,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
 
         let preparedVideoURL = try await mediaPreparer.prepare(
             from: videoURL,
-            playbackSpeed: normalizedSpeed
+            playbackSpeed: normalizedSpeed,
+            scaleMode: scaleMode
         )
         try Task.checkCancellation()
 
@@ -1374,7 +1449,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             systemWallpaperURLWasCaptured: systemWallpaperURLWasCaptured,
             scope: scope,
             lockScreenOnlyRoute: lockScreenOnlyRoute,
-            playbackSpeed: normalizedSpeed
+            playbackSpeed: normalizedSpeed,
+            scaleMode: scaleMode
         )
         guard shouldProceed() else {
             return false
@@ -2860,7 +2936,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         assetID: String,
         scope: AerialWallpaperStoreScope,
         lockScreenOnlyRoute: Bool,
-        playbackSpeed: Double
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
     ) -> Bool {
         guard let marker = loadMarker(),
               marker.completed == true,
@@ -2868,6 +2945,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
               (marker.lockScreenOnly ?? false) == lockScreenOnlyRoute,
               markerStoreIncludesDesktop(marker) == scope.includesDesktop,
               abs((marker.playbackSpeed ?? 1.0) - playbackSpeed) < 0.0001,
+              (WallpaperScaleMode(rawValue: marker.scaleMode ?? "") ?? .fill)
+                == scaleMode,
               URL(fileURLWithPath: marker.videoPath).standardizedFileURL
                 == videoURL.standardizedFileURL
         else {
@@ -3045,7 +3124,8 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         systemWallpaperURLWasCaptured: Bool,
         scope: AerialWallpaperStoreScope,
         lockScreenOnlyRoute: Bool,
-        playbackSpeed: Double
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
     ) throws -> AerialLockScreenMarker {
         let attributes = try fileManager.attributesOfItem(
             atPath: videoURL.path
@@ -3065,6 +3145,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             videoSignature: try mediaPreparer.fileSignature(at: videoURL),
             assetSignature: try mediaPreparer.fileSignature(at: installedAssetURL),
             playbackSpeed: playbackSpeed,
+            scaleMode: scaleMode.rawValue,
             originalAssetExisted: originalAssetExisted,
             originalThumbnailExisted: originalThumbnailExisted,
             originalSystemWallpaperURL: originalSystemWallpaperURL,
@@ -3098,6 +3179,22 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         return markerStoreIncludesDesktop(marker)
             ? .sharedWallpaper
             : .lockScreenOnly
+    }
+
+    private func installedMediaSettings(
+        for videoURL: URL
+    ) -> (speed: Double, scaleMode: WallpaperScaleMode) {
+        guard let marker = loadMarker(),
+              marker.completed == true,
+              URL(fileURLWithPath: marker.videoPath).standardizedFileURL
+                == videoURL.standardizedFileURL
+        else {
+            return (1.0, .fill)
+        }
+        return (
+            marker.playbackSpeed ?? 1.0,
+            WallpaperScaleMode(rawValue: marker.scaleMode ?? "") ?? .fill
+        )
     }
 
     private func markerStoreIncludesDesktop(

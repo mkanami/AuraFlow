@@ -18,6 +18,9 @@ internal struct AerialLockScreenMarker: Codable {
     /// Speed encoded in the managed Aerial movie. Missing means the legacy
     /// 1.0x generation, keeping older journals backward compatible.
     var playbackSpeed: Double?
+    /// Scaling encoded in the managed Aerial movie. Missing means the legacy
+    /// aspect-fill generation, keeping older journals backward compatible.
+    var scaleMode: String? = nil
     var originalAssetExisted: Bool?
     var originalThumbnailExisted: Bool?
     var originalSystemWallpaperURL: String?

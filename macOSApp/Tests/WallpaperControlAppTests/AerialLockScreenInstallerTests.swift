@@ -1371,6 +1371,42 @@ private func writeAerialTestVideo(to url: URL) async throws {
     )
 }
 
+@Test func modernLockScreenScaleModeIsPersistedPerGeneration() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+
+    #expect(
+        try await fixture.installer.updateScaleMode(
+            videoURL: fixture.videoURL,
+            mode: .fit
+        )
+    )
+    let marker = LockScreenJournal(
+        stateDirectoryURL: fixture.stateURL,
+        fileManager: .default
+    ).loadMarker()
+    #expect(marker?.scaleMode == WallpaperScaleMode.fit.rawValue)
+    #expect(
+        try await fixture.installer.rearmForNextLock(
+            videoURL: fixture.videoURL
+        )
+    )
+    #expect(
+        LockScreenJournal(
+            stateDirectoryURL: fixture.stateURL,
+            fileManager: .default
+        ).loadMarker()?.scaleMode == WallpaperScaleMode.fit.rawValue
+    )
+    #expect(
+        try await fixture.installer.updateScaleMode(
+            videoURL: fixture.videoURL,
+            mode: .fit
+        ) == false
+    )
+}
+
 @Test func modernLockScreenOnlyPlaybackSpeedUsesLockOnlyGeneration() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

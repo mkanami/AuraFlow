@@ -245,7 +245,7 @@ protocol WallpaperControlling: AnyObject, Sendable {
     func syncLockScreenSaver() async throws
     func beginLockScreenPreview() throws -> ControlStatus
     func endLockScreenPreview() throws -> ControlStatus
-    func setScaleMode(_ mode: WallpaperScaleMode) throws -> ControlStatus
+    func setScaleMode(_ mode: WallpaperScaleMode) async throws -> ControlStatus
     func setAutostart(_ enabled: Bool) throws -> ControlStatus
     func metrics() throws -> DaemonMetrics
 }
@@ -1576,14 +1576,27 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         return store.status()
     }
 
-    func setScaleMode(_ mode: WallpaperScaleMode) throws -> ControlStatus {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+    func setScaleMode(_ mode: WallpaperScaleMode) async throws -> ControlStatus {
+        try await asyncLifecycleGate.acquire()
+        defer {
+            Task { await asyncLifecycleGate.release() }
+        }
         let config = try updateConfig { config in
             config.scale_mode = mode.commandValue
         }
         if daemonProcessManager.isRunning {
             try send(.update, config: config)
+        } else {
+            postRuntimeCommandDidChange()
+        }
+
+        if lockScreenCapabilities.supportsSecureLockScreen,
+           lockScreenPlatform.isInstalled,
+           let sourceURL = store.effectiveLockScreenSourceURL(for: config) {
+            _ = try await lockScreenPlatform.updateScaleMode(
+                videoURL: sourceURL,
+                mode: mode
+            )
         }
         return store.status()
     }
@@ -1869,6 +1882,16 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 speed: configuredSpeed
             )
         }
+        let configuredScaleMode = WallpaperScaleMode(
+            rawValue: store.loadConfig().scale_mode ?? ""
+        ) ?? .fill
+        if lockScreenPlatform.capabilities.supportsSecureLockScreen,
+           configuredScaleMode != .fill {
+            _ = try await lockScreenPlatform.updateScaleMode(
+                videoURL: videoURL,
+                mode: configuredScaleMode
+            )
+        }
     }
 
     private var shouldUseLegacyNativeFallback: Bool {
@@ -2121,6 +2144,8 @@ final class AppViewModel: ObservableObject {
     private var previewPreparationGeneration = 0
     private var lockScreenPreparationTask: Task<Void, Never>?
     private var lockScreenPreparationGeneration = 0
+    private var scaleModeUpdateTask: Task<Void, Never>?
+    private var scaleModeUpdateGeneration: UInt = 0
     private let expectedStatusContractVersion = 3
     private let bridgeFailureThreshold = 3
     private let daemonSuspiciousThreshold = 2
@@ -2527,6 +2552,7 @@ final class AppViewModel: ObservableObject {
         glassAnalysisTask?.cancel()
         previewPreparationTask?.cancel()
         lockScreenPreparationTask?.cancel()
+        scaleModeUpdateTask?.cancel()
         lockScreenProviderFallbackRetryTask?.cancel()
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver.value)
@@ -3555,21 +3581,23 @@ final class AppViewModel: ObservableObject {
         let previous = scaleMode
         scaleMode = mode
         guard let controller else { return }
-        Task {
-            isBusy = true
-            defer { isBusy = false }
+        scaleModeUpdateGeneration &+= 1
+        let generation = scaleModeUpdateGeneration
+        scaleModeUpdateTask?.cancel()
+        scaleModeUpdateTask = Task { [weak self] in
+            guard let self else { return }
             do {
-                let status = try await runAsync { try controller.setScaleMode(mode) }
+                let status = try await controller.setScaleMode(mode)
+                try Task.checkCancellation()
+                guard generation == scaleModeUpdateGeneration else { return }
                 apply(status: status)
-                if showOnLockScreenEnabled {
-                    try await runAsync {
-                        try await controller.syncLockScreenSaver()
-                    }
-                }
                 recordBridgeSuccess()
                 statusMessage = "Scale mode: \(mode.title)."
                 alertMessage = nil
+            } catch is CancellationError {
+                return
             } catch {
+                guard generation == scaleModeUpdateGeneration else { return }
                 scaleMode = previous
                 recordBridgeFailure(error, context: "set-scale")
                 if bridgeFailureCount < bridgeFailureThreshold {
@@ -5124,6 +5152,7 @@ final class AppViewModel: ObservableObject {
         isShuttingDown = true
         healthMonitorTask?.cancel()
         monitoringTask?.cancel()
+        scaleModeUpdateTask?.cancel()
     }
 
     private func recordBridgeSuccess() {

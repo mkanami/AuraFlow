@@ -77,6 +77,14 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
         return try await installer.updatePlaybackSpeed(videoURL: videoURL, speed: speed)
     }
 
+    public func updateScaleMode(
+        videoURL: URL,
+        mode: WallpaperScaleMode
+    ) async throws -> Bool {
+        try requireAvailability()
+        return try await installer.updateScaleMode(videoURL: videoURL, mode: mode)
+    }
+
     public func lockScreenOnlyStatus(
         videoURL: URL?
     ) -> LockScreenOnlyGenerationStatus {

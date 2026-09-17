@@ -152,6 +152,50 @@ private func writeHEVCTestMovie(to url: URL) async throws {
     #expect(fastURL.lastPathComponent.contains("prepared-v3-"))
 }
 
+@Test func aerialMediaPreparerBakesFitAndStretchIntoDisplayCanvas() async throws {
+    let fixture = try AerialMediaPreparerFixture()
+    defer { fixture.cleanup() }
+    let movieURL = fixture.root.appendingPathComponent("source.mov")
+    try await writeHEVCTestMovie(to: movieURL)
+    let preparer = AerialMediaPreparer(
+        fileManager: .default,
+        usesCanonicalWallpaperStore: true,
+        preparedCacheDirectoryURL: fixture.cacheURL
+    )
+    let displaySize = CGSize(width: 1_600, height: 1_000)
+
+    let fitURL = try await preparer.prepare(
+        from: movieURL,
+        playbackSpeed: 1.0,
+        scaleMode: .fit,
+        targetDisplaySize: displaySize
+    )
+    let stretchURL = try await preparer.prepare(
+        from: movieURL,
+        playbackSpeed: 1.0,
+        scaleMode: .stretch,
+        targetDisplaySize: displaySize
+    )
+
+    let fitTrack = try #require(
+        try await AVURLAsset(url: fitURL).load(.tracks).first {
+            $0.mediaType == .video
+        }
+    )
+    let naturalSize = try await fitTrack.load(.naturalSize)
+    let transform = try await fitTrack.load(.preferredTransform)
+    let displayRect = CGRect(origin: .zero, size: naturalSize)
+        .applying(transform)
+    let aspect = abs(displayRect.width / displayRect.height)
+
+    #expect(abs(aspect - 1.6) < 0.05)
+    #expect(fitURL.lastPathComponent.contains("-fit-"))
+    #expect(stretchURL.lastPathComponent.contains("-stretch-"))
+    #expect(fitURL != stretchURL)
+    #expect(try await preparer.isCompatible(at: fitURL))
+    #expect(try await preparer.isCompatible(at: stretchURL))
+}
+
 @Test func aerialMediaPreparerPropagatesConversionFailureWithoutBlocking() async throws {
     let fixture = try AerialMediaPreparerFixture()
     defer { fixture.cleanup() }

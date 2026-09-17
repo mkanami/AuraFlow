@@ -178,6 +178,12 @@ public protocol LockScreenPlatformOperating: LockScreenPlatform {
     /// Legacy screen savers apply the speed from the shared runtime config and
     /// therefore use the default no-op implementation below.
     func updatePlaybackSpeed(videoURL: URL, speed: Double) async throws -> Bool
+    /// Applies the configured scaling algorithm to a native Lock Screen route.
+    /// Legacy screen savers read the mode from the shared runtime config.
+    func updateScaleMode(
+        videoURL: URL,
+        mode: WallpaperScaleMode
+    ) async throws -> Bool
     func lockScreenOnlyStatus(videoURL: URL?) -> LockScreenOnlyGenerationStatus
     @discardableResult
     func repairLockScreenOnlyGeneration(
@@ -352,6 +358,15 @@ public extension LockScreenSaverInstalling {
     func updatePlaybackSpeed(videoURL: URL, speed: Double) async throws -> Bool {
         // The compatibility saver reads playback_speed from config.json when
         // the distributed runtime notification arrives.
+        false
+    }
+
+    func updateScaleMode(
+        videoURL: URL,
+        mode: WallpaperScaleMode
+    ) async throws -> Bool {
+        // The compatibility saver reads scale_mode from config.json when the
+        // distributed runtime notification arrives.
         false
     }
 

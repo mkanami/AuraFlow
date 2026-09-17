@@ -108,6 +108,42 @@ private final class AerialConversionProcessState: @unchecked Sendable {
     }
 }
 
+/// AVAssetExportSession is callback-based and explicitly non-Sendable. This
+/// wrapper owns the session for the full export and is the only value captured
+/// by Swift concurrency's cancellation and completion closures.
+private final class AerialExportSessionBox: @unchecked Sendable {
+    private let exporter: AVAssetExportSession
+
+    init(_ exporter: AVAssetExportSession) {
+        self.exporter = exporter
+    }
+
+    func run() async throws {
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                exporter.exportAsynchronously { [self] in
+                    switch exporter.status {
+                    case .completed:
+                        continuation.resume()
+                    case .cancelled:
+                        continuation.resume(throwing: CancellationError())
+                    default:
+                        continuation.resume(
+                            throwing: exporter.error
+                                ?? AerialLockScreenInstallerError
+                                    .aerialVideoPreparationFailed(
+                                        "The scaled Lock Screen movie export failed."
+                                    )
+                        )
+                    }
+                }
+            }
+        }, onCancel: { [self] in
+            exporter.cancelExport()
+        })
+    }
+}
+
 /// Prepares media for the native macOS Aerial Lock Screen provider.
 ///
 /// The native provider accepts HEVC video in a QuickTime movie. Noncanonical
@@ -296,6 +332,227 @@ internal final class AerialMediaPreparer {
 
         try replaceCacheItem(at: cacheURL, with: outputURL)
         return cacheURL
+    }
+
+    /// Returns a native-provider movie with the requested scaling baked into
+    /// its frames. Apple's Aerial extension always aspect-fills its surface,
+    /// so Fit and Stretch cannot be expressed as a runtime player property.
+    /// Encoding a canvas with the display aspect ratio makes the visible Lock
+    /// Screen match AuraFlow's Desktop player.
+    internal func prepare(
+        from sourceURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode,
+        targetDisplaySize: CGSize? = nil
+    ) async throws -> URL {
+        let preparedURL = try await prepare(
+            from: sourceURL,
+            playbackSpeed: playbackSpeed
+        )
+        guard usesCanonicalWallpaperStore, scaleMode != .fill else {
+            return preparedURL
+        }
+
+        let asset = AVURLAsset(url: preparedURL)
+        let tracks = try await asset.load(.tracks)
+        guard let videoTrack = tracks.first(where: { $0.mediaType == .video })
+        else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The video has no video track for Lock Screen scaling."
+                )
+        }
+        let naturalSize = try await videoTrack.load(.naturalSize)
+        let preferredTransform = try await videoTrack.load(.preferredTransform)
+        let transformedRect = CGRect(
+            origin: .zero,
+            size: naturalSize
+        ).applying(preferredTransform)
+        let sourceSize = CGSize(
+            width: abs(transformedRect.width),
+            height: abs(transformedRect.height)
+        )
+        guard sourceSize.width > 0, sourceSize.height > 0 else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The video has no valid dimensions for Lock Screen scaling."
+                )
+        }
+
+        let displaySize = targetDisplaySize ?? Self.activeDisplayPixelSize()
+        let canvasSize = Self.scaledCanvasSize(
+            sourceSize: sourceSize,
+            displaySize: displaySize ?? sourceSize
+        )
+        let sourceSignature = try fileSignature(at: sourceURL)
+        let speedTag = String(format: "%.3f", normalizedPlaybackSpeed(playbackSpeed))
+            .replacingOccurrences(of: ".", with: "_")
+        let cacheURL = preparedCacheDirectoryURL.appendingPathComponent(
+            "prepared-v4-\(sourceSignature)-rate-\(speedTag)-\(scaleMode.rawValue)-\(Int(canvasSize.width))x\(Int(canvasSize.height)).mov"
+        )
+        if fileManager.fileExists(atPath: cacheURL.path),
+           try await isCompatible(at: cacheURL) {
+            return cacheURL
+        }
+
+        let duration = try await asset.load(.duration)
+        let frameRate = try await videoTrack.load(.nominalFrameRate)
+        let composition = Self.videoComposition(
+            track: videoTrack,
+            duration: duration,
+            sourceRect: transformedRect,
+            preferredTransform: preferredTransform,
+            canvasSize: canvasSize,
+            scaleMode: scaleMode,
+            frameRate: frameRate
+        )
+        let outputURL = preparedCacheDirectoryURL.appendingPathComponent(
+            ".prepared-scale-\(UUID().uuidString).mov"
+        )
+        defer { try? fileManager.removeItem(at: outputURL) }
+        try await export(
+            asset: asset,
+            videoComposition: composition,
+            to: outputURL
+        )
+        guard fileManager.fileExists(atPath: outputURL.path),
+              try await isCompatible(at: outputURL)
+        else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The scaled Lock Screen movie is not HEVC compatible."
+                )
+        }
+        try replaceCacheItem(at: cacheURL, with: outputURL)
+        return cacheURL
+    }
+
+    private static func activeDisplayPixelSize() -> CGSize? {
+        let screen = NSScreen.main ?? NSScreen.screens.first
+        guard let screen else { return nil }
+        return CGSize(
+            width: screen.frame.width * screen.backingScaleFactor,
+            height: screen.frame.height * screen.backingScaleFactor
+        )
+    }
+
+    private static func scaledCanvasSize(
+        sourceSize: CGSize,
+        displaySize: CGSize
+    ) -> CGSize {
+        guard displaySize.width > 0, displaySize.height > 0 else {
+            return sourceSize
+        }
+        let displayAspect = displaySize.width / displaySize.height
+        let sourceAspect = sourceSize.width / sourceSize.height
+        var width: CGFloat
+        var height: CGFloat
+        if displayAspect >= sourceAspect {
+            height = sourceSize.height
+            width = height * displayAspect
+        } else {
+            width = sourceSize.width
+            height = width / displayAspect
+        }
+        let limitScale = min(1, 3_840 / width, 2_160 / height)
+        width *= limitScale
+        height *= limitScale
+        func even(_ value: CGFloat) -> CGFloat {
+            CGFloat(max(2, Int(value.rounded()) / 2 * 2))
+        }
+        return CGSize(width: even(width), height: even(height))
+    }
+
+    private static func videoComposition(
+        track: AVAssetTrack,
+        duration: CMTime,
+        sourceRect: CGRect,
+        preferredTransform: CGAffineTransform,
+        canvasSize: CGSize,
+        scaleMode: WallpaperScaleMode,
+        frameRate: Float
+    ) -> AVMutableVideoComposition {
+        let sourceWidth = abs(sourceRect.width)
+        let sourceHeight = abs(sourceRect.height)
+        let widthScale = canvasSize.width / sourceWidth
+        let heightScale = canvasSize.height / sourceHeight
+        let scaleX: CGFloat
+        let scaleY: CGFloat
+        switch scaleMode {
+        case .fit:
+            let scale = min(widthScale, heightScale)
+            scaleX = scale
+            scaleY = scale
+        case .stretch:
+            scaleX = widthScale
+            scaleY = heightScale
+        case .fill:
+            let scale = max(widthScale, heightScale)
+            scaleX = scale
+            scaleY = scale
+        }
+
+        let renderedWidth = sourceWidth * scaleX
+        let renderedHeight = sourceHeight * scaleY
+        let offsetX = (canvasSize.width - renderedWidth) / 2
+        let offsetY = (canvasSize.height - renderedHeight) / 2
+        var transform = preferredTransform
+        transform = transform.concatenating(
+            CGAffineTransform(
+                translationX: -sourceRect.minX,
+                y: -sourceRect.minY
+            )
+        )
+        transform = transform.concatenating(
+            CGAffineTransform(scaleX: scaleX, y: scaleY)
+        )
+        transform = transform.concatenating(
+            CGAffineTransform(translationX: offsetX, y: offsetY)
+        )
+
+        let layerInstruction = AVMutableVideoCompositionLayerInstruction(
+            assetTrack: track
+        )
+        layerInstruction.setTransform(transform, at: .zero)
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = CMTimeRange(start: .zero, duration: duration)
+        instruction.backgroundColor = NSColor.black.cgColor
+        instruction.layerInstructions = [layerInstruction]
+
+        let composition = AVMutableVideoComposition()
+        composition.renderSize = canvasSize
+        let resolvedFrameRate = frameRate.isFinite && frameRate > 0
+            ? min(120, max(1, frameRate))
+            : 30
+        composition.frameDuration = CMTime(
+            value: 1,
+            timescale: CMTimeScale(resolvedFrameRate.rounded())
+        )
+        composition.instructions = [instruction]
+        return composition
+    }
+
+    private func export(
+        asset: AVAsset,
+        videoComposition: AVVideoComposition,
+        to outputURL: URL
+    ) async throws {
+        guard let exporter = AVAssetExportSession(
+            asset: asset,
+            presetName: AVAssetExportPresetHEVCHighestQuality
+        ) else {
+            throw AerialLockScreenInstallerError
+                .aerialVideoPreparationFailed(
+                    "The scaled Lock Screen movie exporter is unavailable."
+                )
+        }
+        try? fileManager.removeItem(at: outputURL)
+        exporter.outputURL = outputURL
+        exporter.outputFileType = .mov
+        exporter.shouldOptimizeForNetworkUse = true
+        exporter.videoComposition = videoComposition
+
+        try await AerialExportSessionBox(exporter).run()
     }
 
     /// Rewrites compressed HEVC samples with physical timestamps. Apple's

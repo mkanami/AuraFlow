@@ -291,6 +291,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     private(set) var uninstallCallCount = 0
     private(set) var preservingUninstallCallCount = 0
     private(set) var playbackSpeedUpdates: [(URL, Double)] = []
+    private(set) var scaleModeUpdates: [(URL, WallpaperScaleMode)] = []
     var installError: TestInstallerError?
     var failNextDesktopInstall = false
     var uninstallError: TestInstallerError?
@@ -356,6 +357,14 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         speed: Double
     ) async throws -> Bool {
         playbackSpeedUpdates.append((videoURL, speed))
+        return true
+    }
+
+    func updateScaleMode(
+        videoURL: URL,
+        mode: WallpaperScaleMode
+    ) async throws -> Bool {
+        scaleModeUpdates.append((videoURL, mode))
         return true
     }
 
@@ -1115,7 +1124,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     try await writeTestVideo(to: videoURL)
     _ = try await controller.start(videoURL: videoURL, speed: 1.0)
     _ = try await controller.setSpeed(2.25)
-    _ = try controller.setScaleMode(.fit)
+    _ = try await controller.setScaleMode(.fit)
     let config = fixture.store.loadConfig()
     let command = fixture.store.loadCommand()
 
@@ -1124,6 +1133,9 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(installer.playbackSpeedUpdates.first?.0 == videoURL)
     #expect(installer.playbackSpeedUpdates.first?.1 == 2.25)
     #expect(config.scale_mode == WallpaperScaleMode.fit.rawValue)
+    #expect(installer.scaleModeUpdates.count == 1)
+    #expect(installer.scaleModeUpdates.first?.0 == videoURL)
+    #expect(installer.scaleModeUpdates.first?.1 == .fit)
     #expect(command?.action == .update)
     #expect(command?.config?.scale_mode == WallpaperScaleMode.fit.rawValue)
 }
@@ -2039,7 +2051,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     )
 
     _ = try await controller.start(videoURL: fixture.videoURL, speed: 1.0)
-    _ = try controller.setScaleMode(.fit)
+    _ = try await controller.setScaleMode(.fit)
     let videoAttributes = try FileManager.default.attributesOfItem(
         atPath: fixture.videoURL.path
     )
@@ -2071,6 +2083,8 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadConfig().show_on_lock_screen == true)
     #expect(installer.installedVideoURL == fixture.videoURL)
     #expect(fixture.store.loadConfig().scale_mode == WallpaperScaleMode.fit.rawValue)
+    #expect(installer.scaleModeUpdates.last?.0 == fixture.videoURL)
+    #expect(installer.scaleModeUpdates.last?.1 == .fit)
     #expect(fixture.store.loadCommand()?.action == .update)
     #expect(
         DaemonProcessManager(
