@@ -1376,6 +1376,15 @@ private func writeAerialTestVideo(to url: URL) async throws {
     defer { fixture.cleanup() }
 
     try await fixture.installer.install(videoURL: fixture.videoURL)
+    let installedStore = try Data(contentsOf: fixture.storeURL)
+    let recoveryStoreURL = fixture.stateURL.appendingPathComponent(
+        "Index.before-auraflow.plist"
+    )
+    let recoveryAssetURL = fixture.stateURL.appendingPathComponent(
+        "aerial.before-auraflow.mov"
+    )
+    let recoveryStore = try Data(contentsOf: recoveryStoreURL)
+    let recoveryAsset = try Data(contentsOf: recoveryAssetURL)
 
     #expect(
         try await fixture.installer.updateScaleMode(
@@ -1383,6 +1392,9 @@ private func writeAerialTestVideo(to url: URL) async throws {
             mode: .fit
         )
     )
+    #expect(try Data(contentsOf: fixture.storeURL) == installedStore)
+    #expect(try Data(contentsOf: recoveryStoreURL) == recoveryStore)
+    #expect(try Data(contentsOf: recoveryAssetURL) == recoveryAsset)
     let marker = LockScreenJournal(
         stateDirectoryURL: fixture.stateURL,
         fileManager: .default
@@ -1405,6 +1417,19 @@ private func writeAerialTestVideo(to url: URL) async throws {
             mode: .fit
         ) == false
     )
+
+    try await fixture.installer.uninstallAsync()
+    let restoredStore = try readWallpaperStore(fixture.storeURL)
+    #expect(!wallpaperStoreContains(
+        restoredStore,
+        provider: "com.apple.wallpaper.choice.aerials",
+        assetID: AerialLockScreenFixture.assetID
+    ))
+    #expect(wallpaperStoreContains(
+        restoredStore,
+        provider: "com.apple.wallpaper.choice.image",
+        assetID: nil
+    ))
 }
 
 @Test func modernLockScreenOnlyPlaybackSpeedUsesLockOnlyGeneration() async throws {

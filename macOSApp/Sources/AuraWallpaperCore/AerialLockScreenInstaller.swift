@@ -652,26 +652,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     return false
                 }
 
-                let lockScreenOnlyRoute = markerUsesDedicatedLockOnlyRuntime(
-                    marker
-                )
-                let isolatedDesktopStore = marker.desktopIncluded == false
-                return try await installLocked(
+                return try await updateInstalledMediaLocked(
+                    marker: marker,
                     videoURL: videoURL,
                     playbackSpeed: marker.playbackSpeed ?? 1.0,
-                    scaleMode: mode,
-                    forceRefresh: true,
-                    refreshAction: rearmSystem,
-                    scope: isolatedDesktopStore
-                        ? .lockScreenOnly
-                        : .sharedWallpaper,
-                    lockScreenOnlyRoute: lockScreenOnlyRoute,
-                    avoidProviderRestartOnExistingLockOnlySourceChange:
-                        isolatedDesktopStore,
-                    restoreUserSystemWallpaperURLAfterInstall:
-                        isolatedDesktopStore && !lockScreenOnlyRoute,
-                    rollbackAction: refreshSystem,
-                    shouldProceed: { true }
+                    scaleMode: mode
                 )
             }
         }
@@ -3195,6 +3180,101 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             marker.playbackSpeed ?? 1.0,
             WallpaperScaleMode(rawValue: marker.scaleMode ?? "") ?? .fill
         )
+    }
+
+    /// Replaces only the movie already owned by the active Aerial generation.
+    /// Runtime presentation changes must not rerun the installation transaction:
+    /// that transaction also owns the user's wallpaper-store backup and Remove
+    /// recovery state. Keeping those bytes untouched makes Scale updates and
+    /// subsequent Remove independent and deterministic.
+    private func updateInstalledMediaLocked(
+        marker: AerialLockScreenMarker,
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws -> Bool {
+        let preparedVideoURL = try await mediaPreparer.prepare(
+            from: videoURL,
+            playbackSpeed: normalizedPlaybackSpeed(playbackSpeed),
+            scaleMode: scaleMode
+        )
+        try Task.checkCancellation()
+
+        guard let currentMarker = loadMarker(),
+              currentMarker.completed == true,
+              currentMarker.generation == marker.generation,
+              currentMarker.assetID == marker.assetID,
+              URL(fileURLWithPath: currentMarker.videoPath)
+                .standardizedFileURL == videoURL.standardizedFileURL
+        else {
+            return false
+        }
+
+        let assetURL = URL(fileURLWithPath: currentMarker.assetPath)
+        guard fileManager.fileExists(atPath: assetURL.path) else {
+            return false
+        }
+
+        let assetSnapshotURL = try rollbackSnapshotURL(for: assetURL)
+        defer { removeRollbackSnapshot(at: assetSnapshotURL) }
+        let originalAssetSignature = try? mediaPreparer.fileSignature(
+            at: assetURL
+        )
+        var providerRefreshed = false
+
+        do {
+            try replaceFile(
+                at: assetURL,
+                withContentsOf: preparedVideoURL,
+                preservingDestinationMetadata: true
+            )
+            let installedSignature = try mediaPreparer.fileSignature(
+                at: assetURL
+            )
+            try assetStore.markManagedAsset(
+                signature: installedSignature,
+                at: assetURL
+            )
+
+            var updatedMarker = currentMarker
+            updatedMarker.assetSignature = installedSignature
+            updatedMarker.playbackSpeed = normalizedPlaybackSpeed(playbackSpeed)
+            updatedMarker.scaleMode = scaleMode.rawValue
+            updatedMarker.lastAssetRepairGeneration = nil
+            updatedMarker.state = "healthy"
+            try saveMarker(updatedMarker)
+
+            // The provider caches the movie by asset ID. Restart only its
+            // owner; this action does not rewrite the wallpaper store.
+            try rearmSystem({ true })
+            providerRefreshed = true
+            updatedMarker.lastProviderRefreshGeneration =
+                updatedMarker.generation
+            try saveMarker(updatedMarker)
+            lockScreenLifecycleLogger.notice(
+                "Updated Lock Screen media without rewriting wallpaper store"
+            )
+            return true
+        } catch {
+            if let assetSnapshotURL {
+                try? replaceFile(
+                    at: assetURL,
+                    withContentsOf: assetSnapshotURL,
+                    preservingDestinationMetadata: false
+                )
+                if let originalAssetSignature {
+                    try? assetStore.markManagedAsset(
+                        signature: originalAssetSignature,
+                        at: assetURL
+                    )
+                }
+            }
+            try? saveMarker(currentMarker)
+            if providerRefreshed {
+                try? rearmSystem({ true })
+            }
+            throw error
+        }
     }
 
     private func markerStoreIncludesDesktop(

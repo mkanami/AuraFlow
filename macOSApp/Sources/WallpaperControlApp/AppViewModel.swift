@@ -3320,6 +3320,13 @@ final class AppViewModel: ObservableObject {
         // avconvert to finish even though the wallpaper is already being
         // removed.
         cancelPreviewPreparation()
+        // A realtime Scale change may also be preparing a native Lock Screen
+        // movie. Remove supersedes that work: cancel it before entering the
+        // lifecycle transaction so no media update can finish against a route
+        // that is being restored to the user's wallpaper.
+        scaleModeUpdateGeneration &+= 1
+        scaleModeUpdateTask?.cancel()
+        scaleModeUpdateTask = nil
         lifecycleViewModel.clearWallpaper()
     }
 
