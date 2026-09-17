@@ -979,54 +979,103 @@ private struct ScaleAlgorithmSegmentedControl: View {
 
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @Environment(\.isEnabled) private var isEnabled
-    @Namespace private var selectionAnimation
+    @GestureState private var dragTranslation: CGFloat = 0
+    @State private var dragOriginIndex: Int?
+
+    private let segmentWidth: CGFloat = 72
+    private let segmentHeight: CGFloat = 26
+
+    private var modes: [WallpaperScaleMode] {
+        WallpaperScaleMode.allCases
+    }
+
+    private var selectedIndex: Int {
+        modes.firstIndex(of: selection) ?? 0
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
-            ForEach(WallpaperScaleMode.allCases) { mode in
-                Button {
-                    guard mode != selection else { return }
-                    onSelect(mode)
-                } label: {
-                    ZStack {
-                        if mode == selection {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(Color.accentColor)
-                                .padding(2)
-                                .matchedGeometryEffect(
-                                    id: "scale-algorithm-selection",
-                                    in: selectionAnimation
-                                )
-                        }
+        let originIndex = dragOriginIndex ?? selectedIndex
+        let maximumIndicatorOffset = CGFloat(max(modes.count - 1, 0)) * segmentWidth
+        let indicatorOffset = min(
+            max(CGFloat(originIndex) * segmentWidth + dragTranslation, 0),
+            maximumIndicatorOffset
+        )
+        let displayedIndex = dragOriginIndex == nil
+            ? selectedIndex
+            : Int((indicatorOffset / segmentWidth).rounded())
 
+        ZStack(alignment: .leading) {
+            ForEach(1..<modes.count, id: \.self) { dividerIndex in
+                Rectangle()
+                    .fill(adaptiveGlassAppearance.centerTextTone.primaryTextColor.opacity(0.18))
+                    .frame(width: 1, height: 16)
+                    .offset(x: CGFloat(dividerIndex) * segmentWidth - 0.5)
+                    .allowsHitTesting(false)
+            }
+
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.accentColor)
+                .frame(width: segmentWidth - 4, height: segmentHeight - 4)
+                .offset(x: indicatorOffset + 2)
+                .allowsHitTesting(false)
+
+            HStack(spacing: 0) {
+                ForEach(Array(modes.enumerated()), id: \.element.id) { index, mode in
+                    Button {
+                        guard mode != selection else { return }
+                        onSelect(mode)
+                    } label: {
                         Text(mode.title)
-                            .font(.callout.weight(mode == selection ? .semibold : .medium))
+                            .font(.callout.weight(index == displayedIndex ? .semibold : .medium))
                             .foregroundStyle(
-                                mode == selection
+                                index == displayedIndex
                                     ? Color.white
                                     : adaptiveGlassAppearance.centerTextTone.primaryTextColor
                             )
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 4)
-                            .padding(.horizontal, 10)
+                            .frame(width: segmentWidth, height: segmentHeight)
+                            .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(AuraPlainPressButtonStyle())
-                .accessibilityValue(mode == selection ? "Selected" : "")
-
-                if mode != WallpaperScaleMode.allCases.last {
-                    Rectangle()
-                        .fill(
-                            adaptiveGlassAppearance.centerTextTone.primaryTextColor.opacity(0.18)
-                        )
-                        .frame(width: 1, height: 16)
-                        .allowsHitTesting(false)
+                    .buttonStyle(AuraPlainPressButtonStyle())
+                    .accessibilityValue(index == displayedIndex ? "Selected" : "")
                 }
             }
         }
+        .frame(width: CGFloat(modes.count) * segmentWidth, height: segmentHeight)
+        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .highPriorityGesture(selectionDragGesture)
         .opacity(isEnabled ? 1.0 : 0.62)
-        .animation(.easeInOut(duration: 0.18), value: selection)
+        .animation(
+            dragOriginIndex == nil ? .easeInOut(duration: 0.18) : nil,
+            value: selection
+        )
+    }
+
+    private var selectionDragGesture: some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .local)
+            .updating($dragTranslation) { value, translation, _ in
+                guard dragOriginIndex != nil else { return }
+                translation = value.translation.width
+            }
+            .onChanged { value in
+                guard dragOriginIndex == nil else { return }
+                let pillMinimumX = CGFloat(selectedIndex) * segmentWidth
+                let pillMaximumX = pillMinimumX + segmentWidth
+                guard value.startLocation.x >= pillMinimumX,
+                      value.startLocation.x <= pillMaximumX else {
+                    return
+                }
+                dragOriginIndex = selectedIndex
+            }
+            .onEnded { value in
+                guard let originIndex = dragOriginIndex else { return }
+                let rawIndex = CGFloat(originIndex) + value.translation.width / segmentWidth
+                let targetIndex = min(max(Int(rawIndex.rounded()), 0), modes.count - 1)
+                let targetMode = modes[targetIndex]
+                if targetMode != selection {
+                    onSelect(targetMode)
+                }
+                dragOriginIndex = nil
+            }
     }
 }
 
