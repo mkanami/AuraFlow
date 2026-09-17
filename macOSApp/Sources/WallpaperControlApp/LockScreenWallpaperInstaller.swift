@@ -296,6 +296,16 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
         try await selectedPlatform.prepareLockScreenMedia(videoURL: videoURL)
     }
 
+    func updateScaleMode(
+        videoURL: URL,
+        mode: WallpaperScaleMode
+    ) async throws -> Bool {
+        try await selectedPlatform.updateScaleMode(
+            videoURL: videoURL,
+            mode: mode
+        )
+    }
+
     func lockScreenOnlyStatus(
         videoURL: URL?
     ) -> LockScreenOnlyGenerationStatus {

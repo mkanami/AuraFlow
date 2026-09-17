@@ -37,6 +37,7 @@ private final class RecordingModernInstaller: ModernLockScreenInstalling {
     var isInstalled: Bool
     private(set) var installCallCount = 0
     private(set) var repairCallCount = 0
+    private(set) var scaleModeUpdates: [(URL, WallpaperScaleMode)] = []
     var lockScreenOnlyStatusOverride: LockScreenOnlyGenerationStatus?
     var restoreError: Error?
     private(set) var restoredLockScreenOnlyVideoURL: URL?
@@ -84,10 +85,48 @@ private final class RecordingModernInstaller: ModernLockScreenInstalling {
         return false
     }
 
+    func updateScaleMode(
+        videoURL: URL,
+        mode: WallpaperScaleMode
+    ) async throws -> Bool {
+        scaleModeUpdates.append((videoURL, mode))
+        return true
+    }
+
     func uninstall() throws {
         isInstalled = false
         restoredLockScreenOnlyVideoURL = nil
     }
+}
+
+@Test func wallpaperPlatformAdapterForwardsScaleModeToModernLockScreen() async throws {
+    let modernInstaller = RecordingModernInstaller(
+        isAvailable: true,
+        isInstalled: true
+    )
+    let modern = ModernMacOS26Adapter(
+        installer: modernInstaller,
+        operatingSystemVersion: OperatingSystemVersion(
+            majorVersion: 26,
+            minorVersion: 0,
+            patchVersion: 0
+        )
+    )
+    let adapter = WallpaperPlatformAdapter(
+        modern: modern,
+        legacy: LegacyMacOSAdapter(installer: PlatformRecordingInstaller())
+    )
+    let mediaURL = URL(fileURLWithPath: "/tmp/scale-lock-screen.mov")
+
+    #expect(
+        try await adapter.updateScaleMode(
+            videoURL: mediaURL,
+            mode: .fit
+        )
+    )
+    #expect(modernInstaller.scaleModeUpdates.count == 1)
+    #expect(modernInstaller.scaleModeUpdates.first?.0 == mediaURL)
+    #expect(modernInstaller.scaleModeUpdates.first?.1 == .fit)
 }
 
 private enum PlatformRecordingError: Error {
