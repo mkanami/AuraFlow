@@ -222,6 +222,41 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func startCancelsBackgroundLockScreenMediaWarmUp() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.prepareLockScreenMediaDelay = 30_000_000_000
+    let viewModel = AppViewModel(controller: controller)
+    let sourceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("start-cancels-lock-warm-up-\(UUID().uuidString).png")
+    FileManager.default.createFile(
+        atPath: sourceURL.path,
+        contents: Data([0])
+    )
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+    viewModel.selectLocalVideoForPreview(sourceURL)
+    for _ in 0..<40 {
+        if controller.prepareLockScreenMediaCallCount == 1 { break }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    #expect(controller.prepareLockScreenMediaCallCount == 1)
+
+    let startBeganAt = Date()
+    viewModel.start()
+    for _ in 0..<40 {
+        if controller.startCallCount == 1,
+           !viewModel.isLifecycleBusy {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    #expect(controller.startCallCount == 1)
+    #expect(controller.prepareLockScreenMediaCancellationCount == 1)
+    #expect(Date().timeIntervalSince(startBeganAt) < 2.0)
+}
+
+@MainActor
 @Test func defaultTestAppSupportDoesNotUseTheUserProfile() {
     let viewModel = AppViewModel(controller: MockNativeWallpaperController())
     let userAppSupport = FileManager.default.homeDirectoryForCurrentUser

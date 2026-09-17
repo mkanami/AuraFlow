@@ -2794,6 +2794,10 @@ final class AppViewModel: ObservableObject {
         previewPreparationGeneration &+= 1
         previewPreparationTask?.cancel()
         previewPreparationTask = nil
+        cancelLockScreenMediaPreparation()
+    }
+
+    private func cancelLockScreenMediaPreparation() {
         lockScreenPreparationGeneration &+= 1
         lockScreenPreparationTask?.cancel()
         lockScreenPreparationTask = nil
@@ -3280,6 +3284,9 @@ final class AppViewModel: ObservableObject {
 
     func start() {
         guard canStart else { return }
+        // Native Fit cache warming is strictly background work. Never let an
+        // in-flight HEVC export sit in front of the user's Start request.
+        cancelLockScreenMediaPreparation()
         lifecycleViewModel.start(
             selectedVideoURL: selectedVideoURL,
             hasPendingPreview: pendingPreviewVideoURL != nil
@@ -3306,6 +3313,7 @@ final class AppViewModel: ObservableObject {
         previewPreparationGeneration &+= 1
         previewPreparationTask?.cancel()
         previewPreparationTask = nil
+        cancelLockScreenMediaPreparation()
         lifecycleViewModel.applyLockScreenOnly(selectedVideoURL: selectedVideoURL)
     }
 

@@ -685,7 +685,23 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     throw AerialLockScreenInstallerError.videoMissing(videoURL.path)
                 }
                 _ = try await mediaPreparer.prepare(from: videoURL)
-                lockScreenLifecycleLogger.notice("Prepared Lock Screen media cache")
+                try Task.checkCancellation()
+
+                // Fit uses the same baked-canvas route as Stretch. Prepare
+                // that movie while the wallpaper is only being previewed so
+                // selecting Fit later can replace the active Aerial asset
+                // immediately instead of starting a full HEVC export after
+                // the click. This writes only AuraFlow's media cache; it does
+                // not touch the provider slot, wallpaper store, or recovery
+                // journal.
+                _ = try await mediaPreparer.prepare(
+                    from: videoURL,
+                    playbackSpeed: 1,
+                    scaleMode: .fit
+                )
+                lockScreenLifecycleLogger.notice(
+                    "Prepared Lock Screen base and Fit media cache"
+                )
             }
         }
     }
