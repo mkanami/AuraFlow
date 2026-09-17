@@ -3155,7 +3155,7 @@ final class AppViewModel: ObservableObject {
     func resetCatalogFilters() {
         catalogViewModel.selectedGroup = nil
         catalogSearchText = ""
-        catalogScrollTargetID = catalogViewModel.wallpapers.first?.id
+        catalogViewModel.requestScroll(to: catalogViewModel.wallpapers.first?.id)
     }
 
     func prefetchCatalogPreview(_ wallpaper: CatalogWallpaper, hovered: Bool = false) {

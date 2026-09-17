@@ -1653,12 +1653,8 @@ struct WallpaperCatalogView: View {
                 .font(.caption2.weight(.semibold))
         }
         .buttonStyle(AuraPanelButtonStyle(fillWidth: false))
-        .disabled(
-            catalogViewModel.searchText.isEmpty
-                && catalogViewModel.selectedGroup == nil
-        )
-        .help("Reset search and category")
-        .accessibilityLabel("Reset catalog filters")
+        .help("Reset search and category, then scroll to top")
+        .accessibilityLabel("Reset catalog and scroll to top")
     }
 }
 
@@ -1697,28 +1693,36 @@ struct WallpaperCatalogGridView: View {
     private let columns = [GridItem(.adaptive(minimum: 220), spacing: 12)]
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 12) {
-                ForEach(catalogViewModel.filteredWallpapers) { wallpaper in
-                    CatalogWallpaperCard(wallpaper: wallpaper) {
-                        viewModel.openCatalogWallpaper(wallpaper)
-                    }
-                    .id(wallpaper.id)
-                    .onAppear {
-                        viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: true)
-                        viewModel.catalogTrailingWallpaperBecameVisible(wallpaper.id)
-                    }
-                    .onDisappear {
-                        viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: false)
+        ScrollViewReader { scrollViewProxy in
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(catalogViewModel.filteredWallpapers) { wallpaper in
+                        CatalogWallpaperCard(wallpaper: wallpaper) {
+                            viewModel.openCatalogWallpaper(wallpaper)
+                        }
+                        .id(wallpaper.id)
+                        .onAppear {
+                            viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: true)
+                            viewModel.catalogTrailingWallpaperBecameVisible(wallpaper.id)
+                        }
+                        .onDisappear {
+                            viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: false)
+                        }
                     }
                 }
-            }
-            .padding(.vertical, 2)
+                .padding(.vertical, 2)
 
-            if catalogViewModel.isLoadingMore {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity, minHeight: 28)
+                if catalogViewModel.isLoadingMore {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                }
+            }
+            .onChange(of: catalogViewModel.scrollRequestGeneration) { _ in
+                guard let targetID = catalogViewModel.scrollTargetID else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    scrollViewProxy.scrollTo(targetID, anchor: .top)
+                }
             }
         }
     }

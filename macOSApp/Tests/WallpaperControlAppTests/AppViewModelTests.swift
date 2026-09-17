@@ -1502,6 +1502,11 @@ private func pngData(for image: CGImage) -> Data {
     #expect(viewModel.selectedCatalogGroup == nil)
     #expect(viewModel.filteredCatalogWallpapers.map(\.id) == ["anime-rain", "forest-rain"])
     #expect(viewModel.catalogScrollTargetID == "anime-rain")
+
+    let firstResetGeneration = viewModel.catalogViewModel.scrollRequestGeneration
+    viewModel.resetCatalogFilters()
+    #expect(viewModel.catalogViewModel.scrollRequestGeneration == firstResetGeneration + 1)
+    #expect(viewModel.catalogScrollTargetID == "anime-rain")
 }
 
 @MainActor

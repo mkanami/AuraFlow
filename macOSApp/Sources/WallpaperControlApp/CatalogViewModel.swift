@@ -12,6 +12,7 @@ final class CatalogViewModel: ObservableObject {
     @Published var isDownloadedWallpapersOpen = false
     @Published var selectedWallpaper: CatalogWallpaper?
     @Published var scrollTargetID: String?
+    @Published private(set) var scrollRequestGeneration: UInt = 0
     @Published var searchText = ""
     @Published var selectedGroup: CatalogWallpaperGroup?
     @Published var downloadID: String?
@@ -63,7 +64,13 @@ final class CatalogViewModel: ObservableObject {
 
     func toggleGroup(_ group: CatalogWallpaperGroup) {
         selectedGroup = selectedGroup == group ? nil : group
-        scrollTargetID = filteredWallpapers.first?.id
+        requestScroll(to: filteredWallpapers.first?.id)
+    }
+
+    func requestScroll(to wallpaperID: String?) {
+        scrollTargetID = wallpaperID
+        guard wallpaperID != nil else { return }
+        scrollRequestGeneration &+= 1
     }
 
     func count(in group: CatalogWallpaperGroup) -> Int {

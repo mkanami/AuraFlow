@@ -40,6 +40,7 @@ func catalogViewModelOwnsFilteringAndGroupSelection() {
     #expect(viewModel.filteredWallpapers.map(\.id) == ["scenic-1"])
     #expect(viewModel.count(in: .anime) == 1)
     #expect(viewModel.scrollTargetID == "scenic-1")
+    #expect(viewModel.scrollRequestGeneration == 1)
 }
 
 @Test @MainActor
