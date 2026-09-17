@@ -3152,6 +3152,12 @@ final class AppViewModel: ObservableObject {
         Task { await catalogPreviewPipeline.cancelPending() }
     }
 
+    func resetCatalogFilters() {
+        catalogViewModel.selectedGroup = nil
+        catalogSearchText = ""
+        catalogScrollTargetID = catalogViewModel.wallpapers.first?.id
+    }
+
     func prefetchCatalogPreview(_ wallpaper: CatalogWallpaper, hovered: Bool = false) {
         let priority: CatalogPreviewPriority = hovered ? .hovered : .visible
         Task { await catalogPreviewPipeline.prefetchMetadata(wallpaper, priority: priority) }

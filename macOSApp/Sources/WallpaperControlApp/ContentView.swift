@@ -1645,6 +1645,20 @@ struct WallpaperCatalogView: View {
                 viewModel.toggleCatalogGroup(group)
             }
         }
+
+        Button {
+            viewModel.resetCatalogFilters()
+        } label: {
+            Image(systemName: "arrow.counterclockwise")
+                .font(.caption2.weight(.semibold))
+        }
+        .buttonStyle(AuraPanelButtonStyle(fillWidth: false))
+        .disabled(
+            catalogViewModel.searchText.isEmpty
+                && catalogViewModel.selectedGroup == nil
+        )
+        .help("Reset search and category")
+        .accessibilityLabel("Reset catalog filters")
     }
 }
 

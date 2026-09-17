@@ -1493,6 +1493,15 @@ private func pngData(for image: CGImage) -> Data {
     viewModel.toggleCatalogGroup(.scenic)
     #expect(viewModel.selectedCatalogGroup == nil)
     #expect(viewModel.filteredCatalogWallpapers.map(\.id) == ["forest-rain"])
+
+    viewModel.toggleCatalogGroup(.anime)
+    viewModel.catalogSearchText = "rain"
+    viewModel.resetCatalogFilters()
+
+    #expect(viewModel.catalogSearchText.isEmpty)
+    #expect(viewModel.selectedCatalogGroup == nil)
+    #expect(viewModel.filteredCatalogWallpapers.map(\.id) == ["anime-rain", "forest-rain"])
+    #expect(viewModel.catalogScrollTargetID == "anime-rain")
 }
 
 @MainActor
