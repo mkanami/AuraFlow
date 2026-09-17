@@ -45,6 +45,26 @@ func catalogDetailKeepsFirstMovingWebRouteAfterItWins() async {
     #expect(model.player == nil)
 }
 
+@Test @MainActor
+func catalogDetailSuspendsBeforeDownloadAndResumesWithoutAnEmptyPlayer() async {
+    let webMURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("catalog-preview-suspend.webm")
+    let wallpaper = previewTestWallpaper(sources: [webMURL])
+    let model = CatalogDetailMediaPreviewModel()
+
+    await model.load(wallpaper)
+    #expect(model.streamingVideoURL == webMURL)
+
+    _ = model.suspendForForegroundDownload(wallpaper: wallpaper)
+    #expect(model.streamingVideoURL == nil)
+    #expect(model.player == nil)
+    #expect(!model.isVideoVisible)
+
+    model.resumeAfterForegroundDownload(wallpaper: wallpaper)
+    await Task.yield()
+    #expect(model.streamingVideoURL == webMURL)
+}
+
 private func previewTestWallpaper(sources: [URL]) -> CatalogWallpaper {
     CatalogWallpaper(
         id: "preview-test",

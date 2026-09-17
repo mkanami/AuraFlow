@@ -1,17 +1,91 @@
 import Foundation
+import OSLog
+
+enum CatalogHostTransferStrategy: String, Codable, Sendable {
+    case parallelRange
+    case singleStream
+}
+
+struct CatalogHostTransferProfile: Codable, Sendable {
+    let strategy: CatalogHostTransferStrategy
+    let validUntil: Date
+}
+
+actor CatalogHostTransferProfileStore {
+    static let shared = CatalogHostTransferProfileStore()
+
+    private static let defaultsKey = "CatalogHostTransferProfiles.v1"
+    private let defaults: UserDefaults
+    private var profiles: [String: CatalogHostTransferProfile]
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: Self.defaultsKey),
+           let decoded = try? JSONDecoder().decode(
+               [String: CatalogHostTransferProfile].self,
+               from: data
+           ) {
+            profiles = decoded
+        } else {
+            profiles = [:]
+        }
+    }
+
+    func strategy(for host: String, now: Date = Date()) -> CatalogHostTransferStrategy? {
+        guard let profile = profiles[host], profile.validUntil > now else {
+            profiles[host] = nil
+            persist()
+            return nil
+        }
+        return profile.strategy
+    }
+
+    func record(_ strategy: CatalogHostTransferStrategy, for host: String) {
+        profiles[host] = CatalogHostTransferProfile(
+            strategy: strategy,
+            validUntil: Date().addingTimeInterval(24 * 60 * 60)
+        )
+        persist()
+    }
+
+    func removeProfile(for host: String) {
+        profiles[host] = nil
+        persist()
+    }
+
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(profiles) else { return }
+        defaults.set(data, forKey: Self.defaultsKey)
+    }
+}
 
 enum CatalogFileDownloader {
-    private static let parallelThreshold: Int64 = 32 * 1024 * 1024
-    private static let chunkSize: Int64 = 8 * 1024 * 1024
+    private static let defaultParallelThreshold: Int64 = 32 * 1024 * 1024
+    private static let defaultChunkSize: Int64 = 8 * 1024 * 1024
     // Four requests keep range-capable CDNs fast without triggering the
     // throttling that made the previous six-request version intermittent.
     private static let maximumConcurrentChunks = 4
     private static let maximumDownloadAttempts = 3
+    private static let defaultValidationRangeBytes: Int64 = 256 * 1024
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "AuraFlow",
+        category: "CatalogTransfer"
+    )
 
     static func download(
         request: URLRequest,
-        session: URLSession
+        session: URLSession,
+        parallelThreshold: Int64 = defaultParallelThreshold,
+        chunkSize: Int64 = defaultChunkSize,
+        validationRangeBytes: Int64 = defaultValidationRangeBytes
     ) async throws -> (temporaryURL: URL, response: URLResponse) {
+        let host = request.url?.host?.lowercased() ?? "unknown"
+        if await CatalogHostTransferProfileStore.shared.strategy(for: host) == .singleStream {
+            logger.info("stage=range-strategy strategy=single-stream source=cached")
+            return try await regularDownloadWithRetry(request: request, session: session)
+        }
+
+        let probeStartedAt = Date()
         let rangeProbe: RangeProbeResult
         do {
             rangeProbe = try await probe(request: request, session: session)
@@ -24,11 +98,15 @@ enum CatalogFileDownloader {
                 session: session
             )
         }
+        let firstByteMilliseconds = Int(Date().timeIntervalSince(probeStartedAt) * 1_000)
+        logger.info("stage=first-byte elapsed_ms=\(firstByteMilliseconds)")
 
         // A server that ignores Range can make every parallel chunk download
         // the entire video. The probe is deliberately one byte and has a
         // short timeout, so that edge never turns into six duplicate files.
         if rangeProbe.statusCode == 200 {
+            await CatalogHostTransferProfileStore.shared.record(.singleStream, for: host)
+            logger.info("stage=range-strategy strategy=single-stream source=probe")
             return (rangeProbe.temporaryURL, rangeProbe.response)
         }
 
@@ -44,23 +122,31 @@ enum CatalogFileDownloader {
         }
 
         try? FileManager.default.removeItem(at: rangeProbe.temporaryURL)
-
-        do {
+        let validationRange = Int64(0)...min(validationRangeBytes - 1, totalBytes - 1)
+        let validationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AuraFlowRangeValidation-\(UUID().uuidString)")
+        let validation = try await downloadRangeWithRetry(
+            request: request,
+            session: session,
+            range: validationRange,
+            destinationURL: validationURL,
+            acceptsFullResponse: true
+        )
+        switch validation {
+        case let .full(temporaryURL, response):
+            await CatalogHostTransferProfileStore.shared.record(.singleStream, for: host)
+            logger.info("stage=range-strategy strategy=single-stream source=validation")
+            return (temporaryURL, response)
+        case let .partial(initialChunk):
+            await CatalogHostTransferProfileStore.shared.record(.parallelRange, for: host)
+            logger.info("stage=range-strategy strategy=parallel-range")
             return try await parallelDownload(
                 request: request,
                 session: session,
                 totalBytes: totalBytes,
-                probeResponse: rangeProbe.response
-            )
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            // Some CDNs advertise range support but reject larger ranges.
-            // Keep those servers working with the regular downloader.
-            try Task.checkCancellation()
-            return try await regularDownloadWithRetry(
-                request: request,
-                session: session
+                probeResponse: rangeProbe.response,
+                initialChunk: initialChunk,
+                chunkSize: chunkSize
             )
         }
     }
@@ -143,7 +229,9 @@ enum CatalogFileDownloader {
         request: URLRequest,
         session: URLSession,
         totalBytes: Int64,
-        probeResponse: HTTPURLResponse
+        probeResponse: HTTPURLResponse,
+        initialChunk: DownloadedChunk,
+        chunkSize: Int64
     ) async throws -> (temporaryURL: URL, response: URLResponse) {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AuraFlowDownload-\(UUID().uuidString)", isDirectory: true)
@@ -155,14 +243,19 @@ enum CatalogFileDownloader {
             withIntermediateDirectories: true
         )
         defer {
+            try? FileManager.default.removeItem(at: initialChunk.url)
             try? FileManager.default.removeItem(at: temporaryDirectory)
             if !keepAssembledFile {
                 try? FileManager.default.removeItem(at: assembledURL)
             }
         }
 
-        let ranges = makeRanges(totalBytes: totalBytes)
-        var chunks: [DownloadedChunk] = []
+        let ranges = makeRanges(
+            totalBytes: totalBytes,
+            startingAt: initialChunk.range.upperBound + 1,
+            chunkSize: chunkSize
+        )
+        var chunks: [DownloadedChunk] = [initialChunk]
 
         try await withThrowingTaskGroup(of: DownloadedChunk.self) { group in
             var nextRange = ranges.makeIterator()
@@ -170,15 +263,20 @@ enum CatalogFileDownloader {
 
             func addNextChunk() {
                 guard let range = nextRange.next() else { return }
-                let chunkIndex = chunks.count + activeCount
+                let chunkIndex = Int(range.lowerBound / chunkSize) + 1
                 let chunkURL = temporaryDirectory.appendingPathComponent("chunk-\(chunkIndex)")
                 group.addTask {
-                    try await downloadChunkWithRetry(
+                    let result = try await downloadRangeWithRetry(
                         request: request,
                         session: session,
                         range: range,
-                        destinationURL: chunkURL
+                        destinationURL: chunkURL,
+                        acceptsFullResponse: false
                     )
+                    guard case let .partial(chunk) = result else {
+                        throw RangeDownloadError.rangeUnsupported
+                    }
+                    return chunk
                 }
                 activeCount += 1
             }
@@ -196,7 +294,7 @@ enum CatalogFileDownloader {
             }
         }
 
-        guard chunks.count == ranges.count else {
+        guard chunks.count == ranges.count + 1 else {
             throw RangeDownloadError.incompleteDownload
         }
 
@@ -206,39 +304,41 @@ enum CatalogFileDownloader {
         try handle.truncate(atOffset: UInt64(totalBytes))
 
         for chunk in chunks.sorted(by: { $0.range.lowerBound < $1.range.lowerBound }) {
-            let data = try Data(contentsOf: chunk.url)
-            guard Int64(data.count) == chunk.range.count else {
+            guard fileSize(at: chunk.url) == chunk.range.count else {
                 throw RangeDownloadError.incompleteDownload
             }
             try handle.seek(toOffset: UInt64(chunk.range.lowerBound))
-            try handle.write(contentsOf: data)
+            try copyFile(chunk.url, to: handle)
         }
 
         keepAssembledFile = true
         return (assembledURL, probeResponse)
     }
 
-    private static func downloadChunk(
+    private static func downloadRange(
         request: URLRequest,
         session: URLSession,
         range: ClosedRange<Int64>,
-        destinationURL: URL
-    ) async throws -> DownloadedChunk {
+        destinationURL: URL,
+        acceptsFullResponse: Bool
+    ) async throws -> RangeResponse {
         var chunkRequest = request
         chunkRequest.setValue(
             "bytes=\(range.lowerBound)-\(range.upperBound)",
             forHTTPHeaderField: "Range"
         )
-        // Read the response headers before consuming the body. Some CDNs
-        // honour the one-byte probe but ignore larger ranges. Using
-        // download(for:) here would then write a complete video to every
-        // chunk before we could detect the bad response.
         chunkRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        let (data, response) = try await session.data(for: chunkRequest)
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 206 else {
-            if let httpResponse = response as? HTTPURLResponse,
-               isRetryableStatus(httpResponse.statusCode) {
+        let (temporaryURL, response) = try await session.download(for: chunkRequest)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw RangeDownloadError.rangeUnsupported
+        }
+        if httpResponse.statusCode == 200, acceptsFullResponse {
+            return .full(temporaryURL, httpResponse)
+        }
+        guard httpResponse.statusCode == 206 else {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            if isRetryableStatus(httpResponse.statusCode) {
                 throw RangeDownloadError.transientHTTPStatus(
                     httpResponse.statusCode
                 )
@@ -247,27 +347,31 @@ enum CatalogFileDownloader {
         }
 
         guard contentRange(httpResponse) == range,
-              Int64(data.count) == range.count else {
+              fileSize(at: temporaryURL) == range.count else {
+            try? FileManager.default.removeItem(at: temporaryURL)
             throw RangeDownloadError.incompleteDownload
         }
-        try data.write(to: destinationURL, options: .atomic)
-        return DownloadedChunk(range: range, url: destinationURL)
+        try? FileManager.default.removeItem(at: destinationURL)
+        try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+        return .partial(DownloadedChunk(range: range, url: destinationURL))
     }
 
-    private static func downloadChunkWithRetry(
+    private static func downloadRangeWithRetry(
         request: URLRequest,
         session: URLSession,
         range: ClosedRange<Int64>,
-        destinationURL: URL
-    ) async throws -> DownloadedChunk {
+        destinationURL: URL,
+        acceptsFullResponse: Bool
+    ) async throws -> RangeResponse {
         var attempt = 0
         while true {
             do {
-                return try await downloadChunk(
+                return try await downloadRange(
                     request: request,
                     session: session,
                     range: range,
-                    destinationURL: destinationURL
+                    destinationURL: destinationURL,
+                    acceptsFullResponse: acceptsFullResponse
                 )
             } catch is CancellationError {
                 throw CancellationError()
@@ -342,9 +446,13 @@ enum CatalogFileDownloader {
         return (lowerBound...upperBound, totalBytes)
     }
 
-    private static func makeRanges(totalBytes: Int64) -> [ClosedRange<Int64>] {
+    private static func makeRanges(
+        totalBytes: Int64,
+        startingAt start: Int64 = 0,
+        chunkSize: Int64 = defaultChunkSize
+    ) -> [ClosedRange<Int64>] {
         var ranges: [ClosedRange<Int64>] = []
-        var lowerBound: Int64 = 0
+        var lowerBound = start
         while lowerBound < totalBytes {
             ranges.append(lowerBound...min(lowerBound + chunkSize - 1, totalBytes - 1))
             lowerBound += chunkSize
@@ -352,9 +460,29 @@ enum CatalogFileDownloader {
         return ranges
     }
 
+    private static func fileSize(at url: URL) -> Int64 {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.size] as? NSNumber)?.int64Value ?? -1
+    }
+
+    private static func copyFile(_ sourceURL: URL, to destination: FileHandle) throws {
+        let source = try FileHandle(forReadingFrom: sourceURL)
+        defer { try? source.close() }
+        while true {
+            let data = try source.read(upToCount: 1_024 * 1_024) ?? Data()
+            if data.isEmpty { break }
+            try destination.write(contentsOf: data)
+        }
+    }
+
     private struct DownloadedChunk: Sendable {
         let range: ClosedRange<Int64>
         let url: URL
+    }
+
+    private enum RangeResponse: Sendable {
+        case partial(DownloadedChunk)
+        case full(URL, HTTPURLResponse)
     }
 
     private struct RangeProbeResult {

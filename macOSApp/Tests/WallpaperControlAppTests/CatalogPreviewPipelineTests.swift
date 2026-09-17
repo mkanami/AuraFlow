@@ -143,7 +143,7 @@ struct CatalogPreviewPipelineTests {
     #expect(CatalogPreviewURLProtocol.fullRequestCount == 0)
 
     await pipeline.endForegroundDownload(lease)
-    _ = try await awaitReadyURL(await pipeline.events(for: wallpaper))
+    _ = try await prepareAndAwaitReady(pipeline, wallpaper: wallpaper)
     #expect(CatalogPreviewURLProtocol.fullRequestCount == 1)
 }
 
@@ -267,6 +267,7 @@ struct CatalogPreviewPipelineTests {
 
     async let first = awaitReadyURL(await pipeline.events(for: wallpaper))
     async let second = awaitReadyURL(await pipeline.events(for: wallpaper))
+    await pipeline.requestPreparedFallback(for: wallpaper)
     let urls = try await [first, second]
 
     #expect(urls[0] == urls[1])
@@ -292,9 +293,10 @@ struct CatalogPreviewPipelineTests {
         mediaPreparer: CatalogPreviewMediaPreparerStub()
     )
 
-    let event = try await firstTerminalEvent(
-        await pipeline.events(for: previewPipelineWallpaper(id: "failed"))
-    )
+    let wallpaper = previewPipelineWallpaper(id: "failed")
+    let stream = await pipeline.events(for: wallpaper)
+    await pipeline.requestPreparedFallback(for: wallpaper)
+    let event = try await firstTerminalEvent(stream)
 
     #expect(event == .failed)
 }
@@ -313,10 +315,32 @@ struct CatalogPreviewPipelineTests {
         mediaPreparer: CatalogPreviewMediaPreparerStub()
     )
 
-    let readyURL = try await awaitReadyURL(await pipeline.events(for: wallpaper))
+    let directURL = try await firstDirectURL(await pipeline.events(for: wallpaper))
 
-    #expect(readyURL != nil)
+    #expect(directURL.standardizedFileURL == localMedia.standardizedFileURL)
     #expect(await resolver.callCount == 0)
+}
+
+@Test func selectedDirectPreviewDoesNotStartABodyBeforeExplicitFallback() async throws {
+    CatalogPreviewURLProtocol.configure(statusCode: 206, byteCount: 4_096)
+    let session = previewTestSession()
+    defer { session.invalidateAndCancel() }
+    let directory = previewTestDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let pipeline = CatalogPreviewPipeline(
+        resolver: CatalogPreviewResolverSpy(),
+        catalogDirectoryURL: directory,
+        session: session,
+        mediaPreparer: CatalogPreviewMediaPreparerStub()
+    )
+    let wallpaper = previewPipelineWallpaper(id: "explicit-fallback")
+
+    _ = try await firstDirectURL(await pipeline.events(for: wallpaper))
+    try await Task.sleep(nanoseconds: 1_350_000_000)
+    #expect(CatalogPreviewURLProtocol.fullRequestCount == 0)
+
+    _ = try await prepareAndAwaitReady(pipeline, wallpaper: wallpaper)
+    #expect(CatalogPreviewURLProtocol.fullRequestCount == 1)
 }
 
 @Test func catalogPreviewPipelineEvictsLeastRecentlyUsedPreparedFile() async throws {
@@ -338,8 +362,14 @@ struct CatalogPreviewPipelineTests {
         mediaPreparer: CatalogPreviewMediaPreparerStub()
     )
 
-    _ = try await awaitReadyURL(await pipeline.events(for: previewPipelineWallpaper(id: "older")))
-    _ = try await awaitReadyURL(await pipeline.events(for: previewPipelineWallpaper(id: "newer")))
+    _ = try await prepareAndAwaitReady(
+        pipeline,
+        wallpaper: previewPipelineWallpaper(id: "older")
+    )
+    _ = try await prepareAndAwaitReady(
+        pipeline,
+        wallpaper: previewPipelineWallpaper(id: "newer")
+    )
 
     let preparedDirectory = directory.appendingPathComponent("PreparedPreviews", isDirectory: true)
     let mp4Files = (try FileManager.default.contentsOfDirectory(
@@ -597,6 +627,15 @@ private func awaitReadyURL(_ stream: AsyncStream<CatalogPreviewEvent>) async thr
         if event == .failed { return nil }
     }
     return nil
+}
+
+private func prepareAndAwaitReady(
+    _ pipeline: CatalogPreviewPipeline,
+    wallpaper: CatalogWallpaper
+) async throws -> URL? {
+    let stream = await pipeline.events(for: wallpaper)
+    await pipeline.requestPreparedFallback(for: wallpaper)
+    return try await awaitReadyURL(stream)
 }
 
 private func firstTerminalEvent(_ stream: AsyncStream<CatalogPreviewEvent>) async throws -> CatalogPreviewEvent {

@@ -378,6 +378,30 @@ actor CatalogPreviewPipeline {
         logger.info("stage=direct-ready wallpaper=\(Self.digest(wallpaperID).prefix(12), privacy: .public)")
     }
 
+    /// Starts the disk-backed compatibility route only after the detail player
+    /// has fully torn down its direct stream. This prevents two media bodies
+    /// for the same preview from competing for bandwidth.
+    func requestPreparedFallback(for wallpaper: CatalogWallpaper) {
+        guard reusableEntry(for: wallpaper.id) == nil,
+              jobs[wallpaper.id]?.state != .downloading,
+              jobs[wallpaper.id]?.state != .preparing else { return }
+
+        jobs[wallpaper.id]?.task?.cancel()
+        let token = UUID()
+        jobs[wallpaper.id] = Job(
+            token: token,
+            priority: .selected,
+            state: .resolving,
+            directURL: nil,
+            task: nil
+        )
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runPreparedFallback(wallpaper, token: token)
+        }
+        jobs[wallpaper.id]?.task = task
+    }
+
     private func startIfNeeded(_ wallpaper: CatalogWallpaper, priority: CatalogPreviewPriority) {
         if reusableEntry(for: wallpaper.id) != nil { return }
         if let failedAt = failures[wallpaper.id],
@@ -421,16 +445,7 @@ actor CatalogPreviewPipeline {
             if currentPriority(for: wallpaper.id, fallback: priority) == .selected,
                let localCandidate = existingLocalCandidate(for: wallpaper) {
                 try ensureCurrentJob(wallpaper.id, token: token)
-                jobs[wallpaper.id]?.directURL = localCandidate.url
-                emit(.direct(localCandidate.url), for: wallpaper.id)
-                let cachedURL = try await prepare(
-                    localCandidate,
-                    wallpaperID: wallpaper.id,
-                    referer: wallpaper.sourcePageURL,
-                    priority: .selected,
-                    token: token
-                )
-                try finishReady(cachedURL, wallpaperID: wallpaper.id, token: token)
+                publishDirectURL(localCandidate.url, wallpaperID: wallpaper.id, token: token)
                 return
             }
 
@@ -460,50 +475,69 @@ actor CatalogPreviewPipeline {
                 return
             }
 
+            guard let candidate = media.previewSources.first else {
+                throw URLError(.resourceUnavailable)
+            }
+            publishDirectURL(candidate.url, wallpaperID: wallpaper.id, token: token)
+            let milliseconds = Int(Date().timeIntervalSince(startedAt) * 1_000)
+            logger.info("provider=\(wallpaper.attribution, privacy: .public) stage=direct elapsed_ms=\(milliseconds)")
+        } catch is CancellationError {
+            if jobs[wallpaper.id]?.token == token {
+                jobs[wallpaper.id] = nil
+            }
+        } catch {
+            guard jobs[wallpaper.id]?.token == token else { return }
+            jobs[wallpaper.id] = nil
+            failures[wallpaper.id] = Date()
+            emit(.state(.failed), for: wallpaper.id)
+            emit(.failed, for: wallpaper.id)
+            logger.notice("provider=\(wallpaper.attribution, privacy: .public) stage=fallback reason=\(Self.errorCategory(error), privacy: .public)")
+        }
+    }
+
+    private func runPreparedFallback(
+        _ wallpaper: CatalogWallpaper,
+        token: UUID
+    ) async {
+        let startedAt = Date()
+        guard let selectedLease = await transferCoordinator.beginSelectedPreview() else {
+            if jobs[wallpaper.id]?.token == token { jobs[wallpaper.id] = nil }
+            return
+        }
+        do {
+            guard await transferCoordinator.permitsBackgroundMedia() else {
+                throw CancellationError()
+            }
+            let media = try await resolvedMedia(for: wallpaper, priority: .selected)
             var seen = Set<String>()
-            var cachedURL: URL?
-            var lastCandidateError: Error?
-            for candidate in media.previewSources where seen.insert(candidate.url.absoluteString).inserted {
-                try ensureCurrentJob(wallpaper.id, token: token)
-                guard await transferCoordinator.permitsBackgroundMedia() else {
-                    throw CancellationError()
-                }
-                if !candidate.url.isFileURL {
-                    publishDirectURL(candidate.url, wallpaperID: wallpaper.id, token: token)
-                    // Do not immediately start a second transfer for the same
-                    // media. A successful direct player confirms its first
-                    // moving frame and cancels this fallback before it can
-                    // consume bandwidth. If direct playback stalls, local
-                    // preparation still starts as the compatibility route.
-                    try await Task.sleep(nanoseconds: 1_200_000_000)
-                }
+            var lastError: Error?
+            for candidate in media.previewSources
+                where seen.insert(candidate.url.absoluteString).inserted {
                 do {
-                    cachedURL = try await prepare(
+                    let cachedURL = try await prepare(
                         candidate,
                         wallpaperID: wallpaper.id,
                         referer: wallpaper.sourcePageURL,
                         priority: .selected,
                         token: token
                     )
-                    break
+                    try finishReady(cachedURL, wallpaperID: wallpaper.id, token: token)
+                    await transferCoordinator.endSelectedPreview(selectedLease)
+                    let elapsed = Int(Date().timeIntervalSince(startedAt) * 1_000)
+                    logger.info("provider=\(wallpaper.attribution, privacy: .public) stage=ready elapsed_ms=\(elapsed)")
+                    return
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
-                    lastCandidateError = error
-                    logger.debug("provider=\(wallpaper.attribution, privacy: .public) stage=retry reason=\(Self.errorCategory(error), privacy: .public)")
+                    lastError = error
                 }
             }
-            guard let cachedURL else {
-                throw lastCandidateError ?? URLError(.resourceUnavailable)
-            }
-            try finishReady(cachedURL, wallpaperID: wallpaper.id, token: token)
-            let milliseconds = Int(Date().timeIntervalSince(startedAt) * 1_000)
-            logger.info("provider=\(wallpaper.attribution, privacy: .public) stage=ready elapsed_ms=\(milliseconds)")
+            throw lastError ?? URLError(.resourceUnavailable)
         } catch is CancellationError {
-            if jobs[wallpaper.id]?.token == token {
-                jobs[wallpaper.id] = nil
-            }
+            await transferCoordinator.endSelectedPreview(selectedLease)
+            if jobs[wallpaper.id]?.token == token { jobs[wallpaper.id] = nil }
         } catch {
+            await transferCoordinator.endSelectedPreview(selectedLease)
             guard jobs[wallpaper.id]?.token == token else { return }
             jobs[wallpaper.id] = nil
             failures[wallpaper.id] = Date()

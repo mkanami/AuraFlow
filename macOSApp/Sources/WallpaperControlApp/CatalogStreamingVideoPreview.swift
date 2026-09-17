@@ -76,12 +76,25 @@ final class CatalogStreamingVideoSessionStore {
 
         func stop() {
             messageHandler.shouldPlay = false
+            webView.evaluateJavaScript(
+                "window.auraPausePreview?.(); const v=document.getElementById('preview'); if(v){v.removeAttribute('src');v.load();}"
+            )
             webView.stopLoading()
             webView.configuration.userContentController.removeScriptMessageHandler(
                 forName: MessageHandler.messageName
             )
             webView.navigationDelegate = nil
             webView.removeFromSuperview()
+        }
+
+        func snapshot() -> NSImage? {
+            guard webView.bounds.width > 0, webView.bounds.height > 0 else { return nil }
+            let representation = webView.bitmapImageRepForCachingDisplay(in: webView.bounds)
+            guard let representation else { return nil }
+            webView.cacheDisplay(in: webView.bounds, to: representation)
+            let image = NSImage(size: webView.bounds.size)
+            image.addRepresentation(representation)
+            return image
         }
 
         private static func document(for url: URL) -> String {
@@ -265,6 +278,17 @@ final class CatalogStreamingVideoSessionStore {
         hostView.url = nil
         sessions[url] = nil
         session.stop()
+    }
+
+    func snapshotAndStop(url: URL) -> NSImage? {
+        guard let session = sessions.removeValue(forKey: url) else { return nil }
+        let image = session.snapshot()
+        session.stop()
+        return image
+    }
+
+    func stop(url: URL) {
+        sessions.removeValue(forKey: url)?.stop()
     }
 
     private func session(for url: URL, referer: URL?) -> Session {

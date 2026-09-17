@@ -1768,6 +1768,22 @@ struct WallpaperCatalogDetailView: View {
     let isCompactLayout: Bool
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @State private var resolvedMedia: CatalogResolvedMedia?
+    @StateObject private var mediaPreviewModel: CatalogDetailMediaPreviewModel
+
+    init(
+        viewModel: AppViewModel,
+        wallpaper: CatalogWallpaper,
+        isCompactLayout: Bool
+    ) {
+        self.viewModel = viewModel
+        self.wallpaper = wallpaper
+        self.isCompactLayout = isCompactLayout
+        _mediaPreviewModel = StateObject(
+            wrappedValue: CatalogDetailMediaPreviewModel(
+                pipeline: viewModel.catalogPreviewPipeline
+            )
+        )
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -1837,6 +1853,9 @@ struct WallpaperCatalogDetailView: View {
 
                     HStack(spacing: 8) {
                         Button {
+                            mediaPreviewModel.suspendForForegroundDownload(
+                                wallpaper: wallpaper
+                            )
                             viewModel.applyCatalogWallpaper(wallpaper)
                         } label: {
                             Text("Download")
@@ -1866,7 +1885,7 @@ struct WallpaperCatalogDetailView: View {
 
                 CatalogDetailMediaPreview(
                     wallpaper: wallpaper,
-                    pipeline: viewModel.catalogPreviewPipeline,
+                    model: mediaPreviewModel,
                     isDownloadActive: viewModel.isDownloading(wallpaper)
                 )
                     .aspectRatio(16.0 / 9.0, contentMode: .fit)
@@ -1947,17 +1966,17 @@ struct WallpaperCatalogDetailView: View {
 private struct CatalogDetailMediaPreview: View {
     let wallpaper: CatalogWallpaper
     let isDownloadActive: Bool
-    @StateObject private var model: CatalogDetailMediaPreviewModel
+    @ObservedObject var model: CatalogDetailMediaPreviewModel
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     init(
         wallpaper: CatalogWallpaper,
-        pipeline: CatalogPreviewPipeline,
+        model: CatalogDetailMediaPreviewModel,
         isDownloadActive: Bool
     ) {
         self.wallpaper = wallpaper
+        self.model = model
         self.isDownloadActive = isDownloadActive
-        _model = StateObject(wrappedValue: CatalogDetailMediaPreviewModel(pipeline: pipeline))
     }
 
     var body: some View {
@@ -1990,6 +2009,15 @@ private struct CatalogDetailMediaPreview: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .opacity(model.isVideoVisible ? 0 : 1)
+
+            if let frozenFrame = model.frozenFrame {
+                Image(nsImage: frozenFrame)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                    .transition(.opacity)
+            }
         }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(

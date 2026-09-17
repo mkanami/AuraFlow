@@ -2903,7 +2903,7 @@ final class AppViewModel: ObservableObject {
         for sourceURL: URL,
         previewGeneration: Int
     ) {
-        guard controller != nil else { return }
+        guard controller != nil, catalogDownloadID == nil else { return }
 
         lockScreenPreparationGeneration &+= 1
         let requestedGeneration = lockScreenPreparationGeneration
@@ -3226,6 +3226,9 @@ final class AppViewModel: ObservableObject {
 
     func applyCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
         guard canDownloadCatalogWallpaper else { return }
+        // A catalog transfer must not compete with native Lock Screen/Fit
+        // warm-up work. This does not stop an already-running wallpaper.
+        cancelLockScreenMediaPreparation()
         catalogDownloadID = wallpaper.id
         let requestedCacheGeneration = cacheGeneration
 
@@ -3234,6 +3237,7 @@ final class AppViewModel: ObservableObject {
             defer {
                 catalogDownloadID = nil
                 catalogDownloadTask = nil
+                scheduleLockScreenMediaPreparationForCurrentPreview()
                 if selectedCatalogWallpaper?.id == wallpaper.id {
                     Task { await self.catalogPreviewPipeline.prefetch(wallpaper, priority: .selected) }
                 }

@@ -1,11 +1,17 @@
 import AVFoundation
+import AppKit
 import Combine
 import Foundation
+import OSLog
 import SwiftUI
 
 enum CatalogDetailImmediatePreviewSource: Equatable {
     case web(URL)
     case native(URL)
+}
+
+struct CatalogPreviewSuspension {
+    let frozenFrame: NSImage?
 }
 
 @MainActor
@@ -14,6 +20,7 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
     @Published private(set) var player: AVPlayer?
     @Published private(set) var streamingVideoURL: URL?
     @Published private(set) var isVideoVisible = false
+    @Published private(set) var frozenFrame: NSImage?
 
     private enum Winner { case native, web }
 
@@ -22,12 +29,19 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
     private var playerLooper: AVPlayerLooper?
     private var eventTask: Task<Void, Never>?
     private var nativeAttemptTask: Task<Void, Never>?
+    private var directTimeoutTask: Task<Void, Never>?
     private var generation = 0
     private var nativeAttemptGeneration = 0
     private var winner: Winner?
     private var attemptedURLs = Set<URL>()
     private var isNetworkSuspended = false
     private var activeWallpaperID: String?
+    private var activeWallpaper: CatalogWallpaper?
+    private var fallbackRequested = false
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "AuraFlow",
+        category: "CatalogTransfer"
+    )
 
     init(pipeline: CatalogPreviewPipeline? = nil) {
         self.pipeline = pipeline
@@ -37,8 +51,10 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         guard !isNetworkSuspended else { return }
         generation &+= 1
         let requestedGeneration = generation
-        stopPlayback()
+        stopPlayback(preservingFrozenFrame: frozenFrame != nil)
         activeWallpaperID = wallpaper.id
+        activeWallpaper = wallpaper
+        fallbackRequested = false
         imageURL = Self.preferredImageURL(for: wallpaper)
 
         if let immediate = Self.immediatePreviewSource(for: wallpaper) {
@@ -60,16 +76,18 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
     func streamingPreviewDidStart(url: URL) {
         guard winner == nil, streamingVideoURL == url else { return }
         winner = .web
+        directTimeoutTask?.cancel()
         nativeAttemptTask?.cancel()
         nativeAttemptTask = nil
         clearAVPlayback()
-        withAnimation(.easeInOut(duration: 0.16)) { isVideoVisible = true }
+        revealMovingPreview()
         confirmDirectPlayback(url: url)
+        logFirstFrame(provider: activeWallpaper?.attribution)
     }
 
     func streamingPreviewDidFail(url: URL, wallpaper: CatalogWallpaper) {
         guard winner == nil, streamingVideoURL == url else { return }
-        streamingVideoURL = nil
+        beginPreparedFallback(for: wallpaper, reason: "stream-failed")
     }
 
     func stop() {
@@ -77,16 +95,35 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         stopPlayback()
     }
 
+    @discardableResult
+    func suspendForForegroundDownload(wallpaper: CatalogWallpaper) -> CatalogPreviewSuspension {
+        isNetworkSuspended = true
+        generation &+= 1
+        let frame: NSImage?
+        if let streamingVideoURL {
+            frame = CatalogStreamingVideoSessionStore.shared.snapshotAndStop(url: streamingVideoURL)
+        } else {
+            frame = nil
+        }
+        if let frame { frozenFrame = frame }
+        stopPlayback(preservingFrozenFrame: true)
+        logger.info("provider=\(wallpaper.attribution, privacy: .public) stage=preview-suspended")
+        return CatalogPreviewSuspension(frozenFrame: frame)
+    }
+
+    func resumeAfterForegroundDownload(wallpaper: CatalogWallpaper) {
+        guard isNetworkSuspended else { return }
+        isNetworkSuspended = false
+        logger.info("provider=\(wallpaper.attribution, privacy: .public) stage=preview-resumed")
+        Task { [weak self] in await self?.load(wallpaper) }
+    }
+
     func setNetworkSuspended(_ suspended: Bool, wallpaper: CatalogWallpaper) {
         guard isNetworkSuspended != suspended else { return }
-        isNetworkSuspended = suspended
         if suspended {
-            generation &+= 1
-            stopPlayback()
+            _ = suspendForForegroundDownload(wallpaper: wallpaper)
         } else {
-            Task { [weak self] in
-                await self?.load(wallpaper)
-            }
+            resumeAfterForegroundDownload(wallpaper: wallpaper)
         }
     }
 
@@ -131,13 +168,19 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         case let .web(url):
             guard streamingVideoURL != url else { return }
             streamingVideoURL = url
+            scheduleDirectTimeout(url: url, wallpaper: activeWallpaper)
         case let .native(url):
             guard supersedePendingNative || !attemptedURLs.contains(url) else { return }
             attemptedURLs.insert(url)
             nativeAttemptTask?.cancel()
             nativeAttemptTask = Task { [weak self] in
                 guard let self else { return }
-                _ = await self.startAVPlayback(url, requestedGeneration: requestedGeneration)
+                let started = await self.startAVPlayback(url, requestedGeneration: requestedGeneration)
+                if !started,
+                   requestedGeneration == self.generation,
+                   let wallpaper = self.activeWallpaper {
+                    self.beginPreparedFallback(for: wallpaper, reason: "native-timeout")
+                }
             }
         }
     }
@@ -159,7 +202,7 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         player = queuePlayer
         queuePlayer.play()
 
-        for _ in 0..<240 {
+        for _ in 0..<100 {
             guard !Task.isCancelled,
                   winner == nil,
                   requestedGeneration == generation,
@@ -170,8 +213,9 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
                 if seconds.isFinite, seconds > 0.03 {
                     winner = .native
                     streamingVideoURL = nil
-                    withAnimation(.easeInOut(duration: 0.16)) { isVideoVisible = true }
+                    revealMovingPreview()
                     confirmDirectPlayback(url: videoURL)
+                    logFirstFrame(provider: activeWallpaper?.attribution)
                     return true
                 }
             case .failed:
@@ -186,10 +230,13 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         return false
     }
 
-    private func stopPlayback() {
+    private func stopPlayback(preservingFrozenFrame: Bool = false) {
         winner = nil
         attemptedURLs.removeAll()
         isVideoVisible = false
+        if !preservingFrozenFrame { frozenFrame = nil }
+        directTimeoutTask?.cancel()
+        directTimeoutTask = nil
         streamingVideoURL = nil
         eventTask?.cancel()
         eventTask = nil
@@ -197,6 +244,51 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         nativeAttemptTask = nil
         nativeAttemptGeneration &+= 1
         clearAVPlayback()
+    }
+
+    private func scheduleDirectTimeout(url: URL, wallpaper: CatalogWallpaper?) {
+        directTimeoutTask?.cancel()
+        guard let wallpaper else { return }
+        let requestedGeneration = generation
+        directTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled,
+                  let self,
+                  self.generation == requestedGeneration,
+                  self.winner == nil,
+                  self.streamingVideoURL == url else { return }
+            self.beginPreparedFallback(for: wallpaper, reason: "stream-timeout")
+        }
+    }
+
+    private func beginPreparedFallback(for wallpaper: CatalogWallpaper, reason: String) {
+        guard !fallbackRequested, !isNetworkSuspended else { return }
+        fallbackRequested = true
+        directTimeoutTask?.cancel()
+        directTimeoutTask = nil
+        if let streamingVideoURL {
+            CatalogStreamingVideoSessionStore.shared.stop(url: streamingVideoURL)
+        }
+        streamingVideoURL = nil
+        nativeAttemptGeneration &+= 1
+        clearAVPlayback()
+        logger.notice("provider=\(wallpaper.attribution, privacy: .public) stage=preview-fallback reason=\(reason, privacy: .public)")
+        guard let pipeline else { return }
+        Task {
+            await Task.yield()
+            await pipeline.requestPreparedFallback(for: wallpaper)
+        }
+    }
+
+    private func revealMovingPreview() {
+        withAnimation(.easeInOut(duration: 0.16)) {
+            isVideoVisible = true
+            frozenFrame = nil
+        }
+    }
+
+    private func logFirstFrame(provider: String?) {
+        logger.info("provider=\(provider ?? "unknown", privacy: .public) stage=preview-first-frame")
     }
 
     private func confirmDirectPlayback(url: URL) {
