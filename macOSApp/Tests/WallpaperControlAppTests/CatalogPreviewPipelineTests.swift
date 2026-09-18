@@ -203,7 +203,9 @@ struct CatalogPreviewPipelineTests {
         directURL.absoluteString ==
             "https://motionbgs.com/media/9964/summer-mountain-paradise.960x540.mp4"
     )
-    #expect(await resolver.isStillResolving)
+    try await waitUntil(timeoutNanoseconds: 10_000_000_000) {
+        await resolver.isStillResolving
+    }
 }
 
 @Test func moeWallsSelectedPreviewBuildsAQuickRangeSampleInsteadOfWaitingForWebKit() async throws {

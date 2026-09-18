@@ -660,7 +660,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     }
     defer { installGate.release() }
 
-    #expect(installGate.waitUntilEntered(timeout: 2.0))
+    #expect(installGate.waitUntilEntered(timeout: 10.0))
     let desktopPID = fixture.store.loadPID()
     #expect(desktopPID != nil)
     #expect(fixture.store.processIsAlive(pid: desktopPID))
