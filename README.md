@@ -4,106 +4,78 @@
 
 # AuraFlow
 
-AuraFlow turns videos, animated files, and pictures into wallpapers on macOS.
-You can use a wallpaper on the Desktop and Lock Screen together, or apply it
-only to the Lock Screen without changing your Desktop.
+Live wallpapers for macOS. Use a video, GIF, WebM, or image from your Mac, or
+pick one from the built-in catalog.
 
 <p align="center">
-  <img src="docs/aura-ui.png" width="900" alt="AuraFlow app showing a live wallpaper preview" />
+  <img src="docs/aura-ui.png" width="900" alt="AuraFlow wallpaper preview and controls" />
 </p>
 
-## What you can do
+## Features
 
-- Use your own videos, GIFs, WebM files, and pictures as wallpapers
-- Browse and download wallpapers from the built-in catalog
-- Apply one wallpaper to all connected displays
-- Choose how the wallpaper fits the screen: Fill, Fit, or Stretch
-- Change the playback speed of animated wallpapers
-- Pause and continue playback with Stop and Play
-- Use a wallpaper on the Lock Screen only
-- Automatically pause animated wallpapers while another app is fullscreen
-- Restore your previous macOS wallpaper with Remove
+- Animated wallpapers on the Desktop and Lock Screen
+- Separate Lock Screen-only mode
+- Built-in catalog with downloadable wallpapers
+- Fill, Fit, and Stretch scaling
+- Playback speed control
+- Multi-display support
+- Automatic pause while another app is fullscreen
+- One-click restore of your previous macOS wallpaper
 
-## Requirements
+## Install
 
-- macOS 13 or later
-- Apple Silicon or Intel Mac
-- An internet connection only when browsing or downloading from the catalog
+1. Download the latest [`AuraFlow.dmg`](https://github.com/mkanami/AuraFlow/releases/latest).
+2. Open it and drag AuraFlow into Applications.
+3. Launch AuraFlow from Applications.
 
-The native animated Lock Screen experience requires macOS 26 or later. On
-older supported macOS versions, AuraFlow uses its included Screen Saver mode
-for Lock Screen playback.
+AuraFlow supports macOS 13 and newer on Apple Silicon and Intel Macs. Native
+animated Lock Screen wallpapers require macOS 26 or newer; earlier versions use
+the included screen saver integration.
 
-## Installation
+## Use
 
-1. Download the latest `AuraFlow.dmg` from
-   [GitHub Releases](https://github.com/mkanami/AuraFlow/releases/latest)
-2. Open the downloaded DMG
-3. Drag `AuraFlow.app` into the Applications folder
-4. Open AuraFlow from Applications
+Choose a local file with **Change Wallpaper…**, or open **Wallpaper Catalog**
+and select **Download** on a wallpaper. The selection appears in the main
+preview before anything is applied.
 
-## Quick start
+- **Start** — apply to the Desktop and Lock Screen
+- **Lock** — apply only to the Lock Screen
+- **Stop / Play** — pause or resume animation
+- **Remove** — stop AuraFlow and restore the previous wallpaper
+- **Downloaded Wallpapers** — reopen wallpapers already saved on this Mac
+- **Monitoring** — inspect the wallpaper process and resource usage
 
-1. Open AuraFlow
-2. Click **Change Wallpaper…** to choose a file from your Mac, or open
-   **Wallpaper Catalog** to find one online
-3. Check the wallpaper in the preview
-4. Click **Start** to use it on the Desktop and Lock Screen, or **Lock** to use
-   it only on the Lock Screen
-5. Use the speed slider if you want to change animation speed
-6. Click **Remove** when you want AuraFlow to stop and restore your regular
-   macOS wallpaper
+Pictures do not have Stop or Play controls. To switch between Desktop mode and
+Lock Screen-only mode, remove the active wallpaper first.
 
-## Controls
+## Catalog downloads
 
-| Button | What it does |
-| --- | --- |
-| **Start** | Applies the selected wallpaper to the Desktop and Lock Screen |
-| **Lock** | Applies the selected wallpaper only to the Lock Screen |
-| **Stop** | Freezes an animated wallpaper on its current frame |
-| **Play** | Continues a wallpaper previously frozen with Stop |
-| **Remove** | Removes the AuraFlow wallpaper and restores your regular wallpaper |
-| **Change Wallpaper…** | Selects a video, animation, or picture from your Mac |
-| **Wallpaper Catalog** | Opens the online wallpaper collection |
-| **Downloaded Wallpapers** | Shows wallpapers already saved to your Mac |
-| **Monitoring** | Shows whether the wallpaper process is running correctly |
+Catalog previews use lightweight media. Downloading fetches the original file,
+stores it locally, and adds it to **Downloaded Wallpapers**. A saved wallpaper
+does not need to be downloaded again.
 
-Stop and Play are unavailable for pictures because a still image has no
-playback to pause. Start and Lock remain unavailable while an AuraFlow
-wallpaper is active; click Remove before applying a different mode.
+## Build from source
 
-## Using the wallpaper catalog
+The app is a Swift Package and builds with Xcode's macOS toolchain:
 
-Open **Wallpaper Catalog**, select a wallpaper, and click **Download to
-Preview**. After the download finishes, the wallpaper appears in the main
-preview. It is not applied until you click Start or Lock.
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path macOSApp
+BUILD_UNIVERSAL=1 REQUIRE_UNIVERSAL=1 scripts/build_release.sh
+```
 
-Downloaded wallpapers remain available under **Downloaded Wallpapers**, so you
-do not need to download them again.
+Release artifacts are written to `dist-builds/` unless
+`AURAFLOW_OUTPUT_DIR` is set.
 
-## Restoring your normal wallpaper
+## Troubleshooting
 
-Click **Remove** to stop AuraFlow and return to your regular macOS wallpaper.
-AuraFlow remembers the most recent wallpaper you selected in macOS, including
-your own pictures and Apple's built-in wallpapers.
+- If Start or Lock is unavailable, remove the currently active AuraFlow wallpaper first.
+- If a catalog download was interrupted, open the card and download it again.
+- Check **Monitoring** if playback is not running.
+- Keep enough free space for the original wallpaper and temporary video processing.
 
-If macOS needs extra time to update multiple displays or Spaces, leave AuraFlow
-open until Remove finishes.
-
-## If something does not work
-
-- Make sure there is enough free storage for wallpaper downloads and temporary
-  video processing
-- Use **Monitoring** to check whether the wallpaper process is running
-- If a download was interrupted, try it again from the catalog
-- If Start or Lock is unavailable, click Remove first and then select the
-  wallpaper again
-- After updating macOS, install the latest AuraFlow release for the best Lock
-  Screen compatibility
-
-When reporting a problem, include your macOS version, Mac model, wallpaper file
-type, and the exact button you pressed.
+For bug reports, include the macOS version, Mac model, wallpaper format, and the
+action that triggered the problem.
 
 ## License
 
-AuraFlow is available under the [MIT License](LICENSE).
+[MIT](LICENSE)
