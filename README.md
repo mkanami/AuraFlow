@@ -4,8 +4,8 @@
 
 # AuraFlow
 
-Live wallpapers for macOS. Use a video, GIF, WebM, or image from your Mac, or
-pick one from the built-in catalog.
+Native live wallpapers for the macOS Desktop and Lock Screen. Use your own
+video, GIF, WebM, or image, or pick a wallpaper from the built-in catalog.
 
 <p align="center">
   <img src="docs/aura-ui.png" width="900" alt="AuraFlow wallpaper preview and controls" />
@@ -22,17 +22,13 @@ pick one from the built-in catalog.
 - Automatic pause while another app is fullscreen
 - One-click restore of your previous macOS wallpaper
 
-## Install
+## Installation
 
 1. Download the latest [`AuraFlow.dmg`](https://github.com/mkanami/AuraFlow/releases/latest).
 2. Open it and drag AuraFlow into Applications.
 3. Launch AuraFlow from Applications.
 
-AuraFlow supports macOS 13 and newer on Apple Silicon and Intel Macs. Native
-animated Lock Screen wallpapers require macOS 26 or newer; earlier versions use
-the included screen saver integration.
-
-## Use
+## Getting Started
 
 Choose a local file with **Change Wallpaper…**, or open **Wallpaper Catalog**
 and select **Download** on a wallpaper. The selection appears in the main
@@ -48,13 +44,22 @@ preview before anything is applied.
 Pictures do not have Stop or Play controls. To switch between Desktop mode and
 Lock Screen-only mode, remove the active wallpaper first.
 
-## Catalog downloads
+## Wallpaper Catalog
 
 Catalog previews use lightweight media. Downloading fetches the original file,
 stores it locally, and adds it to **Downloaded Wallpapers**. A saved wallpaper
 does not need to be downloaded again.
 
-## Build from source
+## Compatibility
+
+AuraFlow supports macOS 13 and newer on Apple Silicon and Intel Macs. Native
+animated Lock Screen wallpapers require macOS 26 or newer; earlier versions use
+the included screen saver integration.
+
+An internet connection is only required for browsing and downloading catalog
+wallpapers.
+
+## Build from Source
 
 The app is a Swift Package and builds with Xcode's macOS toolchain:
 
