@@ -1816,8 +1816,8 @@ struct WallpaperCatalogDetailView: View {
                         Text(wallpaper.title)
                             .font(
                                 isCompactLayout
-                                    ? .subheadline.weight(.semibold)
-                                    : .headline.weight(.semibold)
+                                    ? .headline.weight(.semibold)
+                                    : .title3.weight(.semibold)
                             )
                             .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
                             .lineLimit(isCompactLayout ? 2 : 3)
@@ -1825,23 +1825,23 @@ struct WallpaperCatalogDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
 
                         Text(wallpaper.category)
-                            .font(.subheadline.weight(.medium))
+                            .font(.body.weight(.medium))
                             .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             .lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
 
                         Text(resolutionSummary ?? " ")
-                            .font(.caption.monospacedDigit())
+                            .font(.subheadline.monospacedDigit())
                             .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             .lineLimit(1)
 
                         Text(mediaSummary)
-                            .font(.caption.monospacedDigit())
+                            .font(.subheadline.monospacedDigit())
                             .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             .lineLimit(1)
 
                         Text("by \(wallpaper.attribution)")
-                            .font(.caption)
+                            .font(.subheadline)
                             .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             .lineLimit(1)
                     }
