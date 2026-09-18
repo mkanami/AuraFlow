@@ -206,6 +206,36 @@ struct CatalogPreviewPipelineTests {
     #expect(await resolver.isStillResolving)
 }
 
+@Test func moeWallsSelectedPreviewBuildsAQuickRangeSampleInsteadOfWaitingForWebKit() async throws {
+    CatalogPreviewURLProtocol.configure(statusCode: 206, byteCount: 4_096)
+    let session = previewTestSession()
+    defer { session.invalidateAndCancel() }
+    let directory = previewTestDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let resolver = MoeWallsSampleMediaResolver()
+    let pipeline = CatalogPreviewPipeline(
+        resolver: nil,
+        mediaResolver: resolver,
+        catalogDirectoryURL: directory,
+        session: session,
+        mediaPreparer: CatalogPreviewMediaPreparerStub()
+    )
+    let wallpaper = CatalogWallpaper(
+        id: "moewalls-native-preview",
+        title: "Native Preview",
+        category: "Anime",
+        attribution: "MoeWalls",
+        previewImageURL: nil,
+        sourcePageURL: URL(string: "https://moewalls.com/anime/native-preview/"),
+        sources: []
+    )
+
+    let readyURL = try await awaitReadyURL(await pipeline.events(for: wallpaper))
+
+    #expect(readyURL != nil)
+    #expect(CatalogPreviewURLProtocol.requestedRanges == ["bytes=0-2097151"])
+}
+
 @Test func movingDirectPreviewCancelsDuplicateMediaDownload() async throws {
     CatalogPreviewURLProtocol.configure(statusCode: 206, byteCount: 4_096)
     let session = previewTestSession()
@@ -486,6 +516,23 @@ private actor CatalogMediaResolverSpy: WallpaperCatalogMediaResolving {
     func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {}
 }
 
+private actor MoeWallsSampleMediaResolver: WallpaperCatalogMediaResolving {
+    func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
+        CatalogResolvedMedia(
+            previewSources: [
+                CatalogVideoSource(
+                    url: URL(string: "https://media.example.test/native-preview.webm")!,
+                    width: 1280,
+                    height: 720
+                )
+            ],
+            originalSources: [],
+            provider: "MoeWalls",
+            validUntil: Date().addingTimeInterval(86_400)
+        )
+    }
+}
+
 private actor CatalogMetadataEnricherSpy:
     WallpaperCatalogMediaResolving,
     WallpaperCatalogMediaMetadataEnriching
@@ -683,6 +730,7 @@ private final class CatalogPreviewURLProtocol: URLProtocol, @unchecked Sendable 
     private static var responseStatusCode = 206
     private static var responseData = Data(repeating: 7, count: 4_096)
     private static var fullRequests = 0
+    private static var ranges: [String] = []
 
     static var fullRequestCount: Int {
         lock.lock()
@@ -690,11 +738,18 @@ private final class CatalogPreviewURLProtocol: URLProtocol, @unchecked Sendable 
         return fullRequests
     }
 
+    static var requestedRanges: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return ranges
+    }
+
     static func configure(statusCode: Int, byteCount: Int) {
         lock.lock()
         responseStatusCode = statusCode
         responseData = Data(repeating: 7, count: byteCount)
         fullRequests = 0
+        ranges = []
         lock.unlock()
     }
 
@@ -708,7 +763,11 @@ private final class CatalogPreviewURLProtocol: URLProtocol, @unchecked Sendable 
         Self.lock.lock()
         let statusCode = Self.responseStatusCode
         let data = Self.responseData
-        if request.value(forHTTPHeaderField: "Range") == nil { Self.fullRequests += 1 }
+        if let range = request.value(forHTTPHeaderField: "Range") {
+            Self.ranges.append(range)
+        } else {
+            Self.fullRequests += 1
+        }
         Self.lock.unlock()
 
         guard let url = request.url else {
@@ -719,7 +778,10 @@ private final class CatalogPreviewURLProtocol: URLProtocol, @unchecked Sendable 
             url: url,
             statusCode: statusCode,
             httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "video/mp4", "Accept-Ranges": "bytes"]
+            headerFields: [
+                "Content-Type": url.pathExtension == "webm" ? "video/webm" : "video/mp4",
+                "Accept-Ranges": "bytes",
+            ]
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         if !data.isEmpty { client?.urlProtocol(self, didLoad: data) }

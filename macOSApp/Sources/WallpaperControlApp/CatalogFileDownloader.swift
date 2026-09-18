@@ -80,6 +80,13 @@ enum CatalogFileDownloader {
         validationRangeBytes: Int64 = defaultValidationRangeBytes
     ) async throws -> (temporaryURL: URL, response: URLResponse) {
         let host = request.url?.host?.lowercased() ?? "unknown"
+        // MoeWalls' Cloudflare route is materially faster as one HTTP/2 body.
+        // Multiple URLSession range tasks are throttled independently and
+        // measured 3-4x slower for the same file on this CDN.
+        if host.contains("moewalls.com") {
+            logger.info("stage=range-strategy strategy=single-stream source=provider")
+            return try await regularDownloadWithRetry(request: request, session: session)
+        }
         if await CatalogHostTransferProfileStore.shared.strategy(for: host) == .singleStream {
             logger.info("stage=range-strategy strategy=single-stream source=cached")
             return try await regularDownloadWithRetry(request: request, session: session)
@@ -250,10 +257,16 @@ enum CatalogFileDownloader {
             }
         }
 
+        let remainingBytes = totalBytes - initialChunk.range.upperBound - 1
+        let boundedChunkSize = max(
+            chunkSize,
+            (remainingBytes + Int64(maximumConcurrentChunks) - 1)
+                / Int64(maximumConcurrentChunks)
+        )
         let ranges = makeRanges(
             totalBytes: totalBytes,
             startingAt: initialChunk.range.upperBound + 1,
-            chunkSize: chunkSize
+            chunkSize: boundedChunkSize
         )
         var chunks: [DownloadedChunk] = [initialChunk]
 

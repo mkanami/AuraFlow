@@ -478,6 +478,35 @@ actor CatalogPreviewPipeline {
             guard let candidate = media.previewSources.first else {
                 throw URLError(.resourceUnavailable)
             }
+
+            if Self.shouldPrepareQuickSample(candidate, wallpaper: wallpaper),
+               let selectedLease = await transferCoordinator.beginSelectedPreview() {
+                do {
+                    let cachedURL = try await prepareQuickSample(
+                        candidate,
+                        wallpaperID: wallpaper.id,
+                        referer: wallpaper.sourcePageURL,
+                        token: token
+                    )
+                    await transferCoordinator.endSelectedPreview(selectedLease)
+                    try finishReady(cachedURL, wallpaperID: wallpaper.id, token: token)
+                    let milliseconds = Int(Date().timeIntervalSince(startedAt) * 1_000)
+                    logger.info(
+                        "provider=\(wallpaper.attribution, privacy: .public) stage=sample-ready elapsed_ms=\(milliseconds)"
+                    )
+                    return
+                } catch is CancellationError {
+                    await transferCoordinator.endSelectedPreview(selectedLease)
+                    throw CancellationError()
+                } catch {
+                    await transferCoordinator.endSelectedPreview(selectedLease)
+                    try ensureCurrentJob(wallpaper.id, token: token)
+                    logger.notice(
+                        "provider=\(wallpaper.attribution, privacy: .public) stage=sample-fallback reason=\(Self.errorCategory(error), privacy: .public)"
+                    )
+                }
+            }
+
             publishDirectURL(candidate.url, wallpaperID: wallpaper.id, token: token)
             let milliseconds = Int(Date().timeIntervalSince(startedAt) * 1_000)
             logger.info("provider=\(wallpaper.attribution, privacy: .public) stage=direct elapsed_ms=\(milliseconds)")
@@ -726,15 +755,96 @@ actor CatalogPreviewPipeline {
     }
 
     private static func fastDirectPreviewURL(for wallpaper: CatalogWallpaper) -> URL? {
-        if wallpaper.attribution.localizedCaseInsensitiveContains("MoeWalls") {
-            return wallpaper.sources.map(\.url).first { url in
-                !url.isFileURL && ["webm", "mkv"].contains(url.pathExtension.lowercased())
-            }
-        }
         if wallpaper.attribution.localizedCaseInsensitiveContains("MotionBGS") {
             return MotionBGSParser.derivedPreviewVideoURL(from: wallpaper.previewImageURL)
         }
         return nil
+    }
+
+    private static func shouldPrepareQuickSample(
+        _ candidate: CatalogVideoSource,
+        wallpaper: CatalogWallpaper
+    ) -> Bool {
+        wallpaper.attribution.localizedCaseInsensitiveContains("MoeWalls")
+            && ["webm", "mkv"].contains(candidate.url.pathExtension.lowercased())
+    }
+
+    private func prepareQuickSample(
+        _ candidate: CatalogVideoSource,
+        wallpaperID: String,
+        referer: URL?,
+        token: UUID
+    ) async throws -> URL {
+        try ensureCurrentJob(wallpaperID, token: token)
+        guard await transferCoordinator.permitsBackgroundMedia() else {
+            throw CancellationError()
+        }
+        setState(.downloading, wallpaperID: wallpaperID, token: token)
+        try await downloadPermits.acquire(priority: .selected, key: wallpaperID)
+        let sampleURL: URL
+        do {
+            sampleURL = try await downloadQuickSample(candidate.url, referer: referer)
+            await downloadPermits.release()
+        } catch {
+            await downloadPermits.release()
+            throw error
+        }
+        defer { try? FileManager.default.removeItem(at: sampleURL) }
+
+        try ensureCurrentJob(wallpaperID, token: token)
+        guard await transferCoordinator.permitsBackgroundMedia() else {
+            throw CancellationError()
+        }
+        setState(.preparing, wallpaperID: wallpaperID, token: token)
+        try await conversionPermits.acquire(priority: .selected, key: wallpaperID)
+        let preparedURL: URL
+        do {
+            preparedURL = try await mediaPreparer.convertSampleToMP4(sampleURL)
+            await conversionPermits.release()
+        } catch {
+            await conversionPermits.release()
+            throw error
+        }
+        defer {
+            if preparedURL != sampleURL {
+                try? FileManager.default.removeItem(at: preparedURL)
+            }
+        }
+
+        try ensureCurrentJob(wallpaperID, token: token)
+        guard await mediaPreparer.containsPlayableVideo(preparedURL) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        let fingerprintURL = URL(
+            string: candidate.url.absoluteString + "#auraflow-preview-sample-v1"
+        ) ?? candidate.url
+        return try storePreparedFile(
+            preparedURL,
+            wallpaperID: wallpaperID,
+            sourceURL: fingerprintURL
+        )
+    }
+
+    private func downloadQuickSample(_ url: URL, referer: URL?) async throws -> URL {
+        var request = Self.request(url: url, referer: referer)
+        request.setValue("bytes=0-2097151", forHTTPHeaderField: "Range")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        let (temporaryURL, response) = try await session.download(for: request)
+        guard let http = response as? HTTPURLResponse,
+              http.statusCode == 206,
+              response.mimeType?.lowercased().hasPrefix("video/") == true else {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw URLError(.cannotDecodeContentData)
+        }
+        let destination = cacheDirectory.appendingPathComponent(
+            "sample-\(UUID().uuidString).\(url.pathExtension.isEmpty ? "webm" : url.pathExtension)"
+        )
+        try FileManager.default.createDirectory(
+            at: cacheDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.moveItem(at: temporaryURL, to: destination)
+        return destination
     }
 
     private func download(_ url: URL, referer: URL?) async throws -> URL {
@@ -923,7 +1033,14 @@ actor CatalogPreviewPipeline {
 
 protocol CatalogPreviewMediaPreparing: Sendable {
     func convertToMP4(_ inputURL: URL) async throws -> URL
+    func convertSampleToMP4(_ inputURL: URL) async throws -> URL
     func containsPlayableVideo(_ url: URL) async -> Bool
+}
+
+extension CatalogPreviewMediaPreparing {
+    func convertSampleToMP4(_ inputURL: URL) async throws -> URL {
+        try await convertToMP4(inputURL)
+    }
 }
 
 struct DefaultCatalogPreviewMediaPreparer: CatalogPreviewMediaPreparing {
@@ -942,6 +1059,12 @@ struct DefaultCatalogPreviewMediaPreparer: CatalogPreviewMediaPreparing {
                 progress: { _ in }
             )
             return result.outputURL
+        }.value
+    }
+
+    func convertSampleToMP4(_ inputURL: URL) async throws -> URL {
+        try await Task { @MainActor in
+            try await VideoOptimizer().makeCatalogPreviewSample(inputURL: inputURL)
         }.value
     }
 

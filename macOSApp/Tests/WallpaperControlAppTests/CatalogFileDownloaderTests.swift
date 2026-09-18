@@ -22,6 +22,27 @@ import Testing
     #expect(RangeIgnoringURLProtocol.requestCount == 1)
 }
 
+@Test func catalogDownloaderUsesOneSingleStreamForMoeWalls() async throws {
+    MoeWallsSingleURLProtocol.configure(body: Data(repeating: 9, count: 4_096))
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MoeWallsSingleURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+
+    let request = URLRequest(
+        url: URL(string: "https://go.moewalls.com/download.php?video=test")!
+    )
+    let result = try await CatalogFileDownloader.download(
+        request: request,
+        session: session,
+        parallelThreshold: 1
+    )
+    defer { try? FileManager.default.removeItem(at: result.temporaryURL) }
+
+    #expect(MoeWallsSingleURLProtocol.requestCount == 1)
+    #expect(MoeWallsSingleURLProtocol.requestedRanges == [nil])
+}
+
 @Test func catalogDownloaderReusesValidationBodyWhenLargeRangesAreIgnored() async throws {
     await CatalogHostTransferProfileStore.shared.removeProfile(for: "validation-range.test")
     let body = Data("validation became the one full stream".utf8)
@@ -46,7 +67,7 @@ import Testing
 
 @Test func catalogDownloaderRetriesOnlyTheMissingChunkWithoutAFullRestart() async throws {
     await CatalogHostTransferProfileStore.shared.removeProfile(for: "parallel-range.test")
-    RangeChunkURLProtocol.configure(totalBytes: 40, transientRange: "bytes=12-19")
+    RangeChunkURLProtocol.configure(totalBytes: 40, transientRange: "bytes=13-21")
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [RangeChunkURLProtocol.self]
     let session = URLSession(configuration: configuration)
@@ -68,7 +89,8 @@ import Testing
         try Data(contentsOf: result.temporaryURL)
             == Data((0..<40).map(UInt8.init))
     )
-    #expect(RangeChunkURLProtocol.requestCount(for: "bytes=12-19") == 2)
+    #expect(RangeChunkURLProtocol.requestCount(for: "bytes=13-21") == 2)
+    #expect(RangeChunkURLProtocol.uniqueRequestedRangeCount == 6)
     #expect(RangeChunkURLProtocol.fullRequestCount == 0)
 }
 
@@ -123,6 +145,58 @@ private final class RangeIgnoringURLProtocol: URLProtocol, @unchecked Sendable {
             didReceive: response,
             cacheStoragePolicy: .notAllowed
         )
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class MoeWallsSingleURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var configuredBody = Data()
+    private static var ranges: [String?] = []
+
+    static var requestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return ranges.count
+    }
+
+    static var requestedRanges: [String?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return ranges
+    }
+
+    static func configure(body: Data) {
+        lock.lock()
+        configuredBody = body
+        ranges = []
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "go.moewalls.com"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.ranges.append(request.value(forHTTPHeaderField: "Range"))
+        let body = Self.configuredBody
+        Self.lock.unlock()
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/2",
+            headerFields: [
+                "Content-Length": String(body.count),
+                "Content-Type": "application/octet-stream",
+            ]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: body)
         client?.urlProtocolDidFinishLoading(self)
     }
@@ -204,6 +278,11 @@ private final class RangeChunkURLProtocol: URLProtocol, @unchecked Sendable {
     private static var counts: [String: Int] = [:]
 
     static var fullRequestCount: Int { requestCount(for: "none") }
+    static var uniqueRequestedRangeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return counts.keys.filter { $0 != "none" }.count
+    }
 
     static func configure(totalBytes: Int, transientRange: String) {
         lock.lock()

@@ -37,6 +37,7 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
     private var isNetworkSuspended = false
     private var activeWallpaperID: String?
     private var activeWallpaper: CatalogWallpaper?
+    private var loadStartedAt: Date?
     private var fallbackRequested = false
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "AuraFlow",
@@ -54,6 +55,7 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
         stopPlayback(preservingFrozenFrame: frozenFrame != nil)
         activeWallpaperID = wallpaper.id
         activeWallpaper = wallpaper
+        loadStartedAt = Date()
         fallbackRequested = false
         imageURL = Self.preferredImageURL(for: wallpaper)
 
@@ -288,7 +290,12 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
     }
 
     private func logFirstFrame(provider: String?) {
-        logger.info("provider=\(provider ?? "unknown", privacy: .public) stage=preview-first-frame")
+        let elapsedMilliseconds = loadStartedAt.map {
+            Int(Date().timeIntervalSince($0) * 1_000)
+        } ?? -1
+        logger.info(
+            "provider=\(provider ?? "unknown", privacy: .public) stage=preview-first-frame elapsed_ms=\(elapsedMilliseconds)"
+        )
     }
 
     private func confirmDirectPlayback(url: URL) {
@@ -319,4 +326,5 @@ final class CatalogDetailMediaPreviewModel: ObservableObject {
     private static let streamingVideoExtensions: Set<String> = ["webm", "mkv"]
     private static let nativeVideoExtensions: Set<String> = ["mp4", "mov", "m4v"]
     private static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "heif", "webp"]
+
 }

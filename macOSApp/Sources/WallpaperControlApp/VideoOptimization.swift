@@ -165,6 +165,47 @@ final class VideoOptimizer {
     private let softwareAV1Revision = 1
     private let compatibilityTranscodeRevision = 1
 
+    func makeCatalogPreviewSample(inputURL: URL) async throws -> URL {
+        guard let ffmpeg = resolveFFmpegExecutableForCompatibility() else {
+            throw VideoOptimizerError.exportFailed(
+                "Catalog preview conversion requires ffmpeg."
+            )
+        }
+        let outputURL = inputURL
+            .deletingPathExtension()
+            .appendingPathExtension("mp4")
+        try? FileManager.default.removeItem(at: outputURL)
+        let arguments = [
+            "-y",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-progress", "pipe:2",
+            "-t", "3",
+            "-i", inputURL.path,
+            "-map_metadata", "-1",
+            "-an",
+            "-sn",
+            "-dn",
+            "-pix_fmt", "yuv420p",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "28",
+            "-vf", "scale=min(960\\,iw):min(540\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2",
+            "-movflags", "+faststart",
+            "-f", "mp4",
+            outputURL.path,
+        ]
+        try await runFFmpegProcess(
+            executable: ffmpeg,
+            arguments: arguments,
+            durationSeconds: 3,
+            failurePrefix: "Catalog preview conversion failed",
+            launchFailureMessage: "Unable to start ffmpeg for catalog preview.",
+            progress: { _ in }
+        )
+        return outputURL
+    }
+
     func optimizeIfNeeded(
         inputURL: URL,
         settings: VideoOptimizationSettings,
