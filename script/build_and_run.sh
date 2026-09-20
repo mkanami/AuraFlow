@@ -19,6 +19,7 @@ APP_PLUGINS="$APP_CONTENTS/PlugIns"
 APP_BINARY="$APP_MACOS/$PROCESS_NAME"
 HELPER_NAME="AuraWallpaperAgent"
 NATIVE_BRIDGE_NAME="AuraWallpaperNativeBridge"
+TERMINAL_HELPER_NAME="AuraTerminalWallpaperAgent"
 if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
   SIGNING_IDENTITY="$CODESIGN_IDENTITY"
 else
@@ -40,6 +41,7 @@ if [[ -x "$XCODE_DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift
 fi
 
 pkill -x "$PROCESS_NAME" >/dev/null 2>&1 || true
+pkill -x "$TERMINAL_HELPER_NAME" >/dev/null 2>&1 || true
 
 pushd "$SWIFT_DIR" >/dev/null
 "$SWIFT_BIN" build "${SWIFT_ARGS[@]}"
@@ -51,7 +53,8 @@ mkdir -p "$APP_MACOS" "$APP_RESOURCES" "$APP_PLUGINS"
 cp "$BUILD_DIR/$PROCESS_NAME" "$APP_BINARY"
 cp "$BUILD_DIR/$HELPER_NAME" "$APP_MACOS/$HELPER_NAME"
 cp "$BUILD_DIR/$NATIVE_BRIDGE_NAME" "$APP_MACOS/$NATIVE_BRIDGE_NAME"
-chmod +x "$APP_BINARY" "$APP_MACOS/$HELPER_NAME" "$APP_MACOS/$NATIVE_BRIDGE_NAME"
+cp "$BUILD_DIR/$TERMINAL_HELPER_NAME" "$APP_MACOS/$TERMINAL_HELPER_NAME"
+chmod +x "$APP_BINARY" "$APP_MACOS/$HELPER_NAME" "$APP_MACOS/$NATIVE_BRIDGE_NAME" "$APP_MACOS/$TERMINAL_HELPER_NAME"
 
 RESOURCE_BUNDLE="$BUILD_DIR/${PROCESS_NAME}_${PROCESS_NAME}.bundle"
 if [[ -d "$RESOURCE_BUNDLE" ]]; then
@@ -99,6 +102,7 @@ PLIST
 
 codesign --force --sign "$SIGNING_IDENTITY" "$APP_MACOS/$HELPER_NAME"
 codesign --force --sign "$SIGNING_IDENTITY" "$APP_MACOS/$NATIVE_BRIDGE_NAME"
+codesign --force --sign "$SIGNING_IDENTITY" "$APP_MACOS/$TERMINAL_HELPER_NAME"
 codesign --force --sign "$SIGNING_IDENTITY" "$APP_BINARY"
 codesign --force --options runtime --timestamp=none \
   --entitlements "$APP_ENTITLEMENTS" \

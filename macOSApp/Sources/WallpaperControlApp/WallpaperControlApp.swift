@@ -93,21 +93,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct WallpaperControlApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var viewModel = AuraFlowApplication.shared.viewModel
+    @StateObject private var terminalWallpaperViewModel = TerminalWallpaperViewModel()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarControls(viewModel: viewModel)
+            MenuBarControls(
+                viewModel: viewModel
+            )
         } label: {
             MenuBarIcon()
         }
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
+
+        Window("Terminal Wallpaper", id: "terminal-wallpaper") {
+            TerminalWallpaperSettingsView(viewModel: terminalWallpaperViewModel)
+        }
+        .defaultSize(width: 760, height: 720)
     }
 }
 
 private struct MenuBarControls: View {
     @ObservedObject var viewModel: AppViewModel
+    @Environment(\.openWindow) private var openWindow
     @State private var menuOpenedAt: Date = .distantPast
 
     var body: some View {
@@ -160,6 +169,11 @@ private struct MenuBarControls: View {
             openCatalogFromMenuBar()
         }
 
+        Button("Terminal Wallpaper…") {
+            guard allowActionAfterMenuOpen else { return }
+            openTerminalWallpaper()
+        }
+
         Divider()
 
         Button("Quit AuraFlow") {
@@ -190,6 +204,11 @@ private struct MenuBarControls: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             viewModel.openCatalogFromMenuBar()
         }
+    }
+
+    private func openTerminalWallpaper() {
+        openWindow(id: "terminal-wallpaper")
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func performMenuBarActionAfterDismiss(_ action: @escaping () -> Void) {

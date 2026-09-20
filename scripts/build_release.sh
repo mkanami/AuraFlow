@@ -8,6 +8,7 @@ DIST_DIR="${AURAFLOW_OUTPUT_DIR:-$ROOT_DIR/dist}"
 APP_TARGET="WallpaperControlApp"
 HELPER_TARGET="AuraWallpaperAgent"
 NATIVE_BRIDGE_TARGET="AuraWallpaperNativeBridge"
+TERMINAL_HELPER_TARGET="AuraTerminalWallpaperAgent"
 APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-AuraFlow}"
 APP_VERSION="${AURAFLOW_VERSION:-1.3.1}"
 APP_BUILD="${AURAFLOW_BUILD:-10}"
@@ -300,6 +301,11 @@ build_swift_architecture() {
     return 1
   fi
 
+  if ! swift_build_product "$architecture" "$TERMINAL_HELPER_TARGET"; then
+    log "Failed to build ${TERMINAL_HELPER_TARGET} for $architecture."
+    return 1
+  fi
+
   if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
     log "Building native bridge for $architecture"
     if ! swift_build_product "$architecture" "$NATIVE_BRIDGE_TARGET"; then
@@ -381,17 +387,19 @@ build_swift_app() {
       "$host_bin_path/${APP_TARGET}" "$secondary_bin_path/${APP_TARGET}"
     lipo -create -output "$universal_dir/${HELPER_TARGET}" \
       "$host_bin_path/${HELPER_TARGET}" "$secondary_bin_path/${HELPER_TARGET}"
+    lipo -create -output "$universal_dir/${TERMINAL_HELPER_TARGET}" \
+      "$host_bin_path/${TERMINAL_HELPER_TARGET}" "$secondary_bin_path/${TERMINAL_HELPER_TARGET}"
     if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
       lipo -create -output "$universal_dir/${NATIVE_BRIDGE_TARGET}" \
         "$host_bin_path/${NATIVE_BRIDGE_TARGET}" "$secondary_bin_path/${NATIVE_BRIDGE_TARGET}"
     fi
     bin_path="$universal_dir"
-    log "Created universal app and agent binaries"
   fi
   popd >/dev/null
 
   local binary="$bin_path/${APP_TARGET}"
   local helper_path="$bin_path/${HELPER_TARGET}"
+  local terminal_helper_path="$bin_path/${TERMINAL_HELPER_TARGET}"
   local native_bridge_path=""
   if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
     native_bridge_path="$bin_path/${NATIVE_BRIDGE_TARGET}"
@@ -409,6 +417,10 @@ build_swift_app() {
     log "Native bridge binary not found: $native_bridge_path"
     exit 1
   fi
+  if [[ ! -x "$terminal_helper_path" ]]; then
+    log "Terminal helper binary not found: $terminal_helper_path"
+    exit 1
+  fi
 
   rm -rf "$APP_BUNDLE"
   mkdir -p "$APP_BUNDLE/Contents/MacOS"
@@ -416,17 +428,20 @@ build_swift_app() {
 
   cp "$binary" "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
   cp "$helper_path" "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
+  cp "$terminal_helper_path" "$APP_BUNDLE/Contents/MacOS/${TERMINAL_HELPER_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
   if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
     cp "$native_bridge_path" "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
     chmod +x "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
   fi
+  chmod +x "$APP_BUNDLE/Contents/MacOS/${TERMINAL_HELPER_TARGET}"
 
   if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
-    local app_archs helper_archs
+    local app_archs helper_archs terminal_helper_archs
     app_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}" 2>/dev/null || true)"
     helper_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}" 2>/dev/null || true)"
+    terminal_helper_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${TERMINAL_HELPER_TARGET}" 2>/dev/null || true)"
     if [[ "$app_archs" != *"arm64"* || "$app_archs" != *"x86_64"* ]]; then
       log "Universal app binary required, produced: ${app_archs:-unknown}"
       exit 1
@@ -442,6 +457,10 @@ build_swift_app() {
         log "Universal native bridge binary required, produced: ${native_bridge_archs:-unknown}"
         exit 1
       fi
+    fi
+    if [[ "$terminal_helper_archs" != *"arm64"* || "$terminal_helper_archs" != *"x86_64"* ]]; then
+      log "Universal terminal helper binary required, produced: ${terminal_helper_archs:-unknown}"
+      exit 1
     fi
   fi
 

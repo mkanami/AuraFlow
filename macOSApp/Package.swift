@@ -19,9 +19,20 @@ let canBuildNativeBridge = !nativeBridgeIsDisabled && nativeBridgeFrameworks.all
 var products: [Product] = [
     .executable(name: "WallpaperControlApp", targets: ["WallpaperControlApp"]),
     .executable(name: "AuraWallpaperAgent", targets: ["AuraWallpaperAgent"]),
+    .executable(name: "AuraTerminalWallpaperAgent", targets: ["AuraTerminalWallpaperAgent"]),
 ]
 
 var targets: [Target] = [
+    .target(
+        name: "AuraTerminalPTYKit",
+        path: "Sources/AuraTerminalPTYKit",
+        publicHeadersPath: "include"
+    ),
+    .target(
+        name: "AuraTerminalWallpaperCore",
+        dependencies: ["AuraTerminalPTYKit"],
+        path: "Sources/AuraTerminalWallpaperCore"
+    ),
     .target(
         name: "AuraWallpaperCore",
         path: "Sources/AuraWallpaperCore"
@@ -32,9 +43,15 @@ var targets: [Target] = [
         path: "Sources/AuraWallpaperAgent"
     ),
     .executableTarget(
+        name: "AuraTerminalWallpaperAgent",
+        dependencies: ["AuraTerminalWallpaperCore"],
+        path: "Sources/AuraTerminalWallpaperAgent"
+    ),
+    .executableTarget(
         name: "WallpaperControlApp",
         dependencies: [
             "AuraWallpaperCore",
+            "AuraTerminalWallpaperCore",
         ],
         exclude: ["WallpaperControlApp.entitlements"],
         resources: [
@@ -45,6 +62,7 @@ var targets: [Target] = [
         name: "WallpaperControlAppTests",
         dependencies: [
             "AuraWallpaperCore",
+            "AuraTerminalWallpaperCore",
             "WallpaperControlApp",
             "AuraWallpaperAgent",
         ],
