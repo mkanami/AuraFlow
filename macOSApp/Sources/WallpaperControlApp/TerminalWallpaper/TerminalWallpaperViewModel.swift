@@ -26,12 +26,21 @@ final class TerminalWallpaperViewModel: ObservableObject {
     @Published var launchAtLogin: Bool
     @Published private(set) var selectedCatalogItemID: String?
     @Published private(set) var catalogItems: [TerminalWallpaperCatalogItem]
+    @Published private(set) var catalogSearch = ""
+    @Published private(set) var catalogIsLoading = false
+    @Published private(set) var catalogHasMore = true
     @Published private(set) var status: TerminalWallpaperStatus
     @Published private(set) var isBusy = false
     @Published var statusMessage: String?
     @Published var errorMessage: String?
 
     private let controller: TerminalWallpaperControlling
+    private let catalogPageSize = 12
+    private var discoveredCatalogItems: [TerminalWallpaperCatalogItem] = []
+    private var catalogDiscoveryStarted = false
+    private var catalogLoadedCount = 0
+    private var catalogGeneration = 0
+    private var catalogDiscoveryTask: Task<Void, Never>?
 
     init(controller: TerminalWallpaperControlling? = nil) {
         let resolvedController: TerminalWallpaperControlling
@@ -47,7 +56,15 @@ final class TerminalWallpaperViewModel: ObservableObject {
         executable = config.command.executable
         argumentsText = config.command.arguments.joined(separator: "\n")
         selectedCatalogItemID = config.command.catalogItemID
-        catalogItems = TerminalWallpaperCatalog.availableItems()
+        let recommendedItems = TerminalWallpaperCatalog.recommendedItems()
+        if let selectedID = config.command.catalogItemID,
+           let selectedItem = TerminalWallpaperCatalog.item(id: selectedID),
+           selectedItem.resolvedExecutable() != nil,
+           !recommendedItems.contains(where: { $0.id == selectedItem.id }) {
+            catalogItems = recommendedItems + [selectedItem]
+        } else {
+            catalogItems = recommendedItems
+        }
         workingDirectory = config.command.workingDirectory ?? ""
         environmentText = config.command.environment
             .sorted { $0.key < $1.key }
@@ -80,20 +97,56 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     func availableCatalogItems(
-        for category: TerminalWallpaperCatalogCategory,
-        matching query: String = ""
+        for category: TerminalWallpaperCatalogCategory
     ) -> [TerminalWallpaperCatalogItem] {
-        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return catalogItems.filter { item in
-            guard item.category == category else { return false }
-            guard !normalizedQuery.isEmpty else { return true }
-            return item.title.localizedCaseInsensitiveContains(normalizedQuery)
-                || item.subtitle.localizedCaseInsensitiveContains(normalizedQuery)
-        }
+        catalogItems.filter { $0.category == category }
     }
 
     func refreshCatalog() {
-        catalogItems = TerminalWallpaperCatalog.availableItems()
+        catalogDiscoveryTask?.cancel()
+        catalogDiscoveryTask = nil
+        catalogGeneration += 1
+        discoveredCatalogItems = []
+        catalogDiscoveryStarted = false
+        catalogLoadedCount = 0
+        catalogIsLoading = false
+        catalogHasMore = true
+        catalogItems = baseCatalogItems
+    }
+
+    func setCatalogSearch(_ value: String) {
+        catalogSearch = value
+        let query = normalizedCatalogSearch
+
+        guard !catalogIsLoading else {
+            catalogItems = filteredCatalogItems(query: query, includeAllDiscovered: false)
+            return
+        }
+
+        guard catalogDiscoveryStarted else {
+            catalogItems = filteredCatalogItems(query: query, includeAllDiscovered: false)
+            if !query.isEmpty {
+                startCatalogDiscovery()
+            }
+            return
+        }
+
+        if query.isEmpty {
+            catalogItems = filteredCatalogItems(query: "", includeAllDiscovered: false)
+            catalogHasMore = catalogLoadedCount < discoveredCatalogItems.count
+        } else {
+            catalogItems = filteredCatalogItems(query: query, includeAllDiscovered: true)
+            catalogHasMore = false
+        }
+    }
+
+    func loadMoreCatalogItems() {
+        guard normalizedCatalogSearch.isEmpty, !catalogIsLoading else { return }
+        guard catalogDiscoveryStarted else {
+            startCatalogDiscovery()
+            return
+        }
+        appendNextCatalogPage()
     }
 
     var statusTitle: String {
@@ -203,6 +256,76 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private func apply(_ status: TerminalWallpaperStatus) {
         self.status = status
         launchAtLogin = status.config.behavior.launchAtLogin
+    }
+
+    private var normalizedCatalogSearch: String {
+        catalogSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var baseCatalogItems: [TerminalWallpaperCatalogItem] {
+        var result = TerminalWallpaperCatalog.recommendedItems()
+        if let selectedID = selectedCatalogItemID,
+           let selectedItem = TerminalWallpaperCatalog.item(id: selectedID),
+           selectedItem.resolvedExecutable() != nil,
+           !result.contains(where: { $0.id == selectedItem.id }) {
+            result.append(selectedItem)
+        }
+        return result
+    }
+
+    private func filteredCatalogItems(
+        query: String,
+        includeAllDiscovered: Bool
+    ) -> [TerminalWallpaperCatalogItem] {
+        let discovered = includeAllDiscovered
+            ? discoveredCatalogItems
+            : Array(discoveredCatalogItems.prefix(catalogLoadedCount))
+        var allItems: [TerminalWallpaperCatalogItem] = []
+        var seenIDs = Set<String>()
+        for item in baseCatalogItems + discovered where seenIDs.insert(item.id).inserted {
+            allItems.append(item)
+        }
+        guard !query.isEmpty else { return allItems }
+        return allItems.filter { item in
+            item.title.localizedCaseInsensitiveContains(query)
+                || item.subtitle.localizedCaseInsensitiveContains(query)
+                || item.executableCandidates.contains {
+                    $0.localizedCaseInsensitiveContains(query)
+                }
+        }
+    }
+
+    private func startCatalogDiscovery() {
+        guard !catalogIsLoading else { return }
+        catalogDiscoveryStarted = true
+        catalogIsLoading = true
+        let generation = catalogGeneration
+        catalogDiscoveryTask = Task { [weak self] in
+            let discovered = await Task.detached(priority: .userInitiated) {
+                TerminalWallpaperCatalog.discoveredItems()
+            }.value
+            guard !Task.isCancelled, let self, self.catalogGeneration == generation else { return }
+            self.discoveredCatalogItems = discovered
+            self.catalogIsLoading = false
+            self.catalogLoadedCount = 0
+            if self.normalizedCatalogSearch.isEmpty {
+                self.catalogItems = self.baseCatalogItems
+                self.appendNextCatalogPage()
+            } else {
+                self.catalogItems = self.filteredCatalogItems(
+                    query: self.normalizedCatalogSearch,
+                    includeAllDiscovered: true
+                )
+                self.catalogHasMore = false
+            }
+        }
+    }
+
+    private func appendNextCatalogPage() {
+        let nextCount = min(catalogLoadedCount + catalogPageSize, discoveredCatalogItems.count)
+        catalogLoadedCount = nextCount
+        catalogItems = filteredCatalogItems(query: "", includeAllDiscovered: false)
+        catalogHasMore = catalogLoadedCount < discoveredCatalogItems.count
     }
 
     private func makeConfig() -> TerminalWallpaperConfig {

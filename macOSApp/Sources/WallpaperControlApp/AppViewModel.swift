@@ -2131,7 +2131,7 @@ final class AppViewModel: ObservableObject {
 
     var catalogWallpapers: [CatalogWallpaper] {
         get { catalogViewModel.wallpapers }
-        set { catalogViewModel.wallpapers = newValue }
+        set { catalogViewModel.setWallpapersDirectly(newValue) }
     }
 
     private var catalogSearchResults: [CatalogWallpaper] {
@@ -3309,6 +3309,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func catalogTrailingWallpaperBecameVisible(_ wallpaperID: String) {
+        let canLoadDeferredCatalogPage = catalogViewModel.hasDeferredWallpapers
         guard catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               selectedCatalogWallpaper == nil,
               filteredCatalogWallpapers.last?.id == wallpaperID,
@@ -3316,7 +3317,9 @@ final class AppViewModel: ObservableObject {
               catalogHasMoreWallpapers,
               !catalogIsRefreshing,
               catalogLoadMoreTask == nil,
-              selectedCatalogGroup == nil || selectedCatalogGroup == .anime else {
+              canLoadDeferredCatalogPage
+                || selectedCatalogGroup == nil
+                || selectedCatalogGroup == .anime else {
             return
         }
         lastCatalogPaginationTriggerID = wallpaperID
@@ -4235,7 +4238,10 @@ final class AppViewModel: ObservableObject {
     private func loadCatalogFromCache() async {
         let result = await catalogRepository.loadCatalogCache()
         if let cached = result.wallpapers, !cached.isEmpty {
-            catalogWallpapers = cached
+            catalogViewModel.replaceCatalogForDisplay(
+                with: cached,
+                hasMoreRemotePages: true
+            )
         }
         if let warningMessage = result.persistenceStatus.warningMessage {
             statusMessage = warningMessage
@@ -4276,7 +4282,10 @@ final class AppViewModel: ObservableObject {
                     guard let self else { return }
                     guard !Task.isCancelled else { return }
                     await MainActor.run {
-                        self.catalogWallpapers = partial
+                        self.catalogViewModel.replaceCatalogForDisplay(
+                            with: partial,
+                            hasMoreRemotePages: true
+                        )
                         if let selectedCatalogWallpaper = self.selectedCatalogWallpaper {
                             self.selectedCatalogWallpaper = partial.first(where: { $0.id == selectedCatalogWallpaper.id })
                         }
@@ -4285,15 +4294,20 @@ final class AppViewModel: ObservableObject {
                 guard !Task.isCancelled else { return }
                 let fetched = refreshResult.wallpapers
                 guard !fetched.isEmpty else {
-                    catalogWallpapers = []
+                    catalogViewModel.replaceCatalogForDisplay(
+                        with: [],
+                        hasMoreRemotePages: false
+                    )
                     selectedCatalogWallpaper = nil
                     statusMessage = "Wallpaper catalog returned no wallpapers."
                     lastCatalogRefreshAt = Date()
                     return
                 }
-                catalogWallpapers = fetched
+                catalogViewModel.replaceCatalogForDisplay(
+                    with: fetched,
+                    hasMoreRemotePages: true
+                )
                 lastCatalogPaginationTriggerID = nil
-                catalogHasMoreWallpapers = true
                 if let selectedCatalogWallpaper {
                     self.selectedCatalogWallpaper = fetched.first(where: { $0.id == selectedCatalogWallpaper.id })
                 }
@@ -4320,12 +4334,17 @@ final class AppViewModel: ObservableObject {
             }
 
             do {
+                if catalogViewModel.loadNextDeferredPage() {
+                    return
+                }
                 let result = try await catalogRepository.loadNextCatalogPage(
                     existing: catalogWallpapers
                 )
                 guard !Task.isCancelled else { return }
-                catalogWallpapers = result.wallpapers
-                catalogHasMoreWallpapers = result.hasMore
+                catalogViewModel.appendCatalogPage(
+                    mergedWallpapers: result.wallpapers,
+                    hasMoreRemotePages: result.hasMore
+                )
                 if let warningMessage = result.persistenceStatus.warningMessage {
                     statusMessage = warningMessage
                 }

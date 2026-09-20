@@ -44,6 +44,33 @@ func catalogViewModelOwnsFilteringAndGroupSelection() {
 }
 
 @Test @MainActor
+func catalogViewModelKeepsOnlyTheFirstPageInTheDisplayList() {
+    let wallpapers = (0..<20).map { index in
+        CatalogWallpaper(
+            id: "wallpaper-\(index)",
+            title: "Wallpaper \(index)",
+            category: "Anime",
+            attribution: "Test",
+            previewImageURL: nil,
+            sourcePageURL: nil,
+            sources: []
+        )
+    }
+    let viewModel = CatalogViewModel()
+
+    viewModel.replaceCatalogForDisplay(with: wallpapers, hasMoreRemotePages: false)
+
+    #expect(viewModel.wallpapers.map(\.id) == (0..<12).map { "wallpaper-\($0)" })
+    #expect(viewModel.hasDeferredWallpapers)
+    #expect(viewModel.hasMoreWallpapers)
+
+    #expect(viewModel.loadNextDeferredPage())
+    #expect(viewModel.wallpapers.count == 20)
+    #expect(!viewModel.hasDeferredWallpapers)
+    #expect(!viewModel.hasMoreWallpapers)
+}
+
+@Test @MainActor
 func catalogSearchMatchesCaseAndPartialWordsWithoutFuzzyResults() {
     let viewModel = CatalogViewModel()
     viewModel.wallpapers = [

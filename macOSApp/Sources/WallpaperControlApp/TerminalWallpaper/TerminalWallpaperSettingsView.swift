@@ -4,11 +4,10 @@ import SwiftUI
 struct TerminalWallpaperSettingsView: View {
     @ObservedObject var viewModel: TerminalWallpaperViewModel
     @State private var showAdvancedCommand = false
-    @State private var catalogSearch = ""
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: 18) {
                 header
                 catalogSection
                 renderSection
@@ -48,16 +47,37 @@ struct TerminalWallpaperSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                TextField("Search installed executables", text: $catalogSearch)
+                TextField(
+                    "Search installed executables",
+                    text: Binding(
+                        get: { viewModel.catalogSearch },
+                        set: { viewModel.setCatalogSearch($0) }
+                    )
+                )
                     .textFieldStyle(.roundedBorder)
 
                 catalogCategory(.applications)
                 catalogCategory(.utilities)
 
-                if viewModel.catalogItems.isEmpty {
+                if viewModel.catalogItems.isEmpty && !viewModel.catalogIsLoading {
                     Text("No executable terminal programs were found in PATH or the standard bin folders.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                if viewModel.catalogIsLoading {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Scanning installed command-line programs…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if viewModel.catalogHasMore && viewModel.catalogSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("Scroll to load more…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .onAppear { viewModel.loadMoreCatalogItems() }
                 }
 
                 HStack {
@@ -83,7 +103,7 @@ struct TerminalWallpaperSettingsView: View {
 
     @ViewBuilder
     private func catalogCategory(_ category: TerminalWallpaperCatalogCategory) -> some View {
-        let items = viewModel.availableCatalogItems(for: category, matching: catalogSearch)
+        let items = viewModel.availableCatalogItems(for: category)
         if !items.isEmpty {
             Label(category.title, systemImage: category.systemImage)
                 .font(.headline)

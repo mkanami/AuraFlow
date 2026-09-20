@@ -152,18 +152,22 @@ public enum TerminalWallpaperCatalog {
         return discoveredItem(at: path)
     }
 
+    public static func recommendedItems(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [TerminalWallpaperCatalogItem] {
+        items.filter { $0.resolvedExecutable(environment: environment) != nil }
+    }
+
     public static func availableItems(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> [TerminalWallpaperCatalogItem] {
-        var result: [TerminalWallpaperCatalogItem] = []
-        var seenPaths = Set<String>()
-
-        for item in items {
-            guard let executable = item.resolvedExecutable(environment: environment) else { continue }
-            result.append(item)
-            seenPaths.insert(normalizedPath(executable))
-        }
+        let recommended = recommendedItems(environment: environment)
+        var result = recommended
+        var seenPaths = Set(
+            recommended.compactMap { $0.resolvedExecutable(environment: environment) }
+                .map(normalizedPath)
+        )
 
         for item in discoveredItems(environment: environment, fileManager: fileManager) {
             guard let executable = item.resolvedExecutable(environment: environment) else { continue }
@@ -184,12 +188,15 @@ public enum TerminalWallpaperCatalog {
         }
     }
 
-    private static func discoveredItems(
-        environment: [String: String],
-        fileManager: FileManager
+    public static func discoveredItems(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
     ) -> [TerminalWallpaperCatalogItem] {
         let roots = discoveryRoots(environment: environment)
-        var seenPaths = Set<String>()
+        var seenPaths = Set(
+            items.compactMap { $0.resolvedExecutable(environment: environment) }
+                .map(normalizedPath)
+        )
         var result: [TerminalWallpaperCatalogItem] = []
 
         for root in roots {
