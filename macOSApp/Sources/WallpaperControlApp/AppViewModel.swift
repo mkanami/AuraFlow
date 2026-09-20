@@ -844,10 +844,6 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         if let speed {
             nextConfig.playback_speed = speed
         }
-        // Start is the shared Desktop + Lock Screen action. The setting can
-        // remain disabled before the first start, but a successful Start must
-        // persist the Lock Screen side before the agent is launched.
-        nextConfig.show_on_lock_screen = true
         nextConfig = store.normalized(nextConfig)
         guard !nextConfig.video_path.isEmpty else {
             throw NativeWallpaperControllerError.unavailable(
@@ -1933,7 +1929,7 @@ final class AppViewModel: ObservableObject {
     @Published var autostartEnabled: Bool = false
     @Published var blendInterpolationEnabled: Bool = false
     @Published var pauseOnFullscreenEnabled: Bool = true
-    @Published var showOnLockScreenEnabled: Bool = false
+    @Published var showOnLockScreenEnabled: Bool = true
     @Published var isSettingsOpen: Bool = false
     @Published var isMonitoringOpen: Bool = false
     @Published var monitoringSnapshot: DaemonMetrics?
@@ -3999,7 +3995,7 @@ final class AppViewModel: ObservableObject {
         }
         Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
         Self.setIfChanged(&pauseOnFullscreenEnabled, to: status.config.pause_on_fullscreen ?? true)
-        Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? false)
+        Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? true)
         let previousScaleMode = scaleMode
         let resolvedScaleMode = WallpaperScaleMode(rawValue: status.config.scale_mode ?? "fill") ?? .fill
         Self.setIfChanged(&scaleMode, to: resolvedScaleMode)

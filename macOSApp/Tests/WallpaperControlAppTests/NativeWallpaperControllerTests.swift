@@ -641,6 +641,29 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(installer.installedLockScreenOnlyVideoURL == nil)
 }
 
+@Test func nativeStartPreservesExplicitLockScreenPreference() async throws {
+    let fixture = try NativeRuntimeFixture("start-preserves-lock-preference")
+    defer { fixture.cleanup() }
+
+    try fixture.store.saveConfig(
+        ControlConfig(
+            video_path: "",
+            playback_speed: 1.0,
+            show_on_lock_screen: false
+        )
+    )
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+
+    _ = try await controller.start(videoURL: fixture.videoURL, speed: nil)
+
+    #expect(fixture.store.loadConfig().show_on_lock_screen == false)
+}
+
 @Test func nativeStartLaunchesDesktopBeforeLockScreenPreparationCompletes() async throws {
     let fixture = try NativeRuntimeFixture("start-before-lock-screen-preparation")
     defer { fixture.cleanup() }
