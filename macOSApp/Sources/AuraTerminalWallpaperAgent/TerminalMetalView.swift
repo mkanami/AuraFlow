@@ -28,10 +28,13 @@ final class TerminalMetalView: MTKView {
         pipelineState = try! device.makeRenderPipelineState(descriptor: descriptor)
 
         let vertices = [
-            Vertex(position: SIMD2(-1, -1), uv: SIMD2(0, 1)),
-            Vertex(position: SIMD2(1, -1), uv: SIMD2(1, 1)),
-            Vertex(position: SIMD2(-1, 1), uv: SIMD2(0, 0)),
-            Vertex(position: SIMD2(1, 1), uv: SIMD2(1, 0)),
+            // CoreTextGlyphAtlas applies the CGContext y-transform while
+            // laying out terminal rows. Keep row zero at the top at the final
+            // texture blit instead of applying another vertical flip.
+            Vertex(position: SIMD2(-1, -1), uv: SIMD2(0, 0)),
+            Vertex(position: SIMD2(1, -1), uv: SIMD2(1, 0)),
+            Vertex(position: SIMD2(-1, 1), uv: SIMD2(0, 1)),
+            Vertex(position: SIMD2(1, 1), uv: SIMD2(1, 1)),
         ]
         vertexBuffer = device.makeBuffer(
             bytes: vertices,
