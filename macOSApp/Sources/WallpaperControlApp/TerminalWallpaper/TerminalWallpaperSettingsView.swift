@@ -3,6 +3,7 @@ import SwiftUI
 
 struct TerminalWallpaperSettingsView: View {
     @ObservedObject var viewModel: TerminalWallpaperViewModel
+    var onClose: (() -> Void)? = nil
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @State private var showAdvancedCommand = false
 
@@ -48,6 +49,10 @@ struct TerminalWallpaperSettingsView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.black.opacity(terminalDimmingOpacity))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -59,6 +64,15 @@ struct TerminalWallpaperSettingsView: View {
                 viewModel.refresh()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
+        }
+    }
+
+    private var terminalDimmingOpacity: CGFloat {
+        switch adaptiveGlassAppearance.centerTextTone {
+        case .dark:
+            return 0.11
+        case .light:
+            return 0.05
         }
     }
 
@@ -86,6 +100,15 @@ struct TerminalWallpaperSettingsView: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(viewModel.status.running ? .green : .secondary)
             }
+
+            if let onClose {
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                }
+                .buttonStyle(AuraPlainPressButtonStyle())
+                .accessibilityLabel("Close Terminal Wallpaper")
+            }
         }
         .padding(.horizontal, 4)
     }
@@ -101,7 +124,7 @@ struct TerminalWallpaperSettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(AuraGlassInsetCard(cornerRadius: 12, emphasized: true))
+        .background(AuraGlassInsetCard(cornerRadius: 12, emphasized: false))
     }
 
     private var catalogSection: some View {
@@ -226,7 +249,7 @@ struct TerminalWallpaperSettingsView: View {
                 .disabled(viewModel.isBusy || viewModel.status.running)
         }
         .padding(8)
-        .background(AuraGlassInsetCard(cornerRadius: 10))
+        .background(AuraGlassInsetCard(cornerRadius: 10, emphasized: false))
     }
 
     private var advancedCommandFields: some View {
@@ -415,7 +438,10 @@ struct TerminalWallpaperOverlay: View {
                         viewModel.closeTerminalWallpaper()
                     }
 
-                TerminalWallpaperSettingsView(viewModel: terminalWallpaperViewModel)
+                TerminalWallpaperSettingsView(
+                    viewModel: terminalWallpaperViewModel,
+                    onClose: viewModel.closeTerminalWallpaper
+                )
                     .frame(width: popupWidth, height: popupHeight)
                     .transition(
                         .asymmetric(
@@ -454,6 +480,6 @@ private struct TerminalWallpaperSection<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(AuraGlassInsetCard(cornerRadius: 16, emphasized: true))
+        .background(AuraGlassInsetCard(cornerRadius: 16, emphasized: false))
     }
 }
