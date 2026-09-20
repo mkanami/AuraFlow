@@ -1995,6 +1995,7 @@ final class AppViewModel: ObservableObject {
     @Published var showOnLockScreenEnabled: Bool = true
     @Published var isSettingsOpen: Bool = false
     @Published var isMonitoringOpen: Bool = false
+    @Published var isTerminalWallpaperOpen: Bool = false
     @Published var monitoringSnapshot: DaemonMetrics?
     @Published var monitoringErrorMessage: String?
     @Published var isMonitoringRefreshing: Bool = false
@@ -3184,6 +3185,7 @@ final class AppViewModel: ObservableObject {
         isSettingsOpen = false
         closeMonitoring()
         closeDownloadedWallpapers()
+        closeTerminalWallpaper()
         selectedCatalogWallpaper = nil
         catalogScrollTargetID = nil
         selectedCatalogGroup = nil
@@ -3195,6 +3197,7 @@ final class AppViewModel: ObservableObject {
         isSettingsOpen = false
         closeMonitoring()
         closeDownloadedWallpapers()
+        closeTerminalWallpaper()
         selectedCatalogWallpaper = nil
         catalogScrollTargetID = nil
         selectedCatalogGroup = nil
@@ -3207,6 +3210,7 @@ final class AppViewModel: ObservableObject {
         selectedCatalogWallpaper = nil
         closeSettings()
         closeMonitoring()
+        closeTerminalWallpaper()
         loadDownloadedCatalogWallpapers()
         isDownloadedWallpapersOpen = true
     }
@@ -3730,6 +3734,7 @@ final class AppViewModel: ObservableObject {
     func openSettings() {
         closeDownloadedWallpapers()
         closeMonitoring()
+        closeTerminalWallpaper()
         isSettingsOpen = true
     }
 
@@ -3740,6 +3745,7 @@ final class AppViewModel: ObservableObject {
     func openMonitoring() {
         closeDownloadedWallpapers()
         closeSettings()
+        closeTerminalWallpaper()
         isMonitoringOpen = true
         monitoringErrorMessage = nil
         startMonitoringLoop()
@@ -3749,6 +3755,19 @@ final class AppViewModel: ObservableObject {
         isMonitoringOpen = false
         monitoringTask?.cancel()
         monitoringTask = nil
+    }
+
+    func openTerminalWallpaper() {
+        isCatalogOpen = false
+        selectedCatalogWallpaper = nil
+        closeDownloadedWallpapers()
+        closeSettings()
+        closeMonitoring()
+        isTerminalWallpaperOpen = true
+    }
+
+    func closeTerminalWallpaper() {
+        isTerminalWallpaperOpen = false
     }
 
     func setOptimizationEnabled(_ enabled: Bool) {

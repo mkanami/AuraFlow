@@ -21,7 +21,7 @@ extension EnvironmentValues {
     }
 }
 
-private extension AdaptiveTextTone {
+extension AdaptiveTextTone {
     /// A low-opacity tint that improves contrast without turning Liquid Glass
     /// into an opaque panel. Dark text gets a light lift; light text gets a
     /// dark lift. Every button and inset surface uses the same tone.
@@ -140,6 +140,7 @@ struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var isAdjustingSpeed: Bool = false
     @State private var window: NSWindow?
+    @StateObject private var terminalWallpaperViewModel = TerminalWallpaperViewModel()
 
     private var aspectRatio: CGFloat { mainScreenAspectRatio() }
     private let topOverlayTopPadding: CGFloat = 18
@@ -194,6 +195,14 @@ struct ContentView: View {
             .overlay {
                 if viewModel.isDownloadedWallpapersOpen {
                     DownloadedWallpapersOverlay(viewModel: viewModel)
+                }
+            }
+            .overlay {
+                if viewModel.isTerminalWallpaperOpen {
+                    TerminalWallpaperOverlay(
+                        viewModel: viewModel,
+                        terminalWallpaperViewModel: terminalWallpaperViewModel
+                    )
                 }
             }
         }
@@ -517,7 +526,6 @@ struct ControlPanel: View {
     let isVeryCompactByHeight: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
-    @Environment(\.openWindow) private var openWindow
 
     private var widthScale: CGFloat {
         max(0.82, min(1.0, panelWidth / 1180))
@@ -833,8 +841,7 @@ struct ControlPanel: View {
 
     private var terminalWallpaperButton: some View {
         Button {
-            openWindow(id: "terminal-wallpaper")
-            NSApp.activate(ignoringOtherApps: true)
+            viewModel.openTerminalWallpaper()
         } label: {
             Label("Terminal Wallpaper", systemImage: "terminal")
                 .lineLimit(1)
@@ -3093,12 +3100,12 @@ private struct AuraPlainPressButton: View {
     }
 }
 
-private enum AuraSurfaceMaterial: Equatable {
+enum AuraSurfaceMaterial: Equatable {
     case regular
     case clear
 }
 
-private struct AuraGlassRoundedSurface: View {
+struct AuraGlassRoundedSurface: View {
     let cornerRadius: CGFloat
     var material: AuraSurfaceMaterial = .clear
     var washColor: Color = .clear

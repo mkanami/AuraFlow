@@ -3,44 +3,55 @@ import SwiftUI
 
 struct TerminalWallpaperSettingsView: View {
     @ObservedObject var viewModel: TerminalWallpaperViewModel
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @State private var showAdvancedCommand = false
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.84)
-                .ignoresSafeArea()
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                header
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    header
-
-                    if let errorMessage = viewModel.errorMessage {
-                        terminalMessage(
-                            errorMessage,
-                            systemImage: "exclamationmark.triangle.fill",
-                            color: .red
-                        )
-                    }
-
-                    if let statusMessage = viewModel.statusMessage {
-                        terminalMessage(
-                            statusMessage,
-                            systemImage: "checkmark.circle.fill",
-                            color: .green
-                        )
-                    }
-
-                    catalogSection
-                    renderSection
-                    behaviorSection
-                    statusSection
+                if let errorMessage = viewModel.errorMessage {
+                    terminalMessage(
+                        errorMessage,
+                        systemImage: "exclamationmark.triangle.fill",
+                        color: .red
+                    )
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(20)
+
+                if let statusMessage = viewModel.statusMessage {
+                    terminalMessage(
+                        statusMessage,
+                        systemImage: "checkmark.circle.fill",
+                        color: .green
+                    )
+                }
+
+                catalogSection
+                renderSection
+                behaviorSection
+                statusSection
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
         }
-        .frame(minWidth: 720, minHeight: 680)
-        .foregroundStyle(.primary)
+        .frame(minWidth: 0, minHeight: 0)
+        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
+        .background(
+            AuraGlassRoundedSurface(
+                cornerRadius: 18,
+                material: .clear,
+                alphaMultiplier: adaptiveGlassAppearance.centerGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.centerProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
         .environment(\.colorScheme, .dark)
         .task {
             viewModel.refreshCatalog()
@@ -384,6 +395,39 @@ struct TerminalWallpaperSettingsView: View {
             Spacer()
             Text(value)
         }
+    }
+}
+
+struct TerminalWallpaperOverlay: View {
+    @ObservedObject var viewModel: AppViewModel
+    @ObservedObject var terminalWallpaperViewModel: TerminalWallpaperViewModel
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        GeometryReader { proxy in
+            let popupHeight = min(820, max(proxy.size.height - 48, 1))
+            let popupWidth = min(920, max(proxy.size.width - 48, 1))
+
+            ZStack {
+                Color.black.opacity(colorScheme == .dark ? 0.42 : 0.28)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        viewModel.closeTerminalWallpaper()
+                    }
+
+                TerminalWallpaperSettingsView(viewModel: terminalWallpaperViewModel)
+                    .frame(width: popupWidth, height: popupHeight)
+                    .transition(
+                        .asymmetric(
+                            insertion: .scale(scale: 0.94).combined(with: .opacity),
+                            removal: .opacity
+                        )
+                    )
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.86), value: viewModel.isTerminalWallpaperOpen)
+        .zIndex(80)
     }
 }
 

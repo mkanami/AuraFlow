@@ -93,7 +93,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct WallpaperControlApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var viewModel = AuraFlowApplication.shared.viewModel
-    @StateObject private var terminalWallpaperViewModel = TerminalWallpaperViewModel()
 
     var body: some Scene {
         MenuBarExtra {
@@ -107,17 +106,11 @@ struct WallpaperControlApp: App {
             CommandGroup(replacing: .newItem) {}
         }
 
-        Window("Terminal Wallpaper", id: "terminal-wallpaper") {
-            TerminalWallpaperSettingsView(viewModel: terminalWallpaperViewModel)
-                .environment(\.adaptiveGlassAppearance, viewModel.adaptiveGlassAppearance)
-        }
-        .defaultSize(width: 760, height: 720)
     }
 }
 
 private struct MenuBarControls: View {
     @ObservedObject var viewModel: AppViewModel
-    @Environment(\.openWindow) private var openWindow
     @State private var menuOpenedAt: Date = .distantPast
 
     var body: some View {
@@ -208,7 +201,10 @@ private struct MenuBarControls: View {
     }
 
     private func openTerminalWallpaper() {
-        openWindow(id: "terminal-wallpaper")
+        openMainWindow()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            viewModel.openTerminalWallpaper()
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
 
