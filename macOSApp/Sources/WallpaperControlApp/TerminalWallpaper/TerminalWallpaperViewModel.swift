@@ -25,6 +25,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     @Published var allDisplays: Bool
     @Published var launchAtLogin: Bool
     @Published private(set) var selectedCatalogItemID: String?
+    @Published private(set) var catalogItems: [TerminalWallpaperCatalogItem]
     @Published private(set) var status: TerminalWallpaperStatus
     @Published private(set) var isBusy = false
     @Published var statusMessage: String?
@@ -46,6 +47,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         executable = config.command.executable
         argumentsText = config.command.arguments.joined(separator: "\n")
         selectedCatalogItemID = config.command.catalogItemID
+        catalogItems = TerminalWallpaperCatalog.availableItems()
         workingDirectory = config.command.workingDirectory ?? ""
         environmentText = config.command.environment
             .sorted { $0.key < $1.key }
@@ -77,12 +79,21 @@ final class TerminalWallpaperViewModel: ObservableObject {
         !isBusy && !executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    var availableCatalogItems: [TerminalWallpaperCatalogItem] {
-        TerminalWallpaperCatalog.availableItems()
+    func availableCatalogItems(
+        for category: TerminalWallpaperCatalogCategory,
+        matching query: String = ""
+    ) -> [TerminalWallpaperCatalogItem] {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return catalogItems.filter { item in
+            guard item.category == category else { return false }
+            guard !normalizedQuery.isEmpty else { return true }
+            return item.title.localizedCaseInsensitiveContains(normalizedQuery)
+                || item.subtitle.localizedCaseInsensitiveContains(normalizedQuery)
+        }
     }
 
-    func availableCatalogItems(for category: TerminalWallpaperCatalogCategory) -> [TerminalWallpaperCatalogItem] {
-        availableCatalogItems.filter { $0.category == category }
+    func refreshCatalog() {
+        catalogItems = TerminalWallpaperCatalog.availableItems()
     }
 
     var statusTitle: String {
@@ -114,12 +125,18 @@ final class TerminalWallpaperViewModel: ObservableObject {
         start()
     }
 
-    func selectCustomExecutable(_ url: URL) {
+    @discardableResult
+    func selectCustomExecutable(_ url: URL) -> Bool {
+        if url.pathExtension.lowercased() == "app" {
+            errorMessage = "GUI .app applications cannot be rendered as Terminal Wallpaper. Choose a command-line executable or TUI app."
+            return false
+        }
         selectedCatalogItemID = nil
         executable = url.path
         argumentsText = ""
         workingDirectory = ""
         environmentText = ""
+        return true
     }
 
     func setExecutable(_ value: String) {

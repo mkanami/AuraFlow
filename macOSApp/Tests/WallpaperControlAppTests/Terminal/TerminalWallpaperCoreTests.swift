@@ -115,6 +115,13 @@ import Testing
     )
 }
 
+@Test func terminalCatalogCanResolveDiscoveredMacExecutables() {
+    let discovered = TerminalWallpaperCatalog.item(id: "discovered:/bin/sh")
+    #expect(discovered?.title == "sh")
+    #expect(discovered?.category == .utilities)
+    #expect(discovered?.resolvedExecutable() == "/bin/sh")
+}
+
 @Test func terminalExecutableLocatorFindsPathAndNamedExecutables() throws {
     #expect(TerminalExecutableLocator.resolve("sh", environment: ["PATH": "/bin"]) == "/bin/sh")
     #expect(TerminalExecutableLocator.resolve("/bin/sh") == "/bin/sh")

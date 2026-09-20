@@ -4,6 +4,7 @@ import SwiftUI
 struct TerminalWallpaperSettingsView: View {
     @ObservedObject var viewModel: TerminalWallpaperViewModel
     @State private var showAdvancedCommand = false
+    @State private var catalogSearch = ""
 
     var body: some View {
         ScrollView {
@@ -19,6 +20,7 @@ struct TerminalWallpaperSettingsView: View {
         }
         .frame(minWidth: 720, minHeight: 680)
         .task {
+            viewModel.refreshCatalog()
             while !Task.isCancelled {
                 viewModel.refresh()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -42,15 +44,29 @@ struct TerminalWallpaperSettingsView: View {
                 Text("Select a terminal app or system utility. AuraFlow will find its executable automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text("GUI .app bundles are excluded. A command that writes no terminal output will be reported as blank.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                TextField("Search installed executables", text: $catalogSearch)
+                    .textFieldStyle(.roundedBorder)
 
                 catalogCategory(.applications)
                 catalogCategory(.utilities)
 
+                if viewModel.catalogItems.isEmpty {
+                    Text("No executable terminal programs were found in PATH or the standard bin folders.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 HStack {
+                    Button("Refresh catalog") { viewModel.refreshCatalog() }
                     Button("Choose executable…") {
                         guard let url = TerminalExecutablePicker.choose() else { return }
-                        viewModel.selectCustomExecutable(url)
-                        showAdvancedCommand = true
+                        if viewModel.selectCustomExecutable(url) {
+                            showAdvancedCommand = true
+                        }
                     }
                     Text("For custom scripts or terminal programs")
                         .font(.caption)
@@ -67,7 +83,7 @@ struct TerminalWallpaperSettingsView: View {
 
     @ViewBuilder
     private func catalogCategory(_ category: TerminalWallpaperCatalogCategory) -> some View {
-        let items = viewModel.availableCatalogItems(for: category)
+        let items = viewModel.availableCatalogItems(for: category, matching: catalogSearch)
         if !items.isEmpty {
             Label(category.title, systemImage: category.systemImage)
                 .font(.headline)
@@ -93,6 +109,12 @@ struct TerminalWallpaperSettingsView: View {
                         Text(item.subtitle)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if let executable = item.resolvedExecutable() {
+                            Text(executable)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
                     }
                     Spacer()
                     if viewModel.selectedCatalogItemID == item.id {

@@ -16,12 +16,15 @@ protocol TerminalWallpaperControlling {
 enum TerminalWallpaperControllerError: LocalizedError, Equatable {
     case unavailable(String)
     case videoWallpaperAlreadyRunning
+    case guiApplicationNotSupported
 
     var errorDescription: String? {
         switch self {
         case .unavailable(let message): return message
         case .videoWallpaperAlreadyRunning:
             return "Stop the video wallpaper before starting Terminal Wallpaper."
+        case .guiApplicationNotSupported:
+            return "A GUI .app cannot be rendered as a terminal wallpaper. Choose a command-line executable or TUI app."
         }
     }
 }
@@ -156,6 +159,9 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling {
         let normalized = config.normalized()
         guard !normalized.command.executable.isEmpty else {
             throw TerminalWallpaperControllerError.unavailable("Enter an executable command first.")
+        }
+        if normalized.command.executable.lowercased().hasSuffix(".app") {
+            throw TerminalWallpaperControllerError.guiApplicationNotSupported
         }
         if let catalogItemID = normalized.command.catalogItemID,
            let catalogItem = TerminalWallpaperCatalog.item(id: catalogItemID),

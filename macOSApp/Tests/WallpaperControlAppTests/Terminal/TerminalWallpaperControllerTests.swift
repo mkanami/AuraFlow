@@ -118,3 +118,21 @@ private struct TerminalControllerFixture {
     }
     #expect(fixture.store.loadCommand() == nil)
 }
+
+@Test func terminalControllerRejectsGuiApplicationBundles() throws {
+    let fixture = try TerminalControllerFixture("gui-app")
+    defer { fixture.cleanup() }
+    let controller = try NativeTerminalWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }
+    )
+
+    #expect(throws: TerminalWallpaperControllerError.guiApplicationNotSupported) {
+        _ = try controller.start(
+            config: TerminalWallpaperConfig(
+                command: TerminalCommandConfiguration(executable: "/Applications/Docker.app")
+            )
+        )
+    }
+}

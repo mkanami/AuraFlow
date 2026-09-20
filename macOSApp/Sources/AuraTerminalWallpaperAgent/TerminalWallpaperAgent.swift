@@ -2,8 +2,13 @@ import AppKit
 import AuraTerminalWallpaperCore
 import Foundation
 import Metal
+import OSLog
 
 final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
+    private let logger = Logger(
+        subsystem: "com.andrijvergeles.auraflow",
+        category: "terminal-wallpaper"
+    )
     private let store: TerminalWallpaperRuntimeStore
     private let metalDevice = MTLCreateSystemDefaultDevice()
     private var config: TerminalWallpaperConfig
@@ -18,6 +23,9 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var frames = 0
     private var renderedFrames = 0
     private var lastError: String?
+    private var childStartedAt: Date?
+    private var framesAtChildStart = 0
+    private var reportedNoOutput = false
     private var terminating = false
 
     init(configurationURL: URL) {
@@ -29,6 +37,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        logger.info("Terminal Wallpaper agent started")
         try? store.savePID()
         installNotifications()
         rebuildRuntime()
@@ -140,6 +149,9 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         rebuildWindows()
         guard restartChild || session.childPID != nil else { return }
         if restartChild {
+            childStartedAt = Date()
+            framesAtChildStart = frames
+            reportedNoOutput = false
             do {
                 _ = try session.start(
                     command: config.command,
@@ -153,6 +165,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 lastError = nil
             } catch {
                 lastError = error.localizedDescription
+                logger.error("Could not start child process: \(error.localizedDescription, privacy: .public)")
             }
         }
         applyLatestSnapshot()
@@ -176,6 +189,11 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 latestSnapshot = snapshot
                 frames += 1
+                childStartedAt = childStartedAt ?? Date()
+                if frames == framesAtChildStart + 1 {
+                    lastError = nil
+                    reportedNoOutput = false
+                }
                 applyLatestSnapshot()
             }
         }
@@ -184,6 +202,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func childExited() {
         guard !terminating else { return }
         lastError = "The terminal process exited."
+        logger.error("Terminal child process exited; retaining the last valid frame")
         writeHealth()
     }
 
@@ -228,6 +247,15 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func writeHealth() {
         let geometry = logicalGeometry()
         let childPID = session.childPID.map(Int.init)
+        if let childStartedAt,
+           childPID != nil,
+           frames == framesAtChildStart,
+           !reportedNoOutput,
+           Date().timeIntervalSince(childStartedAt) >= 3 {
+            lastError = "The child is running but produced no terminal output. Choose a TUI or command-line program, not a GUI app."
+            reportedNoOutput = true
+            logger.error("Terminal child produced no output after 3 seconds")
+        }
         let health = TerminalWallpaperHealth(
             available: true,
             fresh: true,

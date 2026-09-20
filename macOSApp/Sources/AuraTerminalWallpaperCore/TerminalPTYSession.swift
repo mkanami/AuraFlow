@@ -192,6 +192,9 @@ public final class TerminalPTYSession {
         }
         let value = command.executable.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { throw TerminalPTYError.invalidCommand }
+        if value.lowercased().hasSuffix(".app") {
+            throw TerminalPTYError.guiApplicationNotSupported
+        }
         guard let executable = TerminalExecutableLocator.resolve(value) else {
             throw TerminalPTYError.executableNotFound(value)
         }
@@ -203,6 +206,7 @@ public enum TerminalPTYError: LocalizedError, Equatable {
     case invalidCommand
     case executableNotFound(String)
     case spawnFailed(String)
+    case guiApplicationNotSupported
     case notRunning
     case resizeFailed
 
@@ -214,6 +218,8 @@ public enum TerminalPTYError: LocalizedError, Equatable {
             return "Executable not found or not executable: \(path)"
         case .spawnFailed(let message):
             return "Could not start terminal process: \(message)"
+        case .guiApplicationNotSupported:
+            return "A GUI .app cannot be rendered as a terminal wallpaper. Choose a command-line executable or TUI app."
         case .notRunning:
             return "Terminal process is not running."
         case .resizeFailed:

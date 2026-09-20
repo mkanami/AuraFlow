@@ -144,13 +144,126 @@ public enum TerminalWallpaperCatalog {
     ]
 
     public static func item(id: String) -> TerminalWallpaperCatalogItem? {
-        items.first { $0.id == id }
+        if let item = items.first(where: { $0.id == id }) {
+            return item
+        }
+        guard id.hasPrefix("discovered:") else { return nil }
+        let path = String(id.dropFirst("discovered:".count))
+        return discoveredItem(at: path)
     }
 
     public static func availableItems(
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
     ) -> [TerminalWallpaperCatalogItem] {
-        items.filter { $0.resolvedExecutable(environment: environment) != nil }
+        var result: [TerminalWallpaperCatalogItem] = []
+        var seenPaths = Set<String>()
+
+        for item in items {
+            guard let executable = item.resolvedExecutable(environment: environment) else { continue }
+            result.append(item)
+            seenPaths.insert(normalizedPath(executable))
+        }
+
+        for item in discoveredItems(environment: environment, fileManager: fileManager) {
+            guard let executable = item.resolvedExecutable(environment: environment) else { continue }
+            guard seenPaths.insert(normalizedPath(executable)).inserted else { continue }
+            result.append(item)
+        }
+
+        return result.sorted { lhs, rhs in
+            if lhs.category != rhs.category {
+                return lhs.category.rawValue < rhs.category.rawValue
+            }
+            let lhsIsRecommended = items.contains { $0.id == lhs.id }
+            let rhsIsRecommended = items.contains { $0.id == rhs.id }
+            if lhsIsRecommended != rhsIsRecommended {
+                return lhsIsRecommended
+            }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
+    }
+
+    private static func discoveredItems(
+        environment: [String: String],
+        fileManager: FileManager
+    ) -> [TerminalWallpaperCatalogItem] {
+        let roots = discoveryRoots(environment: environment)
+        var seenPaths = Set<String>()
+        var result: [TerminalWallpaperCatalogItem] = []
+
+        for root in roots {
+            guard let entries = try? fileManager.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                includingPropertiesForKeys: [.isRegularFileKey, .isExecutableKey, .isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+
+            for entry in entries {
+                guard let values = try? entry.resourceValues(
+                    forKeys: [.isRegularFileKey, .isExecutableKey, .isDirectoryKey]
+                ), values.isRegularFile == true, values.isExecutable == true else {
+                    continue
+                }
+                let path = entry.resolvingSymlinksInPath().path
+                guard seenPaths.insert(normalizedPath(path)).inserted else { continue }
+                result.append(
+                    TerminalWallpaperCatalogItem(
+                        id: "discovered:\(path)",
+                        title: entry.lastPathComponent,
+                        subtitle: "Command-line executable · \(path)",
+                        category: isSystemRoot(root) ? .utilities : .applications,
+                        systemImage: isSystemRoot(root) ? "wrench.and.screwdriver" : "terminal",
+                        executableCandidates: [path]
+                    )
+                )
+            }
+        }
+        return result
+    }
+
+    private static func discoveredItem(at path: String) -> TerminalWallpaperCatalogItem? {
+        guard let resolved = TerminalExecutableLocator.resolve(path) else { return nil }
+        let root = discoveryRoots(environment: ProcessInfo.processInfo.environment)
+            .first { path.hasPrefix($0 + "/") }
+        return TerminalWallpaperCatalogItem(
+            id: "discovered:\(path)",
+            title: URL(fileURLWithPath: path).lastPathComponent,
+            subtitle: "Command-line executable · \(path)",
+            category: root.map(isSystemRoot) == true ? .utilities : .applications,
+            systemImage: root.map(isSystemRoot) == true ? "wrench.and.screwdriver" : "terminal",
+            executableCandidates: [resolved]
+        )
+    }
+
+    private static func discoveryRoots(environment: [String: String]) -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let standardRoots = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "\(home)/bin",
+            "\(home)/.local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ]
+        let pathRoots = (environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+        var result: [String] = []
+        for root in standardRoots + pathRoots where !root.isEmpty && !result.contains(root) {
+            result.append(root)
+        }
+        return result
+    }
+
+    private static func isSystemRoot(_ root: String) -> Bool {
+        ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].contains(root)
+    }
+
+    private static func normalizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
 }
 
