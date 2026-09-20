@@ -1285,7 +1285,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             } catch is AerialLockScreenOperationAbort {
                 return false
             }
-            return true
+            // An explicit Lock request still needs to verify the live
+            // provider handoff. Returning immediately here lets a delayed
+            // WallpaperAgent rewrite invalidate an otherwise healthy marker;
+            // the caller then reports the same error on every retry.
+            return try await waitForInstalledConfiguration()
         }
 
         let preparedVideoURL = try await mediaPreparer.prepare(
@@ -1523,7 +1527,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 }
                 systemWallpaperURLMutated = true
             }
-            let didRefresh: Bool
+            var didRefresh = false
             if lockScreenOnlyRoute,
                avoidProviderRestartOnExistingLockOnlySourceChange,
                replacingExistingLockOnlySource {
@@ -1546,41 +1550,51 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 didRefresh = false
             }
             // WallpaperAgent may flush its old in-memory Index immediately
-            // after being restarted. Reassert the exact desired store before
-            // reporting success, but never perform a second provider refresh.
-            var configurationConfirmed = false
-            for attempt in 0..<3 {
-                if wallpaperStoreTransaction.wallpaperStoreFullySelectsAerial(
+            // after being restarted. Reassert the complete desired store and
+            // the canonical SystemWallpaperURL together. Checking only the
+            // store lets the transaction report success while the URL still
+            // points at the previous asset; checking only the URL has the
+            // opposite failure mode. Both values must remain stable before
+            // the marker is committed.
+            var configurationConfirmed = try await
+                reassertAndConfirmConfiguration(
+                    updatedStoreData: updatedStoreData,
                     assetID: assetID,
-                    scope: scope
-                ) {
-                    configurationConfirmed = true
-                    break
-                }
+                    scope: scope,
+                    shouldProceed: shouldProceed
+                )
+
+            // One provider restart is allowed when the first owner exits
+            // after the initial store write and replays its stale snapshot.
+            // This is deliberately bounded: it repairs the real macOS race
+            // without turning a persistent system failure into a loop.
+            if !configurationConfirmed,
+               didRefresh,
+               usesCanonicalWallpaperStore {
                 guard shouldProceed() else {
                     throw AerialLockScreenOperationAbort.sessionChanged
                 }
-                try updatedStoreData.write(
-                    to: wallpaperStoreURL,
-                    options: .atomic
+                lockScreenLifecycleLogger.warning(
+                    "Lock Screen store drifted after provider refresh; retrying provider handoff"
                 )
-                if usesCanonicalWallpaperStore {
-                    guard setSystemWallpaperURL(
-                        desiredSystemWallpaperURL(assetID: assetID)
-                    ) else {
-                        throw AerialLockScreenInstallerError
-                            .wallpaperStoreUpdateFailed
-                    }
-                }
-                if attempt < 2 {
-                    try await Task.sleep(nanoseconds: 200_000_000)
-                }
+                try refreshAction({ shouldProceed() })
+                configurationConfirmed = try await
+                    reassertAndConfirmConfiguration(
+                        updatedStoreData: updatedStoreData,
+                        assetID: assetID,
+                        scope: scope,
+                        shouldProceed: shouldProceed
+                    )
             }
-            guard configurationConfirmed
-                || wallpaperStoreTransaction.wallpaperStoreFullySelectsAerial(
-                    assetID: assetID,
-                    scope: scope
-                ) else {
+            let finalStoreData = try? Data(contentsOf: wallpaperStoreURL)
+            let finalStoreHash = finalStoreData.map(signature(of:)) ?? "missing"
+            let finalSystemURLMatches = !usesCanonicalWallpaperStore
+                || systemWallpaperURLMatches(assetID: assetID)
+            let finalScopeName = scope == .sharedWallpaper ? "shared" : "lockOnly"
+            lockScreenLifecycleLogger.notice(
+                "Lock Screen configuration result asset=\(assetID, privacy: .public) scope=\(finalScopeName, privacy: .public) confirmed=\(configurationConfirmed, privacy: .public) storeHash=\(finalStoreHash, privacy: .public) systemURLMatches=\(finalSystemURLMatches, privacy: .public)"
+            )
+            guard configurationConfirmed else {
                 throw AerialLockScreenInstallerError
                     .wallpaperStoreUpdateFailed
             }
@@ -1682,6 +1696,89 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             }
             throw error
         }
+    }
+
+    private func reassertAndConfirmConfiguration(
+        updatedStoreData: Data,
+        assetID: String,
+        scope: AerialWallpaperStoreScope,
+        shouldProceed: @escaping () -> Bool
+    ) async throws -> Bool {
+        // The canonical macOS store is asynchronously rewritten by
+        // WallpaperAgent. Require several consecutive matching observations
+        // there, while keeping injected/test stores fast and deterministic.
+        let requiredConsecutiveMatches = usesCanonicalWallpaperStore ? 5 : 1
+        let maximumAttempts = usesCanonicalWallpaperStore ? 20 : 3
+        var consecutiveMatches = 0
+
+        for attempt in 0..<maximumAttempts {
+            let storeMatches = wallpaperStoreTransaction
+                .wallpaperStoreFullySelectsAerial(
+                    assetID: assetID,
+                    scope: scope
+                )
+            let systemURLMatches = !usesCanonicalWallpaperStore
+                || systemWallpaperURLMatches(assetID: assetID)
+
+            if storeMatches && systemURLMatches {
+                consecutiveMatches += 1
+                if consecutiveMatches >= requiredConsecutiveMatches {
+                    return true
+                }
+            } else {
+                consecutiveMatches = 0
+                let currentStoreHash = (try? Data(contentsOf: wallpaperStoreURL))
+                    .map(signature(of:)) ?? "missing"
+                let scopeName = scope == .sharedWallpaper ? "shared" : "lockOnly"
+                lockScreenLifecycleLogger.debug(
+                    "Lock Screen configuration mismatch asset=\(assetID, privacy: .public) scope=\(scopeName, privacy: .public) attempt=\(attempt, privacy: .public) store=\(storeMatches, privacy: .public) systemURL=\(systemURLMatches, privacy: .public) storeHash=\(currentStoreHash, privacy: .public)"
+                )
+                guard shouldProceed() else {
+                    throw AerialLockScreenOperationAbort.sessionChanged
+                }
+                try updatedStoreData.write(
+                    to: wallpaperStoreURL,
+                    options: .atomic
+                )
+                if usesCanonicalWallpaperStore {
+                    guard setSystemWallpaperURL(
+                        desiredSystemWallpaperURL(assetID: assetID)
+                    ) else {
+                        throw AerialLockScreenInstallerError
+                            .wallpaperStoreUpdateFailed
+                    }
+                }
+            }
+
+            if attempt < maximumAttempts - 1 {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        return false
+    }
+
+    private func waitForInstalledConfiguration() async throws -> Bool {
+        let requiredConsecutiveMatches = usesCanonicalWallpaperStore ? 5 : 1
+        let maximumAttempts = usesCanonicalWallpaperStore ? 20 : 3
+        var consecutiveMatches = 0
+
+        for attempt in 0..<maximumAttempts {
+            if installationConfirmed {
+                consecutiveMatches += 1
+                if consecutiveMatches >= requiredConsecutiveMatches {
+                    return true
+                }
+            } else {
+                consecutiveMatches = 0
+                lockScreenLifecycleLogger.debug(
+                    "Existing Lock Screen generation is not stable attempt=\(attempt, privacy: .public)"
+                )
+            }
+            if attempt < maximumAttempts - 1 {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        return false
     }
 
     public func uninstall() throws {

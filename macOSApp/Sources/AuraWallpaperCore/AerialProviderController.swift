@@ -142,24 +142,32 @@ internal final class AerialProviderController {
             "/usr/bin/killall",
             [WallpaperPlatformConstants.wallpaperAgentProcessName]
         )
-        // Once the owner has been stopped, waiting is passive and must finish
-        // even if a new lock begins. Cancelling here could strand that lock
-        // without any provider.
-        if waitForFreshWallpaperRuntime(
-            excludingProviders: previousProviderPIDs,
-            excludingOwners: previousOwnerPIDs
-        ) {
-            return
+        // WallpaperAgent is the owner of the ExtensionKit provider. Wait for
+        // that owner to leave before touching the provider itself; the
+        // extension can legitimately outlive its owner for a short time and
+        // must not make every first Lock fail just because its old PID is
+        // still draining.
+        guard waitForProcessesToExit(
+            previousOwnerPIDs,
+            timeout: 2.0
+        ) else {
+            throw AerialLockScreenInstallerError
+                .aerialProviderRestartFailed
         }
 
-        // A new lock forbids another destructive kill, but explicitly opening
-        // the missing owner is safe and gives the current lock a provider.
-        if shouldProceed() {
-            runProcess(
-                "/usr/bin/pkill",
-                ["-x", WallpaperPlatformConstants.aerialExtensionProcessName]
-            )
+        guard shouldProceed() else {
+            throw AerialLockScreenOperationAbort.sessionChanged
         }
+        // A stale ExtensionKit instance can retain the previous Aerial asset
+        // after its owner has gone away. Kill only that provider and give it a
+        // short bounded drain window. This never touches Dock or Desktop
+        // wallpaper windows.
+        runProcess(
+            "/usr/bin/pkill",
+            ["-x", WallpaperPlatformConstants.aerialExtensionProcessName]
+        )
+        _ = waitForProcessesToExit(previousProviderPIDs, timeout: 1.0)
+
         runProcess(
             "/usr/bin/open",
             [

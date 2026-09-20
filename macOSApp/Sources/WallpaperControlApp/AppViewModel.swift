@@ -1976,6 +1976,22 @@ final class AppViewModel: ObservableObject {
         set { previewViewModel.player = newValue }
     }
 
+    var isPreviewReadyForDisplay: Bool {
+        previewViewModel.isPlayerReadyForDisplay
+    }
+
+    var previewPosterURL: URL? {
+        previewViewModel.posterURL
+    }
+
+    var previewPosterRefererURL: URL? {
+        previewViewModel.posterRefererURL
+    }
+
+    var previewPosterTitle: String {
+        previewViewModel.posterTitle
+    }
+
     var scaleMode: WallpaperScaleMode {
         get { previewViewModel.scaleMode }
         set { previewViewModel.scaleMode = newValue }
@@ -2806,6 +2822,7 @@ final class AppViewModel: ObservableObject {
     private func configurePreviewOrPrepare(for url: URL) {
         guard !WallpaperMediaKind.forURL(url).isStaticImage else {
             cancelPreviewPreparation()
+            previewViewModel.isPlayerReadyForDisplay = false
             configurePreview(for: url)
             scheduleLockScreenMediaPreparation(
                 for: url,
@@ -2814,24 +2831,17 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let isNativeContainer = isNativePlaybackContainer(url)
-        if isNativeContainer {
+        // A filename extension describes only the container. MP4/MOV can
+        // still contain AV1 or another codec that AVPlayer cannot render on
+        // this Mac. Native containers may begin decoding immediately, but the
+        // layer stays behind the poster until it has a real frame. The async
+        // preparation below replaces unsupported codecs with a compatible
+        // cached file.
+        if isNativePlaybackContainer(url) {
             configurePreview(for: url)
-            // Native catalog downloads are already complete local files by
-            // the time they reach preview. Do not wait for AVFoundation to
-            // scan a large movie before starting the Lock Screen warm-up:
-            // files with a tail-located movie index can otherwise begin that
-            // work only after the user presses Start.
-            scheduleLockScreenMediaPreparation(
-                for: url,
-                previewGeneration: previewPreparationGeneration
-            )
-            return
-        } else if previewPlayer == nil {
-            // Keep the view attached to a real player while compatibility
-            // conversion runs. Unsupported containers must never be handed to
-            // AVPlayer as the final preview source.
-            configurePreview(for: nil)
+        } else {
+            previewViewModel.isPlayerReadyForDisplay = false
+            previewPlayer?.pause()
         }
         schedulePreviewPreparation(for: url)
     }
@@ -2844,9 +2854,10 @@ final class AppViewModel: ObservableObject {
         previewPreparationTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                let requiresCompatibility = await optimizer
+                    .requiresMandatoryCompatibility(inputURL: normalizedSourceURL)
                 if isNativePlaybackContainer(normalizedSourceURL),
-                   normalizedSourceURL.pathExtension.lowercased() != "gif",
-                   await isPreviewPlayableVideo(at: normalizedSourceURL) {
+                   !requiresCompatibility {
                     guard !Task.isCancelled,
                           requestedGeneration == previewPreparationGeneration,
                           selectedVideoURL?.standardizedFileURL == normalizedSourceURL
@@ -2857,18 +2868,22 @@ final class AppViewModel: ObservableObject {
                         for: normalizedSourceURL,
                         previewGeneration: requestedGeneration
                     )
-                    if requestedGeneration == previewPreparationGeneration {
-                        previewPreparationTask = nil
-                    }
+                    previewPreparationTask = nil
                     return
                 }
 
-                let prepared = try await prepareCatalogVideoURLForPlayback(normalizedSourceURL)
+                let prepared = isManagedCacheURL(normalizedSourceURL)
+                    ? try await prepareCatalogVideoURLForPlayback(normalizedSourceURL)
+                    : try await prepareVideoURLForPlayback(normalizedSourceURL)
                 guard !Task.isCancelled,
                       requestedGeneration == previewPreparationGeneration,
                       selectedVideoURL?.standardizedFileURL == normalizedSourceURL
                 else {
                     return
+                }
+
+                guard await isPreviewPlayableVideo(at: prepared.url) else {
+                    throw URLError(.cannotDecodeContentData)
                 }
 
                 configurePreview(for: prepared.url)
@@ -2888,9 +2903,9 @@ final class AppViewModel: ObservableObject {
                 else {
                     return
                 }
-                // Keep the current preview visible and let Start/Lock surface
-                // the actionable conversion error at commit time.
-                statusMessage = "Preview preparation failed. Press Start or Lock to retry."
+                // The poster remains visible. A failed decoder must never
+                // replace it with AVPlayer's opaque black surface.
+                statusMessage = "This video could not be decoded. Choose another file or download it again."
             }
 
             if requestedGeneration == previewPreparationGeneration {
@@ -3133,7 +3148,10 @@ final class AppViewModel: ObservableObject {
                 closeDownloadedWallpapers()
                 selectVideoForPreview(
                     resolvedURL,
-                    summary: "Wallpaper loaded into preview. Press Start or Lock to apply."
+                    summary: "Wallpaper loaded into preview. Press Start or Lock to apply.",
+                    posterURL: wallpaper.effectivePreviewURL,
+                    posterRefererURL: wallpaper.sourcePageURL,
+                    posterTitle: wallpaper.title
                 )
             } catch {
                 alertMessage = "Failed to prepare downloaded wallpaper: \(error.localizedDescription)"
@@ -3810,9 +3828,18 @@ final class AppViewModel: ObservableObject {
         if WallpaperMediaKind.forURL(sourceURL).isStaticImage {
             return (sourceURL.standardizedFileURL, nil)
         }
-        let settings = currentOptimizationSettings()
-        guard settings.enabled else {
-            return (sourceURL, nil)
+        var settings = currentOptimizationSettings()
+        if !settings.enabled {
+            // Disabling optional optimization must not disable mandatory
+            // playback compatibility. Preserve compatible H.264/HEVC files,
+            // but still convert WebM/VP8/VP9 and unsupported AV1.
+            guard await optimizer.requiresMandatoryCompatibility(inputURL: sourceURL) else {
+                return (sourceURL.standardizedFileURL, nil)
+            }
+            settings.enabled = true
+            settings.transcodeH264ToHEVC = false
+            settings.forceSoftwareAV1Encode = false
+            settings.profile = .quality
         }
 
         optimizationInProgress = true
@@ -3856,18 +3883,8 @@ final class AppViewModel: ObservableObject {
             return (sourceURL.standardizedFileURL, nil)
         }
 
-        // GIF is deliberately kept on the compatibility path. AVPlayer can
-        // inspect it, but the desktop agent needs the optimizer's MP4 output
-        // for reliable looping.
-        let isGIF = sourceURL.pathExtension.lowercased() == "gif"
-        if !isGIF,
-           isNativePlaybackContainer(sourceURL) {
-            // A native MP4/MOV/M4V source is already ready to render. Do not
-            // rescan a complete managed download on every Start. Some large
-            // MP4 files keep their movie index at the end, making this probe
-            // take several seconds even though the same local file is already
-            // playing in preview. The download transaction validates the
-            // response and publishes the file atomically before this path.
+        if isNativePlaybackContainer(sourceURL),
+           !(await optimizer.requiresMandatoryCompatibility(inputURL: sourceURL)) {
             return (sourceURL.standardizedFileURL, nil)
         }
 
@@ -4653,9 +4670,20 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func selectVideoForPreview(_ url: URL, summary: String?) {
+    private func selectVideoForPreview(
+        _ url: URL,
+        summary: String?,
+        posterURL: URL? = nil,
+        posterRefererURL: URL? = nil,
+        posterTitle: String? = nil
+    ) {
         cancelPreviewPreparation()
         previewViewModel.selectPendingVideo(url)
+        previewViewModel.setPoster(
+            url: posterURL,
+            refererURL: posterRefererURL,
+            title: posterTitle ?? url.deletingPathExtension().lastPathComponent
+        )
         configurePreviewOrPrepare(for: url)
         savePreviewSeed(for: url)
         statusMessage = summary
@@ -4673,7 +4701,10 @@ final class AppViewModel: ObservableObject {
         )
         selectVideoForPreview(
             localURL,
-            summary: "Wallpaper downloaded to preview. Press Start or Lock to apply."
+            summary: "Wallpaper downloaded to preview. Press Start or Lock to apply.",
+            posterURL: wallpaper.previewImageURL,
+            posterRefererURL: wallpaper.sourcePageURL,
+            posterTitle: wallpaper.title
         )
         if let warningMessage = persistenceStatus.warningMessage {
             alertMessage = warningMessage
@@ -4687,7 +4718,8 @@ final class AppViewModel: ObservableObject {
         scheduleLocalWallpaperImport(for: normalizedURL)
         selectVideoForPreview(
             normalizedURL,
-            summary: "Video loaded into preview. Press Start or Lock to apply."
+            summary: "Video loaded into preview. Press Start or Lock to apply.",
+            posterTitle: normalizedURL.deletingPathExtension().lastPathComponent
         )
     }
 
@@ -4835,8 +4867,9 @@ final class AppViewModel: ObservableObject {
 
         guard let url else {
             previewPlayer?.pause()
-            previewPlayer?.replaceCurrentItem(with: nil)
             previewPlayer = nil
+            previewViewModel.isPlayerReadyForDisplay = false
+            previewViewModel.setPoster(url: nil, refererURL: nil, title: nil)
             adaptiveGlassAppearance = .emptyState
             return
         }
@@ -4847,20 +4880,16 @@ final class AppViewModel: ObservableObject {
         // is published below once its signature has been verified.
         adaptiveGlassAppearance = .previewTransitionFallback
 
+        previewViewModel.isPlayerReadyForDisplay = false
+        previewPlayer?.pause()
+
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 0.35
-        let player: AVPlayer
-        if let existingPlayer = previewPlayer {
-            player = existingPlayer
-            player.pause()
-            // Keep one AVPlayer attached to AVPlayerLayer and replace its item
-            // directly. Inserting an empty item or swapping player identities can
-            // leave the layer displaying its opaque black backing surface.
-            player.replaceCurrentItem(with: item)
-        } else {
-            player = AVPlayer(playerItem: item)
-            previewPlayer = player
-        }
+        // Publish a fresh player identity. PreviewLayer keeps it hidden behind
+        // the poster until AVPlayerLayer confirms a decoded frame, so replacing
+        // an item can never expose the layer's transient black surface.
+        let player = AVPlayer(playerItem: item)
+        previewPlayer = player
         player.isMuted = true
         player.volume = 0
         player.automaticallyWaitsToMinimizeStalling = true
@@ -4872,8 +4901,14 @@ final class AppViewModel: ObservableObject {
             Task { @MainActor [weak self, weak player, weak item] in
                 guard let self, let player, let item else { return }
                 guard player.currentItem === item else { return }
-                guard item.status == .readyToPlay else { return }
-                self.applyPreviewPlaybackRate(to: player)
+                switch item.status {
+                case .readyToPlay:
+                    self.applyPreviewPlaybackRate(to: player)
+                case .failed:
+                    self.previewViewModel.isPlayerReadyForDisplay = false
+                default:
+                    break
+                }
             }
         }
 
@@ -4902,6 +4937,11 @@ final class AppViewModel: ObservableObject {
 
         applyPreviewPlaybackRate(to: player)
         scheduleAdaptiveGlassRefresh(for: url)
+    }
+
+    func previewReadyForDisplayDidChange(player: AVPlayer?, isReady: Bool) {
+        guard let player, previewPlayer === player else { return }
+        previewViewModel.isPlayerReadyForDisplay = isReady
     }
 
     private func scheduleAdaptiveGlassRefresh(for url: URL) {

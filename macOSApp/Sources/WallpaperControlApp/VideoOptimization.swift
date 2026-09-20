@@ -165,6 +165,26 @@ final class VideoOptimizer {
     private let softwareAV1Revision = 1
     private let compatibilityTranscodeRevision = 1
 
+    func requiresMandatoryCompatibility(inputURL: URL) async -> Bool {
+        if isGIF(inputURL) || isCompatibilityFFmpegCandidate(inputURL) {
+            return true
+        }
+
+        let asset = AVURLAsset(url: inputURL)
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let codecType = try? await videoCodecType(for: track) else {
+            // An unreadable file is handled by AVPlayer's failure path while
+            // the poster remains visible. Do not mistake a metadata failure
+            // for a codec that definitely needs transcoding.
+            return false
+        }
+
+        if codecType == vp8CodecType || codecType == vp9CodecType {
+            return true
+        }
+        return codecType == av1CodecType && !supportsHardwareAV1Decode()
+    }
+
     func makeCatalogPreviewSample(inputURL: URL) async throws -> URL {
         guard let ffmpeg = resolveFFmpegExecutableForCompatibility() else {
             throw VideoOptimizerError.exportFailed(
@@ -290,6 +310,16 @@ final class VideoOptimizer {
         case .passthrough:
             return VideoOptimizationResult(outputURL: inputURL, decision: decision, fromCache: false)
         case .transcode:
+            if codecType == av1CodecType, !supportsHardwareAV1Decode() {
+                return try await transcodeToCompatibilityUsingFFmpeg(
+                    inputURL: inputURL,
+                    settings: settings,
+                    codecType: codecType,
+                    reason: "AV1 hardware decode unavailable. Converted to H.264 for reliable playback.",
+                    progress: progress
+                )
+            }
+
             if shouldForceSoftwareAV1Encode(codecType: codecType, settings: settings) {
                 let outputURL = try optimizedOutputURL(
                     inputURL: inputURL,

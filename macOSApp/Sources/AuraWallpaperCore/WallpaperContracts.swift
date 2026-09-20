@@ -34,7 +34,7 @@ public struct ControlConfig: Codable, Equatable, Sendable {
     public static let defaultConfig = ControlConfig(
         video_path: "",
         playback_speed: 1.0,
-        show_on_lock_screen: false
+        show_on_lock_screen: true
     )
 }
 

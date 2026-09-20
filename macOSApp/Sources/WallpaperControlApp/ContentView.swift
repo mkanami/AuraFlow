@@ -95,6 +95,37 @@ private func boundedAdaptiveSurfaceProtectionOpacity(_ value: CGFloat) -> CGFloa
     min(max(value, 0.0), maximumAdaptiveSurfaceProtectionOpacity)
 }
 
+/// A button already sits on top of a protected glass panel, so repeating the
+/// panel's full protection value on every control makes native Liquid Glass
+/// bloom into an opaque white highlight. Keep the local layer directional:
+/// light labels receive a dark clamp, while dark labels receive only a small
+/// light lift.
+struct AuraControlSurfaceMetrics {
+    static func nativeProtectionOpacity(
+        tone: AdaptiveTextTone,
+        adaptiveProtection: CGFloat,
+        isPressed: Bool,
+        isSelected: Bool,
+        isEmphasized: Bool
+    ) -> CGFloat {
+        let adaptive = boundedAdaptiveSurfaceProtectionOpacity(adaptiveProtection)
+        let interactionBoost: CGFloat = isPressed ? 0.025 : 0.0
+        let selectionBoost: CGFloat = isSelected ? 0.018 : (isEmphasized ? 0.010 : 0.0)
+
+        switch tone {
+        case .light:
+            // Native clear glass can produce a strong white specular highlight
+            // over bright video. A dark local clamp keeps white labels legible
+            // without replacing the system glass material.
+            return min(0.42, 0.20 + (adaptive * 0.68) + interactionBoost + selectionBoost)
+        case .dark:
+            // A white lift is useful behind dark labels, but it must stay well
+            // below the level where the whole control reads as overexposed.
+            return min(0.20, 0.045 + (adaptive * 0.42) + interactionBoost + selectionBoost)
+        }
+    }
+}
+
 private func speedOverlayPillWidth(for availableWidth: CGFloat) -> CGFloat {
     min(max(availableWidth * 0.46, 420), 720)
 }
@@ -199,7 +230,17 @@ struct ContentView: View {
                 player: viewModel.previewPlayer,
                 wallpaperURL: viewModel.currentVideoURL ?? viewModel.appliedVideoURL,
                 aspectRatio: aspectRatio,
-                scaleMode: viewModel.scaleMode
+                scaleMode: viewModel.scaleMode,
+                isVideoReadyForDisplay: viewModel.isPreviewReadyForDisplay,
+                posterURL: viewModel.previewPosterURL,
+                posterRefererURL: viewModel.previewPosterRefererURL,
+                posterTitle: viewModel.previewPosterTitle,
+                onVideoReadyForDisplayChange: { player, isReady in
+                    viewModel.previewReadyForDisplayDidChange(
+                        player: player,
+                        isReady: isReady
+                    )
+                }
             )
             .frame(
                 width: proxy.size.width,
@@ -420,6 +461,11 @@ struct PreviewLayer: View {
     let wallpaperURL: URL?
     let aspectRatio: CGFloat
     let scaleMode: WallpaperScaleMode
+    let isVideoReadyForDisplay: Bool
+    let posterURL: URL?
+    let posterRefererURL: URL?
+    let posterTitle: String
+    let onVideoReadyForDisplayChange: (AVPlayer?, Bool) -> Void
 
     var body: some View {
         Group {
@@ -432,8 +478,24 @@ struct PreviewLayer: View {
                         contentMode: scaleMode == .fit ? .fit : .fill
                     )
             } else {
-                VideoPreview(player: player, videoGravity: scaleMode.previewGravity)
+                ZStack {
+                    CatalogPreviewImage(
+                        url: posterURL,
+                        title: posterTitle,
+                        referer: posterRefererURL,
+                        contentMode: scaleMode == .fit ? .fit : .fill
+                    )
+
+                    VideoPreview(
+                        player: player,
+                        videoGravity: scaleMode.previewGravity,
+                        onReadyForDisplayChange: { isReady in
+                            onVideoReadyForDisplayChange(player, isReady)
+                        }
+                    )
                     .aspectRatio(aspectRatio, contentMode: .fill)
+                    .opacity(isVideoReadyForDisplay ? 1 : 0)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1652,7 +1714,7 @@ struct WallpaperCatalogView: View {
             Image(systemName: "arrow.counterclockwise")
                 .font(.caption2.weight(.semibold))
         }
-        .buttonStyle(AuraPanelButtonStyle(fillWidth: false))
+        .buttonStyle(AuraPanelButtonStyle(fillWidth: false, region: .center))
         .help("Reset search and category, then scroll to top")
         .accessibilityLabel("Reset catalog and scroll to top")
     }
@@ -1678,7 +1740,8 @@ struct CatalogGroupFilterButton: View {
             AuraPanelButtonStyle(
                 fillWidth: false,
                 emphasized: isSelected,
-                selected: isSelected
+                selected: isSelected,
+                region: .center
             )
         )
         .accessibilityLabel("\(group.title) wallpapers")
@@ -2391,22 +2454,34 @@ private struct AuraLegacySliderDashes: View {
 struct VideoPreview: NSViewRepresentable {
     let player: AVPlayer?
     let videoGravity: AVLayerVideoGravity
+    var onReadyForDisplayChange: ((Bool) -> Void)? = nil
 
     func makeNSView(context: Context) -> AuraPreviewPlayerView {
         let view = AuraPreviewPlayerView()
-        view.update(player: player, videoGravity: videoGravity)
+        view.update(
+            player: player,
+            videoGravity: videoGravity,
+            onReadyForDisplayChange: onReadyForDisplayChange
+        )
         return view
     }
 
     func updateNSView(_ nsView: AuraPreviewPlayerView, context: Context) {
-        nsView.update(player: player, videoGravity: videoGravity)
+        nsView.update(
+            player: player,
+            videoGravity: videoGravity,
+            onReadyForDisplayChange: onReadyForDisplayChange
+        )
     }
 }
 
 final class AuraPreviewPlayerView: NSView {
     override var isOpaque: Bool {
-        true
+        false
     }
+
+    private var readyForDisplayObservation: NSKeyValueObservation?
+    private var readyForDisplayHandler: ((Bool) -> Void)?
 
     private var playerLayer: AVPlayerLayer {
         guard let layer = self.layer as? AVPlayerLayer else {
@@ -2434,17 +2509,39 @@ final class AuraPreviewPlayerView: NSView {
     private func commonInit() {
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
-        playerLayer.backgroundColor = NSColor.black.cgColor
+        playerLayer.backgroundColor = NSColor.clear.cgColor
         playerLayer.needsDisplayOnBoundsChange = false
     }
 
-    func update(player: AVPlayer?, videoGravity: AVLayerVideoGravity) {
+    func update(
+        player: AVPlayer?,
+        videoGravity: AVLayerVideoGravity,
+        onReadyForDisplayChange: ((Bool) -> Void)? = nil
+    ) {
+        readyForDisplayHandler = onReadyForDisplayChange
         if playerLayer.player !== player {
+            readyForDisplayObservation?.invalidate()
+            readyForDisplayObservation = nil
+            onReadyForDisplayChange?(false)
             playerLayer.player = player
+            if player != nil {
+                readyForDisplayObservation = playerLayer.observe(
+                    \.isReadyForDisplay,
+                    options: [.initial, .new]
+                ) { [weak self] layer, _ in
+                    DispatchQueue.main.async { [weak self] in
+                        self?.readyForDisplayHandler?(layer.isReadyForDisplay)
+                    }
+                }
+            }
         }
         if playerLayer.videoGravity != videoGravity {
             playerLayer.videoGravity = videoGravity
         }
+    }
+
+    deinit {
+        readyForDisplayObservation?.invalidate()
     }
 }
 
@@ -2489,16 +2586,23 @@ struct DisabledOverlay: View {
 }
 
 struct AuraPanelButtonStyle: ButtonStyle {
+    enum Region {
+        case bottom
+        case center
+    }
+
     var fillWidth = true
     var emphasized = false
     var selected = false
+    var region: Region = .bottom
 
     func makeBody(configuration: Configuration) -> some View {
         AuraPanelButton(
             configuration: configuration,
             fillWidth: fillWidth,
             emphasized: emphasized,
-            selected: selected
+            selected: selected,
+            region: region
         )
     }
 }
@@ -2508,6 +2612,7 @@ private struct AuraPanelButton: View {
     let fillWidth: Bool
     let emphasized: Bool
     let selected: Bool
+    let region: AuraPanelButtonStyle.Region
 
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @Environment(\.isEnabled) private var isEnabled
@@ -2537,15 +2642,26 @@ private struct AuraPanelButton: View {
 
     private var protectionOpacity: CGFloat {
         let adaptive = boundedAdaptiveSurfaceProtectionOpacity(
-            adaptiveGlassAppearance.bottomButtonProtectionOpacity
+            adaptiveProtectionOpacity
         )
         return (usesNativeLiquidGlass ? 0.035 : 0.10) + adaptive
     }
 
     private var topHighlightOpacity: CGFloat {
         guard isEnabled else { return 0.035 }
-        let adaptive = adaptiveGlassAppearance.bottomButtonHighlightOpacity
+        let adaptive = region == .bottom
+            ? adaptiveGlassAppearance.bottomButtonHighlightOpacity
+            : max(0.012, 0.055 - (0.050 * adaptiveGlassAppearance.centerProtectionOverlayOpacity))
         return min(0.22, (usesNativeLiquidGlass ? 0.105 : 0.075) + adaptive)
+    }
+
+    private var adaptiveProtectionOpacity: CGFloat {
+        switch region {
+        case .bottom:
+            return adaptiveGlassAppearance.bottomButtonProtectionOpacity
+        case .center:
+            return adaptiveGlassAppearance.centerProtectionOverlayOpacity
+        }
     }
 
     private var labelColor: Color {
@@ -2598,15 +2714,13 @@ private struct AuraPanelButton: View {
                             .glassEffect(.clear.interactive(), in: shape)
                         shape.fill(
                             textTone.contrastSurfaceColor.opacity(
-                                min(
-                                    0.34,
-                                    0.035
-                                        + boundedAdaptiveSurfaceProtectionOpacity(
-                                            adaptiveGlassAppearance.bottomButtonProtectionOpacity
-                                        )
-                                        + (configuration.isPressed ? 0.025 : 0.0)
-                                        + (selected ? 0.018 : (emphasized ? 0.010 : 0.0))
-                                    )
+                                AuraControlSurfaceMetrics.nativeProtectionOpacity(
+                                    tone: textTone,
+                                    adaptiveProtection: adaptiveProtectionOpacity,
+                                    isPressed: configuration.isPressed,
+                                    isSelected: selected,
+                                    isEmphasized: emphasized
+                                )
                             )
                         )
                     } else {

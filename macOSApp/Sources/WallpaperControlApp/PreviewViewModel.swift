@@ -34,6 +34,10 @@ final class PreviewViewModel: ObservableObject {
     @Published var playbackSpeed: Double = 1.0
     @Published var player: AVPlayer?
     @Published var scaleMode: WallpaperScaleMode = .fill
+    @Published var isPlayerReadyForDisplay = false
+    @Published var posterURL: URL?
+    @Published var posterRefererURL: URL?
+    @Published var posterTitle = "Wallpaper Preview"
 
     init(previewStateURL: URL) {
         self.previewStateURL = previewStateURL
@@ -49,6 +53,13 @@ final class PreviewViewModel: ObservableObject {
 
     func clearPendingVideo() {
         pendingVideoURL = nil
+    }
+
+    func setPoster(url: URL?, refererURL: URL?, title: String?) {
+        posterURL = url
+        posterRefererURL = refererURL
+        let normalizedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        posterTitle = normalizedTitle.isEmpty ? "Wallpaper Preview" : normalizedTitle
     }
 
     func loadSavedSeed() -> WallpaperPreviewSeed? {
