@@ -43,17 +43,20 @@ public enum TerminalScaleMode: String, Codable, CaseIterable, Identifiable, Send
 }
 
 public struct TerminalCommandConfiguration: Codable, Equatable, Sendable {
+    public var catalogItemID: String?
     public var executable: String
     public var arguments: [String]
     public var workingDirectory: String?
     public var environment: [String: String]
 
     public init(
+        catalogItemID: String? = nil,
         executable: String = "",
         arguments: [String] = [],
         workingDirectory: String? = nil,
         environment: [String: String] = [:]
     ) {
+        self.catalogItemID = catalogItemID
         self.executable = executable
         self.arguments = arguments
         self.workingDirectory = workingDirectory

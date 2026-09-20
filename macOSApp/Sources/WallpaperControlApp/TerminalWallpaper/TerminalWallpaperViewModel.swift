@@ -23,6 +23,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     @Published var backgroundOpacity: Double
     @Published var allDisplays: Bool
     @Published var launchAtLogin: Bool
+    @Published private(set) var selectedCatalogItemID: String?
     @Published private(set) var status: TerminalWallpaperStatus
     @Published private(set) var isBusy = false
     @Published var statusMessage: String?
@@ -43,6 +44,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         let config = (try? resolvedController.status().config) ?? .defaultConfig
         executable = config.command.executable
         argumentsText = config.command.arguments.joined(separator: "\n")
+        selectedCatalogItemID = config.command.catalogItemID
         workingDirectory = config.command.workingDirectory ?? ""
         environmentText = config.command.environment
             .sorted { $0.key < $1.key }
@@ -73,6 +75,14 @@ final class TerminalWallpaperViewModel: ObservableObject {
         !isBusy && !executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var availableCatalogItems: [TerminalWallpaperCatalogItem] {
+        TerminalWallpaperCatalog.availableItems()
+    }
+
+    func availableCatalogItems(for category: TerminalWallpaperCatalogCategory) -> [TerminalWallpaperCatalogItem] {
+        availableCatalogItems.filter { $0.category == category }
+    }
+
     var statusTitle: String {
         if status.running && status.health?.childRunning == true { return "Running" }
         if status.running { return "Agent running" }
@@ -87,6 +97,33 @@ final class TerminalWallpaperViewModel: ObservableObject {
     func start() { applyRuntime(.start) }
     func stop() { applyRuntime(.stop) }
     func restart() { applyRuntime(.restart) }
+
+    func select(_ item: TerminalWallpaperCatalogItem) {
+        let command = item.commandConfiguration()
+        selectedCatalogItemID = item.id
+        executable = command.executable
+        argumentsText = command.arguments.joined(separator: "\n")
+        workingDirectory = ""
+        environmentText = ""
+    }
+
+    func start(_ item: TerminalWallpaperCatalogItem) {
+        select(item)
+        start()
+    }
+
+    func selectCustomExecutable(_ url: URL) {
+        selectedCatalogItemID = nil
+        executable = url.path
+        argumentsText = ""
+        workingDirectory = ""
+        environmentText = ""
+    }
+
+    func setExecutable(_ value: String) {
+        selectedCatalogItemID = nil
+        executable = value
+    }
 
     func apply() {
         let controller = controller
@@ -173,6 +210,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         render = render.normalized()
         return TerminalWallpaperConfig(
             command: TerminalCommandConfiguration(
+                catalogItemID: selectedCatalogItemID,
                 executable: executable,
                 arguments: argumentsText.split(whereSeparator: \.isNewline).map(String.init),
                 workingDirectory: workingDirectory.isEmpty ? nil : workingDirectory,

@@ -3,12 +3,13 @@ import SwiftUI
 
 struct TerminalWallpaperSettingsView: View {
     @ObservedObject var viewModel: TerminalWallpaperViewModel
+    @State private var showAdvancedCommand = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
-                commandSection
+                catalogSection
                 renderSection
                 behaviorSection
                 statusSection
@@ -16,7 +17,7 @@ struct TerminalWallpaperSettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(24)
         }
-        .frame(minWidth: 680, minHeight: 600)
+        .frame(minWidth: 720, minHeight: 680)
         .task {
             while !Task.isCancelled {
                 viewModel.refresh()
@@ -35,30 +36,110 @@ struct TerminalWallpaperSettingsView: View {
         }
     }
 
-    private var commandSection: some View {
-        GroupBox("Child TUI") {
+    private var catalogSection: some View {
+        GroupBox("Choose what to render") {
             VStack(alignment: .leading, spacing: 10) {
-                TextField("Executable, e.g. /usr/bin/top", text: $viewModel.executable)
-                    .textFieldStyle(.roundedBorder)
-                Text("Arguments — one argument per line")
+                Text("Select a terminal app or system utility. AuraFlow will find its executable automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextEditor(text: $viewModel.argumentsText)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 72)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-                TextField("Working directory (optional)", text: $viewModel.workingDirectory)
-                    .textFieldStyle(.roundedBorder)
-                Text("Environment — KEY=VALUE per line")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $viewModel.environmentText)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 72)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+
+                catalogCategory(.applications)
+                catalogCategory(.utilities)
+
+                HStack {
+                    Button("Choose executable…") {
+                        guard let url = TerminalExecutablePicker.choose() else { return }
+                        viewModel.selectCustomExecutable(url)
+                        showAdvancedCommand = true
+                    }
+                    Text("For custom scripts or terminal programs")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                DisclosureGroup("Advanced command settings", isExpanded: $showAdvancedCommand) {
+                    advancedCommandFields
+                }
             }
             .padding(.top, 4)
         }
+    }
+
+    @ViewBuilder
+    private func catalogCategory(_ category: TerminalWallpaperCatalogCategory) -> some View {
+        let items = viewModel.availableCatalogItems(for: category)
+        if !items.isEmpty {
+            Label(category.title, systemImage: category.systemImage)
+                .font(.headline)
+                .padding(.top, 6)
+            ForEach(items) { item in
+                catalogRow(item)
+            }
+        }
+    }
+
+    private func catalogRow(_ item: TerminalWallpaperCatalogItem) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                viewModel.select(item)
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: item.systemImage)
+                        .font(.title3)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title)
+                            .font(.headline)
+                        Text(item.subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if viewModel.selectedCatalogItemID == item.id {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button("Start") { viewModel.start(item) }
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isBusy || viewModel.status.running)
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var advancedCommandFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField(
+                "Executable",
+                text: Binding(
+                    get: { viewModel.executable },
+                    set: { viewModel.setExecutable($0) }
+                )
+            )
+                .textFieldStyle(.roundedBorder)
+            Text("Arguments — one argument per line")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextEditor(text: $viewModel.argumentsText)
+                .font(.system(.body, design: .monospaced))
+                .frame(minHeight: 64)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+            TextField("Working directory (optional)", text: $viewModel.workingDirectory)
+                .textFieldStyle(.roundedBorder)
+            Text("Environment — KEY=VALUE per line")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextEditor(text: $viewModel.environmentText)
+                .font(.system(.body, design: .monospaced))
+                .frame(minHeight: 64)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+        }
+        .padding(.top, 8)
     }
 
     private var renderSection: some View {

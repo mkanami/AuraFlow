@@ -28,7 +28,7 @@ public final class TerminalPTYSession {
         onExit: @escaping ExitHandler
     ) throws -> pid_t {
         stop()
-        let executable = try resolveExecutable(command.executable)
+        let executable = try resolveExecutable(for: command)
         let arguments = [executable] + command.arguments
         let environment = mergedEnvironment(command.environment, columns: columns, rows: rows)
         let argumentBlob = nulSeparatedBlob(arguments)
@@ -182,25 +182,20 @@ public final class TerminalPTYSession {
         return data
     }
 
-    private func resolveExecutable(_ value: String) throws -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw TerminalPTYError.invalidCommand }
-        if trimmed.contains("/") {
-            guard FileManager.default.isExecutableFile(atPath: trimmed) else {
-                throw TerminalPTYError.executableNotFound(trimmed)
+    private func resolveExecutable(for command: TerminalCommandConfiguration) throws -> String {
+        if let catalogItemID = command.catalogItemID,
+           let catalogItem = TerminalWallpaperCatalog.item(id: catalogItemID) {
+            if let executable = catalogItem.resolvedExecutable() {
+                return executable
             }
-            return trimmed
+            throw TerminalPTYError.executableNotFound(catalogItem.title)
         }
-        let paths = (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin")
-            .split(separator: ":")
-            .map(String.init)
-        for path in paths {
-            let candidate = URL(fileURLWithPath: path).appendingPathComponent(trimmed).path
-            if FileManager.default.isExecutableFile(atPath: candidate) {
-                return candidate
-            }
+        let value = command.executable.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { throw TerminalPTYError.invalidCommand }
+        guard let executable = TerminalExecutableLocator.resolve(value) else {
+            throw TerminalPTYError.executableNotFound(value)
         }
-        throw TerminalPTYError.executableNotFound(trimmed)
+        return executable
     }
 }
 

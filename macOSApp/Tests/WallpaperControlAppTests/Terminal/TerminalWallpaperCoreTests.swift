@@ -81,6 +81,7 @@ import Testing
 @Test func terminalConfigRoundTripsSchemaAndSnakeCaseKeys() throws {
     let config = TerminalWallpaperConfig(
         command: TerminalCommandConfiguration(
+            catalogItemID: "top",
             executable: "/bin/echo",
             arguments: ["hello"]
         )
@@ -93,6 +94,53 @@ import Testing
 
     #expect(json.contains("schema_version"))
     #expect(restored == config)
+}
+
+@Test func terminalCatalogSeparatesAppsAndUtilities() {
+    #expect(TerminalWallpaperCatalog.item(id: "btop")?.category == .applications)
+    #expect(TerminalWallpaperCatalog.item(id: "top")?.category == .utilities)
+    #expect(TerminalWallpaperCatalog.item(id: "top")?.resolvedExecutable() == "/usr/bin/top")
+    #expect(
+        TerminalWallpaperCatalog.availableItems().contains {
+            $0.id == "top" && $0.category == .utilities
+        }
+    )
+}
+
+@Test func terminalExecutableLocatorFindsPathAndNamedExecutables() throws {
+    #expect(TerminalExecutableLocator.resolve("sh", environment: ["PATH": "/bin"]) == "/bin/sh")
+    #expect(TerminalExecutableLocator.resolve("/bin/sh") == "/bin/sh")
+    #expect(TerminalExecutableLocator.resolve("definitely-not-a-terminal-program", environment: ["PATH": "/bin"]) == nil)
+
+    let temporaryURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("auraflow-terminal-executable-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: temporaryURL) }
+    try "#!/bin/sh\nprintf ok\n".write(to: temporaryURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temporaryURL.path)
+    #expect(TerminalExecutableLocator.resolve(temporaryURL.path) == temporaryURL.path)
+
+    let appURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlowTerminalApp-\(UUID().uuidString).app")
+    let appExecutableURL = appURL.appendingPathComponent("Contents/MacOS/DemoTerminal")
+    try FileManager.default.createDirectory(
+        at: appExecutableURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    let info: [String: Any] = [
+        "CFBundleExecutable": "DemoTerminal",
+        "CFBundleIdentifier": "com.example.auraflow-test-terminal",
+        "CFBundlePackageType": "APPL",
+    ]
+    let infoData = try PropertyListSerialization.data(
+        fromPropertyList: info,
+        format: .xml,
+        options: 0
+    )
+    try infoData.write(to: appURL.appendingPathComponent("Contents/Info.plist"))
+    try "#!/bin/sh\nprintf app\n".write(to: appExecutableURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appExecutableURL.path)
+    defer { try? FileManager.default.removeItem(at: appURL) }
+    #expect(TerminalExecutableLocator.resolve(appURL.path) == appExecutableURL.path)
 }
 
 @Test func terminalRenderGeometrySupportsResolutionAndScaleModes() {

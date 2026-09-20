@@ -157,6 +157,13 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling {
         guard !normalized.command.executable.isEmpty else {
             throw TerminalWallpaperControllerError.unavailable("Enter an executable command first.")
         }
+        if let catalogItemID = normalized.command.catalogItemID,
+           let catalogItem = TerminalWallpaperCatalog.item(id: catalogItemID),
+           catalogItem.resolvedExecutable() == nil {
+            throw TerminalWallpaperControllerError.unavailable(
+                "\(catalogItem.title) is not installed or is no longer available."
+            )
+        }
         return normalized
     }
 
