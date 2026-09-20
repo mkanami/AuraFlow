@@ -393,7 +393,7 @@ public final class WallpaperRuntimeStore {
         normalized.autostart = config.autostart ?? false
         normalized.blend_interpolation = config.blend_interpolation ?? false
         normalized.pause_on_fullscreen = config.pause_on_fullscreen ?? true
-        normalized.show_on_lock_screen = config.show_on_lock_screen ?? false
+        normalized.show_on_lock_screen = config.show_on_lock_screen ?? true
         if WallpaperScaleMode(rawValue: config.scale_mode ?? "") == nil {
             normalized.scale_mode = WallpaperScaleMode.fill.rawValue
         }
@@ -515,7 +515,7 @@ public final class WallpaperRuntimeStore {
             pause_on_fullscreen: saved?.pause_on_fullscreen,
             fullscreen_app_detected: saved?.fullscreen_app_detected ?? false,
             auto_paused_for_fullscreen: saved?.auto_paused_for_fullscreen ?? false,
-            lock_screen_enabled: saved?.lock_screen_enabled ?? config.show_on_lock_screen ?? false,
+            lock_screen_enabled: saved?.lock_screen_enabled ?? config.show_on_lock_screen ?? true,
             session_inactive: saved?.session_inactive ?? false,
             lock_screen_preview_active: saved?.lock_screen_preview_active ?? false,
             presentation_mode: saved?.presentation_mode ?? WallpaperPresentationMode.desktop.rawValue,

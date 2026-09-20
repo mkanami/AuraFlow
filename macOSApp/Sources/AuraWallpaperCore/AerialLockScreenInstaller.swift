@@ -641,11 +641,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 let currentMode = WallpaperScaleMode(
                     rawValue: marker.scaleMode ?? ""
                 ) ?? .fill
-                guard currentMode != mode else { return false }
 
                 // Keep Stop's still-frame asset in place. Resume rebuilds the
                 // animated generation using this persisted mode.
                 if marker.state == "paused" {
+                    guard currentMode != mode else { return false }
                     var updatedMarker = marker
                     updatedMarker.scaleMode = mode.rawValue
                     try saveMarker(updatedMarker)
@@ -3228,6 +3228,20 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
 
         let assetURL = URL(fileURLWithPath: currentMarker.assetPath)
         guard fileManager.fileExists(atPath: assetURL.path) else {
+            throw AerialLockScreenInstallerError.aerialAssetUnavailable
+        }
+
+        let preparedSignature = try mediaPreparer.fileSignature(at: preparedVideoURL)
+        let currentAssetSignature = try? mediaPreparer.fileSignature(at: assetURL)
+        let currentMode = WallpaperScaleMode(
+            rawValue: currentMarker.scaleMode ?? ""
+        ) ?? .fill
+        if currentMode == scaleMode,
+           currentMarker.assetSignature == preparedSignature,
+           currentAssetSignature == preparedSignature {
+            // The marker and the bytes agree, so this is a genuine no-op.
+            // If only the marker claimed the mode, continue below and repair
+            // the stale asset instead of returning success for old media.
             return false
         }
 

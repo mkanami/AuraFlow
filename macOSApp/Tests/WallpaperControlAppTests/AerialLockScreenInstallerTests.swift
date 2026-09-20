@@ -1414,9 +1414,37 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(
         try await fixture.installer.updateScaleMode(
             videoURL: fixture.videoURL,
-            mode: .fit
-        ) == false
+            mode: .stretch
+        )
     )
+    #expect(
+        LockScreenJournal(
+            stateDirectoryURL: fixture.stateURL,
+            fileManager: .default
+        ).loadMarker()?.scaleMode == WallpaperScaleMode.stretch.rawValue
+    )
+
+    // A stale marker must not make the installer accept an old asset as the
+    // requested Stretch generation.
+    let staleAsset = Data("stale-fill-asset".utf8)
+    try staleAsset.write(to: fixture.assetURL, options: .atomic)
+    if var staleMarker = LockScreenJournal(
+        stateDirectoryURL: fixture.stateURL,
+        fileManager: .default
+    ).loadMarker() {
+        staleMarker.scaleMode = WallpaperScaleMode.stretch.rawValue
+        try LockScreenJournal(
+            stateDirectoryURL: fixture.stateURL,
+            fileManager: .default
+        ).saveMarker(staleMarker)
+    }
+    #expect(
+        try await fixture.installer.updateScaleMode(
+            videoURL: fixture.videoURL,
+            mode: .stretch
+        )
+    )
+    #expect(try Data(contentsOf: fixture.assetURL) != staleAsset)
 
     try await fixture.installer.uninstallAsync()
     let restoredStore = try readWallpaperStore(fixture.storeURL)

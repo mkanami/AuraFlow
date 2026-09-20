@@ -1160,9 +1160,11 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 store.markWallpaperRestorePending(false)
             }
         }
+        // Remove clears the selected media, not the user's Lock Screen
+        // preference. Keep an explicit true/false choice intact so opening
+        // Settings after Remove does not silently invert the toggle.
         _ = try updateConfig { config in
             config.video_path = ""
-            config.show_on_lock_screen = false
         }
         if !removingLockScreenOnly, restoreStatus != .failed {
             store.removeManagedFallback()
@@ -1577,24 +1579,55 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         defer {
             Task { await asyncLifecycleGate.release() }
         }
+        let previousConfig = store.loadConfig()
         let config = try updateConfig { config in
             config.scale_mode = mode.commandValue
         }
-        if daemonProcessManager.isRunning {
-            try send(.update, config: config)
-        } else {
-            postRuntimeCommandDidChange()
-        }
 
-        if lockScreenCapabilities.supportsSecureLockScreen,
-           lockScreenPlatform.isInstalled,
-           let sourceURL = store.effectiveLockScreenSourceURL(for: config) {
-            _ = try await lockScreenPlatform.updateScaleMode(
-                videoURL: sourceURL,
-                mode: mode
-            )
+        do {
+            if daemonProcessManager.isRunning {
+                try send(.update, config: config)
+            } else {
+                postRuntimeCommandDidChange()
+            }
+
+            if lockScreenCapabilities.supportsSecureLockScreen,
+               lockScreenPlatform.isInstalled,
+               let sourceURL = store.effectiveLockScreenSourceURL(for: config) {
+                // `false` is a valid no-op for a paused generation or for a
+                // platform route that has no active native asset. A throwing
+                // result, however, must roll the Desktop config back too so
+                // the two surfaces cannot silently diverge.
+                _ = try await lockScreenPlatform.updateScaleMode(
+                    videoURL: sourceURL,
+                    mode: mode
+                )
+            }
+            return store.status()
+        } catch {
+            // Restore the persisted setting and the running agent's command
+            // after a failed native Lock Screen media transaction. The
+            // installer keeps its own asset rollback; this restores the
+            // configuration side of the same operation.
+            let restoredConfig: ControlConfig
+            do {
+                restoredConfig = try updateConfig { config in
+                    config = previousConfig
+                }
+                if daemonProcessManager.isRunning {
+                    try send(.update, config: restoredConfig)
+                } else {
+                    postRuntimeCommandDidChange()
+                }
+            } catch let rollbackError {
+                throw NativeWallpaperControllerError.unavailable(
+                    "Scale mode update failed: \(error.localizedDescription); "
+                        + "configuration rollback failed: "
+                        + rollbackError.localizedDescription
+                )
+            }
+            throw error
         }
-        return store.status()
     }
 
     func setAutostart(_ enabled: Bool) throws -> ControlStatus {
