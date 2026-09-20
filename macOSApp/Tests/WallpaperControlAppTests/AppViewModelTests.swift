@@ -275,7 +275,7 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
-@Test func startCancelsBackgroundLockScreenMediaWarmUp() async throws {
+@Test func startKeepsBackgroundLockScreenMediaWarmUp() async throws {
     let controller = MockNativeWallpaperController()
     controller.prepareLockScreenMediaDelay = 30_000_000_000
     let viewModel = AppViewModel(controller: controller)
@@ -305,7 +305,7 @@ private func pngData(for image: CGImage) -> Data {
     }
 
     #expect(controller.startCallCount == 1)
-    #expect(controller.prepareLockScreenMediaCancellationCount == 1)
+    #expect(controller.prepareLockScreenMediaCancellationCount == 0)
     #expect(Date().timeIntervalSince(startBeganAt) < 2.0)
 }
 

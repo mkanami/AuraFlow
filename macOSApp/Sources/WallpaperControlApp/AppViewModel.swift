@@ -238,6 +238,11 @@ protocol WallpaperControlling: AnyObject, Sendable {
     func setVideo(_ url: URL) throws -> ControlStatus
     func installLockScreenOnly(videoURL: URL) async throws -> ControlStatus
     func prepareLockScreenMedia(videoURL: URL) async throws
+    func prepareLockScreenMedia(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws
     func setSpeed(_ speed: Double) async throws -> ControlStatus
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus
@@ -268,6 +273,14 @@ extension WallpaperControlling {
     func prepareLockScreenMedia(videoURL: URL) async throws {
         // Controllers without a native Aerial implementation do not need a
         // separate media cache.
+    }
+
+    func prepareLockScreenMedia(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
+        try await prepareLockScreenMedia(videoURL: videoURL)
     }
 }
 
@@ -1281,21 +1294,41 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             store.removeHealth()
             store.markLockScreenOnlyAgent(false)
         }
-        if requiresDedicatedLockScreenAgent {
-            try await waitForLockScreenAgentReady()
-            try await waitForLockScreenGenerationReady(videoURL: normalizedURL)
-        }
+        // The install transaction above is the foreground confirmation. The
+        // dedicated agent and WallpaperAgent finish registering in the
+        // background; blocking the Lock button here made a successful install
+        // look frozen for 6–8 seconds and duplicated the provider's own
+        // bounded health check.
         return store.status()
     }
 
     func prepareLockScreenMedia(videoURL: URL) async throws {
+        let config = store.loadConfig()
+        try await prepareLockScreenMedia(
+            videoURL: videoURL,
+            playbackSpeed: config.playback_speed,
+            scaleMode: WallpaperScaleMode(
+                rawValue: config.scale_mode ?? ""
+            ) ?? .fill
+        )
+    }
+
+    func prepareLockScreenMedia(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
         // This is a cache warm-up, not a runtime mutation. Holding the
         // lifecycle gate here lets a background conversion block an explicit
         // Lock action. The installer has its own mutation/cross-process
         // coordinator, so preparation remains serialized with store writes
         // without delaying unrelated lifecycle requests.
         try requireNativeBridgeIfNeeded()
-        try await lockScreenPlatform.prepareLockScreenMedia(videoURL: videoURL)
+        try await lockScreenPlatform.prepareLockScreenMedia(
+            videoURL: videoURL,
+            playbackSpeed: playbackSpeed,
+            scaleMode: scaleMode
+        )
         // The legacy companion and the first secure transition both need the
         // still frame. Warm it during the same preflight so install does not
         // synchronously decode and encode the source after the user presses
@@ -1594,14 +1627,22 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             if lockScreenCapabilities.supportsSecureLockScreen,
                lockScreenPlatform.isInstalled,
                let sourceURL = store.effectiveLockScreenSourceURL(for: config) {
-                // `false` is a valid no-op for a paused generation or for a
-                // platform route that has no active native asset. A throwing
-                // result, however, must roll the Desktop config back too so
-                // the two surfaces cannot silently diverge.
-                _ = try await lockScreenPlatform.updateScaleMode(
+                let didUpdate = try await lockScreenPlatform.updateScaleMode(
                     videoURL: sourceURL,
                     mode: mode
                 )
+                // A native route that is actively presenting video must not
+                // silently leave the Lock Screen on its previous mode. The
+                // installer returns false only for paused/compatibility
+                // routes or a genuine missing generation; paused playback is
+                // journaled and will use this mode on Resume.
+                if !didUpdate,
+                   !store.isPaused(),
+                   !WallpaperMediaKind.forURL(sourceURL).isStaticImage {
+                    throw NativeWallpaperControllerError.unavailable(
+                        "Lock Screen scale mode was not applied."
+                    )
+                }
             }
             return store.status()
         } catch {
@@ -1891,35 +1932,24 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             )
         } else {
             try requireNativeBridgeIfNeeded()
+            let config = store.loadConfig()
             if lockScreenOnly {
-                try await lockScreenPlatform.installLockScreenOnly(videoURL: videoURL)
+                try await lockScreenPlatform.installLockScreenOnly(
+                    videoURL: videoURL,
+                    playbackSpeed: config.playback_speed,
+                    scaleMode: WallpaperScaleMode(
+                        rawValue: config.scale_mode ?? ""
+                    ) ?? .fill
+                )
             } else {
                 try await lockScreenPlatform.installForDesktopAgent(
-                    videoURL: videoURL
+                    videoURL: videoURL,
+                    playbackSpeed: config.playback_speed,
+                    scaleMode: WallpaperScaleMode(
+                        rawValue: config.scale_mode ?? ""
+                    ) ?? .fill
                 )
             }
-        }
-
-        // A saved non-default rate must also be applied when the user starts
-        // a new shared or Lock-only route before touching the speed slider.
-        let configuredSpeed = store.loadConfig().playback_speed
-        if lockScreenPlatform.capabilities.supportsSecureLockScreen,
-           !WallpaperMediaKind.forURL(videoURL).isStaticImage,
-           abs(configuredSpeed - 1.0) > 0.0001 {
-            _ = try await lockScreenPlatform.updatePlaybackSpeed(
-                videoURL: videoURL,
-                speed: configuredSpeed
-            )
-        }
-        let configuredScaleMode = WallpaperScaleMode(
-            rawValue: store.loadConfig().scale_mode ?? ""
-        ) ?? .fill
-        if lockScreenPlatform.capabilities.supportsSecureLockScreen,
-           configuredScaleMode != .fill {
-            _ = try await lockScreenPlatform.updateScaleMode(
-                videoURL: videoURL,
-                mode: configuredScaleMode
-            )
         }
     }
 
@@ -2189,6 +2219,7 @@ final class AppViewModel: ObservableObject {
     private var previewPreparationGeneration = 0
     private var lockScreenPreparationTask: Task<Void, Never>?
     private var lockScreenPreparationGeneration = 0
+    private var lockScreenPreparationKey: String?
     private var scaleModeUpdateTask: Task<Void, Never>?
     private var scaleModeUpdateGeneration: UInt = 0
     private let expectedStatusContractVersion = 3
@@ -2846,6 +2877,7 @@ final class AppViewModel: ObservableObject {
         lockScreenPreparationGeneration &+= 1
         lockScreenPreparationTask?.cancel()
         lockScreenPreparationTask = nil
+        lockScreenPreparationKey = nil
     }
 
     private func configurePreviewOrPrepare(for url: URL) {
@@ -2949,13 +2981,29 @@ final class AppViewModel: ObservableObject {
     ) {
         guard controller != nil, catalogDownloadID == nil else { return }
 
-        lockScreenPreparationGeneration &+= 1
-        let requestedGeneration = lockScreenPreparationGeneration
-        lockScreenPreparationTask?.cancel()
         let normalizedSourceURL = sourceURL.standardizedFileURL
         guard FileManager.default.fileExists(atPath: normalizedSourceURL.path) else {
             return
         }
+        let requestedPlaybackSpeed = playbackSpeed
+        let requestedScaleMode = scaleMode
+        let preparationKey = [
+            normalizedSourceURL.path,
+            String(format: "%.4f", requestedPlaybackSpeed),
+            requestedScaleMode.rawValue,
+        ].joined(separator: "|")
+        if lockScreenPreparationTask != nil,
+           lockScreenPreparationKey == preparationKey {
+            // Start/Lock can be requested while this exact cache operation is
+            // already running. Keep it alive so the native installer reuses
+            // the finished media instead of starting another conversion.
+            return
+        }
+
+        lockScreenPreparationGeneration &+= 1
+        let requestedGeneration = lockScreenPreparationGeneration
+        lockScreenPreparationTask?.cancel()
+        lockScreenPreparationKey = preparationKey
         let controller = self.controller
 
         lockScreenPreparationTask = Task { @MainActor [weak self] in
@@ -2963,7 +3011,9 @@ final class AppViewModel: ObservableObject {
             do {
                 try await self.runAsync {
                     try await controller.prepareLockScreenMedia(
-                        videoURL: normalizedSourceURL
+                        videoURL: normalizedSourceURL,
+                        playbackSpeed: requestedPlaybackSpeed,
+                        scaleMode: requestedScaleMode
                     )
                 }
                 try Task.checkCancellation()
@@ -2973,6 +3023,7 @@ final class AppViewModel: ObservableObject {
                     return
                 }
                 self.lockScreenPreparationTask = nil
+                self.lockScreenPreparationKey = nil
             } catch is CancellationError {
                 return
             } catch {
@@ -2987,6 +3038,7 @@ final class AppViewModel: ObservableObject {
                     "Lock Screen media cache warm-up deferred: \(error.localizedDescription, privacy: .public)"
                 )
                 self.lockScreenPreparationTask = nil
+                self.lockScreenPreparationKey = nil
             }
         }
     }
@@ -3335,9 +3387,6 @@ final class AppViewModel: ObservableObject {
 
     func start() {
         guard canStart else { return }
-        // Native Fit cache warming is strictly background work. Never let an
-        // in-flight HEVC export sit in front of the user's Start request.
-        cancelLockScreenMediaPreparation()
         lifecycleViewModel.start(
             selectedVideoURL: selectedVideoURL,
             hasPendingPreview: pendingPreviewVideoURL != nil
@@ -3355,16 +3404,9 @@ final class AppViewModel: ObservableObject {
 
     func applyLockScreenOnly() {
         guard canApplyLockScreenOnly else { return }
-        // Preview and Lock can be requested back-to-back while a catalog
-        // source is being converted. They do not share an in-flight Task, so
-        // leaving preview alive starts a second conversion against the same
-        // cache output and delays the actual Lock operation. Cancel only the
-        // unfinished preview task; an already completed Lock cache warm-up is
-        // left intact and can still be reused by the installer.
-        previewPreparationGeneration &+= 1
-        previewPreparationTask?.cancel()
-        previewPreparationTask = nil
-        cancelLockScreenMediaPreparation()
+        // Keep source preparation alive. The native installer uses the same
+        // source/rate/mode cache key, so an in-flight warm-up is reused by the
+        // Lock transaction instead of being canceled and rebuilt on demand.
         lifecycleViewModel.applyLockScreenOnly(selectedVideoURL: selectedVideoURL)
     }
 

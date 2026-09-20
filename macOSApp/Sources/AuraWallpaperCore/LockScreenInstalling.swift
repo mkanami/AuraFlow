@@ -157,7 +157,22 @@ public protocol LockScreenPlatformOperating: LockScreenPlatform {
     /// Installs the native Lock Screen companion used by the Desktop agent
     /// without replacing the user's system Desktop/Linked routes.
     func installForDesktopAgent(videoURL: URL) async throws
+    /// Mode-aware installation used by Start. Native implementations should
+    /// bake the selected speed and scale into the same media transaction.
+    /// The compatibility default below preserves the old two-step behavior for
+    /// legacy/test adapters that have not adopted this overload yet.
+    func installForDesktopAgent(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws
     func installLockScreenOnly(videoURL: URL) async throws
+    /// Mode-aware installation used by the explicit Lock action.
+    func installLockScreenOnly(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws
     /// Installs the compatibility screen saver without routing through a
     /// modern provider. Platform adapters may use the optional previous
     /// source to restore native Lock Screen state if the fallback fails.
@@ -166,6 +181,13 @@ public protocol LockScreenPlatformOperating: LockScreenPlatform {
         restoringLockScreenOnlyVideoURL: URL?
     ) async throws
     func prepareLockScreenMedia(videoURL: URL) async throws
+    /// Warms the exact source/rate/mode that the next installation will use.
+    /// Legacy adapters may keep their existing no-op implementation.
+    func prepareLockScreenMedia(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws
     /// Freezes the native Lock Screen asset at a still frame. Compatibility
     /// screen savers use the shared pause marker instead, so their default is
     /// intentionally a no-op. The operation applies to both the shared
@@ -336,12 +358,48 @@ public extension LockScreenSaverInstalling {
         try await install(videoURL: videoURL)
     }
 
+    func installLockScreenOnly(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
+        try await installLockScreenOnly(videoURL: videoURL)
+        if abs(playbackSpeed - 1.0) > 0.0001 {
+            _ = try await updatePlaybackSpeed(videoURL: videoURL, speed: playbackSpeed)
+        }
+        if scaleMode != .fill {
+            _ = try await updateScaleMode(videoURL: videoURL, mode: scaleMode)
+        }
+    }
+
     func installForDesktopAgent(videoURL: URL) async throws {
         try await install(videoURL: videoURL)
     }
 
+    func installForDesktopAgent(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
+        try await installForDesktopAgent(videoURL: videoURL)
+        if abs(playbackSpeed - 1.0) > 0.0001 {
+            _ = try await updatePlaybackSpeed(videoURL: videoURL, speed: playbackSpeed)
+        }
+        if scaleMode != .fill {
+            _ = try await updateScaleMode(videoURL: videoURL, mode: scaleMode)
+        }
+    }
+
     func prepareLockScreenMedia(videoURL: URL) async throws {
         // Legacy screen-saver implementations have no separate media cache.
+    }
+
+    func prepareLockScreenMedia(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
+        try await prepareLockScreenMedia(videoURL: videoURL)
     }
 
     func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {

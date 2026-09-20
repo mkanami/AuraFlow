@@ -1392,6 +1392,15 @@ private func writeAerialTestVideo(to url: URL) async throws {
             mode: .fit
         )
     )
+    // Reapplying the already validated mode is a successful no-op. Returning
+    // false here made the controller treat a healthy native route as a failed
+    // Fit update.
+    #expect(
+        try await fixture.installer.updateScaleMode(
+            videoURL: fixture.videoURL,
+            mode: .fit
+        )
+    )
     #expect(try Data(contentsOf: fixture.storeURL) == installedStore)
     #expect(try Data(contentsOf: recoveryStoreURL) == recoveryStore)
     #expect(try Data(contentsOf: recoveryAssetURL) == recoveryAsset)
@@ -1458,6 +1467,27 @@ private func writeAerialTestVideo(to url: URL) async throws {
         provider: "com.apple.wallpaper.choice.image",
         assetID: nil
     ))
+}
+
+@Test func modeAwareDesktopAgentInstallBuildsSelectedMediaInOneTransaction() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.installForDesktopAgent(
+        videoURL: fixture.videoURL,
+        playbackSpeed: 1.5,
+        scaleMode: .fit
+    )
+
+    let marker = LockScreenJournal(
+        stateDirectoryURL: fixture.stateURL,
+        fileManager: .default
+    ).loadMarker()
+    #expect(marker?.playbackSpeed == 1.5)
+    #expect(marker?.scaleMode == WallpaperScaleMode.fit.rawValue)
+    #expect(marker?.state == "healthy")
+    #expect(fixture.refreshCounter.count == 1)
+    #expect(fixture.installer.installationConfirmed)
 }
 
 @Test func modernLockScreenOnlyPlaybackSpeedUsesLockOnlyGeneration() async throws {

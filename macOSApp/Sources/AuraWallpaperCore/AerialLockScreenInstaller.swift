@@ -500,10 +500,24 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     }
 
     public func installForDesktopAgent(videoURL: URL) async throws {
+        try await installForDesktopAgent(
+            videoURL: videoURL,
+            playbackSpeed: 1.0,
+            scaleMode: .fill
+        )
+    }
+
+    public func installForDesktopAgent(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
         try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
                 _ = try await installLocked(
                     videoURL: videoURL,
+                    playbackSpeed: playbackSpeed,
+                    scaleMode: scaleMode,
                     forceRefresh: false,
                     refreshAction: rearmSystem,
                     // AuraWallpaperAgent owns the visible Desktop. Apple's
@@ -520,10 +534,24 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     }
 
     public func installLockScreenOnly(videoURL: URL) async throws {
+        try await installLockScreenOnly(
+            videoURL: videoURL,
+            playbackSpeed: 1.0,
+            scaleMode: .fill
+        )
+    }
+
+    public func installLockScreenOnly(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
         try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
                 _ = try await installLocked(
                     videoURL: videoURL,
+                    playbackSpeed: playbackSpeed,
+                    scaleMode: scaleMode,
                     // Lock is an explicit user request. Even if the journal
                     // already looks current, rearm the provider so a stale
                     // WallpaperAgent cannot make this action a false no-op.
@@ -676,6 +704,18 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     /// and atomic commit checks; this only moves HEVC conversion off the
     /// button action.
     public func prepareLockScreenMedia(videoURL: URL) async throws {
+        try await prepareLockScreenMedia(
+            videoURL: videoURL,
+            playbackSpeed: 1.0,
+            scaleMode: .fit
+        )
+    }
+
+    public func prepareLockScreenMedia(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
         try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
                 guard fileManager.fileExists(atPath: wallpaperStoreURL.path) else {
@@ -684,23 +724,14 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 guard fileManager.fileExists(atPath: videoURL.path) else {
                     throw AerialLockScreenInstallerError.videoMissing(videoURL.path)
                 }
-                _ = try await mediaPreparer.prepare(from: videoURL)
-                try Task.checkCancellation()
-
-                // Fit uses the same baked-canvas route as Stretch. Prepare
-                // that movie while the wallpaper is only being previewed so
-                // selecting Fit later can replace the active Aerial asset
-                // immediately instead of starting a full HEVC export after
-                // the click. This writes only AuraFlow's media cache; it does
-                // not touch the provider slot, wallpaper store, or recovery
-                // journal.
                 _ = try await mediaPreparer.prepare(
                     from: videoURL,
-                    playbackSpeed: 1,
-                    scaleMode: .fit
+                    playbackSpeed: playbackSpeed,
+                    scaleMode: scaleMode
                 )
+                try Task.checkCancellation()
                 lockScreenLifecycleLogger.notice(
-                    "Prepared Lock Screen base and Fit media cache"
+                    "Prepared Lock Screen media cache speed=\(playbackSpeed, privacy: .public) mode=\(scaleMode.rawValue, privacy: .public)"
                 )
             }
         }
@@ -3242,7 +3273,7 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             // The marker and the bytes agree, so this is a genuine no-op.
             // If only the marker claimed the mode, continue below and repair
             // the stale asset instead of returning success for old media.
-            return false
+            return true
         }
 
         let assetSnapshotURL = try rollbackSnapshotURL(for: assetURL)
