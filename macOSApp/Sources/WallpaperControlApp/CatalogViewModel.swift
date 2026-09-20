@@ -25,7 +25,9 @@ final class CatalogViewModel: ObservableObject {
     @Published var downloadedWallpapers: [DownloadedCatalogWallpaper] = []
 
     private let catalogDisplayPageSize = 12
+    private let searchDisplayPageSize = 24
     private var deferredWallpapers: [CatalogWallpaper] = []
+    private var deferredSearchResults: [CatalogWallpaper] = []
     private var hasMoreRemoteWallpapers = false
 
     var filteredWallpapers: [CatalogWallpaper] {
@@ -85,10 +87,39 @@ final class CatalogViewModel: ObservableObject {
         !deferredWallpapers.isEmpty
     }
 
+    var hasDeferredSearchResults: Bool {
+        !deferredSearchResults.isEmpty
+    }
+
     func setWallpapersDirectly(_ wallpapers: [CatalogWallpaper]) {
         self.wallpapers = wallpapers
         deferredWallpapers = []
         hasMoreRemoteWallpapers = false
+    }
+
+    func setSearchResultsDirectly(_ results: [CatalogWallpaper]) {
+        searchResults = results
+        deferredSearchResults = []
+    }
+
+    func appendSearchResults(_ additions: [CatalogWallpaper]) {
+        var seen = Set(searchResults.map(\.id))
+        seen.formUnion(deferredSearchResults.map(\.id))
+        let uniqueAdditions = additions.filter { seen.insert($0.id).inserted }
+        guard !uniqueAdditions.isEmpty else { return }
+
+        let availableSlots = max(0, searchDisplayPageSize - searchResults.count)
+        searchResults.append(contentsOf: uniqueAdditions.prefix(availableSlots))
+        deferredSearchResults.append(contentsOf: uniqueAdditions.dropFirst(availableSlots))
+    }
+
+    @discardableResult
+    func loadNextSearchPage() -> Bool {
+        guard !deferredSearchResults.isEmpty else { return false }
+        let page = Array(deferredSearchResults.prefix(searchDisplayPageSize))
+        deferredSearchResults.removeFirst(page.count)
+        searchResults.append(contentsOf: page)
+        return true
     }
 
     func replaceCatalogForDisplay(

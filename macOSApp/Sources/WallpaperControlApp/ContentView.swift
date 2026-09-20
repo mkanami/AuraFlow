@@ -4,6 +4,12 @@ import AppKit
 import ImageIO
 import QuartzCore
 
+private let catalogPreviewImageLoadLimiter = DispatchSemaphore(value: 3)
+
+private func acquireCatalogPreviewImagePermit() {
+    catalogPreviewImageLoadLimiter.wait()
+}
+
 private struct AdaptiveGlassAppearanceEnvironmentKey: EnvironmentKey {
     static let defaultValue = AdaptiveGlassAppearance.default
 }
@@ -1765,11 +1771,7 @@ struct WallpaperCatalogGridView: View {
                         }
                         .id(wallpaper.id)
                         .onAppear {
-                            viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: true)
                             viewModel.catalogTrailingWallpaperBecameVisible(wallpaper.id)
-                        }
-                        .onDisappear {
-                            viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: false)
                         }
                     }
                 }
@@ -1817,7 +1819,14 @@ struct CatalogWallpaperCard: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(10)
-            .background(AuraGlassInsetCard())
+            .background {
+                let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+                shape
+                    .fill(Color.black.opacity(0.24))
+                    .overlay {
+                        shape.stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                    }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(AuraPlainPressButtonStyle())
@@ -2195,43 +2204,35 @@ final class CatalogPreviewImageLoader: ObservableObject {
         task = Task { [weak self] in
             guard let self else { return }
 
-            if url.isFileURL {
-                let decoded: DecodedPreview? = await Task.detached(priority: .utility) {
+            let decoded: DecodedPreview? = await Task.detached(priority: .utility) {
+                acquireCatalogPreviewImagePermit()
+                defer { catalogPreviewImageLoadLimiter.signal() }
+
+                if url.isFileURL {
                     guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else {
                         return nil
                     }
                     return Self.decodePreviewImage(data: data)
-                }.value
-                guard !Task.isCancelled, let decoded else { return }
-                Self.cache.setObject(decoded.image, forKey: url as NSURL, cost: decoded.cost)
-                self.image = decoded.image
-                return
-            }
-
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 20
-            request.setValue("AuraFlow/1.1", forHTTPHeaderField: "User-Agent")
-            request.setValue("image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
-            if let referer {
-                request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
-            }
-
-            do {
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard !Task.isCancelled else { return }
-                if let httpResponse = response as? HTTPURLResponse,
-                   !(200...299).contains(httpResponse.statusCode) {
-                    return
                 }
-                let decoded = await Task.detached(priority: .utility) {
-                    Self.decodePreviewImage(data: data)
-                }.value
-                guard !Task.isCancelled, let decoded else { return }
-                Self.cache.setObject(decoded.image, forKey: url as NSURL, cost: decoded.cost)
-                self.image = decoded.image
-            } catch {
-                // Keep fallback preview on failures.
-            }
+
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 20
+                request.setValue("AuraFlow/1.1", forHTTPHeaderField: "User-Agent")
+                request.setValue("image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+                if let referer {
+                    request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+                }
+
+                guard let (data, response) = try? await URLSession.shared.data(for: request),
+                      let httpResponse = response as? HTTPURLResponse,
+                      (200...299).contains(httpResponse.statusCode) else {
+                    return nil
+                }
+                return Self.decodePreviewImage(data: data)
+            }.value
+            guard !Task.isCancelled, let decoded else { return }
+            Self.cache.setObject(decoded.image, forKey: url as NSURL, cost: decoded.cost)
+            self.image = decoded.image
         }
     }
 
@@ -2245,7 +2246,10 @@ final class CatalogPreviewImageLoader: ObservableObject {
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceShouldCacheImmediately: true,
-                kCGImageSourceThumbnailMaxPixelSize: 960,
+                // Catalog cards are rendered at roughly 220×96 points. Keeping
+                // the decoded bitmap close to the display size prevents a dozen
+                // oversized 1080p thumbnails from competing with scrolling.
+                kCGImageSourceThumbnailMaxPixelSize: 512,
             ] as CFDictionary
 
             if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) {

@@ -71,6 +71,30 @@ func catalogViewModelKeepsOnlyTheFirstPageInTheDisplayList() {
 }
 
 @Test @MainActor
+func catalogViewModelPaginatesSearchResultsToo() {
+    let results = (0..<30).map { index in
+        CatalogWallpaper(
+            id: "search-\(index)",
+            title: "Search Result \(index)",
+            category: "Anime",
+            attribution: "Test",
+            previewImageURL: nil,
+            sourcePageURL: nil,
+            sources: []
+        )
+    }
+    let viewModel = CatalogViewModel()
+
+    viewModel.appendSearchResults(results)
+
+    #expect(viewModel.searchResults.count == 24)
+    #expect(viewModel.hasDeferredSearchResults)
+    #expect(viewModel.loadNextSearchPage())
+    #expect(viewModel.searchResults.count == 30)
+    #expect(!viewModel.hasDeferredSearchResults)
+}
+
+@Test @MainActor
 func catalogSearchMatchesCaseAndPartialWordsWithoutFuzzyResults() {
     let viewModel = CatalogViewModel()
     viewModel.wallpapers = [

@@ -2136,7 +2136,7 @@ final class AppViewModel: ObservableObject {
 
     private var catalogSearchResults: [CatalogWallpaper] {
         get { catalogViewModel.searchResults }
-        set { catalogViewModel.searchResults = newValue }
+        set { catalogViewModel.setSearchResultsDirectly(newValue) }
     }
 
     var catalogIsRefreshing: Bool {
@@ -3295,13 +3295,12 @@ final class AppViewModel: ObservableObject {
     func catalogPreviewVisibilityChanged(_ wallpaper: CatalogWallpaper, isVisible: Bool) {
         if isVisible {
             visibleCatalogPreviewIDs.insert(wallpaper.id)
-            // Start the newly visible card immediately. The short viewport
-            // debounce below only batches cancellation and directional lookahead.
-            prefetchCatalogPreview(wallpaper)
         } else {
             visibleCatalogPreviewIDs.remove(wallpaper.id)
         }
-        scheduleCatalogPreviewViewportUpdate()
+        // Browsing renders poster images only. Resolving video routes for every
+        // visible card creates network, disk and metadata work during scrolling;
+        // the detail view resolves media after the user explicitly opens a card.
     }
 
     func catalogWallpaperCount(in group: CatalogWallpaperGroup) -> Int {
@@ -3310,17 +3309,21 @@ final class AppViewModel: ObservableObject {
 
     func catalogTrailingWallpaperBecameVisible(_ wallpaperID: String) {
         let canLoadDeferredCatalogPage = catalogViewModel.hasDeferredWallpapers
-        guard catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              selectedCatalogWallpaper == nil,
+        let isSearching = !catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard selectedCatalogWallpaper == nil,
               filteredCatalogWallpapers.last?.id == wallpaperID,
               lastCatalogPaginationTriggerID != wallpaperID,
-              catalogHasMoreWallpapers,
               !catalogIsRefreshing,
-              catalogLoadMoreTask == nil,
-              canLoadDeferredCatalogPage
-                || selectedCatalogGroup == nil
-                || selectedCatalogGroup == .anime else {
+              catalogLoadMoreTask == nil else {
             return
+        }
+        if isSearching {
+            guard catalogViewModel.hasDeferredSearchResults else { return }
+        } else {
+            guard catalogHasMoreWallpapers,
+                  canLoadDeferredCatalogPage
+                    || selectedCatalogGroup == nil
+                    || selectedCatalogGroup == .anime else { return }
         }
         lastCatalogPaginationTriggerID = wallpaperID
         loadNextCatalogPage()
@@ -4334,6 +4337,10 @@ final class AppViewModel: ObservableObject {
             }
 
             do {
+                if !catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   catalogViewModel.loadNextSearchPage() {
+                    return
+                }
                 if catalogViewModel.loadNextDeferredPage() {
                     return
                 }
@@ -4474,8 +4481,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func mergeCatalogSearchResults(_ additions: [CatalogWallpaper]) {
-        var seen = Set(catalogSearchResults.map(\.id))
-        catalogSearchResults.append(contentsOf: additions.filter { seen.insert($0.id).inserted })
+        catalogViewModel.appendSearchResults(additions)
     }
 
     private func scheduleCatalogPreviewViewportUpdate() {
@@ -4488,30 +4494,11 @@ final class AppViewModel: ObservableObject {
     }
 
     private func applyCatalogPreviewViewport() {
-        let wallpapers = filteredCatalogWallpapers
-        let wallpapersByID = Dictionary(uniqueKeysWithValues: wallpapers.map { ($0.id, $0) })
-        visibleCatalogPreviewIDs.formIntersection(wallpapersByID.keys)
-        guard let plan = CatalogPreviewViewportPlan.make(
-            wallpaperIDs: wallpapers.map(\.id),
-            visibleIDs: visibleCatalogPreviewIDs,
-            previousCenterIndex: previousCatalogPreviewCenterIndex
-        ) else { return }
-
-        previousCatalogPreviewCenterIndex = plan.centerIndex
-        var protectedIDs = plan.protectedIDs
-        if let selectedCatalogWallpaper {
-            protectedIDs.insert(selectedCatalogWallpaper.id)
-        }
-        let visible = plan.visibleIDs.compactMap { wallpapersByID[$0] }
-        let lookahead = plan.lookaheadIDs.compactMap { wallpapersByID[$0] }
+        // Preview metadata is intentionally demand-driven. This method remains
+        // as a safe cancellation boundary for existing callers after a page or
+        // download changes, but it must never start work for a whole viewport.
         Task { [catalogPreviewPipeline] in
-            await catalogPreviewPipeline.cancelPending(except: protectedIDs)
-            for wallpaper in visible {
-                await catalogPreviewPipeline.prefetchMetadata(wallpaper, priority: .visible)
-            }
-            for wallpaper in lookahead {
-                await catalogPreviewPipeline.prefetchMetadata(wallpaper, priority: .lookahead)
-            }
+            await catalogPreviewPipeline.cancelPending()
         }
     }
 
@@ -4549,7 +4536,7 @@ final class AppViewModel: ObservableObject {
             )
         }
         guard !additions.isEmpty else { return }
-        catalogSearchResults.append(contentsOf: additions)
+        catalogViewModel.appendSearchResults(additions)
     }
 
     private func downloadCatalogVideo(for wallpaper: CatalogWallpaper) async throws -> URL {
