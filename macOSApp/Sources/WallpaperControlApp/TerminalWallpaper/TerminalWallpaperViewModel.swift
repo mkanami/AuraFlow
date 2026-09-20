@@ -18,6 +18,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     @Published var fontSize: Double
     @Published var cellSpacing: Double
     @Published var maxFPS: Int
+    @Published var textScale: Double
     @Published var scaleMode: TerminalScaleMode
     @Published var backgroundHex: String
     @Published var backgroundOpacity: Double
@@ -60,6 +61,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         fontSize = config.render.fontSize
         cellSpacing = config.render.cellSpacing
         maxFPS = config.render.maxFPS
+        textScale = config.render.textScale
         scaleMode = config.render.scaleMode
         backgroundHex = Self.hexString(for: config.render.background)
         backgroundOpacity = config.render.backgroundOpacity
@@ -205,7 +207,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
             maxFPS: maxFPS,
             scaleMode: scaleMode,
             background: parseHexColor(backgroundHex),
-            backgroundOpacity: backgroundOpacity
+            backgroundOpacity: backgroundOpacity,
+            textScale: textScale
         )
         render = render.normalized()
         return TerminalWallpaperConfig(

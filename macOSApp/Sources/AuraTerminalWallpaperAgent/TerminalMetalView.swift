@@ -232,7 +232,7 @@ private final class CoreTextGlyphAtlas {
 
         let font = CTFontCreateWithName(
             configuration.fontFamily as CFString,
-            CGFloat(configuration.fontSize),
+            CGFloat(configuration.effectiveFontSize),
             nil
         )
         let ascent = CTFontGetAscent(font)
@@ -245,12 +245,19 @@ private final class CoreTextGlyphAtlas {
         let cellWidth = sampleWidth + CGFloat(configuration.cellSpacing)
         let contentWidth = max(CGFloat(snapshot.columns) * cellWidth, 1)
         let contentHeight = max(CGFloat(snapshot.rows) * lineHeight, 1)
-        let scale = TerminalRenderGeometry.scaleFactors(
+        let baseScale = TerminalRenderGeometry.scaleFactors(
             contentWidth: contentWidth,
             contentHeight: contentHeight,
             targetWidth: CGFloat(width),
             targetHeight: CGFloat(height),
             mode: configuration.scaleMode
+        )
+        let fixedGridZoom = configuration.columns != nil && configuration.rows != nil
+            ? configuration.textScale
+            : 1
+        let scale = TerminalScaleFactors(
+            x: baseScale.x * fixedGridZoom,
+            y: baseScale.y * fixedGridZoom
         )
         let drawnWidth = contentWidth * CGFloat(scale.x)
         let drawnHeight = contentHeight * CGFloat(scale.y)

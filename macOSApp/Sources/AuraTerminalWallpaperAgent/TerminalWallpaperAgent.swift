@@ -221,7 +221,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         return TerminalRenderGeometry.automaticGrid(
             pixelWidth: pixelWidth,
             pixelHeight: pixelHeight,
-            fontSize: config.render.fontSize
+            fontSize: config.render.effectiveFontSize
         )
     }
 

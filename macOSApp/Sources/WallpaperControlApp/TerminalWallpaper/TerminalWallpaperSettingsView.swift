@@ -176,6 +176,16 @@ struct TerminalWallpaperSettingsView: View {
                     Stepper("Cell spacing: \(viewModel.cellSpacing, specifier: "%.1f")", value: $viewModel.cellSpacing, in: 0...8, step: 0.5)
                     Stepper("FPS: \(viewModel.maxFPS)", value: $viewModel.maxFPS, in: 1...120, step: 1)
                 }
+                HStack(spacing: 12) {
+                    Text("Text scale")
+                        .frame(width: 90, alignment: .leading)
+                    Slider(value: $viewModel.textScale, in: 0.5...3, step: 0.05)
+                    Text("\(viewModel.textScale * 100, specifier: "%.0f")%")
+                        .monospacedDigit()
+                        .frame(width: 48, alignment: .trailing)
+                    Button("Reset") { viewModel.textScale = 1.5 }
+                        .buttonStyle(.borderless)
+                }
                 Picker("Scale", selection: $viewModel.scaleMode) {
                     ForEach(TerminalScaleMode.allCases) { mode in
                         Text(mode.title).tag(mode)

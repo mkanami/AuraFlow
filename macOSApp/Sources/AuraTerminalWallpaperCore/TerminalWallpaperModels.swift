@@ -77,6 +77,7 @@ public struct TerminalRenderConfiguration: Codable, Equatable, Sendable {
     public var scaleMode: TerminalScaleMode
     public var background: TerminalRGBA
     public var backgroundOpacity: Double
+    public var textScale: Double
 
     public init(
         pixelMode: TerminalPixelMode = .native,
@@ -90,7 +91,8 @@ public struct TerminalRenderConfiguration: Codable, Equatable, Sendable {
         maxFPS: Int = 30,
         scaleMode: TerminalScaleMode = .fit,
         background: TerminalRGBA = .black,
-        backgroundOpacity: Double = 1
+        backgroundOpacity: Double = 1,
+        textScale: Double = 1.5
     ) {
         self.pixelMode = pixelMode
         self.fixedWidth = fixedWidth
@@ -104,6 +106,61 @@ public struct TerminalRenderConfiguration: Codable, Equatable, Sendable {
         self.scaleMode = scaleMode
         self.background = background
         self.backgroundOpacity = backgroundOpacity
+        self.textScale = textScale
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case pixelMode
+        case fixedWidth
+        case fixedHeight
+        case columns
+        case rows
+        case fontFamily
+        case fontSize
+        case cellSpacing
+        case maxFPS
+        case scaleMode
+        case background
+        case backgroundOpacity
+        case textScale
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.pixelMode = try container.decodeIfPresent(TerminalPixelMode.self, forKey: .pixelMode) ?? .native
+        self.fixedWidth = try container.decodeIfPresent(Int.self, forKey: .fixedWidth)
+        self.fixedHeight = try container.decodeIfPresent(Int.self, forKey: .fixedHeight)
+        self.columns = try container.decodeIfPresent(Int.self, forKey: .columns)
+        self.rows = try container.decodeIfPresent(Int.self, forKey: .rows)
+        self.fontFamily = try container.decodeIfPresent(String.self, forKey: .fontFamily) ?? "Menlo"
+        self.fontSize = try container.decodeIfPresent(Double.self, forKey: .fontSize) ?? 14
+        self.cellSpacing = try container.decodeIfPresent(Double.self, forKey: .cellSpacing) ?? 0
+        self.maxFPS = try container.decodeIfPresent(Int.self, forKey: .maxFPS) ?? 30
+        self.scaleMode = try container.decodeIfPresent(TerminalScaleMode.self, forKey: .scaleMode) ?? .fit
+        self.background = try container.decodeIfPresent(TerminalRGBA.self, forKey: .background) ?? .black
+        self.backgroundOpacity = try container.decodeIfPresent(Double.self, forKey: .backgroundOpacity) ?? 1
+        self.textScale = try container.decodeIfPresent(Double.self, forKey: .textScale) ?? 1.5
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(pixelMode, forKey: .pixelMode)
+        try container.encodeIfPresent(fixedWidth, forKey: .fixedWidth)
+        try container.encodeIfPresent(fixedHeight, forKey: .fixedHeight)
+        try container.encodeIfPresent(columns, forKey: .columns)
+        try container.encodeIfPresent(rows, forKey: .rows)
+        try container.encode(fontFamily, forKey: .fontFamily)
+        try container.encode(fontSize, forKey: .fontSize)
+        try container.encode(cellSpacing, forKey: .cellSpacing)
+        try container.encode(maxFPS, forKey: .maxFPS)
+        try container.encode(scaleMode, forKey: .scaleMode)
+        try container.encode(background, forKey: .background)
+        try container.encode(backgroundOpacity, forKey: .backgroundOpacity)
+        try container.encode(textScale, forKey: .textScale)
+    }
+
+    public var effectiveFontSize: Double {
+        fontSize * textScale
     }
 
     public func normalized() -> TerminalRenderConfiguration {
@@ -117,6 +174,7 @@ public struct TerminalRenderConfiguration: Codable, Equatable, Sendable {
         result.fontSize = min(max(fontSize, 6), 96)
         result.cellSpacing = min(max(cellSpacing, 0), 8)
         result.maxFPS = min(max(maxFPS, 1), 120)
+        result.textScale = min(max(textScale, 0.5), 3)
         result.background = background.normalized()
         result.backgroundOpacity = min(max(backgroundOpacity, 0), 1)
         if result.pixelMode == .fixed {

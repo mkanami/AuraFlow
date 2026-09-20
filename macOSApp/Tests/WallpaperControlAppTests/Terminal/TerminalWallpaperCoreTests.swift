@@ -61,7 +61,8 @@ import Testing
             fontSize: 200,
             cellSpacing: -1,
             maxFPS: 500,
-            backgroundOpacity: 2
+            backgroundOpacity: 2,
+            textScale: 100
         )
     ).normalized()
 
@@ -75,6 +76,7 @@ import Testing
     #expect(config.render.fontSize == 96)
     #expect(config.render.cellSpacing == 0)
     #expect(config.render.maxFPS == 120)
+    #expect(config.render.textScale == 3)
     #expect(config.render.backgroundOpacity == 1)
 }
 
@@ -94,6 +96,12 @@ import Testing
 
     #expect(json.contains("schema_version"))
     #expect(restored == config)
+
+    let legacyRender = try decoder.decode(
+        TerminalRenderConfiguration.self,
+        from: Data("{}".utf8)
+    )
+    #expect(legacyRender.textScale == 1.5)
 }
 
 @Test func terminalCatalogSeparatesAppsAndUtilities() {
