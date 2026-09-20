@@ -109,6 +109,7 @@ struct WallpaperControlApp: App {
 
         Window("Terminal Wallpaper", id: "terminal-wallpaper") {
             TerminalWallpaperSettingsView(viewModel: terminalWallpaperViewModel)
+                .environment(\.adaptiveGlassAppearance, viewModel.adaptiveGlassAppearance)
         }
         .defaultSize(width: 760, height: 720)
     }

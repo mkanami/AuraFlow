@@ -517,6 +517,7 @@ struct ControlPanel: View {
     let isVeryCompactByHeight: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+    @Environment(\.openWindow) private var openWindow
 
     private var widthScale: CGFloat {
         max(0.82, min(1.0, panelWidth / 1180))
@@ -589,6 +590,10 @@ struct ControlPanel: View {
         scaledWidth(154, min: 136)
     }
 
+    private var terminalWallpaperButtonWidth: CGFloat {
+        scaledWidth(190, min: 168)
+    }
+
     private var rowContentWidth: CGFloat {
         max(panelWidth - (panelHorizontalInset * 2), 0)
     }
@@ -605,8 +610,12 @@ struct ControlPanel: View {
         catalogButtonWidth + downloadedButtonWidth + primarySpacing
     }
 
-    private var secondaryButtonsRowWidth: CGFloat {
+    private var secondaryButtonsWithoutTerminalWidth: CGFloat {
         settingsButtonWidth + monitoringButtonWidth + secondarySpacing
+    }
+
+    private var secondaryButtonsRowWidth: CGFloat {
+        secondaryButtonsWithoutTerminalWidth + terminalWallpaperButtonWidth + secondarySpacing
     }
 
     private var actionRowGap: CGFloat {
@@ -615,6 +624,10 @@ struct ControlPanel: View {
 
     private var bottomRowGap: CGFloat {
         max(secondarySpacing, rowContentWidth - secondaryButtonsRowWidth - libraryButtonsRowWidth)
+    }
+
+    private var bottomRowFitsTerminalButton: Bool {
+        rowContentWidth >= secondaryButtonsRowWidth + libraryButtonsRowWidth + secondarySpacing
     }
 
     private var showsStatusMessage: Bool {
@@ -653,31 +666,55 @@ struct ControlPanel: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            HStack(alignment: .center, spacing: 0) {
-                HStack(alignment: .center, spacing: secondarySpacing) {
-                    settingsButton
-                        .frame(width: settingsButtonWidth)
+            if bottomRowFitsTerminalButton {
+                HStack(alignment: .center, spacing: 0) {
+                    HStack(alignment: .center, spacing: secondarySpacing) {
+                        settingsButton
+                            .frame(width: settingsButtonWidth)
 
-                    monitoringButton
-                        .frame(width: monitoringButtonWidth)
+                        monitoringButton
+                            .frame(width: monitoringButtonWidth)
+
+                        terminalWallpaperButton
+                            .frame(width: terminalWallpaperButtonWidth)
+                    }
+                    .frame(width: secondaryButtonsRowWidth, alignment: .leading)
+
+                    Color.clear
+                        .frame(width: bottomRowGap, height: 1)
+
+                    libraryButtons
+                        .frame(width: libraryButtonsRowWidth, alignment: .trailing)
                 }
-                .frame(width: secondaryButtonsRowWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(alignment: .center, spacing: 0) {
+                    HStack(alignment: .center, spacing: secondarySpacing) {
+                        settingsButton
+                            .frame(width: settingsButtonWidth)
 
-                Color.clear
-                    .frame(width: bottomRowGap, height: 1)
+                        monitoringButton
+                            .frame(width: monitoringButtonWidth)
+                    }
+                    .frame(width: secondaryButtonsWithoutTerminalWidth, alignment: .leading)
 
-                HStack(alignment: .center, spacing: primarySpacing) {
-                    catalogButton
-                        .frame(width: catalogButtonWidth)
-                        .layoutPriority(2)
+                    Color.clear
+                        .frame(
+                            width: max(
+                                secondarySpacing,
+                                rowContentWidth - secondaryButtonsWithoutTerminalWidth - libraryButtonsRowWidth
+                            ),
+                            height: 1
+                        )
 
-                    downloadedWallpapersButton
-                        .frame(width: downloadedButtonWidth)
-                        .layoutPriority(2)
+                    libraryButtons
+                        .frame(width: libraryButtonsRowWidth, alignment: .trailing)
                 }
-                .frame(width: libraryButtonsRowWidth, alignment: .trailing)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                terminalWallpaperButton
+                    .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
 
             if showsStatusMessage, let message = viewModel.statusMessage {
                 Text(UserFacingMessageFormatter.format(message))
@@ -792,6 +829,32 @@ struct ControlPanel: View {
         }
         .buttonStyle(AuraPanelButtonStyle())
         .disabled(!viewModel.canOpenMonitoring)
+    }
+
+    private var terminalWallpaperButton: some View {
+        Button {
+            openWindow(id: "terminal-wallpaper")
+            NSApp.activate(ignoringOtherApps: true)
+        } label: {
+            Label("Terminal Wallpaper", systemImage: "terminal")
+                .lineLimit(1)
+                .minimumScaleFactor(0.88)
+                .allowsTightening(true)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(AuraPanelButtonStyle())
+    }
+
+    private var libraryButtons: some View {
+        HStack(alignment: .center, spacing: primarySpacing) {
+            catalogButton
+                .frame(width: catalogButtonWidth)
+                .layoutPriority(2)
+
+            downloadedWallpapersButton
+                .frame(width: downloadedButtonWidth)
+                .layoutPriority(2)
+        }
     }
 
     private func scaledWidth(_ base: CGFloat, min minWidth: CGFloat) -> CGFloat {

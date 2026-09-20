@@ -6,18 +6,42 @@ struct TerminalWallpaperSettingsView: View {
     @State private var showAdvancedCommand = false
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
-                header
-                catalogSection
-                renderSection
-                behaviorSection
-                statusSection
+        ZStack {
+            Color.black.opacity(0.84)
+                .ignoresSafeArea()
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    header
+
+                    if let errorMessage = viewModel.errorMessage {
+                        terminalMessage(
+                            errorMessage,
+                            systemImage: "exclamationmark.triangle.fill",
+                            color: .red
+                        )
+                    }
+
+                    if let statusMessage = viewModel.statusMessage {
+                        terminalMessage(
+                            statusMessage,
+                            systemImage: "checkmark.circle.fill",
+                            color: .green
+                        )
+                    }
+
+                    catalogSection
+                    renderSection
+                    behaviorSection
+                    statusSection
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(24)
         }
         .frame(minWidth: 720, minHeight: 680)
+        .foregroundStyle(.primary)
+        .environment(\.colorScheme, .dark)
         .task {
             viewModel.refreshCatalog()
             while !Task.isCancelled {
@@ -28,19 +52,51 @@ struct TerminalWallpaperSettingsView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Label("Terminal Wallpaper", systemImage: "terminal")
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "terminal")
                 .font(.title2.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Terminal Wallpaper")
+                    .font(.title2.weight(.semibold))
+                Text("Run a terminal app as a live desktop wallpaper")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Spacer()
-            Text(viewModel.statusTitle)
-                .foregroundStyle(viewModel.status.running ? .green : .secondary)
+
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(viewModel.status.running ? .green : .secondary)
+                    .frame(width: 8, height: 8)
+                Text(viewModel.statusTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(viewModel.status.running ? .green : .secondary)
+            }
         }
+        .padding(.horizontal, 4)
+    }
+
+    private func terminalMessage(_ message: String, systemImage: String, color: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Image(systemName: systemImage)
+                .foregroundStyle(color)
+            Text(message)
+                .font(.callout)
+                .lineLimit(3)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(AuraGlassInsetCard(cornerRadius: 12, emphasized: true))
     }
 
     private var catalogSection: some View {
-        GroupBox("Choose what to render") {
+        TerminalWallpaperSection(title: "Choose what to render", systemImage: "rectangle.grid.2x2") {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Select a terminal app or system utility. AuraFlow will find its executable automatically.")
+                Text("Select a terminal app or system utility. AuraFlow finds its executable automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("GUI .app bundles are excluded. A command that writes no terminal output will be reported as blank.")
@@ -54,7 +110,7 @@ struct TerminalWallpaperSettingsView: View {
                         set: { viewModel.setCatalogSearch($0) }
                     )
                 )
-                    .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.roundedBorder)
 
                 catalogCategory(.applications)
                 catalogCategory(.utilities)
@@ -80,14 +136,18 @@ struct TerminalWallpaperSettingsView: View {
                         .onAppear { viewModel.loadMoreCatalogItems() }
                 }
 
-                HStack {
+                HStack(spacing: 10) {
                     Button("Refresh catalog") { viewModel.refreshCatalog() }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+
                     Button("Choose executable…") {
                         guard let url = TerminalExecutablePicker.choose() else { return }
                         if viewModel.selectCustomExecutable(url) {
                             showAdvancedCommand = true
                         }
                     }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+
                     Text("For custom scripts or terminal programs")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -96,8 +156,8 @@ struct TerminalWallpaperSettingsView: View {
                 DisclosureGroup("Advanced command settings", isExpanded: $showAdvancedCommand) {
                     advancedCommandFields
                 }
+                .tint(.secondary)
             }
-            .padding(.top, 4)
         }
     }
 
@@ -106,8 +166,9 @@ struct TerminalWallpaperSettingsView: View {
         let items = viewModel.availableCatalogItems(for: category)
         if !items.isEmpty {
             Label(category.title, systemImage: category.systemImage)
-                .font(.headline)
-                .padding(.top, 6)
+                .font(.headline.weight(.semibold))
+                .padding(.top, 5)
+
             ForEach(items) { item in
                 catalogRow(item)
             }
@@ -123,6 +184,7 @@ struct TerminalWallpaperSettingsView: View {
                     Image(systemName: item.systemImage)
                         .font(.title3)
                         .frame(width: 28)
+
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.title)
                             .font(.headline)
@@ -136,7 +198,9 @@ struct TerminalWallpaperSettingsView: View {
                                 .lineLimit(1)
                         }
                     }
-                    Spacer()
+
+                    Spacer(minLength: 8)
+
                     if viewModel.selectedCatalogItemID == item.id {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
@@ -144,14 +208,14 @@ struct TerminalWallpaperSettingsView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
 
             Button("Start") { viewModel.start(item) }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                 .disabled(viewModel.isBusy || viewModel.status.running)
         }
-        .padding(10)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+        .padding(8)
+        .background(AuraGlassInsetCard(cornerRadius: 10))
     }
 
     private var advancedCommandFields: some View {
@@ -163,7 +227,8 @@ struct TerminalWallpaperSettingsView: View {
                     set: { viewModel.setExecutable($0) }
                 )
             )
-                .textFieldStyle(.roundedBorder)
+            .textFieldStyle(.roundedBorder)
+
             Text("Arguments — one argument per line")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -171,8 +236,10 @@ struct TerminalWallpaperSettingsView: View {
                 .font(.system(.body, design: .monospaced))
                 .frame(minHeight: 64)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+
             TextField("Working directory (optional)", text: $viewModel.workingDirectory)
                 .textFieldStyle(.roundedBorder)
+
             Text("Environment — KEY=VALUE per line")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -185,7 +252,7 @@ struct TerminalWallpaperSettingsView: View {
     }
 
     private var renderSection: some View {
-        GroupBox("Render") {
+        TerminalWallpaperSection(title: "Render", systemImage: "paintbrush.pointed") {
             VStack(alignment: .leading, spacing: 12) {
                 Picker("Pixel resolution", selection: $viewModel.pixelMode) {
                     ForEach(TerminalPixelMode.allCases) { mode in
@@ -214,10 +281,12 @@ struct TerminalWallpaperSettingsView: View {
                         .textFieldStyle(.roundedBorder)
                     Stepper("Size: \(viewModel.fontSize, specifier: "%.1f")", value: $viewModel.fontSize, in: 6...96, step: 1)
                 }
+
                 HStack {
                     Stepper("Cell spacing: \(viewModel.cellSpacing, specifier: "%.1f")", value: $viewModel.cellSpacing, in: 0...8, step: 0.5)
                     Stepper("FPS: \(viewModel.maxFPS)", value: $viewModel.maxFPS, in: 1...120, step: 1)
                 }
+
                 HStack(spacing: 12) {
                     Text("Text scale")
                         .frame(width: 90, alignment: .leading)
@@ -228,12 +297,14 @@ struct TerminalWallpaperSettingsView: View {
                     Button("Reset") { viewModel.textScale = 1.5 }
                         .buttonStyle(.borderless)
                 }
+
                 Picker("Scale", selection: $viewModel.scaleMode) {
                     ForEach(TerminalScaleMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
+
                 HStack {
                     TextField("Background hex", text: $viewModel.backgroundHex)
                         .textFieldStyle(.roundedBorder)
@@ -242,12 +313,11 @@ struct TerminalWallpaperSettingsView: View {
                         .frame(width: 110, alignment: .trailing)
                 }
             }
-            .padding(.top, 4)
         }
     }
 
     private var behaviorSection: some View {
-        GroupBox("Behavior") {
+        TerminalWallpaperSection(title: "Behavior", systemImage: "gearshape.2") {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle("Render on all displays", isOn: $viewModel.allDisplays)
                 Toggle(
@@ -257,46 +327,89 @@ struct TerminalWallpaperSettingsView: View {
                         set: { viewModel.setLaunchAtLogin($0) }
                     )
                 )
-                HStack {
+
+                HStack(spacing: 10) {
                     Button("Apply") { viewModel.apply() }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                         .disabled(viewModel.isBusy)
                     Button("Start") { viewModel.start() }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                         .disabled(!viewModel.canStart || viewModel.status.running)
                     Button("Restart") { viewModel.restart() }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                         .disabled(!viewModel.canStart)
                     Button("Stop") { viewModel.stop() }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                         .disabled(viewModel.isBusy || !viewModel.status.running)
                     Spacer()
                     Button("Refresh") { viewModel.refresh() }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                 }
             }
-            .padding(.top, 4)
         }
     }
 
     private var statusSection: some View {
-        GroupBox("Runtime health") {
+        TerminalWallpaperSection(title: "Runtime health", systemImage: "heart.text.square") {
             VStack(alignment: .leading, spacing: 6) {
                 if let health = viewModel.status.health {
-                    Text("PID: \(health.childPID.map(String.init) ?? "—")")
-                    Text("PTY/grid: \(health.columns.map(String.init) ?? "—") × \(health.rows.map(String.init) ?? "—")")
-                    Text("Screens: \(health.screens)   Frames: \(health.frames)   Rendered: \(health.renderedFrames)")
+                    terminalStatusRow(label: "PID", value: health.childPID.map(String.init) ?? "—")
+                    terminalStatusRow(
+                        label: "PTY/grid",
+                        value: "\(health.columns.map(String.init) ?? "—") × \(health.rows.map(String.init) ?? "—")"
+                    )
+                    terminalStatusRow(label: "Screens", value: "\(health.screens)")
+                    terminalStatusRow(label: "Frames", value: "\(health.frames)")
+                    terminalStatusRow(label: "Rendered", value: "\(health.renderedFrames)")
                     if let error = health.lastError {
-                        Text(error).foregroundStyle(.red)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .padding(.top, 4)
                     }
                 } else {
                     Text("No runtime health report yet.")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-                if let statusMessage = viewModel.statusMessage {
-                    Text(statusMessage).foregroundStyle(.secondary)
-                }
-                if let errorMessage = viewModel.errorMessage {
-                    Text(errorMessage).foregroundStyle(.red)
                 }
             }
             .font(.system(.caption, design: .monospaced))
-            .padding(.top, 4)
         }
+    }
+
+    private func terminalStatusRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+        }
+    }
+}
+
+private struct TerminalWallpaperSection<Content: View>: View {
+    let title: String
+    let systemImage: String
+    let content: Content
+
+    init(
+        title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: systemImage)
+                .font(.headline.weight(.semibold))
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(AuraGlassInsetCard(cornerRadius: 16, emphasized: true))
     }
 }
