@@ -95,6 +95,18 @@ public enum TerminalWallpaperCatalog {
             ]
         ),
         TerminalWallpaperCatalogItem(
+            id: "lavat",
+            title: "lavat",
+            subtitle: "Animated lava lamp in the terminal",
+            category: .applications,
+            systemImage: "sparkles.tv",
+            executableCandidates: [
+                "/opt/homebrew/bin/lavat",
+                "/usr/local/bin/lavat",
+                "lavat",
+            ]
+        ),
+        TerminalWallpaperCatalogItem(
             id: "fastfetch",
             title: "fastfetch",
             subtitle: "System information dashboard",
@@ -227,9 +239,7 @@ public enum TerminalWallpaperCatalog {
             result.append(item)
         }
 
-        return sorted(result).filter {
-            matchesSearch(query: normalizedQuery, item: $0)
-        }
+        return searchSorted(result, query: normalizedQuery)
     }
 
     public static func discoveredItems(
@@ -246,17 +256,21 @@ public enum TerminalWallpaperCatalog {
         for root in roots {
             guard let entries = try? fileManager.contentsOfDirectory(
                 at: URL(fileURLWithPath: root, isDirectory: true),
-                includingPropertiesForKeys: [.isRegularFileKey, .isExecutableKey, .isDirectoryKey],
+                includingPropertiesForKeys: [.isDirectoryKey],
                 options: [.skipsHiddenFiles]
             ) else { continue }
 
             for entry in entries {
                 guard let values = try? entry.resourceValues(
-                    forKeys: [.isRegularFileKey, .isExecutableKey, .isDirectoryKey]
-                ), values.isRegularFile == true, values.isExecutable == true else {
+                    forKeys: [.isDirectoryKey]
+                ), values.isDirectory != true,
+                    fileManager.isExecutableFile(atPath: entry.path) else {
                     continue
                 }
-                let path = entry.resolvingSymlinksInPath().path
+                // Homebrew exposes most commands through symlinks in its bin
+                // directory. Keep the link as the user-facing command path,
+                // while normalizedPath() still deduplicates its target.
+                let path = entry.standardizedFileURL.path
                 guard seenPaths.insert(normalizedPath(path)).inserted else { continue }
                 result.append(
                     TerminalWallpaperCatalogItem(
@@ -271,6 +285,52 @@ public enum TerminalWallpaperCatalog {
             }
         }
         return result
+    }
+
+    private static func searchSorted(
+        _ itemsToSort: [TerminalWallpaperCatalogItem],
+        query rawQuery: String
+    ) -> [TerminalWallpaperCatalogItem] {
+        let query = normalizedSearchValue(rawQuery)
+        return itemsToSort
+            .filter { matchesSearch(query: query, item: $0) }
+            .sorted { lhs, rhs in
+                let lhsScore = searchScore(query: query, item: lhs)
+                let rhsScore = searchScore(query: query, item: rhs)
+                if lhsScore != rhsScore {
+                    return lhsScore > rhsScore
+                }
+                return sorted([lhs, rhs]).first?.id == lhs.id
+            }
+    }
+
+    private static func searchScore(
+        query: String,
+        item: TerminalWallpaperCatalogItem
+    ) -> Int {
+        let fields = [item.title] + item.executableCandidates.map {
+            URL(fileURLWithPath: $0).lastPathComponent
+        }
+        let normalizedFields = fields.map(normalizedSearchValue)
+        var score = 0
+
+        if normalizedFields.contains(query) {
+            score += 1_000
+        }
+        if normalizedFields.contains(where: { $0.hasPrefix(query) }) {
+            score += 800
+        }
+        if normalizedFields.contains(where: { $0.contains(query) }) {
+            score += 600
+        }
+
+        // A fuzzy match should prefer the candidate that preserves the
+        // longest prefix. This makes `lavac` prefer `lavat` over `javac`.
+        let longestPrefix = normalizedFields.map { field in
+            zip(field, query).prefix(while: { $0.0 == $0.1 }).count
+        }.max() ?? 0
+        score += longestPrefix * 10
+        return score
     }
 
     private static func discoveredItem(

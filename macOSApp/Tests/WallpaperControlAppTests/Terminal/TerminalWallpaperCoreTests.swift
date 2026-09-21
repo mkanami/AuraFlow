@@ -129,6 +129,41 @@ import Testing
     #expect(!TerminalWallpaperCatalog.matchesSearch(query: "zzzzz", item: lavat))
 }
 
+@Test func terminalCatalogKeepsExecutableSymlinksInDiscovery() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("auraflow-terminal-bin-\(UUID().uuidString)")
+    let bin = root.appendingPathComponent("bin")
+    let source = root.appendingPathComponent("source-terminal")
+    let link = bin.appendingPathComponent("linked-terminal")
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    try "#!/bin/sh\nprintf ok\n".write(to: source, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: source.path)
+    try FileManager.default.createSymbolicLink(
+        at: link,
+        withDestinationURL: source
+    )
+
+    let discovered = TerminalWallpaperCatalog.discoveredItems(
+        environment: ["PATH": bin.path]
+    )
+
+    #expect(
+        discovered.contains {
+            $0.title == "linked-terminal" &&
+            $0.executableCandidates.first == link.standardizedFileURL.path
+        }
+    )
+}
+
+@Test func terminalCatalogRanksLavaLampAheadOfNearMatchesWhenInstalled() {
+    guard TerminalExecutableLocator.resolve("lavat") != nil else { return }
+
+    let results = TerminalWallpaperCatalog.searchItems(for: "lavac")
+    #expect(results.first?.id == "lavat")
+}
+
 @Test func terminalCatalogCanResolveDiscoveredMacExecutables() {
     let discovered = TerminalWallpaperCatalog.item(id: "discovered:/bin/sh")
     #expect(discovered?.title == "sh")
