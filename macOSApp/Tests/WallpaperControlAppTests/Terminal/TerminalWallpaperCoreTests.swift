@@ -115,6 +115,20 @@ import Testing
     )
 }
 
+@Test func terminalCatalogSearchToleratesOneTypo() {
+    let lavat = TerminalWallpaperCatalogItem(
+        id: "lavat",
+        title: "lavat",
+        subtitle: "Terminal lava lamp",
+        category: .applications,
+        systemImage: "terminal",
+        executableCandidates: ["/opt/homebrew/bin/lavat"]
+    )
+
+    #expect(TerminalWallpaperCatalog.matchesSearch(query: "lavac", item: lavat))
+    #expect(!TerminalWallpaperCatalog.matchesSearch(query: "zzzzz", item: lavat))
+}
+
 @Test func terminalCatalogCanResolveDiscoveredMacExecutables() {
     let discovered = TerminalWallpaperCatalog.item(id: "discovered:/bin/sh")
     #expect(discovered?.title == "sh")

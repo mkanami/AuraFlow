@@ -4,11 +4,22 @@ import Combine
 
 protocol TerminalWallpaperCatalogProviding: Sendable {
     func discover() -> [TerminalWallpaperCatalogItem]
+    func discover(query: String) -> [TerminalWallpaperCatalogItem]
+}
+
+extension TerminalWallpaperCatalogProviding {
+    func discover(query: String) -> [TerminalWallpaperCatalogItem] {
+        discover()
+    }
 }
 
 struct SystemTerminalWallpaperCatalogProvider: TerminalWallpaperCatalogProviding {
     func discover() -> [TerminalWallpaperCatalogItem] {
         TerminalWallpaperCatalog.availableItems()
+    }
+
+    func discover(query: String) -> [TerminalWallpaperCatalogItem] {
+        TerminalWallpaperCatalog.searchItems(for: query)
     }
 }
 
@@ -53,6 +64,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private var catalogSearchTask: Task<Void, Never>?
     private var catalogDiscoveryTask: Task<Void, Never>?
     private var deferredSearchItems: [TerminalWallpaperCatalogItem] = []
+    private var discoveredCatalogItemsByQuery: [String: [TerminalWallpaperCatalogItem]] = [:]
     private var resolvedExecutableCache: [String: String] = [:]
     private let demoCatalogItems: [TerminalWallpaperCatalogItem]
 
@@ -154,6 +166,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         catalogSearchGeneration &+= 1
         catalogSearch = ""
         discoveredCatalogItems = nil
+        discoveredCatalogItemsByQuery = [:]
         resolvedExecutableCache = [:]
         for item in demoCatalogItems {
             if let executable = item.resolvedExecutable() {
@@ -176,6 +189,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
         let query = normalizedCatalogSearch
 
         guard !query.isEmpty else {
+            catalogDiscoveryTask?.cancel()
+            catalogDiscoveryTask = nil
             catalogIsLoading = false
             catalogItems = initialCatalogItems
             deferredSearchItems = []
@@ -184,7 +199,16 @@ final class TerminalWallpaperViewModel: ObservableObject {
         }
 
         applyVisibleSearchResults(for: query)
-        guard discoveredCatalogItems == nil else { return }
+        if let cached = discoveredCatalogItemsByQuery[query] {
+            discoveredCatalogItems = cached
+            applyVisibleSearchResults(for: query)
+            return
+        }
+
+        discoveredCatalogItems = nil
+        catalogDiscoveryTask?.cancel()
+        catalogDiscoveryTask = nil
+        catalogIsLoading = false
 
         catalogSearchTask = Task { [weak self] in
             do {
@@ -292,14 +316,22 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     private func startCatalogDiscovery() {
-        guard discoveredCatalogItems == nil, catalogDiscoveryTask == nil else { return }
+        let query = normalizedCatalogSearch
+        guard !query.isEmpty,
+              discoveredCatalogItemsByQuery[query] == nil,
+              catalogDiscoveryTask == nil else { return }
         catalogIsLoading = true
         let provider = catalogProvider
+        let generation = catalogSearchGeneration
         catalogDiscoveryTask = Task { [weak self] in
             let discovered = await Task.detached(priority: .userInitiated) {
-                provider.discover()
+                provider.discover(query: query)
             }.value
-            guard let self, !Task.isCancelled else { return }
+            guard let self,
+                  !Task.isCancelled,
+                  generation == self.catalogSearchGeneration,
+                  self.normalizedCatalogSearch == query else { return }
+            self.discoveredCatalogItemsByQuery[query] = discovered
             self.discoveredCatalogItems = discovered
             for item in discovered {
                 if let executable = item.resolvedExecutable() {
@@ -331,11 +363,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
             seenIDs.insert($0.id).inserted
         }
         let matches = allItems.filter { item in
-            item.title.localizedCaseInsensitiveContains(query)
-                || item.subtitle.localizedCaseInsensitiveContains(query)
-                || item.executableCandidates.contains {
-                    $0.localizedCaseInsensitiveContains(query)
-                }
+            TerminalWallpaperCatalog.matchesSearch(query: query, item: item)
                 || (executablePath(for: item)?.localizedCaseInsensitiveContains(query) ?? false)
         }
         catalogItems = Array(matches.prefix(catalogPageSize))

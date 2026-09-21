@@ -152,6 +152,20 @@ public enum TerminalWallpaperCatalog {
         return discoveredItem(at: path)
     }
 
+    /// Matches names, descriptions, and executable paths while tolerating a
+    /// single-character typo in a query of at least three characters.
+    public static func matchesSearch(
+        query rawQuery: String,
+        item: TerminalWallpaperCatalogItem
+    ) -> Bool {
+        let query = normalizedSearchValue(rawQuery)
+        guard !query.isEmpty else { return true }
+        let fields = [item.title, item.subtitle] + item.executableCandidates
+        return fields.contains { field in
+            fuzzyContains(query: query, value: normalizedSearchValue(field))
+        }
+    }
+
     public static func recommendedItems(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [TerminalWallpaperCatalogItem] {
@@ -175,16 +189,46 @@ public enum TerminalWallpaperCatalog {
             result.append(item)
         }
 
-        return result.sorted { lhs, rhs in
-            if lhs.category != rhs.category {
-                return lhs.category.rawValue < rhs.category.rawValue
+        return sorted(result)
+    }
+
+    /// Searches the installed executable catalog for a user-entered query.
+    ///
+    /// The normal discovery pass only scans the executable directories that
+    /// are cheap and predictable. Search additionally asks Spotlight for
+    /// matching executable files, which covers tools installed in custom
+    /// Homebrew, Python, Cargo, npm, or project-specific directories without
+    /// recursively scanning the user's home directory on every keystroke.
+    public static func searchItems(
+        for query: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> [TerminalWallpaperCatalogItem] {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedQuery.isEmpty else {
+            return availableItems(environment: environment, fileManager: fileManager)
+        }
+
+        var result = availableItems(environment: environment, fileManager: fileManager)
+        var seenPaths = Set(
+            result.flatMap { $0.executableCandidates }
+                .compactMap { $0.contains("/") ? $0 : nil }
+                .map(normalizedPath)
+        )
+
+        for path in spotlightExecutablePaths(
+            matching: normalizedQuery,
+            fileManager: fileManager
+        ) {
+            guard seenPaths.insert(normalizedPath(path)).inserted,
+                  let item = discoveredItem(at: path, environment: environment) else {
+                continue
             }
-            let lhsIsRecommended = items.contains { $0.id == lhs.id }
-            let rhsIsRecommended = items.contains { $0.id == rhs.id }
-            if lhsIsRecommended != rhsIsRecommended {
-                return lhsIsRecommended
-            }
-            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            result.append(item)
+        }
+
+        return sorted(result).filter {
+            matchesSearch(query: normalizedQuery, item: $0)
         }
     }
 
@@ -229,9 +273,12 @@ public enum TerminalWallpaperCatalog {
         return result
     }
 
-    private static func discoveredItem(at path: String) -> TerminalWallpaperCatalogItem? {
+    private static func discoveredItem(
+        at path: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> TerminalWallpaperCatalogItem? {
         guard let resolved = TerminalExecutableLocator.resolve(path) else { return nil }
-        let root = discoveryRoots(environment: ProcessInfo.processInfo.environment)
+        let root = discoveryRoots(environment: environment)
             .first { path.hasPrefix($0 + "/") }
         return TerminalWallpaperCatalogItem(
             id: "discovered:\(path)",
@@ -244,12 +291,19 @@ public enum TerminalWallpaperCatalog {
     }
 
     private static func discoveryRoots(environment: [String: String]) -> [String] {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let home = environment["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
         let standardRoots = [
             "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
             "/usr/local/bin",
+            "/usr/local/sbin",
+            "/opt/local/bin",
+            "/opt/local/sbin",
             "\(home)/bin",
             "\(home)/.local/bin",
+            "\(home)/.cargo/bin",
+            "\(home)/go/bin",
+            "\(home)/.npm-global/bin",
             "/usr/bin",
             "/bin",
             "/usr/sbin",
@@ -260,9 +314,112 @@ public enum TerminalWallpaperCatalog {
             .map(String.init)
         var result: [String] = []
         for root in standardRoots + pathRoots where !root.isEmpty && !result.contains(root) {
-            result.append(root)
+            result.append((root as NSString).expandingTildeInPath)
         }
         return result
+    }
+
+    private static func spotlightExecutablePaths(
+        matching query: String,
+        fileManager: FileManager
+    ) -> [String] {
+        guard fileManager.isExecutableFile(atPath: "/usr/bin/mdfind") else { return [] }
+
+        let safeQuery = query.filter { character in
+            character.isLetter || character.isNumber || character == " " ||
+                character == "." || character == "_" || character == "-"
+        }
+        guard !safeQuery.isEmpty else { return [] }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        process.arguments = ["kMDItemFSName == '*\(safeQuery)*'cd"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return []
+        }
+
+        guard process.terminationStatus == 0 else { return [] }
+        return String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter { path in
+                !path.contains(".app/") && fileManager.isExecutableFile(atPath: path)
+            }
+    }
+
+    private static func sorted(
+        _ itemsToSort: [TerminalWallpaperCatalogItem]
+    ) -> [TerminalWallpaperCatalogItem] {
+        itemsToSort.sorted { lhs, rhs in
+            if lhs.category != rhs.category {
+                return lhs.category.rawValue < rhs.category.rawValue
+            }
+            let lhsIsRecommended = items.contains { $0.id == lhs.id }
+            let rhsIsRecommended = items.contains { $0.id == rhs.id }
+            if lhsIsRecommended != rhsIsRecommended {
+                return lhsIsRecommended
+            }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
+    }
+
+    private static func normalizedSearchValue(_ value: String) -> String {
+        value
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+            .lowercased()
+    }
+
+    private static func fuzzyContains(query: String, value: String) -> Bool {
+        if value.contains(query) {
+            return true
+        }
+        guard query.count >= 3 else { return false }
+        let queryCharacters = Array(query)
+        let valueCharacters = Array(value)
+        let maximumDistance = queryCharacters.count >= 8 ? 2 : 1
+        guard !valueCharacters.isEmpty else { return false }
+
+        if valueCharacters.count < queryCharacters.count {
+            return levenshteinDistance(valueCharacters, queryCharacters) <= maximumDistance
+        }
+
+        let lastStart = valueCharacters.count - queryCharacters.count
+        for start in 0...lastStart {
+            let window = Array(valueCharacters[start..<(start + queryCharacters.count)])
+            if levenshteinDistance(window, queryCharacters) <= maximumDistance {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func levenshteinDistance(
+        _ lhs: [Character],
+        _ rhs: [Character]
+    ) -> Int {
+        var previous = Array(0...rhs.count)
+        for (lhsIndex, lhsCharacter) in lhs.enumerated() {
+            var current = [lhsIndex + 1]
+            current.reserveCapacity(rhs.count + 1)
+            for (rhsIndex, rhsCharacter) in rhs.enumerated() {
+                let insertion = current[rhsIndex] + 1
+                let deletion = previous[rhsIndex + 1] + 1
+                let substitution = previous[rhsIndex] + (lhsCharacter == rhsCharacter ? 0 : 1)
+                current.append(min(insertion, deletion, substitution))
+            }
+            previous = current
+        }
+        return previous[rhs.count]
     }
 
     private static func isSystemRoot(_ root: String) -> Bool {
