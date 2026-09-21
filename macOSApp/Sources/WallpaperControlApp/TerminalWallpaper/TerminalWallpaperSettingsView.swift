@@ -59,7 +59,7 @@ struct TerminalWallpaperSettingsView: View {
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
         .environment(\.colorScheme, .dark)
         .task {
-            viewModel.refreshCatalog()
+            viewModel.prepareCatalogIfNeeded()
             while !Task.isCancelled {
                 viewModel.refresh()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -137,14 +137,14 @@ struct TerminalWallpaperSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                TextField(
-                    "Search installed executables",
+                AuraCatalogSearchField(
                     text: Binding(
                         get: { viewModel.catalogSearch },
                         set: { viewModel.setCatalogSearch($0) }
-                    )
+                    ),
+                    placeholder: "Search installed executables",
+                    accessibilityLabel: "Search installed executables"
                 )
-                .textFieldStyle(.roundedBorder)
 
                 catalogCategory(.applications)
                 catalogCategory(.utilities)
@@ -163,11 +163,6 @@ struct TerminalWallpaperSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                } else if viewModel.catalogHasMore && viewModel.catalogSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("Scroll to load more…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .onAppear { viewModel.loadMoreCatalogItems() }
                 }
 
                 HStack(spacing: 10) {
@@ -205,6 +200,10 @@ struct TerminalWallpaperSettingsView: View {
 
             ForEach(items) { item in
                 catalogRow(item)
+                    .onAppear {
+                        guard item.id == viewModel.catalogItems.last?.id else { return }
+                        viewModel.loadMoreCatalogItems()
+                    }
             }
         }
     }
@@ -225,7 +224,7 @@ struct TerminalWallpaperSettingsView: View {
                         Text(item.subtitle)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        if let executable = item.resolvedExecutable() {
+                        if let executable = viewModel.cachedExecutablePath(for: item) {
                             Text(executable)
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(.tertiary)
@@ -242,45 +241,59 @@ struct TerminalWallpaperSettingsView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
+            .buttonStyle(AuraPlainPressButtonStyle())
 
             Button("Start") { viewModel.start(item) }
                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .disabled(viewModel.isBusy || viewModel.status.running)
+                .disabled(
+                        viewModel.isBusy
+                        || viewModel.status.running
+                        || viewModel.cachedExecutablePath(for: item) == nil
+                )
         }
         .padding(8)
-        .background(AuraGlassInsetCard(cornerRadius: 10, emphasized: false))
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.black.opacity(0.16))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                )
+        )
     }
 
     private var advancedCommandFields: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField(
-                "Executable",
+            AuraTerminalTextField(
                 text: Binding(
                     get: { viewModel.executable },
                     set: { viewModel.setExecutable($0) }
-                )
+                ),
+                placeholder: "Executable",
+                monospaced: true
             )
-            .textFieldStyle(.roundedBorder)
 
             Text("Arguments — one argument per line")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            TextEditor(text: $viewModel.argumentsText)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 64)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+            AuraTerminalTextEditor(
+                text: $viewModel.argumentsText,
+                placeholder: "--argument\nvalue"
+            )
 
-            TextField("Working directory (optional)", text: $viewModel.workingDirectory)
-                .textFieldStyle(.roundedBorder)
+            AuraTerminalTextField(
+                text: $viewModel.workingDirectory,
+                placeholder: "Working directory (optional)",
+                monospaced: true
+            )
 
             Text("Environment — KEY=VALUE per line")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            TextEditor(text: $viewModel.environmentText)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 64)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+            AuraTerminalTextEditor(
+                text: $viewModel.environmentText,
+                placeholder: "KEY=VALUE"
+            )
         }
         .padding(.top, 8)
     }
@@ -311,8 +324,10 @@ struct TerminalWallpaperSettingsView: View {
                 }
 
                 HStack {
-                    TextField("Font", text: $viewModel.fontFamily)
-                        .textFieldStyle(.roundedBorder)
+                    AuraTerminalTextField(
+                        text: $viewModel.fontFamily,
+                        placeholder: "Font"
+                    )
                     Stepper("Size: \(viewModel.fontSize, specifier: "%.1f")", value: $viewModel.fontSize, in: 6...96, step: 1)
                 }
 
@@ -324,7 +339,13 @@ struct TerminalWallpaperSettingsView: View {
                 HStack(spacing: 12) {
                     Text("Text scale")
                         .frame(width: 90, alignment: .leading)
-                    Slider(value: $viewModel.textScale, in: 0.5...3, step: 0.05)
+                    AuraLegacySpeedSlider(
+                        value: viewModel.textScale,
+                        range: 0.5...3,
+                        step: 0.05,
+                        onValueChanged: { viewModel.textScale = $0 },
+                        onEditingChanged: { _ in }
+                    )
                     Text("\(viewModel.textScale * 100, specifier: "%.0f")%")
                         .monospacedDigit()
                         .frame(width: 48, alignment: .trailing)
@@ -340,9 +361,18 @@ struct TerminalWallpaperSettingsView: View {
                 .pickerStyle(.segmented)
 
                 HStack {
-                    TextField("Background hex", text: $viewModel.backgroundHex)
-                        .textFieldStyle(.roundedBorder)
-                    Slider(value: $viewModel.backgroundOpacity, in: 0...1)
+                    AuraTerminalTextField(
+                        text: $viewModel.backgroundHex,
+                        placeholder: "Background hex",
+                        monospaced: true
+                    )
+                    AuraLegacySpeedSlider(
+                        value: viewModel.backgroundOpacity,
+                        range: 0...1,
+                        step: 0.01,
+                        onValueChanged: { viewModel.backgroundOpacity = $0 },
+                        onEditingChanged: { _ in }
+                    )
                     Text("Opacity \(viewModel.backgroundOpacity * 100, specifier: "%.0f%%")")
                         .frame(width: 110, alignment: .trailing)
                 }

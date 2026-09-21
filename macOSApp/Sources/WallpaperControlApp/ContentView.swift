@@ -1732,44 +1732,14 @@ struct WallpaperCatalogView: View {
     }
 
     private var catalogSearchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-
-            ZStack(alignment: .leading) {
-                TextField(
-                    "",
-                    text: Binding(
-                        get: { catalogViewModel.searchText },
-                        set: { viewModel.catalogSearchText = $0 }
-                    )
-                )
-                    .textFieldStyle(.plain)
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-
-                if catalogViewModel.searchText.isEmpty {
-                    Text("Search catalog")
-                        .font(.body.weight(.medium))
-                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-                        .allowsHitTesting(false)
-                }
-            }
-        }
-        .padding(.vertical, 9)
-        .padding(.horizontal, 12)
-        .background(AuraGlassInsetCard(emphasized: true))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(
-                    adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.12),
-                    lineWidth: 0.9
-                )
+        AuraCatalogSearchField(
+            text: Binding(
+                get: { catalogViewModel.searchText },
+                set: { viewModel.catalogSearchText = $0 }
+            ),
+            placeholder: "Search catalog",
+            accessibilityLabel: "Search catalog"
         )
-        .frame(maxWidth: 260)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Search catalog")
     }
 
     @ViewBuilder
@@ -2406,123 +2376,6 @@ struct SpeedOverlay: View {
         .environment(\.colorScheme, .dark)
     }
 
-}
-
-private struct AuraLegacySpeedSlider: View {
-    let value: Double
-    let range: ClosedRange<Double>
-    let step: Double
-    let onValueChanged: (Double) -> Void
-    let onEditingChanged: (Bool) -> Void
-
-    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
-    @State private var isDragging = false
-
-    private var normalizedValue: CGFloat {
-        guard range.upperBound > range.lowerBound else { return 0 }
-        let fraction = (value - range.lowerBound) / (range.upperBound - range.lowerBound)
-        return min(max(CGFloat(fraction), 0), 1)
-    }
-
-    var body: some View {
-        GeometryReader { proxy in
-            let trackHeight: CGFloat = 4
-            let knobSize = CGSize(width: 10, height: 24)
-            let knobShape = RoundedRectangle(cornerRadius: knobSize.width * 0.5, style: .continuous)
-            let usableWidth = max(proxy.size.width - knobSize.width, 1)
-            let knobX = normalizedValue * usableWidth
-
-            ZStack(alignment: .leading) {
-                AuraLegacySliderDashes()
-                    .mask(
-                        Capsule()
-                            .frame(height: trackHeight)
-                    )
-                    .frame(height: trackHeight)
-
-                Group {
-                    #if compiler(>=6.2)
-                    if #available(macOS 26.0, *) {
-                        knobShape
-                            .fill(Color.clear)
-                            .glassEffect(.clear.interactive(), in: knobShape)
-                    } else {
-                        knobShape
-                            .fill(Color.white.opacity(0.78))
-                    }
-                    #else
-                    knobShape
-                        .fill(Color.white.opacity(0.78))
-                    #endif
-                }
-                    .frame(width: knobSize.width, height: knobSize.height)
-                    .shadow(color: Color.black.opacity(0.20), radius: 2, x: 0, y: 1)
-                    .overlay(
-                        knobShape
-                            .stroke(
-                                adaptiveGlassAppearance.topTextTone.primaryTextColor.opacity(
-                                    isDragging ? 0.34 : 0.24
-                                ),
-                                lineWidth: 0.8
-                            )
-                    )
-                    .offset(x: knobX, y: 0)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { gesture in
-                        if !isDragging {
-                            isDragging = true
-                            onEditingChanged(true)
-                        }
-                        let position = min(max(gesture.location.x - (knobSize.width * 0.5), 0), usableWidth)
-                        let fraction = position / usableWidth
-                        let rawValue = range.lowerBound + Double(fraction) * (range.upperBound - range.lowerBound)
-                        onValueChanged(snapped(rawValue))
-                    }
-                    .onEnded { gesture in
-                        let position = min(max(gesture.location.x - (knobSize.width * 0.5), 0), usableWidth)
-                        let fraction = position / usableWidth
-                        let rawValue = range.lowerBound + Double(fraction) * (range.upperBound - range.lowerBound)
-                        onValueChanged(snapped(rawValue))
-                        isDragging = false
-                        onEditingChanged(false)
-                    }
-            )
-        }
-        .frame(height: 24)
-    }
-
-    private func snapped(_ value: Double) -> Double {
-        guard step > 0 else { return value }
-        let snappedValue = (value / step).rounded() * step
-        return min(max(snappedValue, range.lowerBound), range.upperBound)
-    }
-}
-
-private struct AuraLegacySliderDashes: View {
-    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
-
-    var body: some View {
-        GeometryReader { proxy in
-            let dashWidth: CGFloat = 1
-            let dashCount = max(38, Int(proxy.size.width / 4.2))
-            let dashHeight = max(proxy.size.height + 4, 8)
-            let spacing = max((proxy.size.width - (CGFloat(dashCount) * dashWidth)) / CGFloat(max(dashCount - 1, 1)), 1)
-
-            HStack(spacing: spacing) {
-                ForEach(0..<dashCount, id: \.self) { _ in
-                    Capsule()
-                        .fill(adaptiveGlassAppearance.topTextTone.primaryTextColor.opacity(0.28))
-                        .frame(width: dashWidth, height: dashHeight)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        }
-        .allowsHitTesting(false)
-    }
 }
 
 struct VideoPreview: NSViewRepresentable {
