@@ -8,7 +8,7 @@ protocol TerminalWallpaperCatalogProviding: Sendable {
 
 struct SystemTerminalWallpaperCatalogProvider: TerminalWallpaperCatalogProviding {
     func discover() -> [TerminalWallpaperCatalogItem] {
-        TerminalWallpaperCatalog.discoveredItems()
+        TerminalWallpaperCatalog.availableItems()
     }
 }
 
