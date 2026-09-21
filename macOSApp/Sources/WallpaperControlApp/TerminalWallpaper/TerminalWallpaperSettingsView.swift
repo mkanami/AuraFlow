@@ -7,6 +7,23 @@ struct TerminalWallpaperSettingsView: View {
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @State private var showAdvancedCommand = false
 
+    private var terminalAppearance: AdaptiveGlassAppearance {
+        var appearance = adaptiveGlassAppearance
+        // Terminal settings need a stable dark canvas. Reusing the wallpaper's
+        // adaptive light tone makes every glass surface turn into a white slab
+        // over bright artwork and leaves secondary buttons without contrast.
+        appearance.textTone = .light
+        appearance.centerGlassAlpha = 0.94
+        appearance.topGlassAlpha = 0.94
+        appearance.bottomGlassAlpha = 0.94
+        appearance.centerProtectionOverlayOpacity = 0.42
+        appearance.topProtectionOverlayOpacity = 0.42
+        appearance.bottomProtectionOverlayOpacity = 0.42
+        appearance.bottomButtonProtectionOpacity = 0.36
+        appearance.bottomButtonHighlightOpacity = 0.04
+        return appearance
+    }
+
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
@@ -36,15 +53,16 @@ struct TerminalWallpaperSettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
         }
+        .environment(\.adaptiveGlassAppearance, terminalAppearance)
         .frame(minWidth: 0, minHeight: 0)
-        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
+        .foregroundStyle(terminalAppearance.centerTextTone.primaryTextColor)
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 18,
                 material: .clear,
-                alphaMultiplier: adaptiveGlassAppearance.centerGlassAlpha,
-                protectionOverlayOpacity: adaptiveGlassAppearance.centerProtectionOverlayOpacity,
-                protectionOverlayColor: adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor
+                alphaMultiplier: terminalAppearance.centerGlassAlpha,
+                protectionOverlayOpacity: terminalAppearance.centerProtectionOverlayOpacity,
+                protectionOverlayColor: terminalAppearance.centerTextTone.contrastSurfaceColor
             )
         )
         .overlay(
@@ -70,12 +88,7 @@ struct TerminalWallpaperSettingsView: View {
     }
 
     private var terminalDimmingOpacity: CGFloat {
-        switch adaptiveGlassAppearance.centerTextTone {
-        case .dark:
-            return 0.11
-        case .light:
-            return 0.05
-        }
+        0.18
     }
 
     private var header: some View {
