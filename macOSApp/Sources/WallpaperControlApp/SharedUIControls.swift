@@ -21,6 +21,7 @@ struct AuraCatalogSearchField: View {
                     .textFieldStyle(.plain)
                     .font(.body.weight(.medium))
                     .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+                    .accessibilityLabel(accessibilityLabel)
 
                 if text.isEmpty {
                     Text(placeholder)
@@ -41,8 +42,6 @@ struct AuraCatalogSearchField: View {
                 )
         )
         .frame(maxWidth: maxWidth)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityLabel)
     }
 }
 
