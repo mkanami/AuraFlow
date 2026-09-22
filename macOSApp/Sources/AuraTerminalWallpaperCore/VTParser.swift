@@ -6,6 +6,7 @@ public struct VTParser {
     private enum State {
         case ground
         case escape
+        case escapeIntermediate
         case csi
         case osc
         case oscEscape
@@ -48,6 +49,8 @@ public struct VTParser {
             consumeGround(byte)
         case .escape:
             consumeEscape(byte)
+        case .escapeIntermediate:
+            consumeEscapeIntermediate(byte)
         case .csi:
             consumeCSI(byte)
         case .osc:
@@ -127,7 +130,20 @@ public struct VTParser {
             state = .ground
         case 0x48:
             state = .ground
+        case 0x20...0x2F:
+            // ESC sequences can contain intermediate bytes before their
+            // final byte (for example ESC ( B selects the ASCII character set).
+            // Consume the full sequence so its final byte is not rendered as text.
+            state = .escapeIntermediate
         default:
+            state = .ground
+        }
+    }
+
+    private mutating func consumeEscapeIntermediate(_ byte: UInt8) {
+        if byte == 0x1B {
+            state = .escape
+        } else if !(0x20...0x2F).contains(byte) {
             state = .ground
         }
     }
