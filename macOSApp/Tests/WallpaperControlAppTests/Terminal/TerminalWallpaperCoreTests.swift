@@ -255,6 +255,35 @@ import Testing
     )
 }
 
+@Test func terminalAutomaticGridUsesTerminalPointsAndScalesGlyphsForPixels() {
+    let fontSize = TerminalRenderConfiguration(fontSize: 14, textScale: 1.5).effectiveFontSize
+    let grid = TerminalRenderGeometry.automaticGrid(
+        logicalWidth: 1440,
+        logicalHeight: 900,
+        fontSize: fontSize
+    )
+
+    #expect(fontSize == 21)
+    #expect(grid.columns == 110)
+    #expect(grid.rows == 34)
+    #expect(
+        TerminalRenderGeometry.pixelScaleFactor(
+            pixelWidth: 2880,
+            pixelHeight: 1800,
+            logicalWidth: 1440,
+            logicalHeight: 900
+        ) == 2
+    )
+    #expect(
+        TerminalRenderGeometry.pixelScaleFactor(
+            pixelWidth: 1920,
+            pixelHeight: 1080,
+            logicalWidth: 1440,
+            logicalHeight: 900
+        ) == 1.2
+    )
+}
+
 @Test func terminalGridSnapshotsExposeDirtyRevisions() {
     var grid = TerminalGrid(columns: 4, rows: 1)
     let initial = grid.snapshot()

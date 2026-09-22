@@ -13,12 +13,14 @@ final class TerminalMetalView: MTKView {
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLRenderPipelineState
     private let vertexBuffer: MTLBuffer
+    private let logicalSize: CGSize
     private var texture: MTLTexture?
     private var snapshot: TerminalGridSnapshot?
     private var renderConfiguration = TerminalRenderConfiguration()
     private let frameRenderer = CoreTextGlyphAtlas()
 
-    init(frame: CGRect, device: MTLDevice) {
+    init(frame: CGRect, logicalSize: CGSize, device: MTLDevice) {
+        self.logicalSize = logicalSize
         commandQueue = device.makeCommandQueue()!
         let library = try! device.makeLibrary(source: Self.shaderSource, options: nil)
         let descriptor = MTLRenderPipelineDescriptor()
@@ -103,6 +105,12 @@ final class TerminalMetalView: MTKView {
         )
         let width = pixelSize.width
         let height = pixelSize.height
+        let fontPixelScale = TerminalRenderGeometry.pixelScaleFactor(
+            pixelWidth: width,
+            pixelHeight: height,
+            logicalWidth: logicalSize.width,
+            logicalHeight: logicalSize.height
+        )
         if texture?.width != width || texture?.height != height {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
                 pixelFormat: .bgra8Unorm,
@@ -119,7 +127,8 @@ final class TerminalMetalView: MTKView {
             snapshot: snapshot,
             configuration: renderConfiguration,
             width: width,
-            height: height
+            height: height,
+            fontPixelScale: fontPixelScale
         )
         bytes.withUnsafeBytes { rawBuffer in
             guard let baseAddress = rawBuffer.baseAddress else { return }
@@ -205,7 +214,8 @@ private final class CoreTextGlyphAtlas {
         snapshot: TerminalGridSnapshot,
         configuration: TerminalRenderConfiguration,
         width: Int,
-        height: Int
+        height: Int,
+        fontPixelScale: Double
     ) -> Data {
         var pixels = Data(repeating: 0, count: width * height * 4)
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -235,9 +245,10 @@ private final class CoreTextGlyphAtlas {
         )
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
 
+        let rasterFontSize = configuration.effectiveFontSize * fontPixelScale
         let font = CTFontCreateWithName(
             configuration.fontFamily as CFString,
-            CGFloat(configuration.effectiveFontSize),
+            CGFloat(rasterFontSize),
             nil
         )
         let ascent = CTFontGetAscent(font)
@@ -308,7 +319,7 @@ private final class CoreTextGlyphAtlas {
                     text: cell.text,
                     font: font,
                     family: configuration.fontFamily,
-                    size: configuration.fontSize,
+                    size: rasterFontSize,
                     color: foreground,
                     dim: cell.style.attributes.contains(.dim),
                     opacity: opacity

@@ -36,16 +36,31 @@ public enum TerminalRenderGeometry {
     }
 
     public static func automaticGrid(
-        pixelWidth: Double,
-        pixelHeight: Double,
+        logicalWidth: Double,
+        logicalHeight: Double,
         fontSize: Double
     ) -> (columns: Int, rows: Int) {
         let cellWidth = max(fontSize * 0.62, 1)
         let lineHeight = max(fontSize * 1.25, 1)
         return (
-            min(max(Int(pixelWidth / cellWidth), 40), 1000),
-            min(max(Int(pixelHeight / lineHeight), 20), 500)
+            min(max(Int(logicalWidth / cellWidth), 40), 1000),
+            min(max(Int(logicalHeight / lineHeight), 20), 500)
         )
+    }
+
+    /// Converts point-sized fonts into the pixel coordinates used by the
+    /// Metal/CoreGraphics render target. A fixed output resolution may have a
+    /// different pixel density from the native display, so derive the density
+    /// from the actual target texture rather than assuming Retina is always 2x.
+    public static func pixelScaleFactor(
+        pixelWidth: Int,
+        pixelHeight: Int,
+        logicalWidth: Double,
+        logicalHeight: Double
+    ) -> Double {
+        let horizontal = Double(max(pixelWidth, 1)) / max(logicalWidth, 1)
+        let vertical = Double(max(pixelHeight, 1)) / max(logicalHeight, 1)
+        return max(min(horizontal, vertical), 0.01)
     }
 
     public static func scaleFactors(

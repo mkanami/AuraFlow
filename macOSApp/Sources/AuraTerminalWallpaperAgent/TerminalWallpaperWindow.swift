@@ -9,6 +9,7 @@ final class TerminalWallpaperWindow: NSWindow {
     init(screen: NSScreen, device: MTLDevice) {
         terminalView = TerminalMetalView(
             frame: NSRect(origin: .zero, size: screen.frame.size),
+            logicalSize: screen.frame.size,
             device: device
         )
         super.init(
