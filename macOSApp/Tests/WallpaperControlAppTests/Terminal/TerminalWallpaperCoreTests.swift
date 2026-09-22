@@ -253,6 +253,29 @@ import Testing
             mode: .stretch
         ) == TerminalScaleFactors(x: 2, y: 4)
     )
+
+    for target in [(width: 2560.0, height: 1080.0), (width: 1200.0, height: 1920.0)] {
+        let contentWidth = 1600.0
+        let contentHeight = 900.0
+        let scale = TerminalRenderGeometry.scaleFactors(
+            contentWidth: contentWidth,
+            contentHeight: contentHeight,
+            targetWidth: target.width,
+            targetHeight: target.height,
+            mode: .fit
+        )
+        let drawnWidth = contentWidth * scale.x
+        let drawnHeight = contentHeight * scale.y
+        let offsetX = (target.width - drawnWidth) / 2
+        let offsetY = (target.height - drawnHeight) / 2
+
+        #expect(offsetX >= 0)
+        #expect(offsetY >= 0)
+        #expect(drawnWidth <= target.width)
+        #expect(drawnHeight <= target.height)
+        #expect(abs(offsetX * 2 + drawnWidth - target.width) < 0.001)
+        #expect(abs(offsetY * 2 + drawnHeight - target.height) < 0.001)
+    }
 }
 
 @Test func terminalAutomaticGridUsesTerminalPointsAndScalesGlyphsForPixels() {

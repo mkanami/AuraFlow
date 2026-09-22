@@ -5,11 +5,6 @@ import Metal
 import MetalKit
 
 final class TerminalMetalView: MTKView {
-    private struct Vertex {
-        var position: SIMD2<Float>
-        var uv: SIMD2<Float>
-    }
-
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLRenderPipelineState
     private let vertexBuffer: MTLBuffer
@@ -29,18 +24,10 @@ final class TerminalMetalView: MTKView {
         descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
         pipelineState = try! device.makeRenderPipelineState(descriptor: descriptor)
 
-        let vertices = [
-            // CoreTextGlyphAtlas applies the CGContext y-transform while
-            // laying out terminal rows. Keep row zero at the top at the final
-            // texture blit instead of applying another vertical flip.
-            Vertex(position: SIMD2(-1, -1), uv: SIMD2(0, 0)),
-            Vertex(position: SIMD2(1, -1), uv: SIMD2(1, 0)),
-            Vertex(position: SIMD2(-1, 1), uv: SIMD2(0, 1)),
-            Vertex(position: SIMD2(1, 1), uv: SIMD2(1, 1)),
-        ]
+        let vertices = TerminalTextureOrientation.fullScreenQuad
         vertexBuffer = device.makeBuffer(
             bytes: vertices,
-            length: MemoryLayout<Vertex>.stride * vertices.count,
+            length: MemoryLayout<TerminalMetalVertex>.stride * vertices.count,
             options: .storageModeShared
         )!
         super.init(frame: frame, device: device)

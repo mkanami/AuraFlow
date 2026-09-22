@@ -65,6 +65,7 @@ var targets: [Target] = [
             "AuraTerminalWallpaperCore",
             "WallpaperControlApp",
             "AuraWallpaperAgent",
+            "AuraTerminalWallpaperAgent",
         ],
         path: "Tests/WallpaperControlAppTests",
         resources: [
