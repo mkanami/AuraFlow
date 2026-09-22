@@ -70,7 +70,10 @@ int aura_terminal_pty_spawn(
     }
 
     if (pid == 0) {
-        (void)setpgid(0, 0);
+        // forkpty()'s child setup calls login_tty(), which creates the new
+        // session and controlling terminal. Do not change the process group
+        // before or during that setup: making the child a group leader first
+        // can make setsid() fail, leaving /dev/tty unavailable to TUI apps.
         if (working_directory != NULL && working_directory[0] != '\0') {
             (void)chdir(working_directory);
         }
@@ -84,7 +87,6 @@ int aura_terminal_pty_spawn(
         _exit(127);
     }
 
-    (void)setpgid(pid, pid);
     if (aura_terminal_pty_set_nonblocking(local_master) != 0) {
         close(local_master);
         (void)kill(-pid, SIGTERM);
