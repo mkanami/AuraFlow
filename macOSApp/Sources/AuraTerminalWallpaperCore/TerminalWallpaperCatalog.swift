@@ -8,7 +8,7 @@ public enum TerminalWallpaperCatalogCategory: String, CaseIterable, Identifiable
 
     public var title: String {
         switch self {
-        case .applications: return "TUI Apps"
+        case .applications: return "Terminal Apps"
         case .utilities: return "System Utilities"
         }
     }

@@ -7,26 +7,9 @@ struct TerminalWallpaperSettingsView: View {
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @State private var showAdvancedCommand = false
 
-    private var terminalAppearance: AdaptiveGlassAppearance {
-        var appearance = adaptiveGlassAppearance
-        // Terminal settings need a stable dark canvas. Reusing the wallpaper's
-        // adaptive light tone makes every glass surface turn into a white slab
-        // over bright artwork and leaves secondary buttons without contrast.
-        appearance.textTone = .light
-        appearance.centerGlassAlpha = 0.94
-        appearance.topGlassAlpha = 0.94
-        appearance.bottomGlassAlpha = 0.94
-        appearance.centerProtectionOverlayOpacity = 0.42
-        appearance.topProtectionOverlayOpacity = 0.42
-        appearance.bottomProtectionOverlayOpacity = 0.42
-        appearance.bottomButtonProtectionOpacity = 0.36
-        appearance.bottomButtonHighlightOpacity = 0.04
-        return appearance
-    }
-
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
+            LazyVStack(alignment: .leading, spacing: 0) {
                 header
 
                 if let errorMessage = viewModel.errorMessage {
@@ -46,29 +29,28 @@ struct TerminalWallpaperSettingsView: View {
                 }
 
                 catalogSection
+                Divider()
                 renderSection
+                Divider()
                 behaviorSection
-                statusSection
+                if viewModel.status.health != nil {
+                    Divider()
+                    statusSection
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
         }
-        .environment(\.adaptiveGlassAppearance, terminalAppearance)
         .frame(minWidth: 0, minHeight: 0)
-        .foregroundStyle(terminalAppearance.centerTextTone.primaryTextColor)
+        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
         .background(
             AuraGlassRoundedSurface(
                 cornerRadius: 18,
                 material: .clear,
-                alphaMultiplier: terminalAppearance.centerGlassAlpha,
-                protectionOverlayOpacity: terminalAppearance.centerProtectionOverlayOpacity,
-                protectionOverlayColor: terminalAppearance.centerTextTone.contrastSurfaceColor
+                alphaMultiplier: adaptiveGlassAppearance.centerGlassAlpha,
+                protectionOverlayOpacity: adaptiveGlassAppearance.centerProtectionOverlayOpacity,
+                protectionOverlayColor: adaptiveGlassAppearance.centerTextTone.contrastSurfaceColor
             )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.black.opacity(terminalDimmingOpacity))
-                .allowsHitTesting(false)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -87,23 +69,13 @@ struct TerminalWallpaperSettingsView: View {
         }
     }
 
-    private var terminalDimmingOpacity: CGFloat {
-        0.18
-    }
-
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: "terminal")
                 .font(.title2.weight(.semibold))
-                .foregroundStyle(.secondary)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Terminal Wallpaper")
-                    .font(.title2.weight(.semibold))
-                Text("Run a terminal app as a live desktop wallpaper")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Terminal Wallpaper")
+                .font(.title2.weight(.semibold))
 
             Spacer()
 
@@ -113,7 +85,11 @@ struct TerminalWallpaperSettingsView: View {
                     .frame(width: 8, height: 8)
                 Text(viewModel.statusTitle)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(viewModel.status.running ? .green : .secondary)
+                    .foregroundStyle(
+                        viewModel.status.running
+                            ? Color.green
+                            : adaptiveGlassAppearance.centerTextTone.secondaryTextColor
+                    )
             }
 
             if let onClose {
@@ -145,62 +121,56 @@ struct TerminalWallpaperSettingsView: View {
     private var catalogSection: some View {
         TerminalWallpaperSection(title: "Choose what to render", systemImage: "rectangle.grid.2x2") {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Select a terminal app or system utility. AuraFlow finds its executable automatically.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("GUI .app bundles are excluded. A command that writes no terminal output will be reported as blank.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
                 AuraCatalogSearchField(
                     text: Binding(
                         get: { viewModel.catalogSearch },
                         set: { viewModel.setCatalogSearch($0) }
                     ),
-                    placeholder: "Search installed executables",
-                    accessibilityLabel: "Search installed executables"
+                    placeholder: "Search apps and utilities",
+                    accessibilityLabel: "Search apps and utilities"
                 )
 
                 catalogCategory(.applications)
                 catalogCategory(.utilities)
 
                 if viewModel.catalogItems.isEmpty && !viewModel.catalogIsLoading {
-                    Text("No executable terminal programs were found in PATH or the standard bin folders.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Label(
+                        viewModel.catalogSearch.isEmpty ? "Search to find more apps" : "No matches",
+                        systemImage: "magnifyingglass"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                    .frame(maxWidth: .infinity)
                 }
 
                 if viewModel.catalogIsLoading {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Scanning installed command-line programs…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Searching apps and utilities")
                 }
 
                 HStack(spacing: 10) {
-                    Button("Refresh catalog") { viewModel.refreshCatalog() }
-                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                    Button {
+                        viewModel.refreshCatalog()
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
 
-                    Button("Choose executable…") {
+                    Button {
                         guard let url = TerminalExecutablePicker.choose() else { return }
                         if viewModel.selectCustomExecutable(url) {
                             showAdvancedCommand = true
                         }
+                    } label: {
+                        Label("Choose file…", systemImage: "folder")
                     }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-
-                    Text("For custom scripts or terminal programs")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
-                DisclosureGroup("Advanced command settings", isExpanded: $showAdvancedCommand) {
+                DisclosureGroup("Manual command", isExpanded: $showAdvancedCommand) {
                     advancedCommandFields
                 }
-                .tint(.secondary)
             }
         }
     }
@@ -233,19 +203,8 @@ struct TerminalWallpaperSettingsView: View {
                         .font(.title3)
                         .frame(width: 28)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(item.title)
-                            .font(.headline)
-                        Text(item.subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if let executable = viewModel.cachedExecutablePath(for: item) {
-                            Text(executable)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                        }
-                    }
+                    Text(item.title)
+                        .font(.body.weight(.semibold))
 
                     Spacer(minLength: 8)
 
@@ -267,14 +226,7 @@ struct TerminalWallpaperSettingsView: View {
                 )
         }
         .padding(8)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.black.opacity(0.16))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
-                )
-        )
+        .background(AuraGlassInsetCard())
     }
 
     private var advancedCommandFields: some View {
@@ -288,12 +240,9 @@ struct TerminalWallpaperSettingsView: View {
                 monospaced: true
             )
 
-            Text("Arguments — one argument per line")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             AuraTerminalTextEditor(
                 text: $viewModel.argumentsText,
-                placeholder: "--argument\nvalue"
+                placeholder: "Arguments — one per line"
             )
 
             AuraTerminalTextField(
@@ -302,12 +251,9 @@ struct TerminalWallpaperSettingsView: View {
                 monospaced: true
             )
 
-            Text("Environment — KEY=VALUE per line")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             AuraTerminalTextEditor(
                 text: $viewModel.environmentText,
-                placeholder: "KEY=VALUE"
+                placeholder: "Environment — KEY=VALUE per line"
             )
         }
         .padding(.top, 8)
@@ -429,37 +375,41 @@ struct TerminalWallpaperSettingsView: View {
     }
 
     private var statusSection: some View {
-        TerminalWallpaperSection(title: "Runtime health", systemImage: "heart.text.square") {
-            VStack(alignment: .leading, spacing: 6) {
+        TerminalWallpaperSection(title: "Runtime", systemImage: "heart.text.square") {
+            VStack(alignment: .leading, spacing: 8) {
                 if let health = viewModel.status.health {
                     terminalStatusRow(label: "PID", value: health.childPID.map(String.init) ?? "—")
                     terminalStatusRow(
-                        label: "PTY/grid",
+                        label: "Grid",
                         value: "\(health.columns.map(String.init) ?? "—") × \(health.rows.map(String.init) ?? "—")"
                     )
-                    terminalStatusRow(label: "Screens", value: "\(health.screens)")
-                    terminalStatusRow(label: "Frames", value: "\(health.frames)")
-                    terminalStatusRow(label: "Rendered", value: "\(health.renderedFrames)")
                     if let error = health.lastError {
                         Text(error)
-                            .font(.caption)
                             .foregroundStyle(.red)
-                            .padding(.top, 4)
+                            .padding(.top, 2)
+                    }
+
+                    DisclosureGroup("Diagnostics") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            terminalStatusRow(label: "Displays", value: "\(health.screens)")
+                            terminalStatusRow(label: "Frames", value: "\(health.frames)")
+                            terminalStatusRow(label: "Rendered", value: "\(health.renderedFrames)")
+                        }
+                        .padding(.top, 6)
                     }
                 } else {
-                    Text("No runtime health report yet.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text("Waiting for status…")
+                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 }
             }
-            .font(.system(.caption, design: .monospaced))
+            .font(.system(.callout, design: .monospaced))
         }
     }
 
     private func terminalStatusRow(label: String, value: String) -> some View {
         HStack {
             Text(label)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             Spacer()
             Text(value)
         }
@@ -524,7 +474,6 @@ private struct TerminalWallpaperSection<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(AuraGlassInsetCard(cornerRadius: 16, emphasized: false))
+        .padding(.vertical, 12)
     }
 }
