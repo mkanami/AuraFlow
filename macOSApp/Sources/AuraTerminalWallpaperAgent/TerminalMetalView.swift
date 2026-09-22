@@ -296,8 +296,7 @@ private final class CoreTextGlyphAtlas {
                     swap(&foreground, &cellBackground)
                 }
                 if cell.style.background != .default {
-                    context.setFillColor(cellBackground.cgColor)
-                    context.fill(rect)
+                    fillPixelAligned(rect, color: cellBackground.cgColor, context: context)
                 }
                 guard !cell.text.isEmpty, cell.text != " " else { continue }
                 let opacity = cell.style.attributes.contains(.dim) ? 0.55 : 1.0
@@ -350,9 +349,12 @@ private final class CoreTextGlyphAtlas {
         func fill(_ rect: CGRect, opacity: CGFloat = 1) {
             let fillColor = opacity == 1 ? color : (color.copy(alpha: color.alpha * opacity) ?? color)
             context.setFillColor(fillColor)
-            context.fill(rect)
+            context.fill(pixelAlignedRect(rect, context: context))
         }
 
+        context.saveGState()
+        context.setAllowsAntialiasing(false)
+        context.setShouldAntialias(false)
         switch scalar.value {
         case 0x2580:
             fill(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: halfHeight))
@@ -395,7 +397,35 @@ private final class CoreTextGlyphAtlas {
         default:
             break
         }
+        context.restoreGState()
         return true
+    }
+
+    private func fillPixelAligned(_ rect: CGRect, color: CGColor, context: CGContext) {
+        context.saveGState()
+        context.setAllowsAntialiasing(false)
+        context.setShouldAntialias(false)
+        context.setFillColor(color)
+        context.fill(pixelAlignedRect(rect, context: context))
+        context.restoreGState()
+    }
+
+    /// Snap fill edges to the bitmap's device pixels so adjacent terminal
+    /// cells share exactly one raster boundary instead of antialiasing a
+    /// translucent hairline between otherwise-solid block characters.
+    private func pixelAlignedRect(_ rect: CGRect, context: CGContext) -> CGRect {
+        let deviceRect = context.convertToDeviceSpace(rect).standardized
+        let minX = deviceRect.minX.rounded()
+        let minY = deviceRect.minY.rounded()
+        let maxX = deviceRect.maxX.rounded()
+        let maxY = deviceRect.maxY.rounded()
+        let alignedDeviceRect = CGRect(
+            x: minX,
+            y: minY,
+            width: max(maxX - minX, 0),
+            height: max(maxY - minY, 0)
+        )
+        return context.convertToUserSpace(alignedDeviceRect).standardized
     }
 
     private func lineFor(
