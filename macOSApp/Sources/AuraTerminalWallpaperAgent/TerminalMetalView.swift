@@ -177,6 +177,11 @@ private final class CoreTextGlyphAtlas {
     }
 
     private var lineCache: [GlyphKey: CTLine] = [:]
+    private static let blockQuadrants: [UInt32: UInt8] = [
+        0x2596: 0b0100, 0x2597: 0b1000, 0x2598: 0b0001, 0x2599: 0b1101,
+        0x259A: 0b1001, 0x259B: 0b0111, 0x259C: 0b1011, 0x259D: 0b0010,
+        0x259E: 0b0110, 0x259F: 0b1110,
+    ]
     private let palette: [TerminalRGBA] = [
         TerminalRGBA(red: 0.0, green: 0.0, blue: 0.0),
         TerminalRGBA(red: 0.8, green: 0.1, blue: 0.1),
@@ -296,6 +301,10 @@ private final class CoreTextGlyphAtlas {
                 }
                 guard !cell.text.isEmpty, cell.text != " " else { continue }
                 let opacity = cell.style.attributes.contains(.dim) ? 0.55 : 1.0
+                let glyphColor = foreground.cgColor.copy(alpha: foreground.alpha * opacity) ?? foreground.cgColor
+                if drawBlockElement(cell.text, in: rect, context: context, color: glyphColor) {
+                    continue
+                }
                 let line = lineFor(
                     text: cell.text,
                     font: font,
@@ -319,6 +328,74 @@ private final class CoreTextGlyphAtlas {
         }
         context.restoreGState()
         return pixels
+    }
+
+    /// Terminal block elements represent pixel-sized fills, not font glyphs.
+    /// Rasterizing them directly avoids font-specific gaps and tofu glyphs in
+    /// full-screen visual TUIs such as lavat.
+    private func drawBlockElement(
+        _ text: String,
+        in rect: CGRect,
+        context: CGContext,
+        color: CGColor
+    ) -> Bool {
+        guard text.unicodeScalars.count == 1,
+              let scalar = text.unicodeScalars.first,
+              (0x2580...0x259F).contains(scalar.value)
+        else { return false }
+
+        let halfWidth = rect.width / 2
+        let halfHeight = rect.height / 2
+
+        func fill(_ rect: CGRect, opacity: CGFloat = 1) {
+            let fillColor = opacity == 1 ? color : (color.copy(alpha: color.alpha * opacity) ?? color)
+            context.setFillColor(fillColor)
+            context.fill(rect)
+        }
+
+        switch scalar.value {
+        case 0x2580:
+            fill(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: halfHeight))
+        case 0x2581...0x2587:
+            let eighths = CGFloat(scalar.value - 0x2580)
+            fill(CGRect(
+                x: rect.minX,
+                y: rect.maxY - rect.height * eighths / 8,
+                width: rect.width,
+                height: rect.height * eighths / 8
+            ))
+        case 0x2588:
+            fill(rect)
+        case 0x2589...0x258F:
+            let eighths = CGFloat(0x2590 - scalar.value)
+            fill(CGRect(x: rect.minX, y: rect.minY, width: rect.width * eighths / 8, height: rect.height))
+        case 0x2590:
+            fill(CGRect(x: rect.minX + halfWidth, y: rect.minY, width: halfWidth, height: rect.height))
+        case 0x2591...0x2593:
+            let opacity: CGFloat = scalar.value == 0x2591 ? 0.25 : (scalar.value == 0x2592 ? 0.5 : 0.75)
+            fill(rect, opacity: opacity)
+        case 0x2594:
+            fill(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height / 8))
+        case 0x2595:
+            fill(CGRect(x: rect.maxX - rect.width / 8, y: rect.minY, width: rect.width / 8, height: rect.height))
+        case 0x2596...0x259F:
+            let mask = Self.blockQuadrants[scalar.value] ?? 0
+            for row in 0..<2 {
+                for column in 0..<2 {
+                    let bit = UInt8(1 << (row * 2 + column))
+                    guard mask & bit != 0 else { continue }
+                    fill(CGRect(
+                        x: rect.minX + CGFloat(column) * halfWidth,
+                        y: rect.minY + CGFloat(row) * halfHeight,
+                        width: halfWidth,
+                        height: halfHeight
+                    ))
+                }
+            }
+        default:
+            break
+        }
+        return true
     }
 
     private func lineFor(
