@@ -5,21 +5,47 @@ import Combine
 protocol TerminalWallpaperCatalogProviding: Sendable {
     func discover() -> [TerminalWallpaperCatalogItem]
     func discover(query: String) -> [TerminalWallpaperCatalogItem]
+    func refresh()
 }
 
 extension TerminalWallpaperCatalogProviding {
     func discover(query: String) -> [TerminalWallpaperCatalogItem] {
         discover()
     }
+
+    func refresh() {}
 }
 
-struct SystemTerminalWallpaperCatalogProvider: TerminalWallpaperCatalogProviding {
+final class SystemTerminalWallpaperCatalogProvider: TerminalWallpaperCatalogProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private let discoverItems: @Sendable () -> [TerminalWallpaperCatalogItem]
+    private var cachedItems: [TerminalWallpaperCatalogItem]?
+
+    init(
+        discoverItems: @escaping @Sendable () -> [TerminalWallpaperCatalogItem] = {
+            TerminalWallpaperCatalog.availableItems()
+        }
+    ) {
+        self.discoverItems = discoverItems
+    }
+
     func discover() -> [TerminalWallpaperCatalogItem] {
-        TerminalWallpaperCatalog.availableItems()
+        lock.lock()
+        defer { lock.unlock() }
+        if let cachedItems { return cachedItems }
+        let discovered = discoverItems()
+        cachedItems = discovered
+        return discovered
     }
 
     func discover(query: String) -> [TerminalWallpaperCatalogItem] {
-        TerminalWallpaperCatalog.searchItems(for: query)
+        TerminalWallpaperCatalog.searchItems(for: query, candidates: discover())
+    }
+
+    func refresh() {
+        lock.lock()
+        cachedItems = nil
+        lock.unlock()
     }
 }
 
@@ -63,6 +89,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private var catalogSearchGeneration = 0
     private var catalogSearchTask: Task<Void, Never>?
     private var catalogDiscoveryTask: Task<Void, Never>?
+    private var catalogDiscoveryWorkerTask: Task<[TerminalWallpaperCatalogItem], Never>?
     private var deferredSearchItems: [TerminalWallpaperCatalogItem] = []
     private var discoveredCatalogItemsByQuery: [String: [TerminalWallpaperCatalogItem]] = [:]
     private var resolvedExecutableCache: [String: String] = [:]
@@ -161,8 +188,11 @@ final class TerminalWallpaperViewModel: ObservableObject {
     func refreshCatalog() {
         catalogSearchTask?.cancel()
         catalogDiscoveryTask?.cancel()
+        catalogDiscoveryWorkerTask?.cancel()
         catalogSearchTask = nil
         catalogDiscoveryTask = nil
+        catalogDiscoveryWorkerTask = nil
+        catalogProvider.refresh()
         catalogSearchGeneration &+= 1
         catalogSearch = ""
         discoveredCatalogItems = nil
@@ -181,16 +211,19 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     func setCatalogSearch(_ value: String) {
+        guard value != catalogSearch else { return }
         catalogSearch = value
         catalogSearchGeneration &+= 1
         let generation = catalogSearchGeneration
         catalogSearchTask?.cancel()
+        catalogDiscoveryTask?.cancel()
+        catalogDiscoveryWorkerTask?.cancel()
         catalogSearchTask = nil
+        catalogDiscoveryTask = nil
+        catalogDiscoveryWorkerTask = nil
         let query = normalizedCatalogSearch
 
         guard !query.isEmpty else {
-            catalogDiscoveryTask?.cancel()
-            catalogDiscoveryTask = nil
             catalogIsLoading = false
             catalogItems = initialCatalogItems
             deferredSearchItems = []
@@ -201,18 +234,17 @@ final class TerminalWallpaperViewModel: ObservableObject {
         applyVisibleSearchResults(for: query)
         if let cached = discoveredCatalogItemsByQuery[query] {
             discoveredCatalogItems = cached
+            catalogIsLoading = false
             applyVisibleSearchResults(for: query)
             return
         }
 
         discoveredCatalogItems = nil
-        catalogDiscoveryTask?.cancel()
-        catalogDiscoveryTask = nil
-        catalogIsLoading = false
+        catalogIsLoading = true
 
         catalogSearchTask = Task { [weak self] in
             do {
-                try await Task.sleep(nanoseconds: 180_000_000)
+                try await Task.sleep(nanoseconds: 300_000_000)
             } catch {
                 return
             }
@@ -323,14 +355,17 @@ final class TerminalWallpaperViewModel: ObservableObject {
         catalogIsLoading = true
         let provider = catalogProvider
         let generation = catalogSearchGeneration
+        let worker = Task.detached(priority: .userInitiated) {
+            provider.discover(query: query)
+        }
+        catalogDiscoveryWorkerTask = worker
         catalogDiscoveryTask = Task { [weak self] in
-            let discovered = await Task.detached(priority: .userInitiated) {
-                provider.discover(query: query)
-            }.value
+            let discovered = await worker.value
             guard let self,
                   !Task.isCancelled,
                   generation == self.catalogSearchGeneration,
                   self.normalizedCatalogSearch == query else { return }
+            self.catalogDiscoveryWorkerTask = nil
             self.discoveredCatalogItemsByQuery[query] = discovered
             self.discoveredCatalogItems = discovered
             for item in discovered {

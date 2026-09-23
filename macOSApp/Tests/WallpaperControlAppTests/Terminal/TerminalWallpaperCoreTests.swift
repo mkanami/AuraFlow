@@ -128,6 +128,10 @@ import Testing
 
     #expect(TerminalWallpaperCatalog.matchesSearch(query: "lavac", item: lavat))
     #expect(!TerminalWallpaperCatalog.matchesSearch(query: "zzzzz", item: lavat))
+    #expect(
+        TerminalWallpaperCatalog.searchItems(for: "lavac", candidates: [lavat])
+            .first?.id == "lavat"
+    )
 }
 
 @Test func terminalCatalogKeepsExecutableSymlinksInDiscovery() throws {

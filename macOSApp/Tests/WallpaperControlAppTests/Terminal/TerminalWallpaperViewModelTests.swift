@@ -6,6 +6,7 @@ import Testing
 private final class TerminalDiscoveryRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
+    private var cancellationValue = 0
 
     var count: Int {
         lock.lock()
@@ -13,9 +14,21 @@ private final class TerminalDiscoveryRecorder: @unchecked Sendable {
         return value
     }
 
+    var cancellations: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancellationValue
+    }
+
     func record() {
         lock.lock()
         value += 1
+        lock.unlock()
+    }
+
+    func recordCancellation() {
+        lock.lock()
+        cancellationValue += 1
         lock.unlock()
     }
 }
@@ -27,6 +40,25 @@ private struct StubTerminalCatalogProvider: TerminalWallpaperCatalogProviding {
     func discover() -> [TerminalWallpaperCatalogItem] {
         recorder.record()
         return items
+    }
+}
+
+private struct CancellationAwareTerminalCatalogProvider: TerminalWallpaperCatalogProviding {
+    let recorder: TerminalDiscoveryRecorder
+    let betaItems: [TerminalWallpaperCatalogItem]
+
+    func discover() -> [TerminalWallpaperCatalogItem] { [] }
+
+    func discover(query: String) -> [TerminalWallpaperCatalogItem] {
+        recorder.record()
+        if query == "alpha" {
+            while !Task.isCancelled {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            recorder.recordCancellation()
+            return makeDiscoveredTerminalItems(count: 1, prefix: "alpha")
+        }
+        return betaItems
     }
 }
 
@@ -144,6 +176,68 @@ func terminalCatalogSearchDiscoversOnceAndPaginatesOnlyOnTrigger() async throws 
     viewModel.loadMoreCatalogItems()
     #expect(viewModel.catalogItems.count == 50)
     #expect(!viewModel.catalogHasMore)
+}
+
+@Test func systemTerminalCatalogCachesExecutableScanUntilRefresh() {
+    let recorder = TerminalDiscoveryRecorder()
+    let items = makeDiscoveredTerminalItems(count: 1, prefix: "alpha")
+        + makeDiscoveredTerminalItems(count: 1, prefix: "beta")
+    let provider = SystemTerminalWallpaperCatalogProvider {
+        recorder.record()
+        return items
+    }
+
+    #expect(provider.discover(query: "alpha").count == 1)
+    #expect(provider.discover(query: "beta").count == 1)
+    #expect(recorder.count == 1)
+
+    provider.refresh()
+    _ = provider.discover()
+    #expect(recorder.count == 2)
+}
+
+@Test @MainActor
+func terminalCatalogSearchShowsLoadingInsteadOfFalseNoMatchesDuringDebounce() {
+    let recorder = TerminalDiscoveryRecorder()
+    let provider = StubTerminalCatalogProvider(
+        recorder: recorder,
+        items: makeDiscoveredTerminalItems(count: 1)
+    )
+    let viewModel = makeViewModel(provider: provider)
+
+    viewModel.setCatalogSearch("tool")
+
+    #expect(viewModel.catalogIsLoading)
+    #expect(recorder.count == 0)
+}
+
+@Test @MainActor
+func terminalCatalogCancelsAnObsoleteSearchAlreadyInProgress() async throws {
+    let recorder = TerminalDiscoveryRecorder()
+    let provider = CancellationAwareTerminalCatalogProvider(
+        recorder: recorder,
+        betaItems: makeDiscoveredTerminalItems(count: 2, prefix: "beta")
+    )
+    let viewModel = TerminalWallpaperViewModel(
+        controller: StubTerminalWallpaperController(),
+        catalogProvider: provider
+    )
+
+    viewModel.setCatalogSearch("alpha")
+    for _ in 0..<50 where recorder.count == 0 {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    #expect(recorder.count == 1)
+
+    viewModel.setCatalogSearch("beta")
+    try await Task.sleep(nanoseconds: 400_000_000)
+    for _ in 0..<50 where viewModel.catalogIsLoading {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    #expect(recorder.cancellations == 1)
+    #expect(viewModel.catalogItems.count == 2)
+    #expect(viewModel.catalogItems.allSatisfy { $0.title.localizedCaseInsensitiveContains("beta") })
 }
 
 @Test @MainActor

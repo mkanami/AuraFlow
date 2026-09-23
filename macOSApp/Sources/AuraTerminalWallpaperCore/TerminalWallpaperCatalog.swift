@@ -216,12 +216,34 @@ public enum TerminalWallpaperCatalog {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> [TerminalWallpaperCatalogItem] {
+        searchItems(
+            for: query,
+            candidates: availableItems(environment: environment, fileManager: fileManager),
+            environment: environment,
+            fileManager: fileManager
+        )
+    }
+
+    /// Searches a previously discovered executable snapshot. Reusing the
+    /// snapshot keeps keystrokes from rescanning every executable directory.
+    public static func searchItems(
+        for query: String,
+        candidates: [TerminalWallpaperCatalogItem],
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> [TerminalWallpaperCatalogItem] {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedQuery.isEmpty else {
-            return availableItems(environment: environment, fileManager: fileManager)
+        guard !normalizedQuery.isEmpty else { return sorted(candidates) }
+
+        let localMatches = searchSorted(candidates, query: normalizedQuery)
+        // Most terminal programs live in PATH or a standard package-manager
+        // bin directory. Avoid launching Spotlight for every partial query
+        // when those directories already supplied matches.
+        guard localMatches.isEmpty, normalizedQuery.count >= 3 else {
+            return localMatches
         }
 
-        var result = availableItems(environment: environment, fileManager: fileManager)
+        var result = candidates
         var seenPaths = Set(
             result.flatMap { $0.executableCandidates }
                 .compactMap { $0.contains("/") ? $0 : nil }
@@ -384,6 +406,7 @@ public enum TerminalWallpaperCatalog {
         fileManager: FileManager
     ) -> [String] {
         guard fileManager.isExecutableFile(atPath: "/usr/bin/mdfind") else { return [] }
+        guard !Task.isCancelled else { return [] }
 
         let safeQuery = query.filter { character in
             character.isLetter || character.isNumber || character == " " ||
@@ -396,17 +419,47 @@ public enum TerminalWallpaperCatalog {
         process.arguments = ["kMDItemFSName == '*\(safeQuery)*'cd"]
         let output = Pipe()
         process.standardOutput = output
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
+        let outputBuffer = TerminalWallpaperSearchOutputBuffer()
+        let didReachEOF = DispatchSemaphore(value: 0)
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                didReachEOF.signal()
+                return
+            }
+            outputBuffer.append(data)
+        }
+        let didExit = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in didExit.signal() }
 
         do {
+            guard !Task.isCancelled else {
+                output.fileHandleForReading.readabilityHandler = nil
+                return []
+            }
             try process.run()
-            process.waitUntilExit()
         } catch {
+            output.fileHandleForReading.readabilityHandler = nil
             return []
         }
 
+        let deadline = Date().addingTimeInterval(2)
+        var sentTermination = false
+        while didExit.wait(timeout: .now() + .milliseconds(50)) == .timedOut {
+            if (Task.isCancelled || Date() >= deadline), !sentTermination {
+                process.terminate()
+                sentTermination = true
+            }
+        }
+        process.waitUntilExit()
+        _ = didReachEOF.wait(timeout: .now() + .milliseconds(250))
+        output.fileHandleForReading.readabilityHandler = nil
+
+        guard !Task.isCancelled else { return [] }
         guard process.terminationStatus == 0 else { return [] }
-        return String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        return String(decoding: outputBuffer.data, as: UTF8.self)
             .split(whereSeparator: \.isNewline)
             .map(String.init)
             .filter { path in
@@ -488,6 +541,23 @@ public enum TerminalWallpaperCatalog {
 
     private static func normalizedPath(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+}
+
+private final class TerminalWallpaperSearchOutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = Data()
+
+    func append(_ data: Data) {
+        lock.lock()
+        storage.append(data)
+        lock.unlock()
+    }
+
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }
 
