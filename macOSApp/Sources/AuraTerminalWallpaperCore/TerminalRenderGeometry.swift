@@ -20,6 +20,28 @@ public struct TerminalScaleFactors: Equatable, Sendable {
     }
 }
 
+public struct TerminalRenderLayout: Equatable, Sendable {
+    public let scale: TerminalScaleFactors
+    public let drawnWidth: Double
+    public let drawnHeight: Double
+    public let offsetX: Double
+    public let offsetY: Double
+
+    public init(
+        scale: TerminalScaleFactors,
+        drawnWidth: Double,
+        drawnHeight: Double,
+        offsetX: Double,
+        offsetY: Double
+    ) {
+        self.scale = scale
+        self.drawnWidth = drawnWidth
+        self.drawnHeight = drawnHeight
+        self.offsetX = offsetX
+        self.offsetY = offsetY
+    }
+}
+
 public enum TerminalRenderGeometry {
     public static func pixelSize(
         configuration: TerminalRenderConfiguration,
@@ -38,13 +60,48 @@ public enum TerminalRenderGeometry {
     public static func automaticGrid(
         logicalWidth: Double,
         logicalHeight: Double,
-        fontSize: Double
+        cellWidth: Double,
+        lineHeight: Double
     ) -> (columns: Int, rows: Int) {
-        let cellWidth = max(fontSize * 0.62, 1)
-        let lineHeight = max(fontSize * 1.25, 1)
+        let safeCellWidth = max(cellWidth.isFinite ? cellWidth : 1, 1)
+        let safeLineHeight = max(lineHeight.isFinite ? lineHeight : 1, 1)
+        let safeLogicalWidth = max(logicalWidth.isFinite ? logicalWidth : 1, 1)
+        let safeLogicalHeight = max(logicalHeight.isFinite ? logicalHeight : 1, 1)
         return (
-            min(max(Int(logicalWidth / cellWidth), 40), 1000),
-            min(max(Int(logicalHeight / lineHeight), 20), 500)
+            min(max(Int(safeLogicalWidth / safeCellWidth), 40), 1000),
+            min(max(Int(safeLogicalHeight / safeLineHeight), 20), 500)
+        )
+    }
+
+    /// Builds the final centered content layout from the same cell metrics used
+    /// to rasterize glyphs. Font scaling belongs in those metrics; it must not
+    /// be multiplied again after `fit` has selected a scale.
+    public static func layout(
+        columns: Int,
+        rows: Int,
+        cellWidth: Double,
+        lineHeight: Double,
+        targetWidth: Double,
+        targetHeight: Double,
+        mode: TerminalScaleMode
+    ) -> TerminalRenderLayout {
+        let contentWidth = Double(max(columns, 1)) * max(cellWidth, 0.0001)
+        let contentHeight = Double(max(rows, 1)) * max(lineHeight, 0.0001)
+        let scale = scaleFactors(
+            contentWidth: contentWidth,
+            contentHeight: contentHeight,
+            targetWidth: targetWidth,
+            targetHeight: targetHeight,
+            mode: mode
+        )
+        let drawnWidth = contentWidth * scale.x
+        let drawnHeight = contentHeight * scale.y
+        return TerminalRenderLayout(
+            scale: scale,
+            drawnWidth: drawnWidth,
+            drawnHeight: drawnHeight,
+            offsetX: (targetWidth - drawnWidth) * 0.5,
+            offsetY: (targetHeight - drawnHeight) * 0.5
         )
     }
 

@@ -239,33 +239,24 @@ private final class CoreTextGlyphAtlas {
             nil
         )
         let ascent = CTFontGetAscent(font)
-        let descent = CTFontGetDescent(font)
-        let lineHeight = max(ascent + descent + CGFloat(configuration.cellSpacing), 1)
-        let sampleLine = CTLineCreateWithAttributedString(
-            NSAttributedString(string: "M", attributes: [.font: font])
+        let cellMetrics = TerminalFontMetrics.cellMetrics(
+            font: font,
+            cellSpacing: CGFloat(configuration.cellSpacing * fontPixelScale)
         )
-        let sampleWidth = max(CTLineGetTypographicBounds(sampleLine, nil, nil, nil), 1)
-        let cellWidth = sampleWidth + CGFloat(configuration.cellSpacing)
-        let contentWidth = max(CGFloat(snapshot.columns) * cellWidth, 1)
-        let contentHeight = max(CGFloat(snapshot.rows) * lineHeight, 1)
-        let baseScale = TerminalRenderGeometry.scaleFactors(
-            contentWidth: contentWidth,
-            contentHeight: contentHeight,
-            targetWidth: CGFloat(width),
-            targetHeight: CGFloat(height),
+        let lineHeight = CGFloat(cellMetrics.height)
+        let cellWidth = CGFloat(cellMetrics.width)
+        let layout = TerminalRenderGeometry.layout(
+            columns: snapshot.columns,
+            rows: snapshot.rows,
+            cellWidth: Double(cellWidth),
+            lineHeight: Double(lineHeight),
+            targetWidth: Double(width),
+            targetHeight: Double(height),
             mode: configuration.scaleMode
         )
-        let fixedGridZoom = configuration.columns != nil && configuration.rows != nil
-            ? configuration.textScale
-            : 1
-        let scale = TerminalScaleFactors(
-            x: baseScale.x * fixedGridZoom,
-            y: baseScale.y * fixedGridZoom
-        )
-        let drawnWidth = contentWidth * CGFloat(scale.x)
-        let drawnHeight = contentHeight * CGFloat(scale.y)
-        let offsetX = (CGFloat(width) - drawnWidth) * 0.5
-        let offsetY = (CGFloat(height) - drawnHeight) * 0.5
+        let scale = layout.scale
+        let offsetX = CGFloat(layout.offsetX)
+        let offsetY = CGFloat(layout.offsetY)
 
         context.saveGState()
         context.translateBy(x: 0, y: CGFloat(height))

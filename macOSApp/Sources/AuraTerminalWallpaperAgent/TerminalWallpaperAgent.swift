@@ -234,10 +234,12 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return (columns, rows)
         }
         let screen = NSScreen.main ?? NSScreen.screens.first
+        let cellMetrics = TerminalFontMetrics.cellMetrics(for: config.render)
         return TerminalRenderGeometry.automaticGrid(
             logicalWidth: Double(screen?.frame.width ?? 1920),
             logicalHeight: Double(screen?.frame.height ?? 1080),
-            fontSize: config.render.effectiveFontSize
+            cellWidth: cellMetrics.width,
+            lineHeight: cellMetrics.height
         )
     }
 

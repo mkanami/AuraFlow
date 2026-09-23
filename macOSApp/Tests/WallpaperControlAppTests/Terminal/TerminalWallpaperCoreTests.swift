@@ -1,4 +1,5 @@
 import AuraTerminalWallpaperCore
+@testable import AuraTerminalWallpaperAgent
 import Foundation
 import Testing
 
@@ -16,8 +17,8 @@ import Testing
 
     let childPID = try session.start(
         command: command,
-        columns: 80,
-        rows: 24,
+        columns: 153,
+        rows: 48,
         onData: { data in
             outputLock.lock()
             output.append(data)
@@ -33,14 +34,14 @@ import Testing
         outputLock.lock()
         let text = String(decoding: output, as: UTF8.self)
         outputLock.unlock()
-        if text.contains("xterm-256color:truecolor:80:24") { break }
+        if text.contains("xterm-256color:truecolor:153:48") { break }
         Thread.sleep(forTimeInterval: 0.02)
     }
 
     outputLock.lock()
     let text = String(decoding: output, as: UTF8.self)
     outputLock.unlock()
-    #expect(text.contains("xterm-256color:truecolor:80:24"))
+    #expect(text.contains("xterm-256color:truecolor:153:48"))
     try session.resize(columns: 120, rows: 40)
     #expect(session.childPID == childPID)
 
@@ -278,17 +279,30 @@ import Testing
     }
 }
 
-@Test func terminalAutomaticGridUsesTerminalPointsAndScalesGlyphsForPixels() {
-    let fontSize = TerminalRenderConfiguration(fontSize: 14, textScale: 1.5).effectiveFontSize
+@Test func terminalAutomaticGridUsesCoreTextCellMetrics() {
+    let configuration = TerminalRenderConfiguration(
+        fontSize: 18,
+        cellSpacing: 2,
+        textScale: 1
+    )
+    let metrics = TerminalFontMetrics.cellMetrics(for: configuration)
+    let noSpacingMetrics = TerminalFontMetrics.cellMetrics(
+        family: configuration.fontFamily,
+        pointSize: configuration.effectiveFontSize
+    )
     let grid = TerminalRenderGeometry.automaticGrid(
         logicalWidth: 1440,
         logicalHeight: 900,
-        fontSize: fontSize
+        cellWidth: metrics.width,
+        lineHeight: metrics.height
     )
 
-    #expect(fontSize == 21)
-    #expect(grid.columns == 110)
-    #expect(grid.rows == 34)
+    #expect(metrics.width > 0)
+    #expect(metrics.height > 0)
+    #expect(abs(metrics.width - noSpacingMetrics.width - 2) < 0.01)
+    #expect(abs(metrics.height - noSpacingMetrics.height - 2) < 0.01)
+    #expect(grid.columns == Int(1440 / metrics.width))
+    #expect(grid.rows == Int(900 / metrics.height))
     #expect(
         TerminalRenderGeometry.pixelScaleFactor(
             pixelWidth: 2880,
@@ -305,6 +319,43 @@ import Testing
             logicalHeight: 900
         ) == 1.2
     )
+}
+
+@Test func terminalFitLayoutAppliesTextScaleOnceAndKeepsFixedGridInFrame() {
+    let scaledConfiguration = TerminalRenderConfiguration(
+        columns: 153,
+        rows: 48,
+        fontSize: 12,
+        scaleMode: .fit,
+        textScale: 1.5
+    )
+    let metrics = TerminalFontMetrics.cellMetrics(for: scaledConfiguration)
+    let unscaledMetrics = TerminalFontMetrics.cellMetrics(
+        family: scaledConfiguration.fontFamily,
+        pointSize: scaledConfiguration.fontSize
+    )
+    #expect(abs(metrics.width - unscaledMetrics.width * 1.5) < 0.01)
+    #expect(abs(metrics.height - unscaledMetrics.height * 1.5) < 0.01)
+
+    for target in [(width: 3420.0, height: 2224.0), (width: 1200.0, height: 1920.0)] {
+        let layout = TerminalRenderGeometry.layout(
+            columns: 153,
+            rows: 48,
+            cellWidth: metrics.width,
+            lineHeight: metrics.height,
+            targetWidth: target.width,
+            targetHeight: target.height,
+            mode: .fit
+        )
+        #expect(layout.offsetX >= -0.001)
+        #expect(layout.offsetY >= -0.001)
+        #expect(layout.drawnWidth <= target.width + 0.001)
+        #expect(layout.drawnHeight <= target.height + 0.001)
+        let horizontalCenterError = abs((layout.offsetX * 2) + layout.drawnWidth - target.width)
+        let verticalCenterError = abs((layout.offsetY * 2) + layout.drawnHeight - target.height)
+        #expect(horizontalCenterError < 0.001)
+        #expect(verticalCenterError < 0.001)
+    }
 }
 
 @Test func terminalGridSnapshotsExposeDirtyRevisions() {
