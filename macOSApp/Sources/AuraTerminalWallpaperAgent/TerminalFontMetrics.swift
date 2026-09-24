@@ -21,7 +21,10 @@ enum TerminalFontMetrics {
         pointSize: Double,
         cellSpacing: Double = 0
     ) -> TerminalCellMetrics {
-        let font = CTFontCreateWithName(family as CFString, CGFloat(max(pointSize, 1)), nil)
+        let font = TerminalFontResolver.font(
+            family: family,
+            size: CGFloat(max(pointSize, 1))
+        )
         return cellMetrics(font: font, cellSpacing: CGFloat(max(cellSpacing, 0)))
     }
 

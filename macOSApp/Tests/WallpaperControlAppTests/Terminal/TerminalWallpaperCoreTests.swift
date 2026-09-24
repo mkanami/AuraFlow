@@ -1,5 +1,7 @@
 import AuraTerminalWallpaperCore
 @testable import AuraTerminalWallpaperAgent
+import AppKit
+import CoreText
 import Foundation
 import Testing
 
@@ -73,7 +75,7 @@ import Testing
     #expect(config.render.fixedHeight == 16_384)
     #expect(config.render.columns == 1)
     #expect(config.render.rows == 500)
-    #expect(config.render.fontFamily == "Menlo")
+    #expect(config.render.fontFamily == "System Monospace")
     #expect(config.render.fontSize == 96)
     #expect(config.render.cellSpacing == 0)
     #expect(config.render.maxFPS == 120)
@@ -322,6 +324,42 @@ import Testing
             logicalWidth: 1440,
             logicalHeight: 900
         ) == 1.2
+    )
+}
+
+@Test func terminalSystemMonospaceMatchesMacOSMonospacedFontAndHonorsBold() {
+    let family = TerminalFontResolver.systemMonospaceFamily
+    let regular = TerminalFontResolver.font(family: family, size: 18)
+    let expectedRegular = NSFont.monospacedSystemFont(ofSize: 18, weight: .regular)
+    #expect(CTFontCopyPostScriptName(regular) as String == expectedRegular.fontName)
+
+    let bold = TerminalFontResolver.font(family: family, size: 18, bold: true)
+    let expectedBold = NSFont.monospacedSystemFont(ofSize: 18, weight: .bold)
+    #expect(CTFontCopyPostScriptName(bold) as String == expectedBold.fontName)
+    #expect(CTFontGetSymbolicTraits(bold).contains(.traitBold))
+
+    let kittyAlias = TerminalFontResolver.font(family: "monospace", size: 18)
+    #expect(CTFontCopyPostScriptName(kittyAlias) as String == expectedRegular.fontName)
+}
+
+@Test func terminalIndexedColorsUseKittyAnsiAndXterm256Mappings() {
+    let palette = TerminalPalette.kittyDefault16
+    let fallback = TerminalRGBA(red: 0.25, green: 0.25, blue: 0.25)
+
+    #expect(TerminalColor.indexed(6).resolved(defaultColor: fallback, palette: palette) == palette[6])
+    #expect(palette[6] == TerminalRGBA(red: 13.0 / 255, green: 205.0 / 255, blue: 205.0 / 255))
+    #expect(TerminalColor.indexed(16).resolved(defaultColor: fallback, palette: palette) == .black)
+    #expect(
+        TerminalColor.indexed(196).resolved(defaultColor: fallback, palette: palette)
+            == TerminalRGBA(red: 1, green: 0, blue: 0)
+    )
+    #expect(
+        TerminalColor.indexed(232).resolved(defaultColor: fallback, palette: palette)
+            == TerminalRGBA(red: 8.0 / 255, green: 8.0 / 255, blue: 8.0 / 255)
+    )
+    #expect(
+        TerminalColor.indexed(255).resolved(defaultColor: fallback, palette: palette)
+            == TerminalRGBA(red: 238.0 / 255, green: 238.0 / 255, blue: 238.0 / 255)
     )
 }
 

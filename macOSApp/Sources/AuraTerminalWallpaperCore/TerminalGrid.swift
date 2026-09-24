@@ -10,8 +10,26 @@ public enum TerminalColor: Equatable, Codable, Sendable {
         case .default:
             return defaultColor
         case .indexed(let index):
-            guard !palette.isEmpty else { return defaultColor }
-            return palette[Int(index) % palette.count]
+            let value = Int(index)
+            if value < palette.count {
+                return palette[value]
+            }
+            guard value >= 16 else { return defaultColor }
+            if value < 232 {
+                // xterm's 6×6×6 color cube (also used by Kitty).
+                let cubeIndex = value - 16
+                let levels = [0, 95, 135, 175, 215, 255]
+                return TerminalRGBA(
+                    red: Double(levels[cubeIndex / 36]) / 255,
+                    green: Double(levels[(cubeIndex / 6) % 6]) / 255,
+                    blue: Double(levels[cubeIndex % 6]) / 255
+                )
+            }
+            if value < 256 {
+                let gray = Double(8 + (value - 232) * 10) / 255
+                return TerminalRGBA(red: gray, green: gray, blue: gray)
+            }
+            return defaultColor
         case .rgb(let red, let green, let blue):
             return TerminalRGBA(
                 red: Double(red) / 255,
@@ -19,6 +37,24 @@ public enum TerminalColor: Equatable, Codable, Sendable {
                 blue: Double(blue) / 255
             )
         }
+    }
+}
+
+public enum TerminalPalette {
+    /// Kitty's built-in ANSI palette, used when no application palette is configured.
+    public static let kittyDefault16: [TerminalRGBA] = [
+        color(0x000000), color(0xCC0403), color(0x19CB00), color(0xCECB00),
+        color(0x0D73CC), color(0xCB1ED1), color(0x0DCDCD), color(0xDDDDDD),
+        color(0x767676), color(0xF2201F), color(0x23FD00), color(0xFFFD00),
+        color(0x1A8FFF), color(0xFD28FF), color(0x14FFFF), color(0xFFFFFF),
+    ]
+
+    private static func color(_ rgb: UInt32) -> TerminalRGBA {
+        TerminalRGBA(
+            red: Double((rgb >> 16) & 0xFF) / 255,
+            green: Double((rgb >> 8) & 0xFF) / 255,
+            blue: Double(rgb & 0xFF) / 255
+        )
     }
 }
 

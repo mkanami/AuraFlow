@@ -85,7 +85,7 @@ public struct TerminalRenderConfiguration: Codable, Equatable, Sendable {
         fixedHeight: Int? = nil,
         columns: Int? = nil,
         rows: Int? = nil,
-        fontFamily: String = "Menlo",
+        fontFamily: String = "System Monospace",
         fontSize: Double = 14,
         cellSpacing: Double = 0,
         maxFPS: Int = 30,
@@ -132,7 +132,7 @@ public struct TerminalRenderConfiguration: Codable, Equatable, Sendable {
         self.fixedHeight = try container.decodeIfPresent(Int.self, forKey: .fixedHeight)
         self.columns = try container.decodeIfPresent(Int.self, forKey: .columns)
         self.rows = try container.decodeIfPresent(Int.self, forKey: .rows)
-        self.fontFamily = try container.decodeIfPresent(String.self, forKey: .fontFamily) ?? "Menlo"
+        self.fontFamily = try container.decodeIfPresent(String.self, forKey: .fontFamily) ?? "System Monospace"
         self.fontSize = try container.decodeIfPresent(Double.self, forKey: .fontSize) ?? 14
         self.cellSpacing = try container.decodeIfPresent(Double.self, forKey: .cellSpacing) ?? 0
         self.maxFPS = try container.decodeIfPresent(Int.self, forKey: .maxFPS) ?? 30
@@ -170,7 +170,7 @@ public struct TerminalRenderConfiguration: Codable, Equatable, Sendable {
         result.columns = columns.map { min(max($0, 1), 1000) }
         result.rows = rows.map { min(max($0, 1), 500) }
         result.fontFamily = fontFamily.trimmingCharacters(in: .whitespacesAndNewlines)
-        if result.fontFamily.isEmpty { result.fontFamily = "Menlo" }
+        if result.fontFamily.isEmpty { result.fontFamily = "System Monospace" }
         result.fontSize = min(max(fontSize, 6), 96)
         result.cellSpacing = min(max(cellSpacing, 0), 8)
         result.maxFPS = min(max(maxFPS, 1), 120)

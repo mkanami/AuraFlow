@@ -170,6 +170,7 @@ private final class CoreTextGlyphAtlas {
         let green: UInt8
         let blue: UInt8
         let dim: Bool
+        let bold: Bool
     }
 
     private var lineCache: [GlyphKey: CTLine] = [:]
@@ -178,24 +179,7 @@ private final class CoreTextGlyphAtlas {
         0x259A: 0b1001, 0x259B: 0b0111, 0x259C: 0b1011, 0x259D: 0b0010,
         0x259E: 0b0110, 0x259F: 0b1110,
     ]
-    private let palette: [TerminalRGBA] = [
-        TerminalRGBA(red: 0.0, green: 0.0, blue: 0.0),
-        TerminalRGBA(red: 0.8, green: 0.1, blue: 0.1),
-        TerminalRGBA(red: 0.1, green: 0.75, blue: 0.2),
-        TerminalRGBA(red: 0.8, green: 0.7, blue: 0.1),
-        TerminalRGBA(red: 0.2, green: 0.4, blue: 0.9),
-        TerminalRGBA(red: 0.7, green: 0.2, blue: 0.8),
-        TerminalRGBA(red: 0.1, green: 0.75, blue: 0.75),
-        TerminalRGBA(red: 0.8, green: 0.8, blue: 0.8),
-        TerminalRGBA(red: 0.35, green: 0.35, blue: 0.35),
-        TerminalRGBA(red: 1.0, green: 0.3, blue: 0.3),
-        TerminalRGBA(red: 0.3, green: 1.0, blue: 0.35),
-        TerminalRGBA(red: 1.0, green: 0.95, blue: 0.25),
-        TerminalRGBA(red: 0.35, green: 0.55, blue: 1.0),
-        TerminalRGBA(red: 1.0, green: 0.35, blue: 1.0),
-        TerminalRGBA(red: 0.3, green: 1.0, blue: 1.0),
-        TerminalRGBA(red: 1.0, green: 1.0, blue: 1.0),
-    ]
+    private let palette = TerminalPalette.kittyDefault16
 
     func render(
         snapshot: TerminalGridSnapshot,
@@ -233,10 +217,9 @@ private final class CoreTextGlyphAtlas {
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
 
         let rasterFontSize = configuration.effectiveFontSize * fontPixelScale
-        let font = CTFontCreateWithName(
-            configuration.fontFamily as CFString,
-            CGFloat(rasterFontSize),
-            nil
+        let font = TerminalFontResolver.font(
+            family: configuration.fontFamily,
+            size: CGFloat(rasterFontSize)
         )
         let ascent = CTFontGetAscent(font)
         let cellMetrics = TerminalFontMetrics.cellMetrics(
@@ -274,7 +257,7 @@ private final class CoreTextGlyphAtlas {
                     height: lineHeight
                 )
                 var foreground = cell.style.foreground.resolved(
-                    defaultColor: TerminalRGBA(red: 0.9, green: 0.9, blue: 0.9),
+                    defaultColor: palette[7],
                     palette: palette
                 )
                 var cellBackground = cell.style.background.resolved(
@@ -300,6 +283,7 @@ private final class CoreTextGlyphAtlas {
                     size: rasterFontSize,
                     color: foreground,
                     dim: cell.style.attributes.contains(.dim),
+                    bold: cell.style.attributes.contains(.bold),
                     opacity: opacity
                 )
                 let baseline = rect.minY + ascent
@@ -424,6 +408,7 @@ private final class CoreTextGlyphAtlas {
         size: Double,
         color: TerminalRGBA,
         dim: Bool,
+        bold: Bool,
         opacity: CGFloat
     ) -> CTLine {
         let key = GlyphKey(
@@ -433,13 +418,16 @@ private final class CoreTextGlyphAtlas {
             red: UInt8(min(max(color.red * 255, 0), 255)),
             green: UInt8(min(max(color.green * 255, 0), 255)),
             blue: UInt8(min(max(color.blue * 255, 0), 255)),
-            dim: dim
+            dim: dim,
+            bold: bold
         )
         if let cached = lineCache[key] {
             return cached
         }
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
+            .font: bold
+                ? TerminalFontResolver.font(family: family, size: CGFloat(size), bold: true)
+                : font,
             .foregroundColor: color.cgColor.copy(alpha: opacity) as Any,
         ]
         let line = CTLineCreateWithAttributedString(
