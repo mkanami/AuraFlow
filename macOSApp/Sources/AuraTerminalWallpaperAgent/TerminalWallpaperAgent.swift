@@ -13,12 +13,18 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let metalDevice = MTLCreateSystemDefaultDevice()
     private var config: TerminalWallpaperConfig
     private var parser: VTParser?
+    private var parserSize: (columns: Int, rows: Int)?
     private let parserQueue = DispatchQueue(label: "com.andrijvergeles.auraflow.terminal-parser", qos: .userInitiated)
+    private var parserGeneration: UInt64 = 0 // Accessed only on parserQueue.
+    private var childGeneration: UInt64 = 0
+    private var displayGeneration: UInt64 = 0
+    private var snapshotRequestInFlight = false
     private let session = TerminalPTYSession()
     private var windows: [TerminalWallpaperWindow] = []
     private var latestSnapshot: TerminalGridSnapshot?
     private var commandTimer: Timer?
     private var healthTimer: Timer?
+    private var frameTimer: Timer?
     private var lastCommandID: String?
     private var frames = 0
     private var renderedFrames = 0
@@ -41,6 +47,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         try? store.savePID()
         installNotifications()
         rebuildRuntime()
+        startFrameTimer()
         commandTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.pollCommand()
         }
@@ -54,6 +61,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         terminating = true
         commandTimer?.invalidate()
         healthTimer?.invalidate()
+        frameTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
@@ -65,9 +73,10 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func screensChanged() {
-        rebuildWindows()
         if config.render.columns == nil || config.render.rows == nil {
             restartSessionForCurrentGeometry()
+        } else {
+            rebuildWindows()
         }
         writeHealth()
     }
@@ -105,8 +114,10 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         else { return }
         lastCommandID = command.id
         if let commandConfig = command.config {
+            let oldFPS = config.render.maxFPS
             config = commandConfig.normalized()
             try? store.saveConfig(config)
+            if oldFPS != config.render.maxFPS { startFrameTimer() }
         }
         switch command.action {
         case .start, .restart:
@@ -122,6 +133,8 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildRuntime(restartChild: Bool = true) {
+        displayGeneration &+= 1
+        snapshotRequestInFlight = false
         guard !config.command.executable.isEmpty else {
             lastError = "No executable configured."
             session.stop()
@@ -130,10 +143,18 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
         let geometry = logicalGeometry()
         if restartChild {
+            childGeneration &+= 1
             session.stop()
         }
-        if parser == nil || parser?.grid.columns != geometry.columns || parser?.grid.rows != geometry.rows {
-            if !restartChild, session.childPID != nil {
+        if restartChild || parserSize == nil {
+            parserQueue.sync {
+                parserGeneration = childGeneration
+                parser = VTParser(columns: geometry.columns, rows: geometry.rows)
+                latestSnapshot = parser?.grid.snapshot()
+            }
+            parserSize = geometry
+        } else if parserSize?.columns != geometry.columns || parserSize?.rows != geometry.rows {
+            if session.childPID != nil {
                 parserQueue.sync {
                     parser?.resize(columns: geometry.columns, rows: geometry.rows)
                     latestSnapshot = parser?.grid.snapshot()
@@ -145,6 +166,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     latestSnapshot = parser?.grid.snapshot()
                 }
             }
+            parserSize = geometry
         }
         rebuildWindows()
         guard restartChild || session.childPID != nil else { return }
@@ -152,12 +174,13 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             childStartedAt = Date()
             framesAtChildStart = frames
             reportedNoOutput = false
+            let generation = childGeneration
             do {
                 _ = try session.start(
                     command: config.command,
                     columns: geometry.columns,
                     rows: geometry.rows,
-                    onData: { [weak self] data in self?.consume(data) },
+                    onData: { [weak self] data in self?.consume(data, generation: generation) },
                     onExit: { [weak self] _ in
                         DispatchQueue.main.async { self?.childExited() }
                     }
@@ -179,22 +202,44 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         rebuildRuntime(restartChild: false)
     }
 
-    private func consume(_ data: Data) {
+    private func consume(_ data: Data, generation: UInt64) {
+        parserQueue.async { [weak self] in
+            guard let self, self.parserGeneration == generation else { return }
+            self.parser?.feed(data)
+        }
+    }
+
+    private func startFrameTimer() {
+        frameTimer?.invalidate()
+        let interval = 1.0 / Double(max(config.render.maxFPS, 1))
+        frameTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            self?.publishLatestSnapshot()
+        }
+        frameTimer?.tolerance = interval * 0.1
+    }
+
+    private func publishLatestSnapshot() {
+        guard !terminating, !snapshotRequestInFlight else { return }
+        snapshotRequestInFlight = true
+        let generation = displayGeneration
         parserQueue.async { [weak self] in
             guard let self else { return }
-            self.parser?.feed(data)
             let snapshot = self.parser?.grid.snapshot()
-            guard let snapshot else { return }
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                latestSnapshot = snapshot
-                frames += 1
-                childStartedAt = childStartedAt ?? Date()
-                if frames == framesAtChildStart + 1 {
-                    lastError = nil
-                    reportedNoOutput = false
+                guard let self, self.displayGeneration == generation else { return }
+                self.snapshotRequestInFlight = false
+                guard let snapshot,
+                      snapshot.revision != self.latestSnapshot?.revision ||
+                      snapshot.columns != self.latestSnapshot?.columns ||
+                      snapshot.rows != self.latestSnapshot?.rows
+                else { return }
+                self.latestSnapshot = snapshot
+                self.frames += 1
+                if self.frames == self.framesAtChildStart + 1 {
+                    self.lastError = nil
+                    self.reportedNoOutput = false
                 }
-                applyLatestSnapshot()
+                self.applyLatestSnapshot()
             }
         }
     }

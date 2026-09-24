@@ -9,10 +9,17 @@ final class TerminalMetalView: MTKView {
     private let pipelineState: MTLRenderPipelineState
     private let vertexBuffer: MTLBuffer
     private let logicalSize: CGSize
+    private let rasterQueue = DispatchQueue(label: "com.andrijvergeles.auraflow.terminal-raster", qos: .userInitiated)
     private var texture: MTLTexture?
     private var snapshot: TerminalGridSnapshot?
     private var renderConfiguration = TerminalRenderConfiguration()
     private let frameRenderer = CoreTextGlyphAtlas()
+    private var rasterInFlight = false
+    private var rasterizedRevision: UInt64?
+    private var rasterEpoch: UInt64 = 0
+    private var requestedSize: TerminalPixelSize?
+
+    var displayedRevision: UInt64? { rasterizedRevision }
 
     init(frame: CGRect, logicalSize: CGSize, device: MTLDevice) {
         self.logicalSize = logicalSize
@@ -32,8 +39,8 @@ final class TerminalMetalView: MTKView {
         )!
         super.init(frame: frame, device: device)
         framebufferOnly = false
-        isPaused = false
-        enableSetNeedsDisplay = false
+        isPaused = true
+        enableSetNeedsDisplay = true
         clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         colorPixelFormat = .bgra8Unorm
         preferredFramesPerSecond = renderConfiguration.maxFPS
@@ -45,19 +52,27 @@ final class TerminalMetalView: MTKView {
     }
 
     func update(snapshot: TerminalGridSnapshot, configuration: TerminalRenderConfiguration) {
-        if let currentSnapshot = self.snapshot, snapshot.revision < currentSnapshot.revision {
+        let normalized = configuration.normalized()
+        if normalized == renderConfiguration,
+           let currentSnapshot = self.snapshot,
+           snapshot.revision < currentSnapshot.revision {
             return
         }
+        if normalized != renderConfiguration {
+            rasterEpoch &+= 1
+            rasterizedRevision = nil
+            texture = nil
+        }
         self.snapshot = snapshot
-        renderConfiguration = configuration.normalized()
+        renderConfiguration = normalized
         preferredFramesPerSecond = renderConfiguration.maxFPS
-        texture = nil
+        scheduleRasterization()
     }
 
     override func draw(_ rect: NSRect) {
+        scheduleRasterization()
         guard let drawable = currentDrawable,
-              let snapshot,
-              let texture = makeTexture(for: snapshot, drawableSize: drawable.texture)
+              let texture
         else {
             return
         }
@@ -82,14 +97,23 @@ final class TerminalMetalView: MTKView {
         commandBuffer.commit()
     }
 
-    private func makeTexture(for snapshot: TerminalGridSnapshot, drawableSize: MTLTexture) -> MTLTexture? {
-        let nativeWidth = max(drawableSize.width, 1)
-        let nativeHeight = max(drawableSize.height, 1)
+    private func scheduleRasterization() {
+        guard let snapshot else { return }
         let pixelSize = TerminalRenderGeometry.pixelSize(
             configuration: renderConfiguration,
-            drawableWidth: nativeWidth,
-            drawableHeight: nativeHeight
+            drawableWidth: max(Int(drawableSize.width), 1),
+            drawableHeight: max(Int(drawableSize.height), 1)
         )
+        if requestedSize != pixelSize {
+            requestedSize = pixelSize
+            rasterEpoch &+= 1
+            rasterizedRevision = nil
+            texture = nil
+        }
+        guard !rasterInFlight, rasterizedRevision != snapshot.revision else { return }
+        rasterInFlight = true
+        let epoch = rasterEpoch
+        let configuration = renderConfiguration
         let width = pixelSize.width
         let height = pixelSize.height
         let fontPixelScale = TerminalRenderGeometry.pixelScaleFactor(
@@ -98,6 +122,31 @@ final class TerminalMetalView: MTKView {
             logicalWidth: logicalSize.width,
             logicalHeight: logicalSize.height
         )
+        rasterQueue.async { [weak self] in
+            guard let self else { return }
+            let bytes = self.frameRenderer.render(
+                snapshot: snapshot,
+                configuration: configuration,
+                width: width,
+                height: height,
+                fontPixelScale: fontPixelScale
+            )
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.rasterInFlight = false
+                if self.rasterEpoch == epoch {
+                    self.upload(bytes, width: width, height: height)
+                    self.rasterizedRevision = snapshot.revision
+                    self.needsDisplay = true
+                }
+                if self.snapshot?.revision != self.rasterizedRevision {
+                    self.scheduleRasterization()
+                }
+            }
+        }
+    }
+
+    private func upload(_ bytes: Data, width: Int, height: Int) {
         if texture?.width != width || texture?.height != height {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
                 pixelFormat: .bgra8Unorm,
@@ -109,14 +158,7 @@ final class TerminalMetalView: MTKView {
             descriptor.storageMode = .shared
             texture = device?.makeTexture(descriptor: descriptor)
         }
-        guard let texture else { return nil }
-        let bytes = frameRenderer.render(
-            snapshot: snapshot,
-            configuration: renderConfiguration,
-            width: width,
-            height: height,
-            fontPixelScale: fontPixelScale
-        )
+        guard let texture else { return }
         bytes.withUnsafeBytes { rawBuffer in
             guard let baseAddress = rawBuffer.baseAddress else { return }
             texture.replace(
@@ -126,7 +168,6 @@ final class TerminalMetalView: MTKView {
                 bytesPerRow: width * 4
             )
         }
-        return texture
     }
 
     private static let shaderSource = """
@@ -161,7 +202,7 @@ final class TerminalMetalView: MTKView {
     """
 }
 
-private final class CoreTextGlyphAtlas {
+final class CoreTextGlyphAtlas {
     private struct GlyphKey: Hashable {
         let text: String
         let fontFamily: String
@@ -189,9 +230,9 @@ private final class CoreTextGlyphAtlas {
         fontPixelScale: Double
     ) -> Data {
         var pixels = Data(repeating: 0, count: width * height * 4)
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
-        guard let context = pixels.withUnsafeMutableBytes({ rawBuffer in
-            CGContext(
+        pixels.withUnsafeMutableBytes { rawBuffer in
+            let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+            guard let context = CGContext(
                 data: rawBuffer.baseAddress,
                 width: width,
                 height: height,
@@ -200,11 +241,27 @@ private final class CoreTextGlyphAtlas {
                 space: colorSpace,
                 bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                     | CGBitmapInfo.byteOrder32Little.rawValue
+            ) else { return }
+            drawFrame(
+                snapshot: snapshot,
+                configuration: configuration,
+                width: width,
+                height: height,
+                fontPixelScale: fontPixelScale,
+                context: context
             )
-        }) else {
-            return pixels
         }
+        return pixels
+    }
 
+    private func drawFrame(
+        snapshot: TerminalGridSnapshot,
+        configuration: TerminalRenderConfiguration,
+        width: Int,
+        height: Int,
+        fontPixelScale: Double,
+        context: CGContext
+    ) {
         let background = configuration.background
         context.setFillColor(
             CGColor(
@@ -244,6 +301,9 @@ private final class CoreTextGlyphAtlas {
         context.saveGState()
         context.translateBy(x: 0, y: CGFloat(height))
         context.scaleBy(x: 1, y: -1)
+        // CoreText's glyph coordinate system is y-up even after the grid is
+        // flipped to y-down. Without this, punctuation lands in the next row.
+        context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
         context.translateBy(x: offsetX, y: offsetY)
         context.scaleBy(x: CGFloat(scale.x), y: CGFloat(scale.y))
 
@@ -299,7 +359,6 @@ private final class CoreTextGlyphAtlas {
             }
         }
         context.restoreGState()
-        return pixels
     }
 
     /// Terminal block elements represent pixel-sized fills, not font glyphs.

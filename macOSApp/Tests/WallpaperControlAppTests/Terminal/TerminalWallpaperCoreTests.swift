@@ -463,3 +463,65 @@ import Testing
     #expect(snapshot.cell(column: 2, row: 0).text == "c")
     #expect(snapshot.cell(column: 0, row: 1).text == "d")
 }
+
+@Test func vtParserAppliesChunkedCursesDeleteAndEraseCommands() {
+    var parser = VTParser(columns: 10, rows: 2)
+    // ncurses uses DCH to remove a moving sprite's old cells and ECH for
+    // remaining fragments. Split every byte as a PTY may do under load.
+    let output = "ABCDEFGH\u{1B}[1;3H\u{1B}[2P\u{1B}[1;3H\u{1B}[2X"
+    for byte in output.utf8 { parser.feed(Data([byte])) }
+
+    let row = (0..<10).map { parser.grid.snapshot().cell(column: $0, row: 0).text }.joined()
+    #expect(row == "AB  GH    ")
+    #expect(parser.grid.cursorColumn == 2)
+}
+
+@Test func vtParserSupportsInsertDeleteAndScrollingWithinMargins() {
+    var parser = VTParser(columns: 5, rows: 4)
+    parser.feed(Data("\u{1B}[1;1HAAAAA\u{1B}[2;1HBBBBB\u{1B}[3;1HCCCCC\u{1B}[4;1HDDDDD".utf8))
+    parser.feed(Data("\u{1B}[2;3r\u{1B}[4;1HZ\u{1B}[2;1H\u{1B}M".utf8))
+
+    var snapshot = parser.grid.snapshot()
+    #expect(snapshot.cell(column: 0, row: 0).text == "A")
+    #expect(snapshot.cell(column: 0, row: 1).text == " ")
+    #expect(snapshot.cell(column: 0, row: 2).text == "B")
+    #expect(snapshot.cell(column: 0, row: 3).text == "Z")
+
+    parser.feed(Data("\u{1B}[r\u{1B}[4;1H\u{1B}[1L\u{1B}[2;1H\u{1B}[1M".utf8))
+    snapshot = parser.grid.snapshot()
+    #expect(snapshot.cell(column: 0, row: 0).text == "A")
+    #expect(snapshot.cell(column: 0, row: 1).text == "B")
+    #expect(snapshot.cell(column: 0, row: 2).text == " ")
+    #expect(snapshot.cell(column: 0, row: 3).text == " ")
+}
+
+@Test func vtParserInsertsCharactersAndRespectsOriginAndWrapModes() {
+    var parser = VTParser(columns: 5, rows: 4)
+    parser.feed(Data("ABCDE\u{1B}[1;3H\u{1B}[2@".utf8))
+    let firstRow = (0..<5).map { parser.grid.snapshot().cell(column: $0, row: 0).text }.joined()
+    #expect(firstRow == "AB  C")
+
+    parser.feed(Data("\u{1B}[2;3r\u{1B}[?6h\u{1B}[1;1HZ\u{1B}[?6l\u{1B}[?7l\u{1B}[4;5HQW".utf8))
+    let snapshot = parser.grid.snapshot()
+    #expect(snapshot.cell(column: 0, row: 1).text == "Z")
+    #expect(snapshot.cell(column: 4, row: 3).text == "W")
+    #expect(snapshot.cell(column: 0, row: 3).text == " ")
+}
+
+@Test func vtParserScrollsOnlyTheSelectedRegion() {
+    var parser = VTParser(columns: 3, rows: 4)
+    parser.feed(Data("\u{1B}[1;1HAAA\u{1B}[2;1HBBB\u{1B}[3;1HCCC\u{1B}[4;1HDDD".utf8))
+    parser.feed(Data("\u{1B}[2;3r\u{1B}[1S".utf8))
+    var snapshot = parser.grid.snapshot()
+    #expect(snapshot.cell(column: 0, row: 0).text == "A")
+    #expect(snapshot.cell(column: 0, row: 1).text == "C")
+    #expect(snapshot.cell(column: 0, row: 2).text == " ")
+    #expect(snapshot.cell(column: 0, row: 3).text == "D")
+
+    parser.feed(Data("\u{1B}[1T".utf8))
+    snapshot = parser.grid.snapshot()
+    #expect(snapshot.cell(column: 0, row: 0).text == "A")
+    #expect(snapshot.cell(column: 0, row: 1).text == " ")
+    #expect(snapshot.cell(column: 0, row: 2).text == "C")
+    #expect(snapshot.cell(column: 0, row: 3).text == "D")
+}

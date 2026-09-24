@@ -145,6 +145,8 @@ public struct TerminalGrid {
     private var scrollTop = 0
     private var scrollBottom: Int
     private var pendingWrap = false
+    private var originMode = false
+    private var automaticWrap = true
     private var revision: UInt64 = 0
     private var mainCells: [TerminalCell]?
     private var mainCursor: (column: Int, row: Int)?
@@ -189,7 +191,7 @@ public struct TerminalGrid {
             }
             return
         }
-        if pendingWrap {
+        if pendingWrap && automaticWrap {
             lineFeed()
             cursorColumn = 0
             pendingWrap = false
@@ -205,7 +207,7 @@ public struct TerminalGrid {
         }
         if cursorColumn + width >= columns {
             cursorColumn = columns - 1
-            pendingWrap = true
+            pendingWrap = automaticWrap
         } else {
             cursorColumn += width
         }
@@ -221,7 +223,7 @@ public struct TerminalGrid {
     public mutating func lineFeed() {
         pendingWrap = false
         if cursorRow == scrollBottom {
-            scrollUp()
+            scrollUp(top: scrollTop, bottom: scrollBottom)
         } else {
             cursorRow = min(cursorRow + 1, rows - 1)
         }
@@ -243,9 +245,27 @@ public struct TerminalGrid {
 
     public mutating func moveCursor(column: Int? = nil, row: Int? = nil) {
         if let column { cursorColumn = min(max(column, 0), columns - 1) }
-        if let row { cursorRow = min(max(row, scrollTop), scrollBottom) }
+        if let row {
+            cursorRow = originMode
+                ? min(max(row, scrollTop), scrollBottom)
+                : min(max(row, 0), rows - 1)
+        }
         pendingWrap = false
         markDirty()
+    }
+
+    public mutating func addressCursor(column: Int? = nil, row: Int? = nil) {
+        moveCursor(column: column, row: row.map { $0 + (originMode ? scrollTop : 0) })
+    }
+
+    public mutating func setOriginMode(_ enabled: Bool) {
+        originMode = enabled
+        moveCursor(column: 0, row: enabled ? scrollTop : 0)
+    }
+
+    public mutating func setAutomaticWrap(_ enabled: Bool) {
+        automaticWrap = enabled
+        pendingWrap = false
     }
 
     public mutating func saveCursor() { savedCursor = (cursorColumn, cursorRow) }
@@ -283,11 +303,83 @@ public struct TerminalGrid {
         markDirty()
     }
 
+    public mutating func eraseCharacters(_ count: Int) {
+        let last = cursorColumn + min(max(count, 1), columns - cursorColumn)
+        for column in cursorColumn..<last {
+            cells[index(column: column, row: cursorRow)] = TerminalCell(style: style)
+        }
+        repairWideCells(in: cursorRow)
+        pendingWrap = false
+        markDirty()
+    }
+
+    public mutating func deleteCharacters(_ count: Int) {
+        let amount = min(max(count, 1), columns - cursorColumn)
+        let start = index(column: cursorColumn, row: cursorRow)
+        let end = index(column: columns, row: cursorRow)
+        for index in start..<(end - amount) {
+            cells[index] = cells[index + amount]
+        }
+        for index in (end - amount)..<end { cells[index] = TerminalCell(style: style) }
+        repairWideCells(in: cursorRow)
+        pendingWrap = false
+        markDirty()
+    }
+
+    public mutating func insertCharacters(_ count: Int) {
+        let amount = min(max(count, 1), columns - cursorColumn)
+        let start = index(column: cursorColumn, row: cursorRow)
+        let end = index(column: columns, row: cursorRow)
+        for index in stride(from: end - 1, through: start + amount, by: -1) {
+            cells[index] = cells[index - amount]
+        }
+        for index in start..<(start + amount) { cells[index] = TerminalCell(style: style) }
+        repairWideCells(in: cursorRow)
+        pendingWrap = false
+        markDirty()
+    }
+
+    public mutating func insertLines(_ count: Int) {
+        guard (scrollTop...scrollBottom).contains(cursorRow) else { return }
+        scrollDown(top: cursorRow, bottom: scrollBottom, count: count)
+        pendingWrap = false
+        markDirty()
+    }
+
+    public mutating func deleteLines(_ count: Int) {
+        guard (scrollTop...scrollBottom).contains(cursorRow) else { return }
+        scrollUp(top: cursorRow, bottom: scrollBottom, count: count)
+        pendingWrap = false
+        markDirty()
+    }
+
+    public mutating func scrollUpLines(_ count: Int) {
+        scrollUp(top: scrollTop, bottom: scrollBottom, count: count)
+        pendingWrap = false
+        markDirty()
+    }
+
+    public mutating func scrollDownLines(_ count: Int) {
+        scrollDown(top: scrollTop, bottom: scrollBottom, count: count)
+        pendingWrap = false
+        markDirty()
+    }
+
+    public mutating func reverseIndex() {
+        if cursorRow == scrollTop {
+            scrollDown(top: scrollTop, bottom: scrollBottom)
+        } else {
+            cursorRow = max(cursorRow - 1, 0)
+        }
+        pendingWrap = false
+        markDirty()
+    }
+
     public mutating func setScrollRegion(top: Int, bottom: Int) {
         scrollTop = min(max(top, 0), rows - 1)
         scrollBottom = min(max(bottom, scrollTop), rows - 1)
         cursorColumn = 0
-        cursorRow = scrollTop
+        cursorRow = originMode ? scrollTop : 0
         pendingWrap = false
         markDirty()
     }
@@ -300,6 +392,8 @@ public struct TerminalGrid {
         cursorVisible = true
         scrollTop = 0
         scrollBottom = rows - 1
+        originMode = false
+        automaticWrap = true
         pendingWrap = false
         markDirty()
     }
@@ -353,13 +447,42 @@ public struct TerminalGrid {
         }
     }
 
-    private mutating func scrollUp() {
-        guard scrollTop <= scrollBottom else { return }
-        let first = scrollTop * columns
-        let last = (scrollBottom + 1) * columns
-        if last <= cells.count {
-            cells.removeSubrange(first..<(first + columns))
-            cells.insert(contentsOf: Array(repeating: TerminalCell(style: style), count: columns), at: last - columns)
+    private mutating func scrollUp(top: Int, bottom: Int, count: Int = 1) {
+        let amount = min(max(count, 1), bottom - top + 1)
+        if top <= bottom - amount {
+            for row in top...(bottom - amount) {
+                for column in 0..<columns {
+                    cells[index(column: column, row: row)] = cells[index(column: column, row: row + amount)]
+                }
+            }
+        }
+        for row in (bottom - amount + 1)...bottom {
+            for column in 0..<columns { cells[index(column: column, row: row)] = TerminalCell(style: style) }
+        }
+    }
+
+    private mutating func scrollDown(top: Int, bottom: Int, count: Int = 1) {
+        let amount = min(max(count, 1), bottom - top + 1)
+        if top <= bottom - amount {
+            for row in stride(from: bottom, through: top + amount, by: -1) {
+                for column in 0..<columns {
+                    cells[index(column: column, row: row)] = cells[index(column: column, row: row - amount)]
+                }
+            }
+        }
+        for row in top..<(top + amount) {
+            for column in 0..<columns { cells[index(column: column, row: row)] = TerminalCell(style: style) }
+        }
+    }
+
+    private mutating func repairWideCells(in row: Int) {
+        for column in 0..<columns {
+            let current = index(column: column, row: row)
+            if cells[current].width == 0 && (column == 0 || cells[current - 1].width != 2) {
+                cells[current] = TerminalCell(style: style)
+            } else if cells[current].width == 2 && (column == columns - 1 || cells[current + 1].width != 0) {
+                cells[current] = TerminalCell(style: style)
+            }
         }
     }
 }

@@ -127,6 +127,7 @@ public struct VTParser {
             grid.carriageReturn()
             state = .ground
         case 0x4D:
+            grid.reverseIndex()
             state = .ground
         case 0x48:
             state = .ground
@@ -188,11 +189,26 @@ public struct VTParser {
         case 0x47, 0x60:
             grid.moveCursor(column: max(first - 1, 0))
         case 0x48, 0x66:
-            let row = max((parameters.first ?? 1) - 1, 0)
-            let column = max((parameters.dropFirst().first ?? 1) - 1, 0)
-            grid.moveCursor(column: column, row: row)
+            let row = max((parameters.first == 0 ? 1 : parameters.first ?? 1) - 1, 0)
+            let second = parameters.dropFirst().first ?? 1
+            let column = max((second == 0 ? 1 : second) - 1, 0)
+            grid.addressCursor(column: column, row: row)
         case 0x64:
-            grid.moveCursor(row: max(first - 1, 0))
+            grid.addressCursor(row: max(defaultOne - 1, 0))
+        case 0x40:
+            grid.insertCharacters(defaultOne)
+        case 0x50:
+            grid.deleteCharacters(defaultOne)
+        case 0x58:
+            grid.eraseCharacters(defaultOne)
+        case 0x4C:
+            grid.insertLines(defaultOne)
+        case 0x4D:
+            grid.deleteLines(defaultOne)
+        case 0x53:
+            grid.scrollUpLines(defaultOne)
+        case 0x54:
+            grid.scrollDownLines(defaultOne)
         case 0x4A:
             grid.eraseDisplay(mode: first)
         case 0x4B:
@@ -200,9 +216,12 @@ public struct VTParser {
         case 0x6D:
             applySGR(parameters)
         case 0x72:
-            let top = max((parameters.first ?? 1) - 1, 0)
-            let bottom = max((parameters.dropFirst().first ?? 0) - 1, top)
-            grid.setScrollRegion(top: top, bottom: bottom)
+            let top = max(defaultOne - 1, 0)
+            let last = parameters.dropFirst().first ?? 0
+            let bottom = last == 0 ? grid.rows - 1 : last - 1
+            if bottom > top || grid.rows == 1 {
+                grid.setScrollRegion(top: top, bottom: bottom)
+            }
         case 0x73:
             grid.saveCursor()
         case 0x75:
@@ -222,6 +241,10 @@ public struct VTParser {
                 if enabled { grid.enterAlternateScreen() } else { grid.leaveAlternateScreen() }
             } else if csiPrivate && parameter == 25 {
                 grid.setCursorVisible(enabled)
+            } else if csiPrivate && parameter == 6 {
+                grid.setOriginMode(enabled)
+            } else if csiPrivate && parameter == 7 {
+                grid.setAutomaticWrap(enabled)
             }
         }
     }
