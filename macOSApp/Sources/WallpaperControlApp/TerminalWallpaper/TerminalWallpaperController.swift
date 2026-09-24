@@ -209,8 +209,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling {
            FileManager.default.isExecutableFile(atPath: override) {
             return URL(fileURLWithPath: override)
         }
-        let bundleCandidate = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/MacOS/AuraTerminalWallpaperAgent")
+        let bundleCandidate = bundledHelperURL(in: Bundle.main.bundleURL)
         if FileManager.default.isExecutableFile(atPath: bundleCandidate.path) {
             return bundleCandidate
         }
@@ -222,6 +221,12 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling {
         }
         throw TerminalWallpaperControllerError.unavailable(
             "Terminal Wallpaper agent is not bundled with AuraFlow."
+        )
+    }
+
+    static func bundledHelperURL(in appURL: URL) -> URL {
+        appURL.appendingPathComponent(
+            "Contents/Helpers/AuraTerminalWallpaperAgent.app/Contents/MacOS/AuraTerminalWallpaperAgent"
         )
     }
 }

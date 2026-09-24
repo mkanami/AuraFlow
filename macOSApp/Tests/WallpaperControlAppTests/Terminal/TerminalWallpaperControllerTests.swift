@@ -28,6 +28,14 @@ private struct TerminalControllerFixture {
     }
 }
 
+@Test func terminalHelperUsesItsOwnNestedAppBundle() {
+    let appURL = URL(fileURLWithPath: "/tmp/AuraFlow.app")
+    #expect(
+        NativeTerminalWallpaperController.bundledHelperURL(in: appURL).path ==
+        "/tmp/AuraFlow.app/Contents/Helpers/AuraTerminalWallpaperAgent.app/Contents/MacOS/AuraTerminalWallpaperAgent"
+    )
+}
+
 @Test func terminalControllerWritesOnlyItsOwnRuntimeNamespace() throws {
     let fixture = try TerminalControllerFixture("isolated-store")
     defer { fixture.cleanup() }

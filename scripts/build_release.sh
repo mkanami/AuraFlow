@@ -425,23 +425,25 @@ build_swift_app() {
   rm -rf "$APP_BUNDLE"
   mkdir -p "$APP_BUNDLE/Contents/MacOS"
   mkdir -p "$APP_BUNDLE/Contents/Resources"
+  local terminal_helper_bundle="$APP_BUNDLE/Contents/Helpers/${TERMINAL_HELPER_TARGET}.app"
+  mkdir -p "$terminal_helper_bundle/Contents/MacOS"
 
   cp "$binary" "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
   cp "$helper_path" "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
-  cp "$terminal_helper_path" "$APP_BUNDLE/Contents/MacOS/${TERMINAL_HELPER_TARGET}"
+  cp "$terminal_helper_path" "$terminal_helper_bundle/Contents/MacOS/${TERMINAL_HELPER_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
   if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
     cp "$native_bridge_path" "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
     chmod +x "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
   fi
-  chmod +x "$APP_BUNDLE/Contents/MacOS/${TERMINAL_HELPER_TARGET}"
+  chmod +x "$terminal_helper_bundle/Contents/MacOS/${TERMINAL_HELPER_TARGET}"
 
   if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
     local app_archs helper_archs terminal_helper_archs
     app_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}" 2>/dev/null || true)"
     helper_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}" 2>/dev/null || true)"
-    terminal_helper_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${TERMINAL_HELPER_TARGET}" 2>/dev/null || true)"
+    terminal_helper_archs="$(lipo -archs "$terminal_helper_bundle/Contents/MacOS/${TERMINAL_HELPER_TARGET}" 2>/dev/null || true)"
     if [[ "$app_archs" != *"arm64"* || "$app_archs" != *"x86_64"* ]]; then
       log "Universal app binary required, produced: ${app_archs:-unknown}"
       exit 1
@@ -463,6 +465,33 @@ build_swift_app() {
       exit 1
     fi
   fi
+
+  cat > "$terminal_helper_bundle/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>${TERMINAL_HELPER_TARGET}</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.andrijvergeles.auraflow.terminal-wallpaper.helper</string>
+  <key>CFBundleName</key>
+  <string>AuraFlow Terminal Wallpaper</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${APP_VERSION}</string>
+  <key>CFBundleVersion</key>
+  <string>${APP_BUILD}</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>${MACOSX_DEPLOYMENT_TARGET}</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+</dict>
+</plist>
+EOF
 
   if [[ -d "$resources_bundle" ]]; then
     cp -R "$resources_bundle" "$APP_BUNDLE/Contents/Resources/$(basename "$resources_bundle")"
@@ -685,6 +714,8 @@ sign_app_bundle() {
   while IFS= read -r target; do
     codesign_target "$target"
   done < <(find_macho_files)
+
+  codesign_target "$APP_BUNDLE/Contents/Helpers/${TERMINAL_HELPER_TARGET}.app"
 
   if [[ -d "$APP_BUNDLE/Contents/Frameworks" ]]; then
     while IFS= read -r framework; do

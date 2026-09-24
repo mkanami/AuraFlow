@@ -16,6 +16,8 @@ APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_PLUGINS="$APP_CONTENTS/PlugIns"
+TERMINAL_HELPER_BUNDLE="$APP_CONTENTS/Helpers/AuraTerminalWallpaperAgent.app"
+TERMINAL_HELPER_MACOS="$TERMINAL_HELPER_BUNDLE/Contents/MacOS"
 APP_BINARY="$APP_MACOS/$PROCESS_NAME"
 HELPER_NAME="AuraWallpaperAgent"
 NATIVE_BRIDGE_NAME="AuraWallpaperNativeBridge"
@@ -49,12 +51,12 @@ BUILD_DIR="$("$SWIFT_BIN" build "${SWIFT_ARGS[@]}" --show-bin-path)"
 popd >/dev/null
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS" "$APP_RESOURCES" "$APP_PLUGINS"
+mkdir -p "$APP_MACOS" "$APP_RESOURCES" "$APP_PLUGINS" "$TERMINAL_HELPER_MACOS"
 cp "$BUILD_DIR/$PROCESS_NAME" "$APP_BINARY"
 cp "$BUILD_DIR/$HELPER_NAME" "$APP_MACOS/$HELPER_NAME"
 cp "$BUILD_DIR/$NATIVE_BRIDGE_NAME" "$APP_MACOS/$NATIVE_BRIDGE_NAME"
-cp "$BUILD_DIR/$TERMINAL_HELPER_NAME" "$APP_MACOS/$TERMINAL_HELPER_NAME"
-chmod +x "$APP_BINARY" "$APP_MACOS/$HELPER_NAME" "$APP_MACOS/$NATIVE_BRIDGE_NAME" "$APP_MACOS/$TERMINAL_HELPER_NAME"
+cp "$BUILD_DIR/$TERMINAL_HELPER_NAME" "$TERMINAL_HELPER_MACOS/$TERMINAL_HELPER_NAME"
+chmod +x "$APP_BINARY" "$APP_MACOS/$HELPER_NAME" "$APP_MACOS/$NATIVE_BRIDGE_NAME" "$TERMINAL_HELPER_MACOS/$TERMINAL_HELPER_NAME"
 
 RESOURCE_BUNDLE="$BUILD_DIR/${PROCESS_NAME}_${PROCESS_NAME}.bundle"
 if [[ -d "$RESOURCE_BUNDLE" ]]; then
@@ -100,9 +102,36 @@ cat >"$APP_CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
+cat >"$TERMINAL_HELPER_BUNDLE/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>$TERMINAL_HELPER_NAME</string>
+  <key>CFBundleIdentifier</key>
+  <string>$BUNDLE_ID.terminal-wallpaper.helper</string>
+  <key>CFBundleName</key>
+  <string>AuraFlow Terminal Wallpaper</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$APP_VERSION</string>
+  <key>CFBundleVersion</key>
+  <string>$APP_BUILD</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>$MIN_SYSTEM_VERSION</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+</dict>
+</plist>
+PLIST
+
 codesign --force --sign "$SIGNING_IDENTITY" "$APP_MACOS/$HELPER_NAME"
 codesign --force --sign "$SIGNING_IDENTITY" "$APP_MACOS/$NATIVE_BRIDGE_NAME"
-codesign --force --sign "$SIGNING_IDENTITY" "$APP_MACOS/$TERMINAL_HELPER_NAME"
+codesign --force --sign "$SIGNING_IDENTITY" "$TERMINAL_HELPER_BUNDLE"
 codesign --force --sign "$SIGNING_IDENTITY" "$APP_BINARY"
 codesign --force --options runtime --timestamp=none \
   --entitlements "$APP_ENTITLEMENTS" \
