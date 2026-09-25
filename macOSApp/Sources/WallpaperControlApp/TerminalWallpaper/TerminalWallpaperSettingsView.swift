@@ -34,6 +34,11 @@ struct TerminalWallpaperSettingsView: View {
                         systemImage: "exclamationmark.triangle.fill",
                         color: .red
                     )
+                    if let url = viewModel.installHelpURL {
+                        Link("Homebrew installation guide", destination: url)
+                            .font(.callout)
+                            .padding(.horizontal, 14)
+                    }
                 }
 
                 if let statusMessage = viewModel.statusMessage {
@@ -135,128 +140,140 @@ struct TerminalWallpaperSettingsView: View {
     }
 
     private var catalogSection: some View {
-        TerminalWallpaperSection(title: "Choose what to render", systemImage: "rectangle.grid.2x2") {
+        TerminalWallpaperSection(title: "Choose a wallpaper", systemImage: "rectangle.grid.2x2") {
             LazyVStack(alignment: .leading, spacing: 10) {
-                AuraCatalogSearchField(
-                    text: Binding(
-                        get: { viewModel.catalogSearch },
-                        set: { viewModel.setCatalogSearch($0) }
-                    ),
-                    placeholder: "Search apps and utilities",
-                    accessibilityLabel: "Search apps and utilities"
-                )
-
-                catalogCategory(.applications)
-                catalogCategory(.utilities)
-
-                if viewModel.catalogItems.isEmpty && !viewModel.catalogIsLoading {
-                    Label(
-                        viewModel.catalogSearch.isEmpty ? "Search to find more apps" : "No matches",
-                        systemImage: "magnifyingglass"
-                    )
-                    .font(.callout)
-                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                    .frame(maxWidth: .infinity)
-                }
-
-                if viewModel.catalogIsLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Searching apps and utilities")
-                }
-
                 HStack(spacing: 10) {
+                    AuraCatalogSearchField(
+                        text: Binding(
+                            get: { viewModel.catalogSearch },
+                            set: { viewModel.setCatalogSearch($0) }
+                        ),
+                        placeholder: "Search wallpapers or exact command",
+                        accessibilityLabel: "Search wallpapers or exact command"
+                    )
                     Button {
                         viewModel.refreshCatalog()
                     } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
+                        Image(systemName: "arrow.clockwise")
                     }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+                    .accessibilityLabel("Refresh wallpaper choices")
+                }
 
+                if viewModel.catalogSearch.isEmpty {
+                    if let active = viewModel.activeUnfeaturedTitle {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            Text("Current: \(active)")
+                                .font(.callout.weight(.medium))
+                        }
+                    }
+
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        ForEach(viewModel.featuredPresets) { preset in
+                            presetCard(preset)
+                        }
+                    }
+                } else {
+                    ForEach(viewModel.catalogItems) { item in
+                        if let preset = TerminalWallpaperPreset.preset(id: item.id) {
+                            presetCard(preset)
+                        } else {
+                            catalogRow(item)
+                        }
+                    }
+                    if viewModel.catalogItems.isEmpty && !viewModel.catalogIsLoading {
+                        Label("No match. Try an exact command name or choose a file.", systemImage: "magnifyingglass")
+                            .font(.callout)
+                            .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                    }
+                    if viewModel.catalogIsLoading {
+                        ProgressView("Looking for an exact executable…")
+                            .controlSize(.small)
+                    }
+                }
+
+                if let stage = viewModel.installStage {
+                    ProgressView(stage)
+                        .controlSize(.small)
+                        .padding(.vertical, 4)
+                }
+
+                DisclosureGroup("Add a custom command", isExpanded: $showAdvancedCommand) {
                     Button {
                         guard let url = TerminalExecutablePicker.choose() else { return }
-                        if viewModel.selectCustomExecutable(url) {
-                            showAdvancedCommand = true
-                        }
+                        _ = viewModel.selectCustomExecutable(url)
                     } label: {
                         Label("Choose file…", systemImage: "folder")
                     }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                }
-
-                DisclosureGroup("Manual command", isExpanded: $showAdvancedCommand) {
                     advancedCommandFields
                 }
             }
         }
     }
 
-    @ViewBuilder
-    private func catalogCategory(_ category: TerminalWallpaperCatalogCategory) -> some View {
-        let items = viewModel.availableCatalogItems(for: category)
-        if !items.isEmpty {
-            Label(category.title, systemImage: category.systemImage)
-                .font(.headline.weight(.semibold))
-                .padding(.top, 5)
-
-            ForEach(items) { item in
-                catalogRow(item)
-                    .onAppear {
-                        guard item.id == viewModel.catalogItems.last?.id else { return }
-                        viewModel.loadMoreCatalogItems()
-                    }
+    private func presetCard(_ preset: TerminalWallpaperPreset) -> some View {
+        let item = preset.item
+        let installed = viewModel.cachedExecutablePath(for: item) != nil
+        let active = viewModel.isActive(item)
+        return HStack(spacing: 12) {
+            Image(systemName: item.systemImage)
+                .font(.title3)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title).font(.body.weight(.semibold))
+                Text(preset.description)
+                    .font(.callout)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                    .lineLimit(1)
             }
+            Spacer(minLength: 4)
+            Button(active ? "Current" : installed ? "Set wallpaper" : "Install & set") {
+                viewModel.use(item)
+            }
+            .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+            .disabled(viewModel.isBusy || active)
         }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(catalogRowBackground)
     }
 
     private func catalogRow(_ item: TerminalWallpaperCatalogItem) -> some View {
         HStack(spacing: 10) {
-            Button {
-                viewModel.select(item)
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: item.systemImage)
-                        .font(.title3)
-                        .frame(width: 28)
-
-                    Text(item.title)
-                        .font(.body.weight(.semibold))
-
-                    Spacer(minLength: 8)
-
-                    if viewModel.selectedCatalogItemID == item.id {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    }
-                }
-                .contentShape(Rectangle())
+            Image(systemName: item.systemImage)
+                .font(.title3)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title).font(.body.weight(.semibold))
+                Text("Unverified command · may not draw a wallpaper")
+                    .font(.caption)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             }
-            .buttonStyle(AuraPlainPressButtonStyle())
+            Spacer(minLength: 4)
+            Button(viewModel.isActive(item) ? "Current" : "Set wallpaper") { viewModel.use(item) }
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+                .disabled(viewModel.isBusy || viewModel.isActive(item) || viewModel.cachedExecutablePath(for: item) == nil)
+        }
+        .padding(12)
+        .background(catalogRowBackground)
+    }
 
-            Button("Start") { viewModel.start(item) }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .disabled(
-                        viewModel.isBusy
-                        || viewModel.status.running
-                        || viewModel.cachedExecutablePath(for: item) == nil
+    private var catalogRowBackground: some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        return shape
+            .fill(
+                adaptiveGlassAppearance.centerTextTone == .dark
+                    ? Color.white.opacity(0.12)
+                    : Color.black.opacity(0.24)
+            )
+            .overlay {
+                shape.stroke(
+                    adaptiveGlassAppearance.centerTextTone.primaryTextColor.opacity(0.10),
+                    lineWidth: 0.8
                 )
-        }
-        .padding(8)
-        .background {
-            let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-            shape
-                .fill(
-                    adaptiveGlassAppearance.centerTextTone == .dark
-                        ? Color.white.opacity(0.12)
-                        : Color.black.opacity(0.24)
-                )
-                .overlay {
-                    shape.stroke(
-                        adaptiveGlassAppearance.centerTextTone.primaryTextColor.opacity(0.10),
-                        lineWidth: 0.8
-                    )
-                }
-        }
+            }
     }
 
     private var advancedCommandFields: some View {

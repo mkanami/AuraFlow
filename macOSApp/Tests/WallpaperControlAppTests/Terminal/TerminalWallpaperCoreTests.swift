@@ -108,6 +108,9 @@ import Testing
 }
 
 @Test func terminalCatalogSeparatesAppsAndUtilities() {
+    #expect(TerminalWallpaperCatalog.item(id: "asciiquarium")?.title == "Asciiquarium")
+    #expect(TerminalWallpaperCatalog.item(id: "cmatrix")?.title == "CMatrix")
+    #expect(TerminalWallpaperCatalog.item(id: "pipes")?.title == "Pipes")
     #expect(TerminalWallpaperCatalog.item(id: "btop")?.category == .applications)
     #expect(TerminalWallpaperCatalog.item(id: "top")?.category == .utilities)
     #expect(TerminalWallpaperCatalog.item(id: "top")?.resolvedExecutable() == "/usr/bin/top")
@@ -129,6 +132,7 @@ import Testing
     )
 
     #expect(TerminalWallpaperCatalog.matchesSearch(query: "lavac", item: lavat))
+    #expect(!TerminalWallpaperCatalog.matchesSearch(query: "homebrew", item: lavat, includeExecutablePaths: false))
     #expect(!TerminalWallpaperCatalog.matchesSearch(query: "zzzzz", item: lavat))
     #expect(
         TerminalWallpaperCatalog.searchItems(for: "lavac", candidates: [lavat])
@@ -162,6 +166,13 @@ import Testing
             $0.executableCandidates.first == link.standardizedFileURL.path
         }
     )
+    #expect(
+        TerminalWallpaperCatalog.exactExecutableItems(
+            named: "linked-terminal", environment: ["PATH": bin.path]
+        ).first?.title == "linked-terminal"
+    )
+    #expect(TerminalWallpaperCatalog.exactExecutableItems(named: "linked-terminal-not-present", environment: ["PATH": bin.path]).isEmpty)
+    #expect(TerminalWallpaperCatalog.exactExecutableItems(named: "../linked-terminal", environment: ["PATH": bin.path]).isEmpty)
 }
 
 @Test func terminalCatalogRanksLavaLampAheadOfNearMatchesWhenInstalled() {

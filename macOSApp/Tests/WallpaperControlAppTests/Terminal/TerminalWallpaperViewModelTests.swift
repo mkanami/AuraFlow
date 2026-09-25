@@ -37,7 +37,7 @@ private struct StubTerminalCatalogProvider: TerminalWallpaperCatalogProviding {
     let recorder: TerminalDiscoveryRecorder
     let items: [TerminalWallpaperCatalogItem]
 
-    func discover() -> [TerminalWallpaperCatalogItem] {
+    func discover(query: String) -> [TerminalWallpaperCatalogItem] {
         recorder.record()
         return items
     }
@@ -46,8 +46,6 @@ private struct StubTerminalCatalogProvider: TerminalWallpaperCatalogProviding {
 private struct CancellationAwareTerminalCatalogProvider: TerminalWallpaperCatalogProviding {
     let recorder: TerminalDiscoveryRecorder
     let betaItems: [TerminalWallpaperCatalogItem]
-
-    func discover() -> [TerminalWallpaperCatalogItem] { [] }
 
     func discover(query: String) -> [TerminalWallpaperCatalogItem] {
         recorder.record()
@@ -62,8 +60,10 @@ private struct CancellationAwareTerminalCatalogProvider: TerminalWallpaperCatalo
     }
 }
 
-private final class StubTerminalWallpaperController: TerminalWallpaperControlling {
+private final class StubTerminalWallpaperController: TerminalWallpaperControlling, @unchecked Sendable {
     private(set) var currentStatus: TerminalWallpaperStatus
+    private(set) var startCount = 0
+    var rejectStart = false
 
     init() {
         currentStatus = TerminalWallpaperStatus(
@@ -73,7 +73,12 @@ private final class StubTerminalWallpaperController: TerminalWallpaperControllin
     }
 
     func status() throws -> TerminalWallpaperStatus { currentStatus }
+    func ensureCanStart() throws {
+        if rejectStart { throw TerminalWallpaperControllerError.videoWallpaperAlreadyRunning }
+    }
     func start(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
+        try ensureCanStart()
+        startCount += 1
         currentStatus = TerminalWallpaperStatus(running: true, config: config)
         return currentStatus
     }
@@ -103,11 +108,78 @@ private final class StubTerminalWallpaperController: TerminalWallpaperControllin
     }
 }
 
+private final class TerminalPresetAvailability: @unchecked Sendable {
+    private let lock = NSLock()
+    private var installed: Set<String>
+
+    init(installed: Set<String> = []) { self.installed = installed }
+
+    func resolve(_ item: TerminalWallpaperCatalogItem) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return installed.contains(item.id) ? "/usr/bin/true" : nil
+    }
+
+    func markInstalled(_ id: String) {
+        lock.lock()
+        installed.insert(id)
+        lock.unlock()
+    }
+}
+
+private final class StubTerminalWallpaperInstaller: TerminalWallpaperInstalling, @unchecked Sendable {
+    private let lock = NSLock()
+    private var installedIDs: [String] = []
+    private var recordedStages: [String] = []
+    let availability: TerminalPresetAvailability
+    var shouldFail = false
+    var needsHomebrew = false
+
+    init(availability: TerminalPresetAvailability) { self.availability = availability }
+
+    var calls: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return installedIDs
+    }
+
+    var stages: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedStages
+    }
+
+    private func stage(_ value: String, callback: @Sendable (String) -> Void) {
+        lock.lock()
+        recordedStages.append(value)
+        lock.unlock()
+        callback(value)
+    }
+
+    private func record(_ id: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        installedIDs.append(id)
+        return shouldFail
+    }
+
+    func install(
+        preset: TerminalWallpaperPreset,
+        onStage: @escaping @Sendable (String) -> Void
+    ) async throws {
+        let fail = record(preset.id)
+        if needsHomebrew { stage("Preparing Homebrew…", callback: onStage) }
+        stage("Installing…", callback: onStage)
+        if fail { throw TerminalWallpaperInstallError.commandFailed("mock failure") }
+        availability.markInstalled(preset.id)
+    }
+}
+
 private func makeDiscoveredTerminalItems(count: Int, prefix: String = "tool") -> [TerminalWallpaperCatalogItem] {
     (0..<count).map { index in
         TerminalWallpaperCatalogItem(
             id: "discovered:/usr/bin/true-\(prefix)-\(index)",
-            title: "\(prefix.capitalized) \(index)",
+            title: index == 0 ? prefix : "\(prefix)-\(index)",
             subtitle: "Test terminal executable",
             category: index.isMultiple(of: 2) ? .applications : .utilities,
             systemImage: "terminal",
@@ -140,20 +212,19 @@ private func waitForCatalogDiscovery(
 }
 
 @Test @MainActor
-func terminalCatalogStartsWithAtMostTwoDemoAppsWithoutScanning() {
+func terminalCatalogStartsWithFourFeaturedWallpapersWithoutScanning() {
     let recorder = TerminalDiscoveryRecorder()
     let provider = StubTerminalCatalogProvider(recorder: recorder, items: [])
     let viewModel = makeViewModel(provider: provider)
 
     viewModel.prepareCatalogIfNeeded()
 
-    #expect(viewModel.catalogItems.count <= 2)
-    #expect(viewModel.catalogItems.allSatisfy { $0.id == "btop" || $0.id == "htop" })
+    #expect(viewModel.catalogItems.map(\.id) == ["asciiquarium", "lavat", "cmatrix", "pipes"])
     #expect(recorder.count == 0)
 }
 
 @Test @MainActor
-func terminalCatalogSearchDiscoversOnceAndPaginatesOnlyOnTrigger() async throws {
+func terminalCatalogSearchDiscoversOnceAndNeverShowsLongList() async throws {
     let recorder = TerminalDiscoveryRecorder()
     let provider = StubTerminalCatalogProvider(
         recorder: recorder,
@@ -166,43 +237,66 @@ func terminalCatalogSearchDiscoversOnceAndPaginatesOnlyOnTrigger() async throws 
     try await waitForCatalogDiscovery(viewModel, recorder: recorder)
 
     #expect(recorder.count == 1)
-    #expect(viewModel.catalogItems.count == 24)
-    #expect(viewModel.catalogHasMore)
-
-    viewModel.loadMoreCatalogItems()
-    #expect(viewModel.catalogItems.count == 48)
-    #expect(viewModel.catalogHasMore)
-
-    viewModel.loadMoreCatalogItems()
-    #expect(viewModel.catalogItems.count == 50)
-    #expect(!viewModel.catalogHasMore)
+    #expect(viewModel.catalogItems.count == 1)
+    #expect(viewModel.catalogItems.first?.title == "tool")
 }
 
-@Test func systemTerminalCatalogCachesExecutableScanUntilRefresh() {
+@Test @MainActor
+func terminalCatalogFuzzyPresetMatchDoesNotScanExecutables() {
+    let recorder = TerminalDiscoveryRecorder()
+    let viewModel = makeViewModel(provider: StubTerminalCatalogProvider(recorder: recorder, items: []))
+
+    viewModel.setCatalogSearch("lavac")
+
+    #expect(viewModel.catalogItems.map(\.id) == ["lavat"])
+    #expect(!viewModel.catalogIsLoading)
+    #expect(recorder.count == 0)
+}
+
+@Test @MainActor
+func terminalExactSearchCapsUnknownCommandsAtFive() async throws {
+    let recorder = TerminalDiscoveryRecorder()
+    let many = makeDiscoveredTerminalItems(count: 30).map { item in
+        TerminalWallpaperCatalogItem(
+            id: item.id,
+            title: "tool",
+            subtitle: item.subtitle,
+            category: item.category,
+            systemImage: item.systemImage,
+            executableCandidates: item.executableCandidates
+        )
+    }
+    let viewModel = makeViewModel(provider: StubTerminalCatalogProvider(recorder: recorder, items: many))
+
+    viewModel.setCatalogSearch("tool")
+    try await waitForCatalogDiscovery(viewModel, recorder: recorder)
+
+    #expect(viewModel.catalogItems.count == 5)
+    #expect(viewModel.catalogItems.allSatisfy { $0.title == "tool" })
+}
+
+@Test func systemTerminalCatalogCachesExactQueriesUntilRefresh() {
     let recorder = TerminalDiscoveryRecorder()
     let items = makeDiscoveredTerminalItems(count: 1, prefix: "alpha")
         + makeDiscoveredTerminalItems(count: 1, prefix: "beta")
-    let provider = SystemTerminalWallpaperCatalogProvider {
+    let provider = SystemTerminalWallpaperCatalogProvider { query in
         recorder.record()
-        return items
+        return items.filter { $0.title.localizedCaseInsensitiveCompare(query) == .orderedSame }
     }
 
     #expect(provider.discover(query: "alpha").count == 1)
-    #expect(provider.discover(query: "beta").count == 1)
+    #expect(provider.discover(query: "alpha").count == 1)
     #expect(recorder.count == 1)
 
     provider.refresh()
-    _ = provider.discover()
+    _ = provider.discover(query: "alpha")
     #expect(recorder.count == 2)
 }
 
 @Test @MainActor
 func terminalCatalogSearchShowsLoadingInsteadOfFalseNoMatchesDuringDebounce() {
     let recorder = TerminalDiscoveryRecorder()
-    let provider = StubTerminalCatalogProvider(
-        recorder: recorder,
-        items: makeDiscoveredTerminalItems(count: 1)
-    )
+    let provider = StubTerminalCatalogProvider(recorder: recorder, items: makeDiscoveredTerminalItems(count: 1))
     let viewModel = makeViewModel(provider: provider)
 
     viewModel.setCatalogSearch("tool")
@@ -236,8 +330,8 @@ func terminalCatalogCancelsAnObsoleteSearchAlreadyInProgress() async throws {
     }
 
     #expect(recorder.cancellations == 1)
-    #expect(viewModel.catalogItems.count == 2)
-    #expect(viewModel.catalogItems.allSatisfy { $0.title.localizedCaseInsensitiveContains("beta") })
+    #expect(viewModel.catalogItems.count == 1)
+    #expect(viewModel.catalogItems.first?.title == "beta")
 }
 
 @Test @MainActor
@@ -255,7 +349,7 @@ func terminalCatalogDebounceKeepsOnlyLatestSearchQuery() async throws {
 
     #expect(recorder.count == 1)
     #expect(viewModel.catalogSearch == "beta")
-    #expect(viewModel.catalogItems.allSatisfy { $0.title.localizedCaseInsensitiveContains("beta") })
+    #expect(viewModel.catalogItems.first?.title == "beta")
 }
 
 @Test @MainActor
@@ -281,4 +375,144 @@ func terminalCatalogReopeningDoesNotRescanUntilExplicitRefresh() async throws {
     viewModel.refreshCatalog()
     #expect(recorder.count == 1)
     #expect(viewModel.catalogSearch.isEmpty)
+}
+
+@MainActor
+private func waitForTerminalAction(_ viewModel: TerminalWallpaperViewModel) async throws {
+    for _ in 0..<100 where viewModel.isBusy {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+}
+
+@Test @MainActor
+func terminalFeaturedPresetsSortInstalledFirstAndUseOnlyAllowlistedFormulae() {
+    let availability = TerminalPresetAvailability(installed: ["lavat", "pipes"])
+    let viewModel = TerminalWallpaperViewModel(
+        controller: StubTerminalWallpaperController(),
+        resolveExecutable: { availability.resolve($0) }
+    )
+
+    #expect(viewModel.featuredPresets.map(\.id) == ["lavat", "pipes", "asciiquarium", "cmatrix"])
+    #expect(TerminalWallpaperPreset.featured.map(\.formula) == ["asciiquarium", "lavat", "cmatrix", "pipes-sh"])
+    #expect(TerminalWallpaperPreset.preset(id: "discovered:/bin/sh") == nil)
+}
+
+@Test @MainActor
+func terminalPresetInstallationThenLaunchAndSwitch() async throws {
+    let availability = TerminalPresetAvailability(installed: ["lavat"])
+    let installer = StubTerminalWallpaperInstaller(availability: availability)
+    let controller = StubTerminalWallpaperController()
+    let viewModel = TerminalWallpaperViewModel(
+        controller: controller,
+        installer: installer,
+        resolveExecutable: { availability.resolve($0) }
+    )
+
+    viewModel.use(TerminalWallpaperPreset.preset(id: "asciiquarium")!.item)
+    try await waitForTerminalAction(viewModel)
+    #expect(installer.calls == ["asciiquarium"])
+    #expect(controller.currentStatus.config.command.catalogItemID == "asciiquarium")
+    #expect(viewModel.isActive(TerminalWallpaperPreset.preset(id: "asciiquarium")!.item))
+
+    viewModel.use(TerminalWallpaperPreset.preset(id: "lavat")!.item)
+    try await waitForTerminalAction(viewModel)
+    #expect(installer.calls == ["asciiquarium"])
+    #expect(controller.startCount == 2)
+    #expect(controller.currentStatus.config.command.catalogItemID == "lavat")
+}
+
+@Test @MainActor
+func terminalPresetInstallationFailureDoesNotLaunch() async throws {
+    let availability = TerminalPresetAvailability()
+    let installer = StubTerminalWallpaperInstaller(availability: availability)
+    installer.shouldFail = true
+    let controller = StubTerminalWallpaperController()
+    let viewModel = TerminalWallpaperViewModel(
+        controller: controller,
+        installer: installer,
+        resolveExecutable: { availability.resolve($0) }
+    )
+
+    viewModel.use(TerminalWallpaperPreset.preset(id: "lavat")!.item)
+    try await waitForTerminalAction(viewModel)
+    #expect(controller.startCount == 0)
+    #expect(viewModel.errorMessage?.contains("mock failure") == true)
+    viewModel.refresh()
+    try await Task.sleep(nanoseconds: 50_000_000)
+    #expect(viewModel.errorMessage?.contains("mock failure") == true)
+}
+
+@Test @MainActor
+func terminalPresetCanBootstrapMissingHomebrewThroughInstaller() async throws {
+    let availability = TerminalPresetAvailability()
+    let installer = StubTerminalWallpaperInstaller(availability: availability)
+    installer.needsHomebrew = true
+    let controller = StubTerminalWallpaperController()
+    let viewModel = TerminalWallpaperViewModel(
+        controller: controller,
+        installer: installer,
+        resolveExecutable: { availability.resolve($0) }
+    )
+
+    viewModel.use(TerminalWallpaperPreset.preset(id: "pipes")!.item)
+    try await waitForTerminalAction(viewModel)
+
+    #expect(installer.stages == ["Preparing Homebrew…", "Installing…"])
+    #expect(controller.currentStatus.config.command.catalogItemID == "pipes")
+}
+
+@Test @MainActor
+func terminalPresetVideoConflictPreventsInstallation() async throws {
+    let availability = TerminalPresetAvailability()
+    let installer = StubTerminalWallpaperInstaller(availability: availability)
+    let controller = StubTerminalWallpaperController()
+    controller.rejectStart = true
+    let viewModel = TerminalWallpaperViewModel(
+        controller: controller,
+        installer: installer,
+        resolveExecutable: { availability.resolve($0) }
+    )
+
+    viewModel.use(TerminalWallpaperPreset.preset(id: "lavat")!.item)
+    try await waitForTerminalAction(viewModel)
+    #expect(installer.calls.isEmpty)
+    #expect(controller.startCount == 0)
+    #expect(viewModel.errorMessage?.contains("video wallpaper") == true)
+}
+
+@Test @MainActor
+func terminalExactCommandUsesWallpaperWithoutInstallingPackage() async throws {
+    let recorder = TerminalDiscoveryRecorder()
+    let controller = StubTerminalWallpaperController()
+    let availability = TerminalPresetAvailability()
+    let installer = StubTerminalWallpaperInstaller(availability: availability)
+    let item = makeDiscoveredTerminalItems(count: 1, prefix: "mytool")[0]
+    let viewModel = TerminalWallpaperViewModel(
+        controller: controller,
+        catalogProvider: StubTerminalCatalogProvider(recorder: recorder, items: [item]),
+        installer: installer
+    )
+
+    viewModel.setCatalogSearch("mytool")
+    try await waitForCatalogDiscovery(viewModel, recorder: recorder)
+    viewModel.use(item)
+    try await waitForTerminalAction(viewModel)
+
+    #expect(installer.calls.isEmpty)
+    #expect(controller.currentStatus.config.command.catalogItemID == item.id)
+}
+
+@Test func terminalInstallerRejectsAnythingOutsideFourPresets() async {
+    let invalid = [
+        TerminalWallpaperPreset(id: "sh", description: "no", formula: "unsafe-formula"),
+        TerminalWallpaperPreset(id: "lavat", description: "Flowing lava lamp", formula: "unsafe-formula"),
+    ]
+    for preset in invalid {
+        do {
+            try await SystemTerminalWallpaperInstaller().install(preset: preset) { _ in }
+            Issue.record("An unapproved formula was accepted")
+        } catch {
+            #expect(error is TerminalWallpaperInstallError)
+        }
+    }
 }

@@ -2,7 +2,8 @@ import AuraTerminalWallpaperCore
 import AuraWallpaperCore
 import Foundation
 
-protocol TerminalWallpaperControlling {
+protocol TerminalWallpaperControlling: Sendable {
+    func ensureCanStart() throws
     func status() throws -> TerminalWallpaperStatus
     func start(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
     func stop() throws -> TerminalWallpaperStatus
@@ -11,6 +12,10 @@ protocol TerminalWallpaperControlling {
     func update(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
     func resize(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
     func setLaunchAtLogin(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
+}
+
+extension TerminalWallpaperControlling {
+    func ensureCanStart() throws {}
 }
 
 enum TerminalWallpaperControllerError: LocalizedError, Equatable {
@@ -29,7 +34,7 @@ enum TerminalWallpaperControllerError: LocalizedError, Equatable {
     }
 }
 
-final class NativeTerminalWallpaperController: TerminalWallpaperControlling {
+final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @unchecked Sendable {
     private let store: TerminalWallpaperRuntimeStore
     private let helperURL: URL
     private let videoRuntimeIsRunning: () -> Bool
@@ -52,9 +57,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling {
 
     func start(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
         let normalized = try validated(config)
-        if videoRuntimeIsRunning() {
-            throw TerminalWallpaperControllerError.videoWallpaperAlreadyRunning
-        }
+        try ensureCanStart()
         try store.saveConfig(normalized)
         try applyLaunchAtLogin(normalized)
         if store.processIsAlive(pid: store.loadPID()) {
@@ -96,9 +99,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling {
 
     func restart(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
         let normalized = try validated(config)
-        if videoRuntimeIsRunning() {
-            throw TerminalWallpaperControllerError.videoWallpaperAlreadyRunning
-        }
+        try ensureCanStart()
         try store.saveConfig(normalized)
         try applyLaunchAtLogin(normalized)
         if store.processIsAlive(pid: store.loadPID()) {
@@ -152,6 +153,12 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling {
             try store.enableLaunchAgent(helperPath: helperURL.path)
         } else if store.launchAgentEnabled() {
             store.disableLaunchAgent()
+        }
+    }
+
+    func ensureCanStart() throws {
+        if videoRuntimeIsRunning() {
+            throw TerminalWallpaperControllerError.videoWallpaperAlreadyRunning
         }
     }
 

@@ -71,6 +71,30 @@ public struct TerminalWallpaperCatalogItem: Identifiable, Equatable, Sendable {
 public enum TerminalWallpaperCatalog {
     public static let items: [TerminalWallpaperCatalogItem] = [
         TerminalWallpaperCatalogItem(
+            id: "asciiquarium",
+            title: "Asciiquarium",
+            subtitle: "Animated fish and ocean waves",
+            category: .applications,
+            systemImage: "fish",
+            executableCandidates: ["/opt/homebrew/bin/asciiquarium", "/usr/local/bin/asciiquarium", "asciiquarium"]
+        ),
+        TerminalWallpaperCatalogItem(
+            id: "cmatrix",
+            title: "CMatrix",
+            subtitle: "Falling digital rain",
+            category: .applications,
+            systemImage: "textformat.abc",
+            executableCandidates: ["/opt/homebrew/bin/cmatrix", "/usr/local/bin/cmatrix", "cmatrix"]
+        ),
+        TerminalWallpaperCatalogItem(
+            id: "pipes",
+            title: "Pipes",
+            subtitle: "Moving colorful terminal lines",
+            category: .applications,
+            systemImage: "line.diagonal",
+            executableCandidates: ["/opt/homebrew/bin/pipes.sh", "/usr/local/bin/pipes.sh", "pipes.sh"]
+        ),
+        TerminalWallpaperCatalogItem(
             id: "btop",
             title: "btop",
             subtitle: "Interactive system monitor",
@@ -168,11 +192,13 @@ public enum TerminalWallpaperCatalog {
     /// single-character typo in a query of at least three characters.
     public static func matchesSearch(
         query rawQuery: String,
-        item: TerminalWallpaperCatalogItem
+        item: TerminalWallpaperCatalogItem,
+        includeExecutablePaths: Bool = true
     ) -> Bool {
         let query = normalizedSearchValue(rawQuery)
         guard !query.isEmpty else { return true }
-        let fields = [item.title, item.subtitle] + item.executableCandidates
+        let fields = [item.title, item.subtitle]
+            + (includeExecutablePaths ? item.executableCandidates : [])
         return fields.contains { field in
             fuzzyContains(query: query, value: normalizedSearchValue(field))
         }
@@ -182,6 +208,42 @@ public enum TerminalWallpaperCatalog {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [TerminalWallpaperCatalogItem] {
         items.filter { $0.resolvedExecutable(environment: environment) != nil }
+    }
+
+    /// Resolve only an exact executable name. This deliberately does not turn
+    /// a partial query into a page of unrelated system commands.
+    public static func exactExecutableItems(
+        named rawName: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> [TerminalWallpaperCatalogItem] {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name == URL(fileURLWithPath: name).lastPathComponent,
+              !name.contains("/"), !name.hasPrefix("."),
+              name.allSatisfy({ $0.isLetter || $0.isNumber || ".-_".contains($0) }) else {
+            return []
+        }
+
+        var paths: [String] = []
+        for root in discoveryRoots(environment: environment) {
+            let candidate = URL(fileURLWithPath: root).appendingPathComponent(name).path
+            if fileManager.isExecutableFile(atPath: candidate) {
+                paths.append(candidate)
+            }
+        }
+        if paths.isEmpty, name.count >= 3 {
+            paths = spotlightExecutablePaths(matching: name, exact: true, fileManager: fileManager)
+        }
+
+        var seen = Set<String>()
+        return paths.compactMap { path -> TerminalWallpaperCatalogItem? in
+            guard !path.contains(".app/"),
+                  URL(fileURLWithPath: path).lastPathComponent == name,
+                  seen.insert(normalizedPath(path)).inserted else { return nil }
+            return discoveredItem(at: path, environment: environment)
+        }
+        .prefix(5)
+        .map { $0 }
     }
 
     public static func availableItems(
@@ -403,6 +465,7 @@ public enum TerminalWallpaperCatalog {
 
     private static func spotlightExecutablePaths(
         matching query: String,
+        exact: Bool = false,
         fileManager: FileManager
     ) -> [String] {
         guard fileManager.isExecutableFile(atPath: "/usr/bin/mdfind") else { return [] }
@@ -416,7 +479,11 @@ public enum TerminalWallpaperCatalog {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
-        process.arguments = ["kMDItemFSName == '*\(safeQuery)*'cd"]
+        process.arguments = [
+            exact
+                ? "kMDItemFSName == '\(safeQuery)'cd"
+                : "kMDItemFSName == '*\(safeQuery)*'cd"
+        ]
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice

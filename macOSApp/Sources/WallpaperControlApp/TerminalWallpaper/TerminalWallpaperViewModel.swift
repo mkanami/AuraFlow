@@ -3,48 +3,47 @@ import Foundation
 import Combine
 
 protocol TerminalWallpaperCatalogProviding: Sendable {
-    func discover() -> [TerminalWallpaperCatalogItem]
     func discover(query: String) -> [TerminalWallpaperCatalogItem]
     func refresh()
 }
 
 extension TerminalWallpaperCatalogProviding {
-    func discover(query: String) -> [TerminalWallpaperCatalogItem] {
-        discover()
-    }
-
     func refresh() {}
 }
 
 final class SystemTerminalWallpaperCatalogProvider: TerminalWallpaperCatalogProviding, @unchecked Sendable {
     private let lock = NSLock()
-    private let discoverItems: @Sendable () -> [TerminalWallpaperCatalogItem]
-    private var cachedItems: [TerminalWallpaperCatalogItem]?
+    private let searchItems: @Sendable (String) -> [TerminalWallpaperCatalogItem]
+    private var cachedItems: [String: [TerminalWallpaperCatalogItem]] = [:]
+    private var generation = 0
 
     init(
-        discoverItems: @escaping @Sendable () -> [TerminalWallpaperCatalogItem] = {
-            TerminalWallpaperCatalog.availableItems()
+        searchItems: @escaping @Sendable (String) -> [TerminalWallpaperCatalogItem] = {
+            TerminalWallpaperCatalog.exactExecutableItems(named: $0)
         }
     ) {
-        self.discoverItems = discoverItems
-    }
-
-    func discover() -> [TerminalWallpaperCatalogItem] {
-        lock.lock()
-        defer { lock.unlock() }
-        if let cachedItems { return cachedItems }
-        let discovered = discoverItems()
-        cachedItems = discovered
-        return discovered
+        self.searchItems = searchItems
     }
 
     func discover(query: String) -> [TerminalWallpaperCatalogItem] {
-        TerminalWallpaperCatalog.searchItems(for: query, candidates: discover())
+        lock.lock()
+        if let cached = cachedItems[query] {
+            lock.unlock()
+            return cached
+        }
+        let currentGeneration = generation
+        lock.unlock()
+        let results = searchItems(query)
+        lock.lock()
+        if generation == currentGeneration { cachedItems[query] = results }
+        lock.unlock()
+        return results
     }
 
     func refresh() {
         lock.lock()
-        cachedItems = nil
+        cachedItems = [:]
+        generation &+= 1
         lock.unlock()
     }
 }
@@ -75,29 +74,34 @@ final class TerminalWallpaperViewModel: ObservableObject {
     @Published private(set) var catalogItems: [TerminalWallpaperCatalogItem]
     @Published private(set) var catalogSearch = ""
     @Published private(set) var catalogIsLoading = false
-    @Published private(set) var catalogHasMore = false
+    @Published private(set) var installStage: String?
     @Published private(set) var status: TerminalWallpaperStatus
     @Published private(set) var isBusy = false
     @Published var statusMessage: String?
     @Published var errorMessage: String?
+    @Published private(set) var installHelpURL: URL?
 
     private let controller: TerminalWallpaperControlling
     private let catalogProvider: any TerminalWallpaperCatalogProviding
-    private let catalogPageSize = 24
-    private var discoveredCatalogItems: [TerminalWallpaperCatalogItem]?
+    private let installer: any TerminalWallpaperInstalling
+    private let resolveExecutable: @Sendable (TerminalWallpaperCatalogItem) -> String?
     private var catalogPrepared = false
     private var catalogSearchGeneration = 0
     private var catalogSearchTask: Task<Void, Never>?
     private var catalogDiscoveryTask: Task<Void, Never>?
     private var catalogDiscoveryWorkerTask: Task<[TerminalWallpaperCatalogItem], Never>?
-    private var deferredSearchItems: [TerminalWallpaperCatalogItem] = []
     private var discoveredCatalogItemsByQuery: [String: [TerminalWallpaperCatalogItem]] = [:]
     private var resolvedExecutableCache: [String: String] = [:]
-    private let demoCatalogItems: [TerminalWallpaperCatalogItem]
+    private let featuredItems: [TerminalWallpaperCatalogItem]
+    private var activeInstallationID: UUID?
+    private var statusRefreshInFlight = false
+    private var statusRefreshGeneration = 0
 
     init(
         controller: TerminalWallpaperControlling? = nil,
-        catalogProvider: any TerminalWallpaperCatalogProviding = SystemTerminalWallpaperCatalogProvider()
+        catalogProvider: any TerminalWallpaperCatalogProviding = SystemTerminalWallpaperCatalogProvider(),
+        installer: any TerminalWallpaperInstalling = SystemTerminalWallpaperInstaller(),
+        resolveExecutable: @escaping @Sendable (TerminalWallpaperCatalogItem) -> String? = { $0.resolvedExecutable() }
     ) {
         let resolvedController: TerminalWallpaperControlling
         if let controller {
@@ -109,22 +113,24 @@ final class TerminalWallpaperViewModel: ObservableObject {
         }
         self.controller = resolvedController
         self.catalogProvider = catalogProvider
+        self.installer = installer
+        self.resolveExecutable = resolveExecutable
 
         let config = (try? resolvedController.status().config) ?? .defaultConfig
         executable = config.command.executable
         argumentsText = config.command.arguments.joined(separator: "\n")
         selectedCatalogItemID = config.command.catalogItemID
 
-        let demoItems = Self.demoCatalogItems()
+        let presets = TerminalWallpaperPreset.featured.map(\.item)
         var executableCache: [String: String] = [:]
-        for item in demoItems {
-            if let executable = item.resolvedExecutable() {
+        for item in presets {
+            if let executable = resolveExecutable(item) {
                 executableCache[item.id] = executable
             }
         }
 
-        demoCatalogItems = demoItems
-        catalogItems = demoItems
+        featuredItems = presets
+        catalogItems = presets
         resolvedExecutableCache = executableCache
 
         workingDirectory = config.command.workingDirectory ?? ""
@@ -158,17 +164,36 @@ final class TerminalWallpaperViewModel: ObservableObject {
         !isBusy && !executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    func availableCatalogItems(
-        for category: TerminalWallpaperCatalogCategory
-    ) -> [TerminalWallpaperCatalogItem] {
-        catalogItems.filter { $0.category == category }
+    var featuredPresets: [TerminalWallpaperPreset] {
+        TerminalWallpaperPreset.featured.sorted { lhs, rhs in
+            let lhsInstalled = cachedExecutablePath(for: lhs.item) != nil
+            let rhsInstalled = cachedExecutablePath(for: rhs.item) != nil
+            if lhsInstalled != rhsInstalled { return lhsInstalled }
+            return TerminalWallpaperPreset.featured.firstIndex(of: lhs)! < TerminalWallpaperPreset.featured.firstIndex(of: rhs)!
+        }
+    }
+
+    var activeUnfeaturedTitle: String? {
+        guard status.running else { return nil }
+        if let id = status.config.command.catalogItemID {
+            guard TerminalWallpaperPreset.preset(id: id) == nil else { return nil }
+            if let title = TerminalWallpaperCatalog.item(id: id)?.title { return title }
+        }
+        let name = URL(fileURLWithPath: status.config.command.executable).lastPathComponent
+        return name.isEmpty ? nil : name
+    }
+
+    func isActive(_ item: TerminalWallpaperCatalogItem) -> Bool {
+        guard status.running else { return false }
+        if let activeID = status.config.command.catalogItemID { return activeID == item.id }
+        return cachedExecutablePath(for: item) == status.config.command.executable
     }
 
     func executablePath(for item: TerminalWallpaperCatalogItem) -> String? {
         if let cached = resolvedExecutableCache[item.id] {
             return cached
         }
-        guard let executable = item.resolvedExecutable() else { return nil }
+        guard let executable = resolveExecutable(item) else { return nil }
         resolvedExecutableCache[item.id] = executable
         return executable
     }
@@ -181,11 +206,12 @@ final class TerminalWallpaperViewModel: ObservableObject {
         guard !catalogPrepared else { return }
         catalogPrepared = true
         catalogItems = initialCatalogItems
-        deferredSearchItems = []
-        catalogHasMore = false
     }
 
     func refreshCatalog() {
+        errorMessage = nil
+        statusMessage = nil
+        installHelpURL = nil
         catalogSearchTask?.cancel()
         catalogDiscoveryTask?.cancel()
         catalogDiscoveryWorkerTask?.cancel()
@@ -195,18 +221,15 @@ final class TerminalWallpaperViewModel: ObservableObject {
         catalogProvider.refresh()
         catalogSearchGeneration &+= 1
         catalogSearch = ""
-        discoveredCatalogItems = nil
         discoveredCatalogItemsByQuery = [:]
         resolvedExecutableCache = [:]
-        for item in demoCatalogItems {
-            if let executable = item.resolvedExecutable() {
+        for item in featuredItems {
+            if let executable = resolveExecutable(item) {
                 resolvedExecutableCache[item.id] = executable
             }
         }
-        deferredSearchItems = []
         catalogIsLoading = false
         catalogPrepared = true
-        catalogHasMore = false
         catalogItems = initialCatalogItems
     }
 
@@ -226,25 +249,20 @@ final class TerminalWallpaperViewModel: ObservableObject {
         guard !query.isEmpty else {
             catalogIsLoading = false
             catalogItems = initialCatalogItems
-            deferredSearchItems = []
-            catalogHasMore = false
             return
         }
 
         applyVisibleSearchResults(for: query)
-        if let cached = discoveredCatalogItemsByQuery[query] {
-            discoveredCatalogItems = cached
+        if discoveredCatalogItemsByQuery[query] != nil || !catalogItems.isEmpty {
             catalogIsLoading = false
-            applyVisibleSearchResults(for: query)
             return
         }
 
-        discoveredCatalogItems = nil
         catalogIsLoading = true
 
         catalogSearchTask = Task { [weak self] in
             do {
-                try await Task.sleep(nanoseconds: 300_000_000)
+                try await Task.sleep(nanoseconds: 200_000_000)
             } catch {
                 return
             }
@@ -255,17 +273,6 @@ final class TerminalWallpaperViewModel: ObservableObject {
         }
     }
 
-    func loadMoreCatalogItems() {
-        guard !normalizedCatalogSearch.isEmpty,
-              !catalogIsLoading,
-              !deferredSearchItems.isEmpty else { return }
-
-        let nextPage = Array(deferredSearchItems.prefix(catalogPageSize))
-        deferredSearchItems.removeFirst(nextPage.count)
-        catalogItems.append(contentsOf: nextPage)
-        catalogHasMore = !deferredSearchItems.isEmpty
-    }
-
     var statusTitle: String {
         if status.running && status.health?.childRunning == true { return "Running" }
         if status.running { return "Agent running" }
@@ -273,8 +280,20 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     func refresh() {
+        guard !isBusy, !statusRefreshInFlight else { return }
+        statusRefreshInFlight = true
+        let generation = statusRefreshGeneration
         let controller = controller
-        perform { try controller.status() }
+        Task { @MainActor in
+            defer { statusRefreshInFlight = false }
+            guard let latest: TerminalWallpaperStatus = try? await withCheckedThrowingContinuation({ continuation in
+                DispatchQueue.global(qos: .utility).async {
+                    do { continuation.resume(returning: try controller.status()) }
+                    catch { continuation.resume(throwing: error) }
+                }
+            }), generation == statusRefreshGeneration, !isBusy else { return }
+            apply(latest)
+        }
     }
 
     func start() { applyRuntime(.start) }
@@ -294,9 +313,64 @@ final class TerminalWallpaperViewModel: ObservableObject {
         environmentText = ""
     }
 
-    func start(_ item: TerminalWallpaperCatalogItem) {
-        select(item)
-        start()
+    func use(_ item: TerminalWallpaperCatalogItem) {
+        guard !isBusy, !isActive(item) else { return }
+        isBusy = true
+        statusRefreshGeneration &+= 1
+        errorMessage = nil
+        statusMessage = nil
+        installHelpURL = nil
+        let installationID = UUID()
+        activeInstallationID = installationID
+        let controller = controller
+        let installer = installer
+        let preset = TerminalWallpaperPreset.preset(id: item.id)
+        Task { @MainActor in
+            defer {
+                isBusy = false
+                installStage = nil
+                activeInstallationID = nil
+            }
+            do {
+                try await withCheckedThrowingContinuation { continuation in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        do { try controller.ensureCanStart(); continuation.resume() }
+                        catch { continuation.resume(throwing: error) }
+                    }
+                }
+                if let preset, cachedExecutablePath(for: item) == nil {
+                    try await installer.install(preset: preset) { [weak self] stage in
+                        Task { @MainActor in
+                            guard self?.activeInstallationID == installationID else { return }
+                            self?.installStage = stage
+                        }
+                    }
+                    guard let path = resolveExecutable(item) else {
+                        throw TerminalWallpaperInstallError.executableStillMissing
+                    }
+                    resolvedExecutableCache[item.id] = path
+                    applyVisibleSearchResults(for: normalizedCatalogSearch)
+                }
+                guard cachedExecutablePath(for: item) != nil else {
+                    throw TerminalWallpaperInstallError.executableStillMissing
+                }
+                select(item)
+                let config = makeConfig()
+                let newStatus: TerminalWallpaperStatus = try await withCheckedThrowingContinuation { continuation in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        do { continuation.resume(returning: try controller.start(config: config)) }
+                        catch { continuation.resume(throwing: error) }
+                    }
+                }
+                apply(newStatus)
+                statusMessage = "\(item.title) is now your terminal wallpaper."
+            } catch {
+                errorMessage = error.localizedDescription
+                if case TerminalWallpaperInstallError.unsupportedHomebrewPlatform = error {
+                    installHelpURL = URL(string: "https://docs.brew.sh/Installation")
+                }
+            }
+        }
     }
 
     @discardableResult
@@ -307,6 +381,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
         }
         selectedCatalogItemID = nil
         executable = url.path
+        errorMessage = nil
+        installHelpURL = nil
         argumentsText = ""
         workingDirectory = ""
         environmentText = ""
@@ -367,54 +443,37 @@ final class TerminalWallpaperViewModel: ObservableObject {
                   self.normalizedCatalogSearch == query else { return }
             self.catalogDiscoveryWorkerTask = nil
             self.discoveredCatalogItemsByQuery[query] = discovered
-            self.discoveredCatalogItems = discovered
             for item in discovered {
-                if let executable = item.resolvedExecutable() {
+                if let executable = self.resolveExecutable(item) {
                     self.resolvedExecutableCache[item.id] = executable
                 }
             }
             self.catalogDiscoveryTask = nil
             self.catalogIsLoading = false
-            if self.normalizedCatalogSearch.isEmpty {
-                self.catalogItems = self.initialCatalogItems
-                self.deferredSearchItems = []
-                self.catalogHasMore = false
-            } else {
-                self.applyVisibleSearchResults(for: self.normalizedCatalogSearch)
-            }
+            self.applyVisibleSearchResults(for: self.normalizedCatalogSearch)
         }
     }
 
     private func applyVisibleSearchResults(for query: String) {
         guard !query.isEmpty else {
             catalogItems = initialCatalogItems
-            deferredSearchItems = []
-            catalogHasMore = false
             return
         }
 
         var seenIDs = Set<String>()
-        let allItems = (initialCatalogItems + (discoveredCatalogItems ?? [])).filter {
+        let allItems = (initialCatalogItems + (discoveredCatalogItemsByQuery[query] ?? [])).filter {
             seenIDs.insert($0.id).inserted
         }
         let matches = allItems.filter { item in
-            TerminalWallpaperCatalog.matchesSearch(query: query, item: item)
-                || (executablePath(for: item)?.localizedCaseInsensitiveContains(query) ?? false)
+            TerminalWallpaperPreset.preset(id: item.id) != nil
+                ? TerminalWallpaperCatalog.matchesSearch(query: query, item: item, includeExecutablePaths: false)
+                : item.title.localizedCaseInsensitiveCompare(query) == .orderedSame
         }
-        catalogItems = Array(matches.prefix(catalogPageSize))
-        deferredSearchItems = Array(matches.dropFirst(catalogPageSize))
-        catalogHasMore = !deferredSearchItems.isEmpty
+        catalogItems = Array(matches.prefix(5))
     }
 
     private var initialCatalogItems: [TerminalWallpaperCatalogItem] {
-        demoCatalogItems
-    }
-
-    private static func demoCatalogItems() -> [TerminalWallpaperCatalogItem] {
-        let demoIDs = Set(["btop", "htop"])
-        return TerminalWallpaperCatalog.items.filter { item in
-            demoIDs.contains(item.id) && item.resolvedExecutable() != nil
-        }
+        featuredItems
     }
 
     private func perform(
@@ -423,6 +482,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     ) {
         guard !isBusy else { return }
         isBusy = true
+        statusRefreshGeneration &+= 1
         errorMessage = nil
         Task { @MainActor in
             defer { isBusy = false }
