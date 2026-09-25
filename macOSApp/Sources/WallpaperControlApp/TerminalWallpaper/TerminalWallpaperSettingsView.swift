@@ -1,6 +1,22 @@
 import AuraTerminalWallpaperCore
 import SwiftUI
 
+func terminalWallpaperPopupAppearance(
+    from appearance: AdaptiveGlassAppearance
+) -> AdaptiveGlassAppearance {
+    guard appearance.centerTextTone == .dark else { return appearance }
+
+    var adjusted = appearance
+    // The shared glass surface is already bounded at render time. Keep this
+    // popup's large light-backed surface a little quieter without changing the
+    // adaptive tone or the appearance of any other AuraFlow panel.
+    adjusted.centerProtectionOverlayOpacity = min(
+        appearance.centerProtectionOverlayOpacity,
+        0.22
+    )
+    return adjusted
+}
+
 struct TerminalWallpaperSettingsView: View {
     @ObservedObject var viewModel: TerminalWallpaperViewModel
     var onClose: (() -> Void)? = nil
@@ -120,7 +136,7 @@ struct TerminalWallpaperSettingsView: View {
 
     private var catalogSection: some View {
         TerminalWallpaperSection(title: "Choose what to render", systemImage: "rectangle.grid.2x2") {
-            VStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 AuraCatalogSearchField(
                     text: Binding(
                         get: { viewModel.catalogSearch },
@@ -226,7 +242,21 @@ struct TerminalWallpaperSettingsView: View {
                 )
         }
         .padding(8)
-        .background(AuraGlassInsetCard())
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+            shape
+                .fill(
+                    adaptiveGlassAppearance.centerTextTone == .dark
+                        ? Color.white.opacity(0.12)
+                        : Color.black.opacity(0.24)
+                )
+                .overlay {
+                    shape.stroke(
+                        adaptiveGlassAppearance.centerTextTone.primaryTextColor.opacity(0.10),
+                        lineWidth: 0.8
+                    )
+                }
+        }
     }
 
     private var advancedCommandFields: some View {
@@ -311,7 +341,7 @@ struct TerminalWallpaperSettingsView: View {
                         .monospacedDigit()
                         .frame(width: 48, alignment: .trailing)
                     Button("Reset") { viewModel.textScale = 1.5 }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
                 }
 
                 Picker("Scale", selection: $viewModel.scaleMode) {
@@ -420,6 +450,7 @@ struct TerminalWallpaperOverlay: View {
     @ObservedObject var viewModel: AppViewModel
     @ObservedObject var terminalWallpaperViewModel: TerminalWallpaperViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     var body: some View {
         GeometryReader { proxy in
@@ -437,6 +468,10 @@ struct TerminalWallpaperOverlay: View {
                     viewModel: terminalWallpaperViewModel,
                     onClose: viewModel.closeTerminalWallpaper
                 )
+                    .environment(
+                        \.adaptiveGlassAppearance,
+                        terminalWallpaperPopupAppearance(from: adaptiveGlassAppearance)
+                    )
                     .frame(width: popupWidth, height: popupHeight)
                     .transition(
                         .asymmetric(
