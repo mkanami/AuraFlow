@@ -151,25 +151,25 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     return [NSURL fileURLWithPath:path];
 }
 
-- (BOOL)terminalHeartbeatIsFresh {
+- (BOOL)terminalAgentIsAlive {
     NSDictionary *heartbeat = [self JSONDictionaryAtURL:
         [self terminalRuntimeURLForFile:@"lock-screen-heartbeat.json"]];
     NSNumber *pid = heartbeat[@"pid"];
     NSNumber *updatedAt = heartbeat[@"updatedAt"];
     if (![pid isKindOfClass:NSNumber.class] ||
-        ![updatedAt isKindOfClass:NSNumber.class] || pid.intValue <= 0) {
+        ![updatedAt isKindOfClass:NSNumber.class] || pid.intValue <= 0 ||
+        updatedAt.doubleValue <= 0) {
         return NO;
     }
-    NSTimeInterval age = NSDate.date.timeIntervalSince1970 - updatedAt.doubleValue;
-    if (age < 0 || age > 6) {
-        return NO;
-    }
+    // macOS can App Nap an idle/static TUI helper while the session is locked.
+    // Its last frame is still valid as long as that helper process lives;
+    // requiring a fresh timer tick made the Lock Screen turn blank after 6 s.
     return kill(pid.intValue, 0) == 0 || errno == EPERM;
 }
 
 - (void)syncTerminalFrame {
     NSURL *frameURL = [self terminalRuntimeURLForFile:@"lock-screen-frame.png"];
-    if (![self terminalHeartbeatIsFresh] ||
+    if (![self terminalAgentIsAlive] ||
         ![[NSFileManager defaultManager] isReadableFileAtPath:frameURL.path]) {
         if (self.terminalModeActive) {
             self.terminalModeActive = NO;
