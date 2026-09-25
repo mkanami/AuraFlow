@@ -2,6 +2,11 @@ import Foundation
 import Testing
 @testable import WallpaperControlApp
 
+private struct NoopTerminalWallpaperStore: TerminalScreenSaverStoreCoordinating {
+    func activate() throws {}
+    func restoreIfOwned() throws {}
+}
+
 private final class InMemoryScreenSaverPreferences: ScreenSaverPreferenceManaging {
     var selectedModule: ScreenSaverModulePreference?
     var idleTime: Int
@@ -96,6 +101,33 @@ private struct ScreenSaverSelectionFixture {
 
     #expect(fixture.preferences.selectedModule == fixture.previousModule)
     #expect(fixture.preferences.idleTime == 0)
+    #expect(!FileManager.default.fileExists(atPath: fixture.backupURL.path))
+}
+
+@Test func terminalSaverRestoresOnlySelectionItChanged() throws {
+    let fixture = try ScreenSaverSelectionFixture()
+    defer { fixture.cleanup() }
+
+    try fixture.coordinator.restoreIfOwned()
+    #expect(fixture.preferences.selectedModule == fixture.previousModule)
+    try fixture.coordinator.activate()
+    try fixture.coordinator.restoreIfOwned()
+    #expect(fixture.preferences.selectedModule == fixture.previousModule)
+    #expect(!FileManager.default.fileExists(atPath: fixture.backupURL.path))
+}
+
+@Test func terminalSaverDoesNotReplaceAlreadySelectedAuraFlow() throws {
+    let fixture = try ScreenSaverSelectionFixture()
+    defer { fixture.cleanup() }
+    fixture.preferences.selectedModule = .init(
+        moduleName: "AuraFlowLockScreen",
+        path: fixture.destinationURL.path,
+        type: 0
+    )
+
+    try fixture.coordinator.activate()
+    try fixture.coordinator.restoreIfOwned()
+    #expect(fixture.preferences.selectedModule?.pointsTo(fixture.destinationURL) == true)
     #expect(!FileManager.default.fileExists(atPath: fixture.backupURL.path))
 }
 
@@ -231,4 +263,29 @@ private struct ScreenSaverSelectionFixture {
             atPath: destinationURL.appendingPathComponent("new").path
         )
     )
+}
+
+@Test func terminalSaverInstallsWithoutVideoAndRestoresPreviousSelection() throws {
+    let fixture = try ScreenSaverSelectionFixture()
+    defer { fixture.cleanup() }
+    let template = fixture.root.appendingPathComponent("Template.saver", isDirectory: true)
+    try FileManager.default.createDirectory(at: template, withIntermediateDirectories: true)
+    let installer = LockScreenSaverInstaller(
+        fileManager: .default,
+        templateURL: template,
+        destinationURL: fixture.destinationURL,
+        preferences: fixture.preferences,
+        preferenceBackupURL: fixture.root.appendingPathComponent("video-backup.json"),
+        terminalPreferenceBackupURL: fixture.root.appendingPathComponent("terminal-backup.json"),
+        terminalWallpaperStore: NoopTerminalWallpaperStore(),
+        signatureVerifier: { _ in }
+    )
+
+    try installer.activateForTerminal()
+    #expect(installer.isInstalled)
+    #expect(fixture.preferences.selectedModule?.pointsTo(fixture.destinationURL) == true)
+    #expect(fixture.preferences.idleTime == 0)
+    try installer.restoreAfterTerminal()
+    #expect(fixture.preferences.selectedModule == fixture.previousModule)
+    #expect(installer.isInstalled)
 }

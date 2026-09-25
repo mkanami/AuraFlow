@@ -1,8 +1,11 @@
 #import "AuraFlowLockScreen.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import <ImageIO/ImageIO.h>
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
+#import <signal.h>
+#import <errno.h>
 
 static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
 static NSString * const AuraFlowRuntimeCommandNotification =
@@ -10,6 +13,9 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 
 @interface AuraFlowLockScreen ()
 @property(nonatomic, strong) CALayer *fallbackLayer;
+@property(nonatomic, strong) CALayer *terminalLayer;
+@property(nonatomic, copy, nullable) NSString *terminalFrameRevision;
+@property(nonatomic) BOOL terminalModeActive;
 @property(nonatomic, strong, nullable) AVQueuePlayer *player;
 @property(nonatomic, strong, nullable) AVPlayerLayer *playerLayer;
 @property(nonatomic, strong, nullable) AVPlayerLooper *playerLooper;
@@ -67,6 +73,11 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     self.fallbackLayer.contentsGravity = kCAGravityResizeAspectFill;
     self.fallbackLayer.masksToBounds = YES;
     [self.layer addSublayer:self.fallbackLayer];
+    self.terminalLayer = [CALayer layer];
+    self.terminalLayer.backgroundColor = NSColor.blackColor.CGColor;
+    self.terminalLayer.contentsGravity = kCAGravityResizeAspect;
+    self.terminalLayer.hidden = YES;
+    [self.layer addSublayer:self.terminalLayer];
     [self layoutVideoLayers];
 }
 
@@ -77,7 +88,8 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     // paths or scale mode changed so a pre-rolled first frame is preserved.
     [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
     [self syncRuntimePauseState];
-    if (!self.runtimePaused) {
+    [self syncTerminalFrame];
+    if (!self.runtimePaused && !self.terminalModeActive) {
         [self.player playImmediatelyAtRate:self.playbackRate];
     }
 }
@@ -93,6 +105,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     // AuraWallpaperAgent, so the agent's CALayer pause alone cannot stop this
     // player when macOS enters the secure Lock Screen.
     [self syncRuntimePauseState];
+    [self syncTerminalFrame];
 }
 
 - (void)runtimeCommandDidChange:(NSNotification *)notification {
@@ -102,7 +115,8 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     dispatch_async(dispatch_get_main_queue(), ^{
         [self syncRuntimePauseState];
         [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
-        if (!self.runtimePaused) {
+        [self syncTerminalFrame];
+        if (!self.runtimePaused && !self.terminalModeActive) {
             [self.player playImmediatelyAtRate:self.playbackRate];
         }
     });
@@ -126,7 +140,74 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     [CATransaction setDisableActions:YES];
     self.playerLayer.frame = self.bounds;
     self.fallbackLayer.frame = self.bounds;
+    self.terminalLayer.frame = self.bounds;
     [CATransaction commit];
+}
+
+- (NSURL *)terminalRuntimeURLForFile:(NSString *)name {
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:
+        [@"Library/Application Support/AuraFlow/terminal-wallpaper"
+            stringByAppendingPathComponent:name]];
+    return [NSURL fileURLWithPath:path];
+}
+
+- (BOOL)terminalHeartbeatIsFresh {
+    NSDictionary *heartbeat = [self JSONDictionaryAtURL:
+        [self terminalRuntimeURLForFile:@"lock-screen-heartbeat.json"]];
+    NSNumber *pid = heartbeat[@"pid"];
+    NSNumber *updatedAt = heartbeat[@"updatedAt"];
+    if (![pid isKindOfClass:NSNumber.class] ||
+        ![updatedAt isKindOfClass:NSNumber.class] || pid.intValue <= 0) {
+        return NO;
+    }
+    NSTimeInterval age = NSDate.date.timeIntervalSince1970 - updatedAt.doubleValue;
+    if (age < 0 || age > 6) {
+        return NO;
+    }
+    return kill(pid.intValue, 0) == 0 || errno == EPERM;
+}
+
+- (void)syncTerminalFrame {
+    NSURL *frameURL = [self terminalRuntimeURLForFile:@"lock-screen-frame.png"];
+    if (![self terminalHeartbeatIsFresh] ||
+        ![[NSFileManager defaultManager] isReadableFileAtPath:frameURL.path]) {
+        if (self.terminalModeActive) {
+            self.terminalModeActive = NO;
+            self.terminalLayer.hidden = YES;
+            self.terminalFrameRevision = nil;
+            if (!self.runtimePaused && self.player != nil) {
+                [self.player playImmediatelyAtRate:self.playbackRate];
+            }
+        }
+        return;
+    }
+
+    // PNGs are replaced atomically several times per second. The generic
+    // revision formatter rounds NSDate to whole seconds, which would make
+    // animation appear frozen whenever consecutive frames have equal size.
+    NSDictionary<NSFileAttributeKey, id> *frameAttributes =
+        [[NSFileManager defaultManager] attributesOfItemAtPath:frameURL.path error:nil];
+    NSString *revision = [NSString stringWithFormat:@"%@:%@:%0.9f",
+        frameAttributes[NSFileSystemFileNumber],
+        frameAttributes[NSFileSize],
+        [frameAttributes[NSFileModificationDate] timeIntervalSince1970]];
+    if (![revision isEqualToString:self.terminalFrameRevision]) {
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)frameURL, NULL);
+        if (source != NULL) {
+            CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+            if (image != NULL) {
+                self.terminalLayer.contents = (__bridge id)image;
+                self.terminalFrameRevision = revision;
+                CGImageRelease(image);
+            }
+            CFRelease(source);
+        }
+    }
+    if (self.terminalLayer.contents != nil) {
+        self.terminalModeActive = YES;
+        self.terminalLayer.hidden = NO;
+        [self.player pause];
+    }
 }
 
 - (NSDictionary<NSString *, NSString *> *)resolvedConfiguration {
@@ -231,7 +312,9 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 
     self.runtimePaused = NO;
     [self resumePlayerLayer];
-    [self.player playImmediatelyAtRate:self.playbackRate];
+    if (!self.terminalModeActive) {
+        [self.player playImmediatelyAtRate:self.playbackRate];
+    }
 }
 
 - (void)pausePlayerLayerAtCurrentFrame {
@@ -334,7 +417,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
                                    [self fileRevisionAtPath:configuration[@"video_path"]],
                                    [self fileRevisionAtPath:configuration[@"fallback_path"]]];
     if (!force && [signature isEqualToString:self.configurationSignature]) {
-        if (playbackRateChanged && !self.runtimePaused && self.player != nil) {
+        if (playbackRateChanged && !self.runtimePaused && !self.terminalModeActive && self.player != nil) {
             [self.player playImmediatelyAtRate:self.playbackRate];
         }
         return;

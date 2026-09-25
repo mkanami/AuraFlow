@@ -100,19 +100,6 @@ struct TerminalWallpaperSettingsView: View {
 
             Spacer()
 
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(viewModel.status.running ? .green : .secondary)
-                    .frame(width: 8, height: 8)
-                Text(viewModel.statusTitle)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(
-                        viewModel.status.running
-                            ? Color.green
-                            : adaptiveGlassAppearance.centerTextTone.secondaryTextColor
-                    )
-            }
-
             if let onClose {
                 Button(action: onClose) {
                     Image(systemName: "xmark.circle.fill")

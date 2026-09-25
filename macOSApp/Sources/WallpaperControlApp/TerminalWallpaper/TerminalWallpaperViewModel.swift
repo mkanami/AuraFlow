@@ -1,6 +1,11 @@
 import AuraTerminalWallpaperCore
 import Foundation
 import Combine
+import OSLog
+
+private let terminalWallpaperViewModelLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow", category: "TerminalWallpaperViewModel"
+)
 
 protocol TerminalWallpaperCatalogProviding: Sendable {
     func discover(query: String) -> [TerminalWallpaperCatalogItem]
@@ -96,6 +101,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private var activeInstallationID: UUID?
     private var statusRefreshInFlight = false
     private var statusRefreshGeneration = 0
+    private var agentStartObserver: NSObjectProtocol?
 
     init(
         controller: TerminalWallpaperControlling? = nil,
@@ -158,6 +164,20 @@ final class TerminalWallpaperViewModel: ObservableObject {
             running: false,
             config: config
         )
+        if status.running { reconcileLockScreen() }
+        agentStartObserver = DistributedNotificationCenter.default().addObserver(
+            forName: TerminalWallpaperRuntimeNotifications.agentDidStart,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refresh() }
+        }
+    }
+
+    deinit {
+        if let agentStartObserver {
+            DistributedNotificationCenter.default().removeObserver(agentStartObserver)
+        }
     }
 
     var canStart: Bool {
@@ -292,7 +312,9 @@ final class TerminalWallpaperViewModel: ObservableObject {
                     catch { continuation.resume(throwing: error) }
                 }
             }), generation == statusRefreshGeneration, !isBusy else { return }
+            let wasRunning = status.running
             apply(latest)
+            if latest.running && !wasRunning { reconcileLockScreen() }
         }
     }
 
@@ -507,6 +529,29 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private func apply(_ status: TerminalWallpaperStatus) {
         self.status = status
         launchAtLogin = status.config.behavior.launchAtLogin
+    }
+
+    private func reconcileLockScreen() {
+        let controller = controller
+        Task { [weak self] in
+            do {
+                try await withCheckedThrowingContinuation { continuation in
+                    DispatchQueue.global(qos: .utility).async {
+                        do {
+                            try controller.reconcileLockScreenIfRunning()
+                            continuation.resume()
+                        } catch {
+                            continuation.resume(throwing: error)
+                        }
+                    }
+                }
+            } catch {
+                terminalWallpaperViewModelLogger.error(
+                    "Lock Screen selection failed: \(error.localizedDescription, privacy: .public)"
+                )
+                self?.errorMessage = "Lock Screen: \(error.localizedDescription)"
+            }
+        }
     }
 
     private var normalizedCatalogSearch: String {

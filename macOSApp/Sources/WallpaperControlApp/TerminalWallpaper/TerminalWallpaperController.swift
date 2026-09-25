@@ -3,6 +3,7 @@ import AuraWallpaperCore
 import Foundation
 
 protocol TerminalWallpaperControlling: Sendable {
+    func reconcileLockScreenIfRunning() throws
     func ensureCanStart() throws
     func status() throws -> TerminalWallpaperStatus
     func start(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
@@ -14,13 +15,27 @@ protocol TerminalWallpaperControlling: Sendable {
     func setLaunchAtLogin(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
 }
 
+protocol TerminalLockScreenCoordinating: Sendable {
+    func activate() throws
+    func restore() throws
+}
+
+private final class SystemTerminalLockScreenCoordinator: TerminalLockScreenCoordinating, @unchecked Sendable {
+    private let installer = LockScreenSaverInstaller()
+
+    func activate() throws { try installer.activateForTerminal() }
+    func restore() throws { try installer.restoreAfterTerminal() }
+}
+
 extension TerminalWallpaperControlling {
     func ensureCanStart() throws {}
+    func reconcileLockScreenIfRunning() throws {}
 }
 
 enum TerminalWallpaperControllerError: LocalizedError, Equatable {
     case unavailable(String)
     case videoWallpaperAlreadyRunning
+    case lockScreenVideoAlreadyRunning
     case guiApplicationNotSupported
 
     var errorDescription: String? {
@@ -28,6 +43,8 @@ enum TerminalWallpaperControllerError: LocalizedError, Equatable {
         case .unavailable(let message): return message
         case .videoWallpaperAlreadyRunning:
             return "Stop the video wallpaper before starting Terminal Wallpaper."
+        case .lockScreenVideoAlreadyRunning:
+            return "Stop the Lock Screen-only video before using Terminal Wallpaper on the Lock Screen."
         case .guiApplicationNotSupported:
             return "A GUI .app cannot be rendered as a terminal wallpaper. Choose a command-line executable or TUI app."
         }
@@ -38,17 +55,29 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     private let store: TerminalWallpaperRuntimeStore
     private let helperURL: URL
     private let videoRuntimeIsRunning: () -> Bool
+    private let lockScreenVideoIsActive: () -> Bool
+    private let lockScreenCoordinator: any TerminalLockScreenCoordinating
+    private let lockScreenOperationLock = NSLock()
 
     init(
         store: TerminalWallpaperRuntimeStore = TerminalWallpaperRuntimeStore(),
         helperURL: URL? = nil,
-        videoRuntimeIsRunning: (() -> Bool)? = nil
+        videoRuntimeIsRunning: (() -> Bool)? = nil,
+        lockScreenVideoIsActive: (() -> Bool)? = nil,
+        lockScreenCoordinator: (any TerminalLockScreenCoordinating)? = nil
     ) throws {
         self.store = store
         self.helperURL = try Self.resolveHelperURL(explicitURL: helperURL)
         self.videoRuntimeIsRunning = videoRuntimeIsRunning ?? {
             WallpaperRuntimeStore().status().running
         }
+        self.lockScreenVideoIsActive = lockScreenVideoIsActive ?? {
+            FileManager.default.fileExists(
+                atPath: WallpaperRuntimeStore.defaultAppSupportURL()
+                    .appendingPathComponent("lock_screen_only_source.json").path
+            )
+        }
+        self.lockScreenCoordinator = lockScreenCoordinator ?? SystemTerminalLockScreenCoordinator()
     }
 
     func status() throws -> TerminalWallpaperStatus {
@@ -56,20 +85,31 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     }
 
     func start(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
         let normalized = try validated(config)
         try ensureCanStart()
-        try store.saveConfig(normalized)
-        try applyLaunchAtLogin(normalized)
-        if store.processIsAlive(pid: store.loadPID()) {
-            try send(.restart, config: normalized)
-        } else {
-            try launchAgent()
-            try send(.start, config: normalized)
+        let wasRunning = store.processIsAlive(pid: store.loadPID())
+        try lockScreenCoordinator.activate()
+        do {
+            try store.saveConfig(normalized)
+            try applyLaunchAtLogin(normalized)
+            if wasRunning {
+                try send(.restart, config: normalized)
+            } else {
+                try launchAgent()
+                try send(.start, config: normalized)
+            }
+        } catch {
+            if !wasRunning { try? lockScreenCoordinator.restore() }
+            throw error
         }
         return store.status()
     }
 
     func stop() throws -> TerminalWallpaperStatus {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.stop, config: store.loadConfig())
             guard store.terminateAgent(timeout: 2) else {
@@ -80,10 +120,14 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         }
         store.removeCommand()
         store.removeHealth()
+        store.removeLockScreenPublication()
+        try lockScreenCoordinator.restore()
         return store.status()
     }
 
     func terminate() throws -> TerminalWallpaperStatus {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.terminate, config: store.loadConfig())
             guard store.terminateAgent(timeout: 2) else {
@@ -94,21 +138,13 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         }
         store.removeCommand()
         store.removeHealth()
+        store.removeLockScreenPublication()
+        try lockScreenCoordinator.restore()
         return store.status()
     }
 
     func restart(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
-        let normalized = try validated(config)
-        try ensureCanStart()
-        try store.saveConfig(normalized)
-        try applyLaunchAtLogin(normalized)
-        if store.processIsAlive(pid: store.loadPID()) {
-            try send(.restart, config: normalized)
-        } else {
-            try launchAgent()
-            try send(.start, config: normalized)
-        }
-        return store.status()
+        try start(config: config)
     }
 
     func update(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
@@ -160,6 +196,17 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         if videoRuntimeIsRunning() {
             throw TerminalWallpaperControllerError.videoWallpaperAlreadyRunning
         }
+        if lockScreenVideoIsActive() {
+            throw TerminalWallpaperControllerError.lockScreenVideoAlreadyRunning
+        }
+    }
+
+    func reconcileLockScreenIfRunning() throws {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
+        guard store.processIsAlive(pid: store.loadPID()) else { return }
+        try ensureCanStart()
+        try lockScreenCoordinator.activate()
     }
 
     private func validated(_ config: TerminalWallpaperConfig) throws -> TerminalWallpaperConfig {

@@ -10,6 +10,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         category: "terminal-wallpaper"
     )
     private let store: TerminalWallpaperRuntimeStore
+    private let framePublisher: TerminalLockScreenFramePublisher
     private let metalDevice = MTLCreateSystemDefaultDevice()
     private var config: TerminalWallpaperConfig
     private var parser: VTParser?
@@ -37,12 +38,14 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     init(configurationURL: URL) {
         let supportURL = configurationURL.deletingLastPathComponent()
         store = TerminalWallpaperRuntimeStore(appSupportURL: supportURL)
+        framePublisher = TerminalLockScreenFramePublisher(store: store)
         config = store.loadConfig()
         super.init()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        framePublisher.revoke()
         logger.info("Terminal Wallpaper agent started")
         try? store.savePID()
         installNotifications()
@@ -55,6 +58,11 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             self?.writeHealth()
         }
         writeHealth()
+        DistributedNotificationCenter.default().post(
+            name: TerminalWallpaperRuntimeNotifications.agentDidStart,
+            object: nil,
+            userInfo: nil
+        )
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -66,6 +74,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         session.stop()
+        framePublisher.revoke()
         for window in windows { window.orderOut(nil) }
         windows.removeAll()
         store.removePID()
@@ -143,6 +152,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
         let geometry = logicalGeometry()
         if restartChild {
+            framePublisher.revoke()
             childGeneration &+= 1
             session.stop()
         }
@@ -252,14 +262,29 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildWindows() {
-        for window in windows { window.orderOut(nil) }
+        for window in windows {
+            window.onRasterizedFrame = nil
+            window.orderOut(nil)
+        }
         windows.removeAll()
         guard let metalDevice else {
             lastError = "Metal is unavailable on this Mac."
+            framePublisher.revoke()
             return
         }
         let screens = config.behavior.allDisplays ? NSScreen.screens : Array(NSScreen.screens.prefix(1))
         windows = screens.map { TerminalWallpaperWindow(screen: $0, device: metalDevice) }
+        if windows.isEmpty { framePublisher.revoke() }
+        if let firstWindow = windows.first {
+            let generation = displayGeneration
+            firstWindow.onRasterizedFrame = { [weak self] bytes, width, height in
+                guard let self,
+                      self.displayGeneration == generation,
+                      !self.terminating,
+                      self.frames > self.framesAtChildStart else { return }
+                self.framePublisher.publish(bytes, width: width, height: height)
+            }
+        }
         for window in windows {
             if !window.isVisible { window.orderBack(nil); window.orderFrontRegardless() }
         }
@@ -289,6 +314,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func writeHealth() {
+        framePublisher.refreshHeartbeat()
         let geometry = logicalGeometry()
         let childPID = session.childPID.map(Int.init)
         if let childStartedAt,

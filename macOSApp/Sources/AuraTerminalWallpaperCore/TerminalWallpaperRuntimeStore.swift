@@ -4,6 +4,25 @@ public enum TerminalWallpaperRuntimeNotifications {
     public static let commandDidChange = Notification.Name(
         "com.andrijvergeles.auraflow.terminal-runtime-command-did-change"
     )
+    public static let agentDidStart = Notification.Name(
+        "com.andrijvergeles.auraflow.terminal-agent-did-start"
+    )
+}
+
+/// A short-lived publication lease for the separate screen-saver process.
+/// The saver must not show a stale frame after the terminal agent exits.
+public struct TerminalLockScreenHeartbeat: Codable, Equatable, Sendable {
+    public let pid: Int
+    public let updatedAt: TimeInterval
+
+    public init(pid: Int, updatedAt: TimeInterval = Date().timeIntervalSince1970) {
+        self.pid = pid
+        self.updatedAt = updatedAt
+    }
+
+    public func isFresh(at time: TimeInterval, maxAge: TimeInterval = 6) -> Bool {
+        pid > 0 && time >= updatedAt && time - updatedAt <= maxAge
+    }
 }
 
 public final class TerminalWallpaperRuntimeStore {
@@ -28,14 +47,33 @@ public final class TerminalWallpaperRuntimeStore {
     public var commandURL: URL { appSupportURL.appendingPathComponent("command.json") }
     public var healthURL: URL { appSupportURL.appendingPathComponent("health.json") }
     public var pidURL: URL { appSupportURL.appendingPathComponent("agent.pid") }
+    public var lockScreenFrameURL: URL { appSupportURL.appendingPathComponent("lock-screen-frame.png") }
+    public var lockScreenHeartbeatURL: URL { appSupportURL.appendingPathComponent("lock-screen-heartbeat.json") }
     public var launchAgentFileURL: URL { launchAgentURL }
 
     public func ensureDirectories() throws {
         try FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: appSupportURL.path)
         try FileManager.default.createDirectory(
             at: launchAgentURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+    }
+
+    public func saveLockScreenHeartbeat(_ heartbeat: TerminalLockScreenHeartbeat) throws {
+        try ensureDirectories()
+        let data = try JSONEncoder().encode(heartbeat)
+        try data.write(to: lockScreenHeartbeatURL, options: .atomic)
+    }
+
+    public func loadLockScreenHeartbeat() -> TerminalLockScreenHeartbeat? {
+        guard let data = try? Data(contentsOf: lockScreenHeartbeatURL) else { return nil }
+        return try? JSONDecoder().decode(TerminalLockScreenHeartbeat.self, from: data)
+    }
+
+    public func removeLockScreenPublication() {
+        try? FileManager.default.removeItem(at: lockScreenHeartbeatURL)
+        try? FileManager.default.removeItem(at: lockScreenFrameURL)
     }
 
     public func loadConfig() -> TerminalWallpaperConfig {

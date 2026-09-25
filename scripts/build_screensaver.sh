@@ -168,6 +168,7 @@ compile_architecture() {
     -bundle \
     -framework AppKit \
     -framework AVFoundation \
+    -framework ImageIO \
     -framework QuartzCore \
     -framework ScreenSaver \
     "$SOURCE_DIR/AuraFlowLockScreen.m" \

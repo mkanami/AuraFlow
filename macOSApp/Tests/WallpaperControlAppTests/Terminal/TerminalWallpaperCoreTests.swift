@@ -3,7 +3,41 @@ import AuraTerminalWallpaperCore
 import AppKit
 import CoreText
 import Foundation
+import ImageIO
 import Testing
+
+@Test func terminalLockScreenHeartbeatExpiresAndStaysInTerminalNamespace() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraTerminalLockFrame-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = TerminalWallpaperRuntimeStore(
+        appSupportURL: root.appendingPathComponent("terminal-wallpaper", isDirectory: true),
+        launchAgentURL: root.appendingPathComponent("LaunchAgents/terminal.plist")
+    )
+    let heartbeat = TerminalLockScreenHeartbeat(pid: 42, updatedAt: 100)
+    try store.saveLockScreenHeartbeat(heartbeat)
+    #expect(store.loadLockScreenHeartbeat() == heartbeat)
+    #expect(heartbeat.isFresh(at: 105))
+    #expect(!heartbeat.isFresh(at: 107))
+    #expect(!heartbeat.isFresh(at: 99))
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("config.json").path))
+    store.removeLockScreenPublication()
+    #expect(store.loadLockScreenHeartbeat() == nil)
+}
+
+@Test func terminalLockScreenFrameEncodesRasterizedPixels() {
+    let pixels = Data([
+        0, 0, 255, 255, 0, 255, 0, 255,
+        255, 0, 0, 255, 255, 255, 255, 255,
+    ])
+    let png = TerminalLockScreenFramePublisher.encodePNG(pixels, width: 2, height: 2)
+    #expect(png != nil)
+    guard let png,
+          let source = CGImageSourceCreateWithData(png as CFData, nil),
+          let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return }
+    #expect(image.width == 2)
+    #expect(image.height == 2)
+}
 
 @Test func terminalPTYSessionSpawnsDirectChildAndResizes() throws {
     let session = TerminalPTYSession()

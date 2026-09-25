@@ -19,6 +19,8 @@ final class TerminalMetalView: MTKView {
     private var rasterEpoch: UInt64 = 0
     private var requestedSize: TerminalPixelSize?
 
+    var onRasterizedFrame: ((Data, Int, Int) -> Void)?
+
     var displayedRevision: UInt64? { rasterizedRevision }
 
     init(frame: CGRect, logicalSize: CGSize, device: MTLDevice) {
@@ -137,6 +139,7 @@ final class TerminalMetalView: MTKView {
                 if self.rasterEpoch == epoch {
                     self.upload(bytes, width: width, height: height)
                     self.rasterizedRevision = snapshot.revision
+                    self.onRasterizedFrame?(bytes, width, height)
                     self.needsDisplay = true
                 }
                 if self.snapshot?.revision != self.rasterizedRevision {

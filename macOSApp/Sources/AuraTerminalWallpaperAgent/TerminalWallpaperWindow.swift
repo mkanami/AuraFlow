@@ -6,6 +6,11 @@ import MetalKit
 final class TerminalWallpaperWindow: NSWindow {
     private let terminalView: TerminalMetalView
 
+    var onRasterizedFrame: ((Data, Int, Int) -> Void)? {
+        get { terminalView.onRasterizedFrame }
+        set { terminalView.onRasterizedFrame = newValue }
+    }
+
     init(screen: NSScreen, device: MTLDevice) {
         terminalView = TerminalMetalView(
             frame: NSRect(origin: .zero, size: screen.frame.size),

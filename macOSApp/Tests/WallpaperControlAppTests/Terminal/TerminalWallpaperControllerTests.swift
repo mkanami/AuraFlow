@@ -3,6 +3,13 @@ import Foundation
 import Testing
 @testable import WallpaperControlApp
 
+private final class MockTerminalLockScreenCoordinator: TerminalLockScreenCoordinating, @unchecked Sendable {
+    private(set) var activations = 0
+    private(set) var restorations = 0
+    func activate() throws { activations += 1 }
+    func restore() throws { restorations += 1 }
+}
+
 private struct TerminalControllerFixture {
     let root: URL
     let store: TerminalWallpaperRuntimeStore
@@ -42,7 +49,9 @@ private struct TerminalControllerFixture {
     let controller = try NativeTerminalWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
-        videoRuntimeIsRunning: { false }
+        videoRuntimeIsRunning: { false },
+        lockScreenVideoIsActive: { false },
+        lockScreenCoordinator: MockTerminalLockScreenCoordinator()
     )
     let config = TerminalWallpaperConfig(
         command: TerminalCommandConfiguration(executable: "/bin/echo", arguments: ["hello"])
@@ -66,7 +75,9 @@ private struct TerminalControllerFixture {
     let controller = try NativeTerminalWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
-        videoRuntimeIsRunning: { false }
+        videoRuntimeIsRunning: { false },
+        lockScreenVideoIsActive: { false },
+        lockScreenCoordinator: MockTerminalLockScreenCoordinator()
     )
     let config = TerminalWallpaperConfig(
         command: TerminalCommandConfiguration(executable: "/bin/echo", arguments: ["hello"])
@@ -95,7 +106,9 @@ private struct TerminalControllerFixture {
     let controller = try NativeTerminalWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
-        videoRuntimeIsRunning: { false }
+        videoRuntimeIsRunning: { false },
+        lockScreenVideoIsActive: { false },
+        lockScreenCoordinator: MockTerminalLockScreenCoordinator()
     )
     var config = TerminalWallpaperConfig(
         command: TerminalCommandConfiguration(executable: "/bin/echo")
@@ -114,7 +127,9 @@ private struct TerminalControllerFixture {
     let controller = try NativeTerminalWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
-        videoRuntimeIsRunning: { true }
+        videoRuntimeIsRunning: { true },
+        lockScreenVideoIsActive: { false },
+        lockScreenCoordinator: MockTerminalLockScreenCoordinator()
     )
 
     #expect(throws: TerminalWallpaperControllerError.videoWallpaperAlreadyRunning) {
@@ -133,7 +148,9 @@ private struct TerminalControllerFixture {
     let controller = try NativeTerminalWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
-        videoRuntimeIsRunning: { false }
+        videoRuntimeIsRunning: { false },
+        lockScreenVideoIsActive: { false },
+        lockScreenCoordinator: MockTerminalLockScreenCoordinator()
     )
 
     #expect(throws: TerminalWallpaperControllerError.guiApplicationNotSupported) {
@@ -143,4 +160,50 @@ private struct TerminalControllerFixture {
             )
         )
     }
+}
+
+@Test func terminalControllerActivatesAndRestoresLockScreenSaver() throws {
+    let fixture = try TerminalControllerFixture("lock-saver-lifecycle")
+    defer { fixture.cleanup() }
+    let lockScreen = MockTerminalLockScreenCoordinator()
+    let controller = try NativeTerminalWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false },
+        lockScreenVideoIsActive: { false },
+        lockScreenCoordinator: lockScreen
+    )
+    let config = TerminalWallpaperConfig(command: .init(executable: "/bin/echo"))
+
+    try controller.reconcileLockScreenIfRunning()
+    #expect(lockScreen.activations == 0)
+    _ = try controller.start(config: config)
+    #expect(lockScreen.activations == 1)
+    try controller.reconcileLockScreenIfRunning()
+    #expect(lockScreen.activations == 2)
+    try fixture.store.saveLockScreenHeartbeat(.init(pid: Int(getpid())))
+    _ = try controller.restart(config: config)
+    #expect(lockScreen.activations == 3)
+    _ = try controller.stop()
+    #expect(lockScreen.restorations == 1)
+    #expect(fixture.store.loadLockScreenHeartbeat() == nil)
+}
+
+@Test func terminalControllerRefusesActiveLockScreenOnlyVideoBeforeSelectingSaver() throws {
+    let fixture = try TerminalControllerFixture("lock-video-conflict")
+    defer { fixture.cleanup() }
+    let lockScreen = MockTerminalLockScreenCoordinator()
+    let controller = try NativeTerminalWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false },
+        lockScreenVideoIsActive: { true },
+        lockScreenCoordinator: lockScreen
+    )
+
+    #expect(throws: TerminalWallpaperControllerError.lockScreenVideoAlreadyRunning) {
+        _ = try controller.start(config: .init(command: .init(executable: "/bin/echo")))
+    }
+    #expect(lockScreen.activations == 0)
+    #expect(fixture.store.loadCommand() == nil)
 }
