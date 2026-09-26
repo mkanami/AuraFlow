@@ -176,11 +176,11 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
         try stopWallpaperAgent()
         do {
             try operation()
-            try startWallpaperAgent()
         } catch {
             try? startWallpaperAgent()
             throw error
         }
+        try startWallpaperAgent()
     }
 
     private func makeSaverMode() throws -> [String: Any] {
@@ -305,42 +305,110 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
     }
 
     private static func restartWallpaperAgent(stopOnly: Bool) throws {
-        let oldPIDs = stopOnly ? wallpaperAgentPIDs() : []
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: stopOnly ? "/usr/bin/killall" : "/usr/bin/open")
-        process.arguments = stopOnly
-            ? [WallpaperPlatformConstants.wallpaperAgentProcessName]
-            : ["-gja", WallpaperPlatformConstants.wallpaperAgentApplicationPath]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-        try process.run()
-        process.waitUntilExit()
-        if stopOnly {
-            let deadline = Date().addingTimeInterval(2)
-            while oldPIDs.contains(where: { kill($0, 0) == 0 }) {
-                guard Date() < deadline else { throw StoreError.wallpaperAgentUnavailable }
-                Thread.sleep(forTimeInterval: 0.05)
+        let oldPIDs = wallpaperAgentPIDs()
+        let oldSaverPIDs = legacyScreenSaverPIDs()
+        // WallpaperAgent can be relaunched by macOS while Index.plist is being
+        // updated. Stop that generation too before asking it to read the new
+        // Screen Saver route.
+        if stopOnly || !oldPIDs.isEmpty {
+            runProcess(
+                "/usr/bin/killall",
+                [WallpaperPlatformConstants.wallpaperAgentProcessName]
+            )
+            guard waitForProcessesToExit(oldPIDs, timeout: 2) else {
+                throw StoreError.wallpaperAgentUnavailable
             }
         }
-        if !stopOnly && process.terminationStatus != 0 {
+        // This route is hosted by the legacy Screen Saver extension. A live
+        // extension can retain the previous module even after WallpaperAgent
+        // has reread its store, so drain it before the next owner starts.
+        if !oldSaverPIDs.isEmpty {
+            runProcess("/usr/bin/pkill", ["-x", "legacyScreenSaver"])
+            guard waitForProcessesToExit(oldSaverPIDs, timeout: 2) else {
+                throw StoreError.wallpaperAgentUnavailable
+            }
+        }
+        guard !stopOnly else { return }
+
+        // `open` hands the request to Launch Services. Its exit code does not
+        // tell us whether WallpaperAgent actually started; the new PID does.
+        runProcess(
+            "/usr/bin/open",
+            ["-gja", WallpaperPlatformConstants.wallpaperAgentApplicationPath]
+        )
+        guard waitForFreshWallpaperAgent(excluding: oldPIDs) else {
             throw StoreError.wallpaperAgentUnavailable
         }
     }
 
-    private static func wallpaperAgentPIDs() -> [pid_t] {
+    private static func runProcess(_ executable: String, _ arguments: [String]) {
         let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        process.arguments = [
-            "-u", String(getuid()), "-x", WallpaperPlatformConstants.wallpaperAgentProcessName,
-        ]
-        process.standardOutput = output
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = Pipe()
         process.standardError = Pipe()
-        guard (try? process.run()) != nil else { return [] }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return String(data: data, encoding: .utf8)?
-            .split(whereSeparator: \.isNewline)
-            .compactMap { pid_t($0) } ?? []
+        guard (try? process.run()) != nil else { return }
+        let deadline = Date().addingTimeInterval(1)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning { process.terminate() }
+    }
+
+    private static func waitForProcessesToExit(_ processIDs: Set<pid_t>, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while processIDs.contains(where: { kill($0, 0) == 0 || errno == EPERM }) {
+            guard Date() < deadline else { return false }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return true
+    }
+
+    static func waitForFreshWallpaperAgent(
+        excluding oldPIDs: Set<pid_t>,
+        timeout: TimeInterval = 5,
+        processIDs: () -> Set<pid_t> = wallpaperAgentPIDs,
+        sleep: (TimeInterval) -> Void = Thread.sleep
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            let currentPIDs = processIDs()
+            if !currentPIDs.isEmpty && currentPIDs.isDisjoint(with: oldPIDs) {
+                return true
+            }
+            sleep(0.1)
+        } while Date() < deadline
+        return false
+    }
+
+    private static func wallpaperAgentPIDs() -> Set<pid_t> {
+        processIdentifiers(named: WallpaperPlatformConstants.wallpaperAgentProcessName)
+    }
+
+    private static func legacyScreenSaverPIDs() -> Set<pid_t> {
+        processIdentifiers(named: "legacyScreenSaver")
+    }
+
+    private static func processIdentifiers(named name: String) -> Set<pid_t> {
+        // Match the working Lock Screen re-arm: enumerate process paths
+        // directly instead of launching pgrep during a system handoff.
+        let bufferSize = proc_listallpids(nil, 0)
+        guard bufferSize > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(bufferSize) / MemoryLayout<pid_t>.stride)
+        let bytesUsed = proc_listallpids(&pids, bufferSize)
+        guard bytesUsed > 0 else { return [] }
+
+        var matches = Set<pid_t>()
+        let count = min(Int(bytesUsed) / MemoryLayout<pid_t>.stride, pids.count)
+        for pid in pids.prefix(count) where pid > 0 {
+            var path = [Int8](repeating: 0, count: 4_096)
+            guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { continue }
+            let bytes = path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+            if URL(fileURLWithPath: String(decoding: bytes, as: UTF8.self)).lastPathComponent
+                == name {
+                matches.insert(pid)
+            }
+        }
+        return matches
     }
 }

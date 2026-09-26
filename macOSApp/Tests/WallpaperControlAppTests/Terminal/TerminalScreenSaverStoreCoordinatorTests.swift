@@ -200,3 +200,40 @@ private final class TerminalSaverStoreFixture {
     let restored = try fixture.load()["SystemDefault"] as! [String: Any]
     #expect(fixture.provider(restored["Idle"]) == "new-choice")
 }
+
+@Test func terminalSaverWaitsForNewWallpaperAgentInsteadOfOpenExit() {
+    var samples: [Set<Int32>] = [[41], [41], [72]]
+    var polls = 0
+    let ready = TerminalScreenSaverStoreCoordinator.waitForFreshWallpaperAgent(
+        excluding: [41],
+        processIDs: {
+            polls += 1
+            return samples.removeFirst()
+        },
+        sleep: { _ in }
+    )
+    #expect(ready)
+    #expect(polls == 3)
+}
+
+@Test func terminalSaverDoesNotLaunchWallpaperAgentTwiceAfterLaunchFailure() throws {
+    let fixture = try TerminalSaverStoreFixture()
+    defer { fixture.cleanup() }
+    let desktop = try fixture.mode(provider: WallpaperPlatformConstants.imageProviderID)
+    try fixture.save(["SystemDefault": ["Type": "individual", "Desktop": desktop]])
+    var starts = 0
+    let coordinator = TerminalScreenSaverStoreCoordinator(
+        storeURL: fixture.storeURL,
+        journalURL: fixture.journalURL,
+        saverURL: fixture.saverURL,
+        stopWallpaperAgent: {},
+        startWallpaperAgent: {
+            starts += 1
+            throw TerminalScreenSaverStoreCoordinator.StoreError.wallpaperAgentUnavailable
+        }
+    )
+    #expect(throws: TerminalScreenSaverStoreCoordinator.StoreError.self) {
+        try coordinator.activate()
+    }
+    #expect(starts == 1)
+}
