@@ -152,7 +152,9 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
         let geometry = logicalGeometry()
         if restartChild {
-            framePublisher.revoke()
+            // Keep the last published image while replacing the child. The
+            // Lock Screen runs in a separate process and otherwise briefly
+            // loses its only content source before the new PTY paints a frame.
             childGeneration &+= 1
             session.stop()
         }

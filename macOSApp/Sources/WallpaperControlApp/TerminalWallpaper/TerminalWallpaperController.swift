@@ -36,6 +36,7 @@ enum TerminalWallpaperControllerError: LocalizedError, Equatable {
     case unavailable(String)
     case videoWallpaperAlreadyRunning
     case lockScreenVideoAlreadyRunning
+    case lockScreenFrameNotReady
     case guiApplicationNotSupported
 
     var errorDescription: String? {
@@ -45,6 +46,8 @@ enum TerminalWallpaperControllerError: LocalizedError, Equatable {
             return "Stop the video wallpaper before starting Terminal Wallpaper."
         case .lockScreenVideoAlreadyRunning:
             return "Stop the Lock Screen-only video before using Terminal Wallpaper on the Lock Screen."
+        case .lockScreenFrameNotReady:
+            return "Terminal Wallpaper is running on the desktop, but has not published a fresh Lock Screen frame yet. Check Runtime health and try Restart."
         case .guiApplicationNotSupported:
             return "A GUI .app cannot be rendered as a terminal wallpaper. Choose a command-line executable or TUI app."
         }
@@ -57,6 +60,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     private let videoRuntimeIsRunning: () -> Bool
     private let lockScreenVideoIsActive: () -> Bool
     private let lockScreenCoordinator: any TerminalLockScreenCoordinating
+    private let lockScreenFrameReadinessWaiter: (TimeInterval, String?) -> Bool
     private let lockScreenOperationLock = NSLock()
 
     init(
@@ -64,7 +68,8 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         helperURL: URL? = nil,
         videoRuntimeIsRunning: (() -> Bool)? = nil,
         lockScreenVideoIsActive: (() -> Bool)? = nil,
-        lockScreenCoordinator: (any TerminalLockScreenCoordinating)? = nil
+        lockScreenCoordinator: (any TerminalLockScreenCoordinating)? = nil,
+        lockScreenFrameReadinessWaiter: ((TimeInterval, String?) -> Bool)? = nil
     ) throws {
         self.store = store
         self.helperURL = try Self.resolveHelperURL(explicitURL: helperURL)
@@ -78,6 +83,14 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
             )
         }
         self.lockScreenCoordinator = lockScreenCoordinator ?? SystemTerminalLockScreenCoordinator()
+        self.lockScreenFrameReadinessWaiter = lockScreenFrameReadinessWaiter ?? {
+            [store] startedAt, previousRevision in
+            Self.waitForLockScreenFrame(
+                in: store,
+                startedAt: startedAt,
+                previousRevision: previousRevision
+            )
+        }
     }
 
     func status() throws -> TerminalWallpaperStatus {
@@ -90,7 +103,8 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         let normalized = try validated(config)
         try ensureCanStart()
         let wasRunning = store.processIsAlive(pid: store.loadPID())
-        try lockScreenCoordinator.activate()
+        let startedAt = Date().timeIntervalSince1970
+        let previousFrameRevision = Self.lockScreenFrameRevision(in: store)
         do {
             try store.saveConfig(normalized)
             try applyLaunchAtLogin(normalized)
@@ -100,6 +114,13 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
                 try launchAgent()
                 try send(.start, config: normalized)
             }
+            guard lockScreenFrameReadinessWaiter(startedAt, previousFrameRevision) else {
+                throw TerminalWallpaperControllerError.lockScreenFrameNotReady
+            }
+            // Match the ordinary wallpaper Start sequence: first make the new
+            // source available, then re-arm WallpaperAgent so its secure
+            // Lock Screen surface binds to that source instead of a stale one.
+            try lockScreenCoordinator.activate()
         } catch {
             if !wasRunning { try? lockScreenCoordinator.restore() }
             throw error
@@ -248,6 +269,42 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
                 "Could not launch Terminal Wallpaper agent: \(error.localizedDescription)"
             )
         }
+    }
+
+    private static func waitForLockScreenFrame(
+        in store: TerminalWallpaperRuntimeStore,
+        startedAt: TimeInterval,
+        previousRevision: String?
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(3.5)
+        repeat {
+            let now = Date().timeIntervalSince1970
+            let expectedPID = store.loadPID()
+            let heartbeat = store.loadLockScreenHeartbeat()
+            let revision = lockScreenFrameRevision(in: store)
+            if let expectedPID,
+               store.processIsAlive(pid: expectedPID),
+               heartbeat?.pid == expectedPID,
+               let heartbeat,
+               heartbeat.updatedAt > startedAt,
+               heartbeat.isFresh(at: now),
+               revision != nil,
+               revision != previousRevision {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        } while Date() < deadline
+        return false
+    }
+
+    private static func lockScreenFrameRevision(in store: TerminalWallpaperRuntimeStore) -> String? {
+        guard let attributes = try? FileManager.default.attributesOfItem(
+            atPath: store.lockScreenFrameURL.path
+        ),
+              let modifiedAt = attributes[.modificationDate] as? Date else { return nil }
+        let fileNumber = String(describing: attributes[.systemFileNumber] ?? "?")
+        let size = String(describing: attributes[.size] ?? "?")
+        return "\(fileNumber):\(size):\(modifiedAt.timeIntervalSince1970)"
     }
 
     private static func resolveHelperURL(explicitURL: URL?) throws -> URL {

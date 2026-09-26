@@ -51,7 +51,8 @@ private struct TerminalControllerFixture {
         helperURL: fixture.helperURL,
         videoRuntimeIsRunning: { false },
         lockScreenVideoIsActive: { false },
-        lockScreenCoordinator: MockTerminalLockScreenCoordinator()
+        lockScreenCoordinator: MockTerminalLockScreenCoordinator(),
+        lockScreenFrameReadinessWaiter: { _, _ in true }
     )
     let config = TerminalWallpaperConfig(
         command: TerminalCommandConfiguration(executable: "/bin/echo", arguments: ["hello"])
@@ -77,7 +78,8 @@ private struct TerminalControllerFixture {
         helperURL: fixture.helperURL,
         videoRuntimeIsRunning: { false },
         lockScreenVideoIsActive: { false },
-        lockScreenCoordinator: MockTerminalLockScreenCoordinator()
+        lockScreenCoordinator: MockTerminalLockScreenCoordinator(),
+        lockScreenFrameReadinessWaiter: { _, _ in true }
     )
     let config = TerminalWallpaperConfig(
         command: TerminalCommandConfiguration(executable: "/bin/echo", arguments: ["hello"])
@@ -108,7 +110,8 @@ private struct TerminalControllerFixture {
         helperURL: fixture.helperURL,
         videoRuntimeIsRunning: { false },
         lockScreenVideoIsActive: { false },
-        lockScreenCoordinator: MockTerminalLockScreenCoordinator()
+        lockScreenCoordinator: MockTerminalLockScreenCoordinator(),
+        lockScreenFrameReadinessWaiter: { _, _ in true }
     )
     var config = TerminalWallpaperConfig(
         command: TerminalCommandConfiguration(executable: "/bin/echo")
@@ -171,7 +174,8 @@ private struct TerminalControllerFixture {
         helperURL: fixture.helperURL,
         videoRuntimeIsRunning: { false },
         lockScreenVideoIsActive: { false },
-        lockScreenCoordinator: lockScreen
+        lockScreenCoordinator: lockScreen,
+        lockScreenFrameReadinessWaiter: { _, _ in true }
     )
     let config = TerminalWallpaperConfig(command: .init(executable: "/bin/echo"))
 
@@ -187,6 +191,27 @@ private struct TerminalControllerFixture {
     _ = try controller.stop()
     #expect(lockScreen.restorations == 1)
     #expect(fixture.store.loadLockScreenHeartbeat() == nil)
+}
+
+@Test func terminalControllerDoesNotSelectLockScreenBeforeFreshFrameIsAvailable() throws {
+    let fixture = try TerminalControllerFixture("lock-frame-not-ready")
+    defer { fixture.cleanup() }
+    let lockScreen = MockTerminalLockScreenCoordinator()
+    let controller = try NativeTerminalWallpaperController(
+        store: fixture.store,
+        helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false },
+        lockScreenVideoIsActive: { false },
+        lockScreenCoordinator: lockScreen,
+        lockScreenFrameReadinessWaiter: { _, _ in false }
+    )
+
+    #expect(throws: TerminalWallpaperControllerError.lockScreenFrameNotReady) {
+        _ = try controller.start(config: .init(command: .init(executable: "/bin/echo")))
+    }
+    #expect(lockScreen.activations == 0)
+    #expect(fixture.store.loadCommand()?.action == .start)
+    #expect(fixture.store.processIsAlive(pid: fixture.store.loadPID()))
 }
 
 @Test func terminalControllerRefusesActiveLockScreenOnlyVideoBeforeSelectingSaver() throws {

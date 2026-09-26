@@ -68,14 +68,20 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
 
     func activate() throws {
         let existingJournal = try loadJournal()
-        guard try activationPlan(from: readStore(), journal: existingJournal) != nil else { return }
+        // Validate the store before interrupting WallpaperAgent, but do not
+        // return early when our saver is already selected. Like the regular
+        // wallpaper Start path, every real activation must re-arm the system
+        // agent because it can keep a stale secure-surface provider in memory.
+        _ = try activationPlan(from: readStore(), journal: existingJournal)
         try withStoppedWallpaperAgent {
             // WallpaperAgent may rewrite Index.plist while exiting. Build the
             // new Idle choice from the *post-exit* store, not the stale copy.
             let original = try readStore()
-            guard let (updated, journal) = try activationPlan(
-                from: original, journal: existingJournal
-            ) else { return }
+            guard let (updated, journal) = try activationPlan(from: original, journal: existingJournal) else {
+                // The desired route is already present. The deliberate stop /
+                // start above is still required to refresh WallpaperAgent.
+                return
+            }
             try saveJournal(journal)
             do {
                 guard try readStore() == original else { throw StoreError.changedDuringUpdate }

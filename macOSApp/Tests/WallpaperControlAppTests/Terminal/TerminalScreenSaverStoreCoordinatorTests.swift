@@ -89,8 +89,8 @@ private final class TerminalSaverStoreFixture {
     ) as! [String: Any]
     #expect((config["module"] as? [String: String])?["relative"]
         == URL(fileURLWithPath: fixture.saverURL.path, isDirectory: false).absoluteString)
-    #expect(fixture.stopCount == 1)
-    #expect(fixture.startCount == 1)
+    #expect(fixture.stopCount == 2)
+    #expect(fixture.startCount == 2)
     #expect(FileManager.default.fileExists(atPath: fixture.journalURL.path))
 
     try coordinator.restoreIfOwned()
@@ -101,9 +101,31 @@ private final class TerminalSaverStoreFixture {
     #expect(fixture.provider(restoredAll["Linked"]) == WallpaperPlatformConstants.imageProviderID)
     #expect(restoredAll["Idle"] == nil)
     #expect(fixture.provider(restoredSystem["Idle"]) == WallpaperPlatformConstants.aerialProviderID)
-    #expect(fixture.stopCount == 2)
-    #expect(fixture.startCount == 2)
+    #expect(fixture.stopCount == 3)
+    #expect(fixture.startCount == 3)
     #expect(!FileManager.default.fileExists(atPath: fixture.journalURL.path))
+}
+
+@Test func terminalSaverRearmsWallpaperAgentWhenItsRouteIsAlreadySelected() throws {
+    let fixture = try TerminalSaverStoreFixture()
+    defer { fixture.cleanup() }
+    let desktop = try fixture.mode(provider: WallpaperPlatformConstants.imageProviderID)
+    let saverURL = URL(fileURLWithPath: fixture.saverURL.standardizedFileURL.path, isDirectory: false)
+    let selectedSaver = try fixture.mode(
+        provider: WallpaperPlatformConstants.screenSaverProviderID,
+        config: ["module": ["relative": saverURL.absoluteString]]
+    )
+    try fixture.save(["SystemDefault": [
+        "Type": "individual", "Desktop": desktop, "Idle": selectedSaver,
+    ]])
+
+    try fixture.coordinator().activate()
+
+    #expect(fixture.stopCount == 1)
+    #expect(fixture.startCount == 1)
+    #expect(!FileManager.default.fileExists(atPath: fixture.journalURL.path))
+    let system = try fixture.load()["SystemDefault"] as! [String: Any]
+    #expect(fixture.provider(system["Idle"]) == WallpaperPlatformConstants.screenSaverProviderID)
 }
 
 @Test func terminalSaverSelectsEveryDisplayAndRestoresEachPreviousIdle() throws {
