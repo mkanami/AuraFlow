@@ -20,7 +20,7 @@ final class TerminalLockScreenFramePublisher {
 
     func publish(_ bytes: Data, width: Int, height: Int) {
         let now = Date().timeIntervalSince1970
-        guard !writing, width > 0, height > 0, now - lastPublishedAt >= 1.0 / 20.0 else { return }
+        guard !writing, width > 0, height > 0, now - lastPublishedAt >= 1.0 / 30.0 else { return }
         writing = true
         let currentGeneration = generation
         let store = store

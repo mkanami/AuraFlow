@@ -27,10 +27,12 @@ final class TerminalLockScreenPresentation {
     private let logger = Logger(subsystem: "com.andrijvergeles.auraflow", category: "terminal-lock-screen")
     private var timer: Timer?
     private var transition = TerminalLockTransition()
+    private var notifiedLockState: Bool?
     private var generation: UInt64 = 0
     private var task: Task<Void, Never>?
     private var activity: NSObjectProtocol?
     private var observer: NSObjectProtocol?
+    private var workspaceObserver: NSObjectProtocol?
     #if canImport(Wallpaper)
     // Erased storage avoids resolving private Swift type metadata at helper
     // startup on older macOS. The frameworks are weak-linked and gated below.
@@ -50,6 +52,25 @@ final class TerminalLockScreenPresentation {
         ) { [weak self] _ in
             Task { @MainActor in self?.prepare(reloadRoute: true) }
         }
+        let center = DistributedNotificationCenter.default()
+        for (name, locked) in [
+            (Notification.Name("com.apple.screenIsLocked"), true),
+            (Notification.Name("com.apple.screenIsUnlocked"), false),
+            (Notification.Name("com.apple.shieldWindowRaised"), true),
+            (Notification.Name("com.apple.sessionagent.shieldWindowRaised"), true),
+        ] {
+            let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.handleLockNotification(locked) }
+            }
+            sessionObservers.append(token)
+        }
+        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.sessionDidBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handleLockNotification(false) }
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.pollSession() }
         }
@@ -61,6 +82,10 @@ final class TerminalLockScreenPresentation {
         timer = nil
         if let observer { DistributedNotificationCenter.default().removeObserver(observer) }
         observer = nil
+        for token in sessionObservers { DistributedNotificationCenter.default().removeObserver(token) }
+        sessionObservers.removeAll()
+        if let workspaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver) }
+        workspaceObserver = nil
         generation &+= 1
         task?.cancel()
         task = nil
@@ -76,9 +101,21 @@ final class TerminalLockScreenPresentation {
     private func pollSession() {
         let session = CGSessionCopyCurrentDictionary() as? [String: Any]
         let locked = session.map { ($0["CGSSessionScreenIsLocked"] as? Bool) ?? false }
-        guard let changed = transition.update(locked) else { return }
+        let resolved = notifiedLockState ?? locked
+        guard let changed = transition.update(resolved) else { return }
         logger.notice("Terminal Lock Screen session locked=\(changed)")
+        if changed { startSaver() }
         prepare()
+    }
+
+    private var sessionObservers: [NSObjectProtocol] = []
+
+    private func handleLockNotification(_ locked: Bool) {
+        notifiedLockState = locked
+        guard let changed = transition.update(locked) else { return }
+        logger.notice("Terminal Lock Screen notification locked=\(changed)")
+        if changed { startSaver() }
+        prepare(reloadRoute: changed)
     }
 
     private func prepare(reloadRoute: Bool = false) {
@@ -86,7 +123,6 @@ final class TerminalLockScreenPresentation {
         let requestedGeneration = generation
         let locked = transition.locked
         task?.cancel()
-        if locked { startSaver() }
         task = Task { [weak self] in
             guard let self else { return }
             #if canImport(Wallpaper)
