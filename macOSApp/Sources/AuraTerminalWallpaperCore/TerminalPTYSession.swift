@@ -7,6 +7,7 @@ public final class TerminalPTYSession {
 
     public private(set) var childPID: pid_t?
     public private(set) var masterFileDescriptor: Int32?
+    public private(set) var isPaused = false
 
     private let queue = DispatchQueue(label: "com.andrijvergeles.auraflow.terminal-pty", qos: .userInitiated)
     private var readSource: DispatchSourceRead?
@@ -64,6 +65,7 @@ public final class TerminalPTYSession {
         }
 
         childPID = child
+        isPaused = false
         masterFileDescriptor = master
         exitHandler = onExit
         didFinish = false
@@ -85,10 +87,24 @@ public final class TerminalPTYSession {
         }
     }
 
+    public func setPaused(_ paused: Bool) throws {
+        guard let childPID else { throw TerminalPTYError.notRunning }
+        guard paused != isPaused else { return }
+        let signalNumber = paused ? SIGSTOP : SIGCONT
+        let result = aura_terminal_pty_terminate(childPID, signalNumber)
+        guard result == 0 || errno == ESRCH else {
+            throw TerminalPTYError.pauseFailed
+        }
+        isPaused = paused
+    }
+
     public func stop() {
         readSource?.cancel()
         readSource = nil
         if let childPID {
+            if isPaused {
+                _ = aura_terminal_pty_terminate(childPID, SIGCONT)
+            }
             _ = aura_terminal_pty_terminate(childPID, SIGTERM)
             var status: Int32 = 0
             var reaped = false
@@ -109,6 +125,7 @@ public final class TerminalPTYSession {
         }
         self.masterFileDescriptor = nil
         self.childPID = nil
+        isPaused = false
         exitHandler = nil
         didFinish = true
     }
@@ -157,6 +174,7 @@ public final class TerminalPTYSession {
         }
         self.masterFileDescriptor = nil
         self.childPID = nil
+        isPaused = false
         callback?(status)
     }
 
@@ -209,6 +227,7 @@ public enum TerminalPTYError: LocalizedError, Equatable {
     case guiApplicationNotSupported
     case notRunning
     case resizeFailed
+    case pauseFailed
 
     public var errorDescription: String? {
         switch self {
@@ -224,6 +243,8 @@ public enum TerminalPTYError: LocalizedError, Equatable {
             return "Terminal process is not running."
         case .resizeFailed:
             return "Could not resize the terminal PTY."
+        case .pauseFailed:
+            return "Could not pause or resume the terminal process."
         }
     }
 }

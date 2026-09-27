@@ -17,7 +17,10 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var parser: VTParser?
     private var parserSize: (columns: Int, rows: Int)?
     private let parserQueue = DispatchQueue(label: "com.andrijvergeles.auraflow.terminal-parser", qos: .userInitiated)
+    private let parserDirtyLock = NSLock()
+    private var parserHasPendingData = false
     private var parserGeneration: UInt64 = 0 // Accessed only on parserQueue.
+    private var publishedParserRevision: UInt64? // Accessed only on parserQueue.
     private var childGeneration: UInt64 = 0
     private var displayGeneration: UInt64 = 0
     private var snapshotRequestInFlight = false
@@ -27,6 +30,9 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var commandTimer: Timer?
     private var healthTimer: Timer?
     private var frameTimer: Timer?
+    private var fullscreenTimer: Timer?
+    private var fullscreenPausePolicy = TerminalFullscreenPausePolicy()
+    private var lockScreenIsLocked = false
     private var lastCommandID: String?
     private var frames = 0
     private var renderedFrames = 0
@@ -51,9 +57,17 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         try? store.savePID()
         installNotifications()
         lockScreenPresentation = TerminalLockScreenPresentation()
+        lockScreenPresentation?.onLockStateChange = { [weak self] locked in
+            self?.lockScreenIsLocked = locked
+            self?.lockScreenStateChanged(locked)
+        }
         lockScreenPresentation?.start()
+        framePublisher.configure(maxFPS: config.render.maxFPS)
         rebuildRuntime()
         startFrameTimer()
+        fullscreenTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.updateFullscreenPausePolicy()
+        }
         commandTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.pollCommand()
         }
@@ -74,6 +88,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         commandTimer?.invalidate()
         healthTimer?.invalidate()
         frameTimer?.invalidate()
+        fullscreenTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
@@ -91,6 +106,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         } else {
             rebuildWindows()
         }
+        updateFullscreenPausePolicy()
         writeHealth()
     }
 
@@ -130,6 +146,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             let oldFPS = config.render.maxFPS
             config = commandConfig.normalized()
             try? store.saveConfig(config)
+            framePublisher.configure(maxFPS: config.render.maxFPS)
             if oldFPS != config.render.maxFPS { startFrameTimer() }
         }
         switch command.action {
@@ -142,12 +159,16 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         case .stop, .terminate:
             NSApp.terminate(nil)
         }
+        updateFullscreenPausePolicy()
         writeHealth()
     }
 
     private func rebuildRuntime(restartChild: Bool = true) {
         displayGeneration &+= 1
         snapshotRequestInFlight = false
+        parserDirtyLock.lock()
+        parserHasPendingData = false
+        parserDirtyLock.unlock()
         guard !config.command.executable.isEmpty else {
             lastError = "No executable configured."
             session.stop()
@@ -167,6 +188,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 parserGeneration = childGeneration
                 parser = VTParser(columns: geometry.columns, rows: geometry.rows)
                 latestSnapshot = parser?.grid.snapshot()
+                publishedParserRevision = parser?.grid.currentRevision
             }
             parserSize = geometry
         } else if parserSize?.columns != geometry.columns || parserSize?.rows != geometry.rows {
@@ -174,12 +196,14 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 parserQueue.sync {
                     parser?.resize(columns: geometry.columns, rows: geometry.rows)
                     latestSnapshot = parser?.grid.snapshot()
+                    publishedParserRevision = parser?.grid.currentRevision
                 }
                 try? session.resize(columns: geometry.columns, rows: geometry.rows)
             } else {
                 parserQueue.sync {
                     parser = VTParser(columns: geometry.columns, rows: geometry.rows)
                     latestSnapshot = parser?.grid.snapshot()
+                    publishedParserRevision = parser?.grid.currentRevision
                 }
             }
             parserSize = geometry
@@ -202,6 +226,9 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     }
                 )
                 lastError = nil
+                if fullscreenPausePolicy.isPaused {
+                    try? session.setPaused(true)
+                }
             } catch {
                 lastError = error.localizedDescription
                 logger.error("Could not start child process: \(error.localizedDescription, privacy: .public)")
@@ -219,6 +246,9 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func consume(_ data: Data, generation: UInt64) {
+        parserDirtyLock.lock()
+        parserHasPendingData = true
+        parserDirtyLock.unlock()
         parserQueue.async { [weak self] in
             guard let self, self.parserGeneration == generation else { return }
             self.parser?.feed(data)
@@ -227,6 +257,8 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func startFrameTimer() {
         frameTimer?.invalidate()
+        frameTimer = nil
+        guard !fullscreenPausePolicy.isPaused else { return }
         let interval = 1.0 / Double(max(config.render.maxFPS, 1))
         frameTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.publishLatestSnapshot()
@@ -236,11 +268,21 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func publishLatestSnapshot() {
         guard !terminating, !snapshotRequestInFlight else { return }
+        parserDirtyLock.lock()
+        let hasPendingData = parserHasPendingData
+        parserHasPendingData = false
+        parserDirtyLock.unlock()
+        guard hasPendingData else { return }
         snapshotRequestInFlight = true
         let generation = displayGeneration
         parserQueue.async { [weak self] in
             guard let self else { return }
-            let snapshot = self.parser?.grid.snapshot()
+            var snapshot: TerminalGridSnapshot?
+            if let parser = self.parser,
+               parser.grid.currentRevision != self.publishedParserRevision {
+                snapshot = parser.grid.snapshot()
+                self.publishedParserRevision = snapshot?.revision
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.displayGeneration == generation else { return }
                 self.snapshotRequestInFlight = false
@@ -269,7 +311,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func rebuildWindows() {
         for window in windows {
-            window.onRasterizedFrame = nil
+            window.onLockScreenFrame = nil
             window.orderOut(nil)
         }
         windows.removeAll()
@@ -283,7 +325,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if windows.isEmpty { framePublisher.revoke() }
         if let firstWindow = windows.first {
             let generation = displayGeneration
-            firstWindow.onRasterizedFrame = { [weak self] bytes, width, height in
+            firstWindow.onLockScreenFrame = { [weak self] bytes, width, height in
                 guard let self,
                       self.displayGeneration == generation,
                       !self.terminating,
@@ -292,6 +334,8 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             }
         }
         for window in windows {
+            window.setRendererPaused(fullscreenPausePolicy.isPaused)
+            window.setLockScreenCaptureEnabled(lockScreenIsLocked)
             if !window.isVisible { window.orderBack(nil); window.orderFrontRegardless() }
         }
         applyLatestSnapshot()
@@ -303,6 +347,87 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             window.update(snapshot: latestSnapshot, configuration: config.render)
             renderedFrames += 1
         }
+    }
+
+    private func lockScreenStateChanged(_ locked: Bool) {
+        lockScreenIsLocked = locked
+        framePublisher.setLockScreenActive(locked)
+        for window in windows { window.setLockScreenCaptureEnabled(locked) }
+        updateFullscreenPausePolicy()
+    }
+
+    private func updateFullscreenPausePolicy() {
+        guard !terminating else { return }
+        let screenLocked = lockScreenIsLocked
+        let enabled = config.behavior.pauseOnFullscreen
+        let foregroundIsFullscreen = enabled && !screenLocked
+            ? Self.detectFullscreenApplication()
+            : false
+        guard let paused = fullscreenPausePolicy.update(
+            enabled: enabled,
+            screenLocked: screenLocked,
+            foregroundIsFullscreen: foregroundIsFullscreen
+        ) else { return }
+
+        if let childPID = session.childPID {
+            do {
+                try session.setPaused(paused)
+                logger.notice("Terminal wallpaper fullscreen pause=\(paused), child=\(childPID)")
+            } catch {
+                logger.error("Could not change terminal process pause state: \(error.localizedDescription, privacy: .public)")
+                fullscreenPausePolicy.restoreAfterFailedProcessSignal(to: !paused)
+                return
+            }
+        }
+        for window in windows { window.setRendererPaused(paused) }
+        if paused {
+            frameTimer?.invalidate()
+            frameTimer = nil
+        } else {
+            startFrameTimer()
+            applyLatestSnapshot()
+        }
+    }
+
+    private static func detectFullscreenApplication() -> Bool {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication,
+              frontmost.activationPolicy == .regular,
+              let windows = CGWindowListCopyWindowInfo(
+                [.optionOnScreenOnly, .excludeDesktopElements],
+                kCGNullWindowID
+              ) as? [[String: Any]] else {
+            return false
+        }
+        let displays = NSScreen.screens.compactMap { screen -> CGRect? in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+                return nil
+            }
+            return CGDisplayBounds(CGDirectDisplayID(number.uint32Value))
+        }
+        let tolerance: CGFloat = 3
+        for window in windows {
+            guard let ownerPID = window[kCGWindowOwnerPID as String] as? pid_t,
+                  ownerPID == frontmost.processIdentifier,
+                  let layer = window[kCGWindowLayer as String] as? Int,
+                  layer == 0,
+                  let alpha = window[kCGWindowAlpha as String] as? NSNumber,
+                  alpha.doubleValue > 0,
+                  let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = bounds["X"], let y = bounds["Y"],
+                  let width = bounds["Width"], let height = bounds["Height"] else {
+                continue
+            }
+            let rect = CGRect(x: x, y: y, width: width, height: height)
+            if displays.contains(where: { display in
+                abs(rect.minX - display.minX) <= tolerance
+                    && abs(rect.minY - display.minY) <= tolerance
+                    && abs(rect.maxX - display.maxX) <= tolerance
+                    && abs(rect.maxY - display.maxY) <= tolerance
+            }) {
+                return true
+            }
+        }
+        return false
     }
 
     private func logicalGeometry() -> (columns: Int, rows: Int) {

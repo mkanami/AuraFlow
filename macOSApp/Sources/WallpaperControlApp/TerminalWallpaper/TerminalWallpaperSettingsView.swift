@@ -328,7 +328,7 @@ struct TerminalWallpaperSettingsView: View {
 
                 HStack {
                     Stepper("Cell spacing: \(viewModel.cellSpacing, specifier: "%.1f")", value: $viewModel.cellSpacing, in: 0...8, step: 0.5)
-                    Stepper("FPS: \(viewModel.maxFPS)", value: $viewModel.maxFPS, in: 1...120, step: 1)
+                    Stepper("FPS: \(viewModel.maxFPS)", value: $viewModel.maxFPS, in: 1...60, step: 1)
                 }
 
                 HStack(spacing: 12) {
@@ -379,6 +379,7 @@ struct TerminalWallpaperSettingsView: View {
         TerminalWallpaperSection(title: "Behavior", systemImage: "gearshape.2") {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle("Render on all displays", isOn: $viewModel.allDisplays)
+                Toggle("Pause when another app is fullscreen", isOn: $viewModel.pauseOnFullscreen)
                 Toggle(
                     "Launch Terminal Wallpaper at login",
                     isOn: Binding(

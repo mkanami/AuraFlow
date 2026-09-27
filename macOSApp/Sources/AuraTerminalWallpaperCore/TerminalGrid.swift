@@ -151,6 +151,8 @@ public struct TerminalGrid {
     private var mainCells: [TerminalCell]?
     private var mainCursor: (column: Int, row: Int)?
 
+    public var currentRevision: UInt64 { revision }
+
     public init(columns: Int, rows: Int) {
         self.columns = max(columns, 1)
         self.rows = max(rows, 1)

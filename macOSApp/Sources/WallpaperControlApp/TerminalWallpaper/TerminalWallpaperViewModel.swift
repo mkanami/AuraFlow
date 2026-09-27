@@ -74,6 +74,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     @Published var backgroundHex: String
     @Published var backgroundOpacity: Double
     @Published var allDisplays: Bool
+    @Published var pauseOnFullscreen: Bool
     @Published var launchAtLogin: Bool
     @Published private(set) var selectedCatalogItemID: String?
     @Published private(set) var catalogItems: [TerminalWallpaperCatalogItem]
@@ -159,6 +160,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         backgroundHex = Self.hexString(for: config.render.background)
         backgroundOpacity = config.render.backgroundOpacity
         allDisplays = config.behavior.allDisplays
+        pauseOnFullscreen = config.behavior.pauseOnFullscreen
         launchAtLogin = config.behavior.launchAtLogin
         status = (try? resolvedController.status()) ?? TerminalWallpaperStatus(
             running: false,
@@ -529,6 +531,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private func apply(_ status: TerminalWallpaperStatus) {
         self.status = status
         launchAtLogin = status.config.behavior.launchAtLogin
+        pauseOnFullscreen = status.config.behavior.pauseOnFullscreen
     }
 
     private func reconcileLockScreen() {
@@ -592,7 +595,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
             render: render,
             behavior: TerminalWallpaperBehavior(
                 launchAtLogin: launchAtLogin,
-                allDisplays: allDisplays
+                allDisplays: allDisplays,
+                pauseOnFullscreen: pauseOnFullscreen
             )
         ).normalized()
     }

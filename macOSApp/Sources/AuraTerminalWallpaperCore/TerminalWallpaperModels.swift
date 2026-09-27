@@ -173,7 +173,7 @@ public struct TerminalRenderConfiguration: Codable, Equatable, Sendable {
         if result.fontFamily.isEmpty { result.fontFamily = "System Monospace" }
         result.fontSize = min(max(fontSize, 6), 96)
         result.cellSpacing = min(max(cellSpacing, 0), 8)
-        result.maxFPS = min(max(maxFPS, 1), 120)
+        result.maxFPS = min(max(maxFPS, 1), 60)
         result.textScale = min(max(textScale, 0.5), 3)
         result.background = background.normalized()
         result.backgroundOpacity = min(max(backgroundOpacity, 0), 1)
@@ -188,10 +188,36 @@ public struct TerminalRenderConfiguration: Codable, Equatable, Sendable {
 public struct TerminalWallpaperBehavior: Codable, Equatable, Sendable {
     public var launchAtLogin: Bool
     public var allDisplays: Bool
+    public var pauseOnFullscreen: Bool
 
-    public init(launchAtLogin: Bool = false, allDisplays: Bool = true) {
+    public init(
+        launchAtLogin: Bool = false,
+        allDisplays: Bool = true,
+        pauseOnFullscreen: Bool = true
+    ) {
         self.launchAtLogin = launchAtLogin
         self.allDisplays = allDisplays
+        self.pauseOnFullscreen = pauseOnFullscreen
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case launchAtLogin
+        case allDisplays
+        case pauseOnFullscreen
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
+        allDisplays = try container.decodeIfPresent(Bool.self, forKey: .allDisplays) ?? true
+        pauseOnFullscreen = try container.decodeIfPresent(Bool.self, forKey: .pauseOnFullscreen) ?? true
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(launchAtLogin, forKey: .launchAtLogin)
+        try container.encode(allDisplays, forKey: .allDisplays)
+        try container.encode(pauseOnFullscreen, forKey: .pauseOnFullscreen)
     }
 }
 

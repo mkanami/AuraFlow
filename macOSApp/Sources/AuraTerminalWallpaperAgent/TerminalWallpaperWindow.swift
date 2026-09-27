@@ -6,9 +6,9 @@ import MetalKit
 final class TerminalWallpaperWindow: NSWindow {
     private let terminalView: TerminalMetalView
 
-    var onRasterizedFrame: ((Data, Int, Int) -> Void)? {
-        get { terminalView.onRasterizedFrame }
-        set { terminalView.onRasterizedFrame = newValue }
+    var onLockScreenFrame: ((Data, Int, Int) -> Void)? {
+        get { terminalView.onLockScreenFrame }
+        set { terminalView.onLockScreenFrame = newValue }
     }
 
     init(screen: NSScreen, device: MTLDevice) {
@@ -39,5 +39,13 @@ final class TerminalWallpaperWindow: NSWindow {
 
     func update(snapshot: TerminalGridSnapshot, configuration: TerminalRenderConfiguration) {
         terminalView.update(snapshot: snapshot, configuration: configuration)
+    }
+
+    func setRendererPaused(_ paused: Bool) {
+        terminalView.setRendererPaused(paused)
+    }
+
+    func setLockScreenCaptureEnabled(_ enabled: Bool) {
+        terminalView.setLockScreenCaptureEnabled(enabled)
     }
 }

@@ -39,6 +39,31 @@ import Testing
     #expect(image.height == 2)
 }
 
+@Test @MainActor func terminalLockScreenPublisherWritesOnlyWhileLocked() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraTerminalLockPublisher-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = TerminalWallpaperRuntimeStore(
+        appSupportURL: root.appendingPathComponent("terminal-wallpaper", isDirectory: true),
+        launchAgentURL: root.appendingPathComponent("LaunchAgents/terminal.plist")
+    )
+    let publisher = TerminalLockScreenFramePublisher(store: store)
+    let pixel = Data([0, 0, 0, 255])
+
+    publisher.publish(pixel, width: 1, height: 1)
+    try await Task.sleep(nanoseconds: 100_000_000)
+    #expect(!FileManager.default.fileExists(atPath: store.lockScreenFrameURL.path))
+
+    publisher.setLockScreenActive(true)
+    publisher.publish(pixel, width: 1, height: 1)
+    let deadline = Date().addingTimeInterval(2)
+    while !FileManager.default.fileExists(atPath: store.lockScreenFrameURL.path), Date() < deadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    #expect(FileManager.default.fileExists(atPath: store.lockScreenFrameURL.path))
+    publisher.revoke()
+}
+
 @Test func terminalPTYSessionSpawnsDirectChildAndResizes() throws {
     let session = TerminalPTYSession()
     let outputLock = NSLock()
@@ -86,7 +111,70 @@ import Testing
     #expect(session.masterFileDescriptor == nil)
 }
 
+@Test func terminalPTYSessionPausesAndResumesItsChild() throws {
+    let session = TerminalPTYSession()
+    let outputLock = NSLock()
+    var output = Data()
+    let command = TerminalCommandConfiguration(
+        executable: "/bin/sh",
+        arguments: ["-c", "while :; do printf x; sleep 0.02; done"]
+    )
+    _ = try session.start(
+        command: command,
+        columns: 80,
+        rows: 24,
+        onData: { data in
+            outputLock.lock()
+            output.append(data)
+            outputLock.unlock()
+        },
+        onExit: { _ in }
+    )
+    defer { session.stop() }
+
+    let outputDeadline = Date().addingTimeInterval(2)
+    while Date() < outputDeadline {
+        outputLock.lock()
+        let count = output.count
+        outputLock.unlock()
+        if count >= 4 { break }
+        Thread.sleep(forTimeInterval: 0.01)
+    }
+    outputLock.lock()
+    let initialCount = output.count
+    outputLock.unlock()
+    #expect(initialCount >= 4)
+
+    try session.setPaused(true)
+    #expect(session.isPaused)
+    Thread.sleep(forTimeInterval: 0.1)
+    outputLock.lock()
+    let pausedCount = output.count
+    outputLock.unlock()
+    Thread.sleep(forTimeInterval: 0.15)
+    outputLock.lock()
+    let stillPausedCount = output.count
+    outputLock.unlock()
+    #expect(stillPausedCount == pausedCount)
+
+    try session.setPaused(false)
+    #expect(!session.isPaused)
+    let resumeDeadline = Date().addingTimeInterval(1)
+    while Date() < resumeDeadline {
+        outputLock.lock()
+        let count = output.count
+        outputLock.unlock()
+        if count > pausedCount { break }
+        Thread.sleep(forTimeInterval: 0.01)
+    }
+    outputLock.lock()
+    let resumedCount = output.count
+    outputLock.unlock()
+    #expect(resumedCount > pausedCount)
+}
+
 @Test func terminalConfigNormalizesToSafeBounds() {
+    #expect(TerminalRenderConfiguration().maxFPS == 30)
     let config = TerminalWallpaperConfig(
         command: TerminalCommandConfiguration(executable: "  /usr/bin/top  "),
         render: TerminalRenderConfiguration(
@@ -112,7 +200,7 @@ import Testing
     #expect(config.render.fontFamily == "System Monospace")
     #expect(config.render.fontSize == 96)
     #expect(config.render.cellSpacing == 0)
-    #expect(config.render.maxFPS == 120)
+    #expect(config.render.maxFPS == 60)
     #expect(config.render.textScale == 3)
     #expect(config.render.backgroundOpacity == 1)
 }
@@ -139,6 +227,8 @@ import Testing
         from: Data("{}".utf8)
     )
     #expect(legacyRender.textScale == 1.5)
+    let legacyBehavior = try decoder.decode(TerminalWallpaperBehavior.self, from: Data("{}".utf8))
+    #expect(legacyBehavior.pauseOnFullscreen)
 }
 
 @Test func terminalCatalogSeparatesAppsAndUtilities() {

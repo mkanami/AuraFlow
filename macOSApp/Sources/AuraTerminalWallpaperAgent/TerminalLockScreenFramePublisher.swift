@@ -13,6 +13,8 @@ final class TerminalLockScreenFramePublisher {
     private var writing = false // Main thread only.
     private var generation: UInt64 = 0 // Main thread only.
     private var lastPublishedAt: TimeInterval = 0 // Main thread only.
+    private var lockScreenActive = false // Main thread only.
+    private var maxFPS = 30 // Main thread only.
 
     init(store: TerminalWallpaperRuntimeStore) {
         self.store = store
@@ -20,7 +22,11 @@ final class TerminalLockScreenFramePublisher {
 
     func publish(_ bytes: Data, width: Int, height: Int) {
         let now = Date().timeIntervalSince1970
-        guard !writing, width > 0, height > 0, now - lastPublishedAt >= 1.0 / 30.0 else { return }
+        guard lockScreenActive,
+              !writing,
+              width > 0,
+              height > 0,
+              now - lastPublishedAt >= 1.0 / Double(max(maxFPS, 1)) else { return }
         writing = true
         let currentGeneration = generation
         let store = store
@@ -42,6 +48,17 @@ final class TerminalLockScreenFramePublisher {
                 try? store.saveLockScreenHeartbeat(TerminalLockScreenHeartbeat(pid: Int(getpid())))
             }
         }
+    }
+
+    func configure(maxFPS: Int) {
+        self.maxFPS = min(max(maxFPS, 1), 60)
+    }
+
+    func setLockScreenActive(_ active: Bool) {
+        guard lockScreenActive != active else { return }
+        lockScreenActive = active
+        generation &+= 1
+        lastPublishedAt = 0
     }
 
     func refreshHeartbeat() {

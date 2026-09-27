@@ -33,6 +33,8 @@ final class TerminalLockScreenPresentation {
     private var activity: NSObjectProtocol?
     private var observer: NSObjectProtocol?
     private var workspaceObserver: NSObjectProtocol?
+    var onLockStateChange: ((Bool) -> Void)?
+
     #if canImport(Wallpaper)
     // Erased storage avoids resolving private Swift type metadata at helper
     // startup on older macOS. The frameworks are weak-linked and gated below.
@@ -104,6 +106,7 @@ final class TerminalLockScreenPresentation {
         let resolved = notifiedLockState ?? locked
         guard let changed = transition.update(resolved) else { return }
         logger.notice("Terminal Lock Screen session locked=\(changed)")
+        onLockStateChange?(changed)
         if changed { startSaver() }
         prepare()
     }
@@ -114,6 +117,7 @@ final class TerminalLockScreenPresentation {
         notifiedLockState = locked
         guard let changed = transition.update(locked) else { return }
         logger.notice("Terminal Lock Screen notification locked=\(changed)")
+        onLockStateChange?(changed)
         if changed { startSaver() }
         prepare(reloadRoute: changed)
     }

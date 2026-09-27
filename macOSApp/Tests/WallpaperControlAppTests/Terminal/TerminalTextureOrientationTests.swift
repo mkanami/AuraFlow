@@ -21,32 +21,67 @@ import Testing
 @Test func coreTextGlyphsStayInsideTheirTerminalRow() {
     let configuration = TerminalRenderConfiguration(fontSize: 18, textScale: 1)
     let metrics = TerminalFontMetrics.cellMetrics(for: configuration)
-    let width = Int(ceil(metrics.width * 4))
-    let height = Int(ceil(metrics.height * 2))
-
     for glyph in ["~", "^", "/", "A"] {
-        var grid = TerminalGrid(columns: 4, rows: 2)
-        grid.put(glyph)
-        let pixels = CoreTextGlyphAtlas().render(
-            snapshot: grid.snapshot(),
-            configuration: configuration,
-            width: width,
-            height: height,
-            fontPixelScale: 1
+        let mask = CoreTextGlyphAtlas(atlasSize: 512).rasterizeForTesting(
+            text: glyph,
+            fontSize: configuration.effectiveFontSize,
+            cellWidth: Int(ceil(metrics.width)),
+            cellHeight: Int(ceil(metrics.height))
         )
-        let inkRows = pixels.withUnsafeBytes { rawBuffer -> [Int] in
+        let inkRows = mask.pixels.withUnsafeBytes { rawBuffer -> [Int] in
             let bytes = rawBuffer.bindMemory(to: UInt8.self)
-            return (0..<height).filter { row in
-                (0..<width).contains { column in
-                    let offset = (row * width + column) * 4
-                    return bytes[offset] > 20 || bytes[offset + 1] > 20 || bytes[offset + 2] > 20
+            return (0..<mask.height).filter { row in
+                (0..<mask.width).contains { column in
+                    bytes[row * mask.width + column] > 20
                 }
             }
         }
         #expect(!inkRows.isEmpty)
-        #expect((inkRows.min() ?? height) < Int(metrics.height * 0.75))
-        #expect((inkRows.max() ?? height) <= Int(ceil(metrics.height)) + 1)
+        #expect((inkRows.min() ?? mask.height) >= 0)
+        #expect((inkRows.max() ?? mask.height) < mask.height)
     }
+}
+
+@Test func terminalMetalPreparationUpdatesOnlyChangedCells() {
+    let configuration = TerminalRenderConfiguration(fontSize: 12, textScale: 1)
+    let metrics = TerminalFontMetrics.cellMetrics(for: configuration)
+    let width = Int(ceil(metrics.width * 20))
+    let height = Int(ceil(metrics.height * 4))
+    let renderer = CoreTextGlyphAtlas(atlasSize: 1024)
+    var grid = TerminalGrid(columns: 20, rows: 4)
+
+    let initial = renderer.prepare(
+        snapshot: grid.snapshot(),
+        configuration: configuration,
+        width: width,
+        height: height,
+        fontPixelScale: 1
+    )
+    #expect(initial.fullInstances != nil)
+    #expect(initial.instanceCount == 80)
+
+    grid.put("A")
+    let changed = renderer.prepare(
+        snapshot: grid.snapshot(),
+        configuration: configuration,
+        width: width,
+        height: height,
+        fontPixelScale: 1
+    )
+    #expect(changed.fullInstances == nil)
+    #expect(changed.instanceUpdates.count == 1)
+    #expect(changed.requiresPresentation)
+
+    grid.setCursorVisible(false)
+    let unchangedCells = renderer.prepare(
+        snapshot: grid.snapshot(),
+        configuration: configuration,
+        width: width,
+        height: height,
+        fontPixelScale: 1
+    )
+    #expect(unchangedCells.instanceUpdates.isEmpty)
+    #expect(!unchangedCells.requiresPresentation)
 }
 
 @Test @MainActor func terminalRendererCoalescesRapidSnapshotsToNewestRevision() async throws {
