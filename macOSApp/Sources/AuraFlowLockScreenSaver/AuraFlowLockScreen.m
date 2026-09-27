@@ -6,6 +6,8 @@
 #import <math.h>
 #import <signal.h>
 #import <errno.h>
+#import <pwd.h>
+#import <unistd.h>
 
 static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
 static NSString * const AuraFlowRuntimeCommandNotification =
@@ -16,6 +18,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 @property(nonatomic, strong) CALayer *terminalLayer;
 @property(nonatomic, copy, nullable) NSString *terminalFrameRevision;
 @property(nonatomic) BOOL terminalModeActive;
+@property(nonatomic, copy, nullable) NSString *terminalDiagnosticState;
 @property(nonatomic, strong, nullable) AVQueuePlayer *player;
 @property(nonatomic, strong, nullable) AVPlayerLayer *playerLayer;
 @property(nonatomic, strong, nullable) AVPlayerLooper *playerLooper;
@@ -145,7 +148,21 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 }
 
 - (NSURL *)terminalRuntimeURLForFile:(NSString *)name {
-    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:
+    // legacyScreenSaver may run with a container HOME. Terminal frames are
+    // published by the user's helper, not into the extension's container.
+    static NSString *home;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        struct passwd account;
+        struct passwd *resolved = NULL;
+        char buffer[16384];
+        home = NSHomeDirectory();
+        if (getpwuid_r(getuid(), &account, buffer, sizeof(buffer), &resolved) == 0 &&
+            resolved != NULL && resolved->pw_dir != NULL) {
+            home = [NSString stringWithUTF8String:resolved->pw_dir] ?: home;
+        }
+    });
+    NSString *path = [home stringByAppendingPathComponent:
         [@"Library/Application Support/AuraFlow/terminal-wallpaper"
             stringByAppendingPathComponent:name]];
     return [NSURL fileURLWithPath:path];
@@ -169,8 +186,14 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 
 - (void)syncTerminalFrame {
     NSURL *frameURL = [self terminalRuntimeURLForFile:@"lock-screen-frame.png"];
-    if (![self terminalAgentIsAlive] ||
-        ![[NSFileManager defaultManager] isReadableFileAtPath:frameURL.path]) {
+    BOOL alive = [self terminalAgentIsAlive];
+    BOOL readable = [[NSFileManager defaultManager] isReadableFileAtPath:frameURL.path];
+    NSString *diagnostic = [NSString stringWithFormat:@"alive=%d readable=%d", alive, readable];
+    if (![diagnostic isEqualToString:self.terminalDiagnosticState]) {
+        self.terminalDiagnosticState = diagnostic;
+        NSLog(@"AuraFlow terminal saver %@ path=%@", diagnostic, frameURL.path);
+    }
+    if (!alive || !readable) {
         if (self.terminalModeActive) {
             self.terminalModeActive = NO;
             self.terminalLayer.hidden = YES;
@@ -204,6 +227,9 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         }
     }
     if (self.terminalLayer.contents != nil) {
+        if (!self.terminalModeActive) {
+            NSLog(@"AuraFlow terminal saver displaying frame %@", self.terminalFrameRevision);
+        }
         self.terminalModeActive = YES;
         self.terminalLayer.hidden = NO;
         [self.player pause];

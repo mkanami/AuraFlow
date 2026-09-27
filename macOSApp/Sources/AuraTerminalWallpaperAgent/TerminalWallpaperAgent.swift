@@ -11,6 +11,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     )
     private let store: TerminalWallpaperRuntimeStore
     private let framePublisher: TerminalLockScreenFramePublisher
+    private var lockScreenPresentation: TerminalLockScreenPresentation?
     private let metalDevice = MTLCreateSystemDefaultDevice()
     private var config: TerminalWallpaperConfig
     private var parser: VTParser?
@@ -49,6 +50,8 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         logger.info("Terminal Wallpaper agent started")
         try? store.savePID()
         installNotifications()
+        lockScreenPresentation = TerminalLockScreenPresentation()
+        lockScreenPresentation?.start()
         rebuildRuntime()
         startFrameTimer()
         commandTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -67,6 +70,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         terminating = true
+        lockScreenPresentation?.stop()
         commandTimer?.invalidate()
         healthTimer?.invalidate()
         frameTimer?.invalidate()

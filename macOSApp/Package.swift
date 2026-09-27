@@ -45,7 +45,13 @@ var targets: [Target] = [
     .executableTarget(
         name: "AuraTerminalWallpaperAgent",
         dependencies: ["AuraTerminalWallpaperCore"],
-        path: "Sources/AuraTerminalWallpaperAgent"
+        path: "Sources/AuraTerminalWallpaperAgent",
+        swiftSettings: canBuildNativeBridge ? [.unsafeFlags(["-I", privateWallpaperModulesDirectory])] : [],
+        linkerSettings: canBuildNativeBridge ? [.unsafeFlags([
+            "-F\(privateFrameworksDirectory)",
+            "-Xlinker", "-weak_framework", "-Xlinker", "Wallpaper",
+            "-Xlinker", "-weak_framework", "-Xlinker", "WallpaperTypes",
+        ])] : []
     ),
     .executableTarget(
         name: "WallpaperControlApp",

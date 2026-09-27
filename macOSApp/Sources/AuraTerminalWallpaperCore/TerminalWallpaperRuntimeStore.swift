@@ -1,6 +1,9 @@
 import Foundation
 
 public enum TerminalWallpaperRuntimeNotifications {
+    public static let lockScreenRouteDidChange = Notification.Name(
+        "com.andrijvergeles.auraflow.terminal-lock-screen-route-did-change"
+    )
     public static let commandDidChange = Notification.Name(
         "com.andrijvergeles.auraflow.terminal-runtime-command-did-change"
     )

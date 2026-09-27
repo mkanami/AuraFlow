@@ -23,7 +23,13 @@ protocol TerminalLockScreenCoordinating: Sendable {
 private final class SystemTerminalLockScreenCoordinator: TerminalLockScreenCoordinating, @unchecked Sendable {
     private let installer = LockScreenSaverInstaller()
 
-    func activate() throws { try installer.activateForTerminal() }
+    func activate() throws {
+        try installer.activateForTerminal()
+        DistributedNotificationCenter.default().postNotificationName(
+            TerminalWallpaperRuntimeNotifications.lockScreenRouteDidChange,
+            object: nil, userInfo: nil, deliverImmediately: true
+        )
+    }
     func restore() throws { try installer.restoreAfterTerminal() }
 }
 
