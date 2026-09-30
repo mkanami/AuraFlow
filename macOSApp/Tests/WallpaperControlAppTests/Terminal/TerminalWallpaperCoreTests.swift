@@ -1,5 +1,6 @@
 import AuraTerminalWallpaperCore
 @testable import AuraTerminalWallpaperAgent
+@testable import AuraTerminalRendering
 import AppKit
 import CoreText
 import Foundation
@@ -61,6 +62,53 @@ import Testing
         try await Task.sleep(nanoseconds: 20_000_000)
     }
     #expect(FileManager.default.fileExists(atPath: store.lockScreenFrameURL.path))
+    publisher.revoke()
+}
+
+@Test @MainActor func terminalLockScreenPublisherWritesOneDesktopSeedPerGeneration() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraTerminalLockSeed-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = TerminalWallpaperRuntimeStore(
+        appSupportURL: root.appendingPathComponent("terminal-wallpaper", isDirectory: true),
+        launchAgentURL: root.appendingPathComponent("LaunchAgents/terminal.plist")
+    )
+    let publisher = TerminalLockScreenFramePublisher(store: store)
+    let firstPixel = Data([0, 0, 0, 255])
+    let secondPixel = Data([0, 0, 255, 255])
+    let thirdPixel = Data([0, 255, 0, 255])
+
+    publisher.beginDesktopGeneration()
+    publisher.publishDesktopSeed(firstPixel, width: 1, height: 1)
+    let firstDeadline = Date().addingTimeInterval(2)
+    while !FileManager.default.fileExists(atPath: store.lockScreenFrameURL.path), Date() < firstDeadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let firstFrame = try #require(try? Data(contentsOf: store.lockScreenFrameURL))
+    #expect(store.loadLockScreenHeartbeat()?.pid == Int(getpid()))
+
+    publisher.publishDesktopSeed(secondPixel, width: 1, height: 1)
+    publisher.publish(secondPixel, width: 1, height: 1)
+    try await Task.sleep(nanoseconds: 100_000_000)
+    #expect(try Data(contentsOf: store.lockScreenFrameURL) == firstFrame)
+
+    publisher.setLockScreenActive(true)
+    publisher.publish(secondPixel, width: 1, height: 1)
+    let lockedDeadline = Date().addingTimeInterval(2)
+    while (try? Data(contentsOf: store.lockScreenFrameURL)) == firstFrame, Date() < lockedDeadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let lockedFrame = try #require(try? Data(contentsOf: store.lockScreenFrameURL))
+    #expect(lockedFrame != firstFrame)
+
+    publisher.setLockScreenActive(false)
+    publisher.beginDesktopGeneration()
+    publisher.publishDesktopSeed(thirdPixel, width: 1, height: 1)
+    let restartedDeadline = Date().addingTimeInterval(2)
+    while (try? Data(contentsOf: store.lockScreenFrameURL)) == lockedFrame, Date() < restartedDeadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    #expect(try Data(contentsOf: store.lockScreenFrameURL) != lockedFrame)
     publisher.revoke()
 }
 

@@ -1,4 +1,4 @@
-@testable import AuraTerminalWallpaperAgent
+@testable import AuraTerminalRendering
 import AuraTerminalWallpaperCore
 import Foundation
 import Metal

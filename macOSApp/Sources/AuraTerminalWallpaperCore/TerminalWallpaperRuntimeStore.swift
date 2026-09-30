@@ -10,6 +10,33 @@ public enum TerminalWallpaperRuntimeNotifications {
     public static let agentDidStart = Notification.Name(
         "com.andrijvergeles.auraflow.terminal-agent-did-start"
     )
+    public static let sharedFrameDidUpdate = Notification.Name(
+        "com.andrijvergeles.auraflow.terminal-shared-frame-did-update"
+    )
+}
+
+/// Identifies the live Metal surface produced by the current terminal agent.
+/// The IOSurface is shared directly; this descriptor only carries its identity.
+public struct TerminalSharedFrameDescriptor: Codable, Equatable, Sendable {
+    public let surfaceID: UInt32
+    public let width: Int
+    public let height: Int
+    public let agentPID: Int
+    public let generation: String
+
+    public init(
+        surfaceID: UInt32,
+        width: Int,
+        height: Int,
+        agentPID: Int,
+        generation: String = UUID().uuidString
+    ) {
+        self.surfaceID = surfaceID
+        self.width = width
+        self.height = height
+        self.agentPID = agentPID
+        self.generation = generation
+    }
 }
 
 /// A short-lived publication lease for the separate screen-saver process.
@@ -52,6 +79,7 @@ public final class TerminalWallpaperRuntimeStore {
     public var pidURL: URL { appSupportURL.appendingPathComponent("agent.pid") }
     public var lockScreenFrameURL: URL { appSupportURL.appendingPathComponent("lock-screen-frame.png") }
     public var lockScreenHeartbeatURL: URL { appSupportURL.appendingPathComponent("lock-screen-heartbeat.json") }
+    public var sharedFrameDescriptorURL: URL { appSupportURL.appendingPathComponent("shared-frame.json") }
     public var launchAgentFileURL: URL { launchAgentURL }
 
     public func ensureDirectories() throws {
@@ -77,6 +105,21 @@ public final class TerminalWallpaperRuntimeStore {
     public func removeLockScreenPublication() {
         try? FileManager.default.removeItem(at: lockScreenHeartbeatURL)
         try? FileManager.default.removeItem(at: lockScreenFrameURL)
+    }
+
+    public func saveSharedFrameDescriptor(_ descriptor: TerminalSharedFrameDescriptor) throws {
+        try ensureDirectories()
+        let data = try JSONEncoder.terminalEncoder.encode(descriptor)
+        try data.write(to: sharedFrameDescriptorURL, options: .atomic)
+    }
+
+    public func loadSharedFrameDescriptor() -> TerminalSharedFrameDescriptor? {
+        guard let data = try? Data(contentsOf: sharedFrameDescriptorURL) else { return nil }
+        return try? JSONDecoder.terminalDecoder.decode(TerminalSharedFrameDescriptor.self, from: data)
+    }
+
+    public func removeSharedFrameDescriptor() {
+        try? FileManager.default.removeItem(at: sharedFrameDescriptorURL)
     }
 
     public func loadConfig() -> TerminalWallpaperConfig {

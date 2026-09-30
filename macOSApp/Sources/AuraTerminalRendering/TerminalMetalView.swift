@@ -1,7 +1,9 @@
 import AppKit
 import AuraTerminalWallpaperCore
 import CoreText
+import CoreVideo
 import Darwin
+import IOSurface
 import Metal
 import MetalKit
 
@@ -42,7 +44,7 @@ struct TerminalPreparedFrame {
     }
 }
 
-final class TerminalMetalView: MTKView {
+public final class TerminalMetalView: MTKView {
     private static let atlasSize = 2048
 
     private let commandQueue: MTLCommandQueue
@@ -55,7 +57,13 @@ final class TerminalMetalView: MTKView {
         qos: .userInitiated
     )
     private let frameRenderer = CoreTextGlyphAtlas(atlasSize: TerminalMetalView.atlasSize)
+    // Owned by preparationQueue. An invalidated preparation must not leave
+    // incremental atlas/cell state that was never uploaded to the GPU.
+    private var preparationEpoch: UInt64?
     private var frameTexture: MTLTexture?
+    private var frameSurface: IOSurfaceRef?
+    private var frameSurfaceDescriptor: TerminalSharedFrameDescriptor?
+    private var sharedFrameSequence: UInt64 = 0
     private var atlasTexture: MTLTexture?
     private var uploadedAtlasGeneration: UInt64?
     private var instanceBuffer: MTLBuffer?
@@ -68,17 +76,21 @@ final class TerminalMetalView: MTKView {
     private var rasterEpoch: UInt64 = 0
     private var requestedSize: TerminalPixelSize?
     private var rendererPaused = false
+    private var gpuFrameInFlight = false
+    private var pendingInstallation: (frame: TerminalPreparedFrame, epoch: UInt64)?
     private var lockScreenCaptureEnabled = false
+    private var lockCaptureSeedPending = false
     private var lockCaptureInFlight = false
     private var lockCapturePending = false
     private var lockCaptureGeneration: UInt64 = 0
     private var lockCaptureBuffer: MTLBuffer?
     private var lockCaptureBufferCapacity = 0
 
-    var onLockScreenFrame: ((Data, Int, Int) -> Void)?
+    public var onLockScreenFrame: ((Data, Int, Int) -> Void)?
+    public var onSharedFrame: ((TerminalSharedFrameDescriptor, UInt64) -> Void)?
     var displayedRevision: UInt64? { rasterizedRevision }
 
-    init(frame: CGRect, logicalSize: CGSize, device: MTLDevice) {
+    public init(frame: CGRect, logicalSize: CGSize, device: MTLDevice) {
         self.logicalSize = logicalSize
         commandQueue = device.makeCommandQueue()!
         let library = try! device.makeLibrary(source: Self.shaderSource, options: nil)
@@ -111,11 +123,11 @@ final class TerminalMetalView: MTKView {
         autoresizingMask = [.width, .height]
     }
 
-    required init(coder: NSCoder) {
+    public required init(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func update(snapshot: TerminalGridSnapshot, configuration: TerminalRenderConfiguration) {
+    public func update(snapshot: TerminalGridSnapshot, configuration: TerminalRenderConfiguration) {
         let normalized = configuration.normalized()
         if normalized == renderConfiguration,
            let currentSnapshot = self.snapshot,
@@ -133,10 +145,10 @@ final class TerminalMetalView: MTKView {
         self.snapshot = snapshot
         renderConfiguration = normalized
         preferredFramesPerSecond = normalized.maxFPS
-        if !rendererPaused { schedulePreparation() }
+        if !rendererPaused || lockCaptureSeedPending { schedulePreparation() }
     }
 
-    func setRendererPaused(_ paused: Bool) {
+    public func setRendererPaused(_ paused: Bool) {
         guard rendererPaused != paused else { return }
         rendererPaused = paused
         if paused {
@@ -149,7 +161,7 @@ final class TerminalMetalView: MTKView {
         }
     }
 
-    func setLockScreenCaptureEnabled(_ enabled: Bool) {
+    public func setLockScreenCaptureEnabled(_ enabled: Bool) {
         guard lockScreenCaptureEnabled != enabled else { return }
         lockScreenCaptureEnabled = enabled
         lockCaptureGeneration &+= 1
@@ -160,9 +172,16 @@ final class TerminalMetalView: MTKView {
         }
     }
 
-    override func draw(_ rect: NSRect) {
+    public func requestLockScreenSeedCapture() {
+        guard !lockScreenCaptureEnabled, !lockCaptureSeedPending else { return }
+        lockCaptureSeedPending = true
+        captureCurrentTexture()
+    }
+
+    public override func draw(_ rect: NSRect) {
         schedulePreparation()
-        guard !rendererPaused,
+        guard (!rendererPaused || lockCaptureSeedPending),
+              !gpuFrameInFlight,
               let drawable = currentDrawable,
               let frameTexture,
               let commandBuffer = commandQueue.makeCommandBuffer()
@@ -188,7 +207,8 @@ final class TerminalMetalView: MTKView {
         }
         cellEncoder.endEncoding()
 
-        if lockScreenCaptureEnabled {
+        let seedFrameIsCurrent = rasterizedRevision == snapshot?.revision
+        if lockScreenCaptureEnabled || (lockCaptureSeedPending && seedFrameIsCurrent) {
             appendLockScreenReadback(to: commandBuffer, from: frameTexture)
         }
 
@@ -204,11 +224,38 @@ final class TerminalMetalView: MTKView {
         presentEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         presentEncoder.endEncoding()
         commandBuffer.present(drawable)
+        let publishedDescriptor = frameSurfaceDescriptor
+        if publishedDescriptor != nil {
+            sharedFrameSequence &+= 1
+            let sequence = sharedFrameSequence
+            commandBuffer.addCompletedHandler { [weak self] completedBuffer in
+                guard completedBuffer.status == .completed,
+                      let publishedDescriptor else { return }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          self.frameSurfaceDescriptor == publishedDescriptor else { return }
+                    self.onSharedFrame?(publishedDescriptor, sequence)
+                }
+            }
+        }
+        gpuFrameInFlight = true
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.gpuFrameInFlight = false
+                if let pending = self.pendingInstallation {
+                    self.pendingInstallation = nil
+                    self.accept(pending.frame, epoch: pending.epoch)
+                } else {
+                    self.schedulePreparation()
+                }
+            }
+        }
         commandBuffer.commit()
     }
 
     private func schedulePreparation() {
-        guard !rendererPaused, let snapshot else { return }
+        guard (!rendererPaused || lockCaptureSeedPending), let snapshot else { return }
         let pixelSize = TerminalRenderGeometry.pixelSize(
             configuration: renderConfiguration,
             drawableWidth: max(Int(drawableSize.width), 1),
@@ -221,7 +268,7 @@ final class TerminalMetalView: MTKView {
             preparedFrame = nil
             frameTexture = nil
         }
-        guard !rasterInFlight,
+        guard !rasterInFlight, pendingInstallation == nil,
               rasterizedRevision != snapshot.revision,
               preparedFrame?.revision != snapshot.revision else { return }
 
@@ -238,6 +285,10 @@ final class TerminalMetalView: MTKView {
         )
         preparationQueue.async { [weak self] in
             guard let self else { return }
+            if self.preparationEpoch != epoch {
+                self.frameRenderer.invalidate()
+                self.preparationEpoch = epoch
+            }
             let prepared = self.frameRenderer.prepare(
                 snapshot: snapshot,
                 configuration: configuration,
@@ -248,18 +299,27 @@ final class TerminalMetalView: MTKView {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.rasterInFlight = false
-                guard !self.rendererPaused,
-                      self.rasterEpoch == epoch,
-                      self.snapshot?.revision == prepared.revision else {
-                    self.schedulePreparation()
-                    return
-                }
-                self.install(prepared)
-                self.rasterizedRevision = prepared.revision
-                if prepared.requiresPresentation { self.needsDisplay = true }
-                if self.snapshot?.revision != prepared.revision { self.schedulePreparation() }
+                self.accept(prepared, epoch: epoch)
             }
         }
+    }
+
+    private func accept(_ prepared: TerminalPreparedFrame, epoch: UInt64) {
+        guard (!rendererPaused || lockCaptureSeedPending), rasterEpoch == epoch else {
+            schedulePreparation()
+            return
+        }
+        // Shared buffers/atlas must not be mutated while Metal reads them.
+        guard !gpuFrameInFlight else {
+            pendingInstallation = (prepared, epoch)
+            return
+        }
+        // Consume every prepared delta, even if a newer snapshot arrived.
+        // Only snapshots that have not entered preparation may be coalesced.
+        install(prepared)
+        rasterizedRevision = prepared.revision
+        if prepared.requiresPresentation || lockCaptureSeedPending { needsDisplay = true }
+        if snapshot?.revision != prepared.revision { schedulePreparation() }
     }
 
     private func install(_ prepared: TerminalPreparedFrame) {
@@ -271,6 +331,19 @@ final class TerminalMetalView: MTKView {
             alpha: 1
         )
         if frameTexture?.width != prepared.width || frameTexture?.height != prepared.height {
+            frameSurface = nil
+            frameSurfaceDescriptor = nil
+            let bytesPerRow = ((prepared.width * 4 + 63) / 64) * 64
+            let surfaceProperties: [String: Any] = [
+                kIOSurfaceWidth as String: prepared.width,
+                kIOSurfaceHeight as String: prepared.height,
+                kIOSurfaceBytesPerElement as String: 4,
+                kIOSurfaceBytesPerRow as String: bytesPerRow,
+                kIOSurfacePixelFormat as String: OSType(0x42475241), // BGRA
+                kIOSurfaceAllocSize as String: bytesPerRow * prepared.height,
+                kIOSurfaceIsGlobal as String: true,
+            ]
+            guard let surface = IOSurfaceCreate(surfaceProperties as CFDictionary) else { return }
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
                 pixelFormat: .bgra8Unorm,
                 width: prepared.width,
@@ -278,8 +351,21 @@ final class TerminalMetalView: MTKView {
                 mipmapped: false
             )
             descriptor.usage = [.renderTarget, .shaderRead]
-            descriptor.storageMode = .private
-            frameTexture = device.makeTexture(descriptor: descriptor)
+            descriptor.storageMode = .shared
+            guard let sharedTexture = device.makeTexture(
+                descriptor: descriptor,
+                iosurface: surface,
+                plane: 0
+            ) else { return }
+            frameSurface = surface
+            frameTexture = sharedTexture
+            frameSurfaceDescriptor = TerminalSharedFrameDescriptor(
+                surfaceID: IOSurfaceGetID(surface),
+                width: prepared.width,
+                height: prepared.height,
+                agentPID: Int(getpid())
+            )
+            sharedFrameSequence = 0
         }
         if atlasTexture == nil || uploadedAtlasGeneration != prepared.atlasGeneration {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -348,7 +434,13 @@ final class TerminalMetalView: MTKView {
     }
 
     private func captureCurrentTexture() {
-        guard lockScreenCaptureEnabled else { return }
+        guard lockScreenCaptureEnabled || lockCaptureSeedPending else { return }
+        if !lockScreenCaptureEnabled, lockCaptureSeedPending,
+           rasterizedRevision != snapshot?.revision {
+            schedulePreparation()
+            needsDisplay = true
+            return
+        }
         guard !lockCaptureInFlight else {
             lockCapturePending = true
             return
@@ -362,7 +454,7 @@ final class TerminalMetalView: MTKView {
     }
 
     private func appendLockScreenReadback(to commandBuffer: MTLCommandBuffer, from texture: MTLTexture) {
-        guard lockScreenCaptureEnabled else { return }
+        guard lockScreenCaptureEnabled || lockCaptureSeedPending else { return }
         guard !lockCaptureInFlight else {
             lockCapturePending = true
             return
@@ -409,14 +501,17 @@ final class TerminalMetalView: MTKView {
                 self.lockCaptureInFlight = false
                 let retryCapture = self.lockCapturePending
                 self.lockCapturePending = false
-                guard self.lockScreenCaptureEnabled,
-                      self.lockCaptureGeneration == captureGeneration,
+                guard self.lockCaptureGeneration == captureGeneration,
+                      self.lockScreenCaptureEnabled || self.lockCaptureSeedPending,
                       let pixels else {
-                    if retryCapture && self.lockScreenCaptureEnabled { self.captureCurrentTexture() }
+                    if retryCapture && (self.lockScreenCaptureEnabled || self.lockCaptureSeedPending) {
+                        self.captureCurrentTexture()
+                    }
                     return
                 }
                 self.onLockScreenFrame?(pixels, width, height)
-                if retryCapture { self.captureCurrentTexture() }
+                self.lockCaptureSeedPending = false
+                if retryCapture && self.lockScreenCaptureEnabled { self.captureCurrentTexture() }
             }
         }
     }
@@ -579,6 +674,11 @@ final class CoreTextGlyphAtlas {
 
     init(atlasSize: Int) {
         self.atlasSize = atlasSize
+    }
+
+    func invalidate() {
+        signature = nil
+        cachedConfiguration = nil
     }
 
     func prepare(
@@ -919,7 +1019,7 @@ final class CoreTextGlyphAtlas {
             fill(0, 0, width, height / 2)
         case 0x2581...0x2587:
             let eighths = Int(scalar - 0x2580)
-            fill(0, height - height * eighths / 8, width, height)
+            fill(0, height * (8 - eighths) / 8, width, height)
         case 0x2588:
             fill(0, 0, width, height)
         case 0x2589...0x258F:

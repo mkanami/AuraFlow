@@ -67,7 +67,10 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     private let lockScreenVideoIsActive: () -> Bool
     private let lockScreenCoordinator: any TerminalLockScreenCoordinating
     private let lockScreenFrameReadinessWaiter: (TimeInterval, String?) -> Bool
-    private let lockScreenOperationLock = NSLock()
+    // Preview speed updates use a separate controller instance. Serialize them
+    // with Start/Remove so a stale slider event cannot restore an old command.
+    private static let runtimeMutationLock = NSRecursiveLock()
+    private var lockScreenOperationLock: NSRecursiveLock { Self.runtimeMutationLock }
 
     init(
         store: TerminalWallpaperRuntimeStore = TerminalWallpaperRuntimeStore(),
@@ -147,6 +150,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         }
         store.removeCommand()
         store.removeHealth()
+        store.removeSharedFrameDescriptor()
         store.removeLockScreenPublication()
         try lockScreenCoordinator.restore()
         return store.status()
@@ -165,6 +169,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         }
         store.removeCommand()
         store.removeHealth()
+        store.removeSharedFrameDescriptor()
         store.removeLockScreenPublication()
         try lockScreenCoordinator.restore()
         return store.status()
@@ -175,6 +180,8 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     }
 
     func update(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
         let normalized = try validated(config)
         let previous = store.loadConfig()
         try store.saveConfig(normalized)
@@ -188,6 +195,8 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     }
 
     func resize(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
         let normalized = try validated(config)
         try store.saveConfig(normalized)
         if store.processIsAlive(pid: store.loadPID()) {
@@ -197,6 +206,8 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     }
 
     func setLaunchAtLogin(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
         var normalized = try validated(config)
         normalized.behavior.launchAtLogin = enabled
         try store.saveConfig(normalized)

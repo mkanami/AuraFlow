@@ -189,6 +189,13 @@ private func makeDiscoveredTerminalItems(count: Int, prefix: String = "tool") ->
 }
 
 @MainActor
+private func makePreviewSelectionStore() -> WallpaperPreviewSelectionStore {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AuraFlow-preview-selection-tests-\(UUID().uuidString)", isDirectory: true)
+    return WallpaperPreviewSelectionStore(selectionURL: directory.appendingPathComponent("selection.json"))
+}
+
+@MainActor
 private func makeViewModel(
     provider: StubTerminalCatalogProvider
 ) -> TerminalWallpaperViewModel {
@@ -398,27 +405,31 @@ func terminalFeaturedPresetsSortInstalledFirstAndUseOnlyAllowlistedFormulae() {
 }
 
 @Test @MainActor
-func terminalPresetInstallationThenLaunchAndSwitch() async throws {
+func terminalPresetInstallationThenPreviewAndSwitchDoesNotStartRuntime() async throws {
     let availability = TerminalPresetAvailability(installed: ["lavat"])
     let installer = StubTerminalWallpaperInstaller(availability: availability)
     let controller = StubTerminalWallpaperController()
+    let previewStore = makePreviewSelectionStore()
     let viewModel = TerminalWallpaperViewModel(
         controller: controller,
         installer: installer,
+        previewSelectionStore: previewStore,
         resolveExecutable: { availability.resolve($0) }
     )
 
     viewModel.use(TerminalWallpaperPreset.preset(id: "asciiquarium")!.item)
     try await waitForTerminalAction(viewModel)
     #expect(installer.calls == ["asciiquarium"])
-    #expect(controller.currentStatus.config.command.catalogItemID == "asciiquarium")
-    #expect(viewModel.isActive(TerminalWallpaperPreset.preset(id: "asciiquarium")!.item))
+    #expect(controller.startCount == 0)
+    #expect(previewStore.kind == .terminal)
+    #expect(previewStore.terminalConfiguration?.command.catalogItemID == "asciiquarium")
+    #expect(viewModel.isPreviewSelected(TerminalWallpaperPreset.preset(id: "asciiquarium")!.item))
 
     viewModel.use(TerminalWallpaperPreset.preset(id: "lavat")!.item)
     try await waitForTerminalAction(viewModel)
     #expect(installer.calls == ["asciiquarium"])
-    #expect(controller.startCount == 2)
-    #expect(controller.currentStatus.config.command.catalogItemID == "lavat")
+    #expect(controller.startCount == 0)
+    #expect(previewStore.terminalConfiguration?.command.catalogItemID == "lavat")
 }
 
 @Test @MainActor
@@ -448,9 +459,11 @@ func terminalPresetCanBootstrapMissingHomebrewThroughInstaller() async throws {
     let installer = StubTerminalWallpaperInstaller(availability: availability)
     installer.needsHomebrew = true
     let controller = StubTerminalWallpaperController()
+    let previewStore = makePreviewSelectionStore()
     let viewModel = TerminalWallpaperViewModel(
         controller: controller,
         installer: installer,
+        previewSelectionStore: previewStore,
         resolveExecutable: { availability.resolve($0) }
     )
 
@@ -458,26 +471,30 @@ func terminalPresetCanBootstrapMissingHomebrewThroughInstaller() async throws {
     try await waitForTerminalAction(viewModel)
 
     #expect(installer.stages == ["Preparing Homebrew…", "Installing…"])
-    #expect(controller.currentStatus.config.command.catalogItemID == "pipes")
+    #expect(controller.startCount == 0)
+    #expect(previewStore.terminalConfiguration?.command.catalogItemID == "pipes")
 }
 
 @Test @MainActor
-func terminalPresetVideoConflictPreventsInstallation() async throws {
+func terminalPreviewSelectionDoesNotRunWallpaperConflictPreflight() async throws {
     let availability = TerminalPresetAvailability()
     let installer = StubTerminalWallpaperInstaller(availability: availability)
     let controller = StubTerminalWallpaperController()
     controller.rejectStart = true
+    let previewStore = makePreviewSelectionStore()
     let viewModel = TerminalWallpaperViewModel(
         controller: controller,
         installer: installer,
+        previewSelectionStore: previewStore,
         resolveExecutable: { availability.resolve($0) }
     )
 
     viewModel.use(TerminalWallpaperPreset.preset(id: "lavat")!.item)
     try await waitForTerminalAction(viewModel)
-    #expect(installer.calls.isEmpty)
+    #expect(installer.calls == ["lavat"])
     #expect(controller.startCount == 0)
-    #expect(viewModel.errorMessage?.contains("video wallpaper") == true)
+    #expect(viewModel.errorMessage == nil)
+    #expect(previewStore.terminalConfiguration?.command.catalogItemID == "lavat")
 }
 
 @Test @MainActor
@@ -487,10 +504,12 @@ func terminalExactCommandUsesWallpaperWithoutInstallingPackage() async throws {
     let availability = TerminalPresetAvailability()
     let installer = StubTerminalWallpaperInstaller(availability: availability)
     let item = makeDiscoveredTerminalItems(count: 1, prefix: "mytool")[0]
+    let previewStore = makePreviewSelectionStore()
     let viewModel = TerminalWallpaperViewModel(
         controller: controller,
         catalogProvider: StubTerminalCatalogProvider(recorder: recorder, items: [item]),
-        installer: installer
+        installer: installer,
+        previewSelectionStore: previewStore
     )
 
     viewModel.setCatalogSearch("mytool")
@@ -499,7 +518,8 @@ func terminalExactCommandUsesWallpaperWithoutInstallingPackage() async throws {
     try await waitForTerminalAction(viewModel)
 
     #expect(installer.calls.isEmpty)
-    #expect(controller.currentStatus.config.command.catalogItemID == item.id)
+    #expect(controller.startCount == 0)
+    #expect(previewStore.terminalConfiguration?.command.catalogItemID == item.id)
 }
 
 @Test func terminalInstallerRejectsAnythingOutsideFourPresets() async {

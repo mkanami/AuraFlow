@@ -14,6 +14,7 @@ final class TerminalLockScreenFramePublisher {
     private var generation: UInt64 = 0 // Main thread only.
     private var lastPublishedAt: TimeInterval = 0 // Main thread only.
     private var lockScreenActive = false // Main thread only.
+    private var didPublishDesktopSeed = false // Main thread only.
     private var maxFPS = 30 // Main thread only.
 
     init(store: TerminalWallpaperRuntimeStore) {
@@ -50,6 +51,47 @@ final class TerminalLockScreenFramePublisher {
         }
     }
 
+    /// Publishes one current desktop frame so the Screen Saver source is ready
+    /// before the Mac locks. Animation frames are still only encoded while locked.
+    func publishDesktopSeed(_ bytes: Data, width: Int, height: Int) {
+        guard !lockScreenActive,
+              !didPublishDesktopSeed,
+              !writing,
+              width > 0,
+              height > 0 else { return }
+        writing = true
+        let currentGeneration = generation
+        let store = store
+        queue.async { [weak self] in
+            let success = Self.encodePNG(bytes, width: width, height: height).map { png in
+                do {
+                    try store.ensureDirectories()
+                    try png.write(to: store.lockScreenFrameURL, options: .atomic)
+                    return true
+                } catch {
+                    return false
+                }
+            } ?? false
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.writing = false
+                guard success, self.generation == currentGeneration,
+                      !self.lockScreenActive else { return }
+                self.didPublishDesktopSeed = true
+                self.lastPublishedAt = Date().timeIntervalSince1970
+                try? store.saveLockScreenHeartbeat(TerminalLockScreenHeartbeat(pid: Int(getpid())))
+            }
+        }
+    }
+
+    /// Allows a restart to replace the previous desktop seed with a frame from
+    /// the new PTY session without removing the currently available Lock Screen image.
+    func beginDesktopGeneration() {
+        generation &+= 1
+        lastPublishedAt = 0
+        didPublishDesktopSeed = false
+    }
+
     func configure(maxFPS: Int) {
         self.maxFPS = min(max(maxFPS, 1), 60)
     }
@@ -70,6 +112,7 @@ final class TerminalLockScreenFramePublisher {
     func revoke() {
         generation &+= 1
         lastPublishedAt = 0
+        didPublishDesktopSeed = false
         store.removeLockScreenPublication()
     }
 

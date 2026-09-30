@@ -195,6 +195,11 @@ struct TerminalWallpaperSettingsView: View {
                     }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                     advancedCommandFields
+                    Button("Show command in preview") {
+                        viewModel.showCurrentCommandInPreview()
+                    }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                    .disabled(viewModel.isBusy || viewModel.executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
@@ -203,7 +208,7 @@ struct TerminalWallpaperSettingsView: View {
     private func presetCard(_ preset: TerminalWallpaperPreset) -> some View {
         let item = preset.item
         let installed = viewModel.cachedExecutablePath(for: item) != nil
-        let active = viewModel.isActive(item)
+        let selectedForPreview = viewModel.isPreviewSelected(item)
         return HStack(spacing: 12) {
             Image(systemName: item.systemImage)
                 .font(.title3)
@@ -216,11 +221,11 @@ struct TerminalWallpaperSettingsView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
-            Button(active ? "Current" : installed ? "Set wallpaper" : "Install & set") {
+            Button(selectedForPreview ? "Previewing" : installed ? "Show in preview" : "Install & preview") {
                 viewModel.use(item)
             }
             .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
-            .disabled(viewModel.isBusy || active)
+            .disabled(viewModel.isBusy || selectedForPreview)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -239,9 +244,9 @@ struct TerminalWallpaperSettingsView: View {
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             }
             Spacer(minLength: 4)
-            Button(viewModel.isActive(item) ? "Current" : "Set wallpaper") { viewModel.use(item) }
+            Button(viewModel.isPreviewSelected(item) ? "Previewing" : "Show in preview") { viewModel.use(item) }
                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
-                .disabled(viewModel.isBusy || viewModel.isActive(item) || viewModel.cachedExecutablePath(for: item) == nil)
+                .disabled(viewModel.isBusy || viewModel.isPreviewSelected(item) || viewModel.cachedExecutablePath(for: item) == nil)
         }
         .padding(12)
         .background(catalogRowBackground)

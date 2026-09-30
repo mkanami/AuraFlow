@@ -1,4 +1,5 @@
 import AppKit
+import AuraTerminalRendering
 import AuraTerminalWallpaperCore
 import Foundation
 import Metal
@@ -33,6 +34,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var fullscreenTimer: Timer?
     private var fullscreenPausePolicy = TerminalFullscreenPausePolicy()
     private var lockScreenIsLocked = false
+    private var lockScreenSeedCaptureGeneration: UInt64?
     private var lastCommandID: String?
     private var frames = 0
     private var renderedFrames = 0
@@ -41,6 +43,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var framesAtChildStart = 0
     private var reportedNoOutput = false
     private var terminating = false
+    private var publishedSharedFrameDescriptor: TerminalSharedFrameDescriptor?
 
     init(configurationURL: URL) {
         let supportURL = configurationURL.deletingLastPathComponent()
@@ -53,6 +56,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         framePublisher.revoke()
+        store.removeSharedFrameDescriptor()
         logger.info("Terminal Wallpaper agent started")
         try? store.savePID()
         installNotifications()
@@ -310,8 +314,13 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildWindows() {
+        framePublisher.beginDesktopGeneration()
+        store.removeSharedFrameDescriptor()
+        publishedSharedFrameDescriptor = nil
+        lockScreenSeedCaptureGeneration = nil
         for window in windows {
             window.onLockScreenFrame = nil
+            window.onSharedFrame = nil
             window.orderOut(nil)
         }
         windows.removeAll()
@@ -329,8 +338,40 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 guard let self,
                       self.displayGeneration == generation,
                       !self.terminating,
-                      self.frames > self.framesAtChildStart else { return }
-                self.framePublisher.publish(bytes, width: width, height: height)
+                      self.session.childPID != nil else { return }
+                if self.lockScreenIsLocked {
+                    self.framePublisher.publish(bytes, width: width, height: height)
+                } else {
+                    self.framePublisher.publishDesktopSeed(bytes, width: width, height: height)
+                }
+            }
+            firstWindow.onSharedFrame = { [weak self] descriptor, sequence in
+                guard let self,
+                      self.displayGeneration == generation,
+                      !self.terminating,
+                      self.session.childPID != nil else { return }
+                if self.publishedSharedFrameDescriptor != descriptor {
+                    do {
+                        try self.store.saveSharedFrameDescriptor(descriptor)
+                        self.publishedSharedFrameDescriptor = descriptor
+                    } catch {
+                        self.logger.error("Could not publish terminal preview surface: \(error.localizedDescription, privacy: .public)")
+                        return
+                    }
+                }
+                DistributedNotificationCenter.default().postNotificationName(
+                    TerminalWallpaperRuntimeNotifications.sharedFrameDidUpdate,
+                    object: nil,
+                    userInfo: [
+                        "surface_id": NSNumber(value: descriptor.surfaceID),
+                        "width": NSNumber(value: descriptor.width),
+                        "height": NSNumber(value: descriptor.height),
+                        "agent_pid": NSNumber(value: descriptor.agentPID),
+                        "generation": descriptor.generation,
+                        "sequence": NSNumber(value: sequence),
+                    ],
+                    deliverImmediately: true
+                )
             }
         }
         for window in windows {
@@ -347,6 +388,12 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             window.update(snapshot: latestSnapshot, configuration: config.render)
             renderedFrames += 1
         }
+        guard !lockScreenIsLocked,
+              session.childPID != nil,
+              lockScreenSeedCaptureGeneration != displayGeneration,
+              let firstWindow = windows.first else { return }
+        lockScreenSeedCaptureGeneration = displayGeneration
+        firstWindow.requestLockScreenSeedCapture()
     }
 
     private func lockScreenStateChanged(_ locked: Bool) {

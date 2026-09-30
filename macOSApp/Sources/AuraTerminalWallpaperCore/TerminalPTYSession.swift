@@ -5,16 +5,30 @@ public final class TerminalPTYSession {
     public typealias DataHandler = (Data) -> Void
     public typealias ExitHandler = (Int32) -> Void
 
-    public private(set) var childPID: pid_t?
-    public private(set) var masterFileDescriptor: Int32?
-    public private(set) var isPaused = false
+    private var runningPID: pid_t?
+    private var masterDescriptor: Int32?
+    private var paused = false
+    public var childPID: pid_t? {
+        stateLock.lock(); defer { stateLock.unlock() }; return runningPID
+    }
+    public var masterFileDescriptor: Int32? {
+        stateLock.lock(); defer { stateLock.unlock() }; return masterDescriptor
+    }
+    public var isPaused: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }; return paused
+    }
 
     private let queue = DispatchQueue(label: "com.andrijvergeles.auraflow.terminal-pty", qos: .userInitiated)
+    private let stateLock = NSRecursiveLock()
+    private var generation: UInt64 = 0
     private var readSource: DispatchSourceRead?
     private var exitHandler: ExitHandler?
     private var didFinish = false
+    private let inheritedEnvironment: [String: String]
 
-    public init() {}
+    public init(environment: [String: String] = ProcessInfo.processInfo.environment) {
+        inheritedEnvironment = environment
+    }
 
     deinit {
         stop()
@@ -28,10 +42,25 @@ public final class TerminalPTYSession {
         onData: @escaping DataHandler,
         onExit: @escaping ExitHandler
     ) throws -> pid_t {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         stop()
-        let executable = try resolveExecutable(for: command)
+        let searchEnvironment = TerminalProcessEnvironment.make(
+            inherited: inheritedEnvironment,
+            overrides: command.environment,
+            executable: command.executable,
+            columns: columns,
+            rows: rows
+        )
+        let executable = try resolveExecutable(for: command, environment: searchEnvironment)
         let arguments = [executable] + command.arguments
-        let environment = mergedEnvironment(command.environment, columns: columns, rows: rows)
+        let environment = TerminalProcessEnvironment.make(
+            inherited: inheritedEnvironment,
+            overrides: command.environment,
+            executable: executable,
+            columns: columns,
+            rows: rows
+        )
         let argumentBlob = nulSeparatedBlob(arguments)
         let environmentBlob = nulSeparatedBlob(environment.map { "\($0.key)=\($0.value)" }.sorted())
         var child: pid_t = 0
@@ -64,9 +93,9 @@ public final class TerminalPTYSession {
             throw TerminalPTYError.spawnFailed(message.isEmpty ? "forkpty failed" : message)
         }
 
-        childPID = child
-        isPaused = false
-        masterFileDescriptor = master
+        runningPID = child
+        paused = false
+        masterDescriptor = master
         exitHandler = onExit
         didFinish = false
         installReadSource(onData: onData)
@@ -74,6 +103,8 @@ public final class TerminalPTYSession {
     }
 
     public func resize(columns: Int, rows: Int) throws {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         guard let masterFileDescriptor, let childPID else {
             throw TerminalPTYError.notRunning
         }
@@ -88,6 +119,8 @@ public final class TerminalPTYSession {
     }
 
     public func setPaused(_ paused: Bool) throws {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         guard let childPID else { throw TerminalPTYError.notRunning }
         guard paused != isPaused else { return }
         let signalNumber = paused ? SIGSTOP : SIGCONT
@@ -95,10 +128,13 @@ public final class TerminalPTYSession {
         guard result == 0 || errno == ESRCH else {
             throw TerminalPTYError.pauseFailed
         }
-        isPaused = paused
+        self.paused = paused
     }
 
     public func stop() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        generation &+= 1
         readSource?.cancel()
         readSource = nil
         if let childPID {
@@ -109,7 +145,8 @@ public final class TerminalPTYSession {
             var status: Int32 = 0
             var reaped = false
             for _ in 0..<20 {
-                if waitpid(childPID, &status, WNOHANG) == childPID {
+                let result = waitpid(childPID, &status, WNOHANG)
+                if result == childPID || (result == -1 && errno == ECHILD) {
                     reaped = true
                     break
                 }
@@ -117,26 +154,33 @@ public final class TerminalPTYSession {
             }
             if !reaped {
                 _ = aura_terminal_pty_terminate(childPID, SIGKILL)
-                _ = waitpid(childPID, &status, 0)
+                // Reaping must never hold the UI/shutdown queue indefinitely.
+                DispatchQueue.global(qos: .utility).async {
+                    var exitStatus: Int32 = 0
+                    _ = waitpid(childPID, &exitStatus, 0)
+                }
             }
         }
-        if let masterFileDescriptor {
-            _ = aura_terminal_pty_close(masterFileDescriptor)
-        }
-        self.masterFileDescriptor = nil
-        self.childPID = nil
-        isPaused = false
+        masterDescriptor = nil
+        runningPID = nil
+        paused = false
         exitHandler = nil
         didFinish = true
     }
 
     private func installReadSource(onData: @escaping DataHandler) {
         guard let masterFileDescriptor else { return }
+        let sourceGeneration = generation
         let source = DispatchSource.makeReadSource(fileDescriptor: masterFileDescriptor, queue: queue)
         source.setEventHandler { [weak self] in
             guard let self else { return }
             var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-            while true {
+            // Bound each drain so stop/resize can acquire the state lock even
+            // if a child produces bytes faster than they can be consumed.
+            for _ in 0..<16 {
+                self.stateLock.lock()
+                defer { self.stateLock.unlock() }
+                guard self.generation == sourceGeneration, !self.didFinish else { return }
                 let count = read(masterFileDescriptor, &buffer, buffer.count)
                 if count > 0 {
                     onData(Data(buffer[0..<count]))
@@ -148,17 +192,18 @@ public final class TerminalPTYSession {
                 break
             }
         }
-        source.setCancelHandler { [weak self] in
-            guard let self else { return }
-            if let masterFileDescriptor = self.masterFileDescriptor {
-                _ = aura_terminal_pty_close(masterFileDescriptor)
-            }
+        source.setCancelHandler {
+            // The source owns this exact descriptor. Never close a new
+            // session's descriptor or close the old one twice after reuse.
+            _ = aura_terminal_pty_close(masterFileDescriptor)
         }
         source.resume()
         readSource = source
     }
 
     private func finish(status: Int32) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         guard !didFinish else { return }
         didFinish = true
         readSource?.cancel()
@@ -166,29 +211,15 @@ public final class TerminalPTYSession {
         let callback = exitHandler
         exitHandler = nil
         if let childPID {
-            var childStatus: Int32 = 0
-            _ = waitpid(childPID, &childStatus, 0)
+            DispatchQueue.global(qos: .utility).async {
+                var childStatus: Int32 = 0
+                _ = waitpid(childPID, &childStatus, 0)
+            }
         }
-        if let masterFileDescriptor {
-            _ = aura_terminal_pty_close(masterFileDescriptor)
-        }
-        self.masterFileDescriptor = nil
-        self.childPID = nil
-        isPaused = false
+        masterDescriptor = nil
+        runningPID = nil
+        paused = false
         callback?(status)
-    }
-
-    private func mergedEnvironment(_ overrides: [String: String], columns: Int, rows: Int) -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
-        environment["TERM"] = "xterm-256color"
-        environment["COLORTERM"] = "truecolor"
-        environment["COLUMNS"] = String(columns)
-        environment["LINES"] = String(rows)
-        environment["AURAFLOW_TERMINAL_WALLPAPER"] = "1"
-        for (key, value) in overrides {
-            environment[key] = value
-        }
-        return environment
     }
 
     private func nulSeparatedBlob(_ values: [String]) -> Data {
@@ -200,10 +231,10 @@ public final class TerminalPTYSession {
         return data
     }
 
-    private func resolveExecutable(for command: TerminalCommandConfiguration) throws -> String {
+    private func resolveExecutable(for command: TerminalCommandConfiguration, environment: [String: String]) throws -> String {
         if let catalogItemID = command.catalogItemID,
            let catalogItem = TerminalWallpaperCatalog.item(id: catalogItemID) {
-            if let executable = catalogItem.resolvedExecutable() {
+            if let executable = catalogItem.resolvedExecutable(environment: environment) {
                 return executable
             }
             throw TerminalPTYError.executableNotFound(catalogItem.title)
@@ -213,7 +244,7 @@ public final class TerminalPTYSession {
         if value.lowercased().hasSuffix(".app") {
             throw TerminalPTYError.guiApplicationNotSupported
         }
-        guard let executable = TerminalExecutableLocator.resolve(value) else {
+        guard let executable = TerminalExecutableLocator.resolve(value, environment: environment) else {
             throw TerminalPTYError.executableNotFound(value)
         }
         return executable

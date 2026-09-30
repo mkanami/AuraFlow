@@ -91,6 +91,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private let catalogProvider: any TerminalWallpaperCatalogProviding
     private let installer: any TerminalWallpaperInstalling
     private let resolveExecutable: @Sendable (TerminalWallpaperCatalogItem) -> String?
+    private let previewSelectionStore: WallpaperPreviewSelectionStore?
     private var catalogPrepared = false
     private var catalogSearchGeneration = 0
     private var catalogSearchTask: Task<Void, Never>?
@@ -103,11 +104,14 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private var statusRefreshInFlight = false
     private var statusRefreshGeneration = 0
     private var agentStartObserver: NSObjectProtocol?
+    private var previewConfigPersistence: AnyCancellable?
+    private var previewConfigPersistenceTask: Task<Void, Never>?
 
     init(
         controller: TerminalWallpaperControlling? = nil,
         catalogProvider: any TerminalWallpaperCatalogProviding = SystemTerminalWallpaperCatalogProvider(),
         installer: any TerminalWallpaperInstalling = SystemTerminalWallpaperInstaller(),
+        previewSelectionStore: WallpaperPreviewSelectionStore? = nil,
         resolveExecutable: @escaping @Sendable (TerminalWallpaperCatalogItem) -> String? = { $0.resolvedExecutable() }
     ) {
         let resolvedController: TerminalWallpaperControlling
@@ -122,8 +126,10 @@ final class TerminalWallpaperViewModel: ObservableObject {
         self.catalogProvider = catalogProvider
         self.installer = installer
         self.resolveExecutable = resolveExecutable
+        self.previewSelectionStore = previewSelectionStore
 
-        let config = (try? resolvedController.status().config) ?? .defaultConfig
+        let runtimeConfig = (try? resolvedController.status().config) ?? .defaultConfig
+        let config = previewSelectionStore?.terminalConfiguration ?? runtimeConfig
         executable = config.command.executable
         argumentsText = config.command.arguments.joined(separator: "\n")
         selectedCatalogItemID = config.command.catalogItemID
@@ -174,6 +180,19 @@ final class TerminalWallpaperViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }
+        previewConfigPersistence = objectWillChange.sink { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.previewSelectionStore?.kind == .terminal else { return }
+                self.previewConfigPersistenceTask?.cancel()
+                self.previewConfigPersistenceTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 90_000_000)
+                    guard !Task.isCancelled, let self,
+                          self.previewSelectionStore?.kind == .terminal else { return }
+                    self.previewSelectionStore?.selectTerminal(self.makeConfig())
+                }
+            }
+        }
     }
 
     deinit {
@@ -209,6 +228,13 @@ final class TerminalWallpaperViewModel: ObservableObject {
         guard status.running else { return false }
         if let activeID = status.config.command.catalogItemID { return activeID == item.id }
         return cachedExecutablePath(for: item) == status.config.command.executable
+    }
+
+    func isPreviewSelected(_ item: TerminalWallpaperCatalogItem) -> Bool {
+        guard previewSelectionStore?.kind == .terminal,
+              let selected = previewSelectionStore?.terminalConfiguration?.command else { return false }
+        return selected.catalogItemID == item.id
+            || (selected.catalogItemID == nil && selected.executable == cachedExecutablePath(for: item))
     }
 
     func executablePath(for item: TerminalWallpaperCatalogItem) -> String? {
@@ -338,7 +364,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     func use(_ item: TerminalWallpaperCatalogItem) {
-        guard !isBusy, !isActive(item) else { return }
+        guard !isBusy else { return }
         isBusy = true
         statusRefreshGeneration &+= 1
         errorMessage = nil
@@ -346,7 +372,6 @@ final class TerminalWallpaperViewModel: ObservableObject {
         installHelpURL = nil
         let installationID = UUID()
         activeInstallationID = installationID
-        let controller = controller
         let installer = installer
         let preset = TerminalWallpaperPreset.preset(id: item.id)
         Task { @MainActor in
@@ -356,12 +381,6 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 activeInstallationID = nil
             }
             do {
-                try await withCheckedThrowingContinuation { continuation in
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        do { try controller.ensureCanStart(); continuation.resume() }
-                        catch { continuation.resume(throwing: error) }
-                    }
-                }
                 if let preset, cachedExecutablePath(for: item) == nil {
                     try await installer.install(preset: preset) { [weak self] stage in
                         Task { @MainActor in
@@ -379,15 +398,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
                     throw TerminalWallpaperInstallError.executableStillMissing
                 }
                 select(item)
-                let config = makeConfig()
-                let newStatus: TerminalWallpaperStatus = try await withCheckedThrowingContinuation { continuation in
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        do { continuation.resume(returning: try controller.start(config: config)) }
-                        catch { continuation.resume(throwing: error) }
-                    }
-                }
-                apply(newStatus)
-                statusMessage = "\(item.title) is now your terminal wallpaper."
+                previewSelectionStore?.selectTerminal(makeConfig())
+                statusMessage = "\(item.title) is showing in AuraFlow preview. Use Start to apply it."
             } catch {
                 errorMessage = error.localizedDescription
                 if case TerminalWallpaperInstallError.unsupportedHomebrewPlatform = error {
@@ -410,12 +422,24 @@ final class TerminalWallpaperViewModel: ObservableObject {
         argumentsText = ""
         workingDirectory = ""
         environmentText = ""
+        previewSelectionStore?.selectTerminal(makeConfig())
+        statusMessage = "\(url.deletingPathExtension().lastPathComponent) is showing in AuraFlow preview. Use Start to apply it."
         return true
     }
 
     func setExecutable(_ value: String) {
         selectedCatalogItemID = nil
         executable = value
+    }
+
+    func showCurrentCommandInPreview() {
+        guard !executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            errorMessage = "Choose a terminal executable first."
+            return
+        }
+        errorMessage = nil
+        previewSelectionStore?.selectTerminal(makeConfig())
+        statusMessage = "Terminal command is showing in AuraFlow preview. Use Start to apply it."
     }
 
     func apply() {
@@ -584,14 +608,15 @@ final class TerminalWallpaperViewModel: ObservableObject {
             textScale: textScale
         )
         render = render.normalized()
+        let command = TerminalCommandConfiguration(
+            catalogItemID: selectedCatalogItemID,
+            executable: executable,
+            arguments: argumentsText.split(whereSeparator: \.isNewline).map(String.init),
+            workingDirectory: workingDirectory.isEmpty ? nil : workingDirectory,
+            environment: environment
+        )
         return TerminalWallpaperConfig(
-            command: TerminalCommandConfiguration(
-                catalogItemID: selectedCatalogItemID,
-                executable: executable,
-                arguments: argumentsText.split(whereSeparator: \.isNewline).map(String.init),
-                workingDirectory: workingDirectory.isEmpty ? nil : workingDirectory,
-                environment: environment
-            ),
+            command: command,
             render: render,
             behavior: TerminalWallpaperBehavior(
                 launchAtLogin: launchAtLogin,

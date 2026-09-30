@@ -97,7 +97,7 @@ public struct TerminalCell: Codable, Equatable, Sendable {
     }
 }
 
-public struct TerminalGridSnapshot: Equatable, Sendable {
+public struct TerminalGridSnapshot: Codable, Equatable, Sendable {
     public let columns: Int
     public let rows: Int
     public let cells: [TerminalCell]

@@ -1988,6 +1988,7 @@ final class AppViewModel: ObservableObject {
     let catalogViewModel: CatalogViewModel
     let previewViewModel: PreviewViewModel
     let lifecycleViewModel: LifecycleViewModel
+    private let previewSelectionStore: WallpaperPreviewSelectionStore?
 
     @Published var autostartEnabled: Bool = false
     @Published var blendInterpolationEnabled: Bool = false
@@ -2271,7 +2272,7 @@ final class AppViewModel: ObservableObject {
 
     /// Stop pauses playback without releasing the installed wallpaper session.
     /// Start and Lock must remain unavailable until Remove clears that session.
-    private var hasInstalledWallpaperSessionForControls: Bool {
+    var hasInstalledWallpaperSessionForControls: Bool {
         isRunning || isPlaybackPaused || isLockScreenOnlyActive
     }
 
@@ -2414,7 +2415,8 @@ final class AppViewModel: ObservableObject {
         optimizationStore: VideoOptimizationStore = VideoOptimizationStore(),
         catalogProvider: WallpaperCatalogProviding = ManagedWallpaperCatalogProvider(),
         appSupportDirectoryURL: URL? = nil,
-        previewStateURL: URL? = nil
+        previewStateURL: URL? = nil,
+        previewSelectionStore: WallpaperPreviewSelectionStore? = nil
     ) {
         let resolvedAppSupportURL = appSupportDirectoryURL
             ?? Self.defaultAppSupportDirectoryForCurrentProcess()
@@ -2425,6 +2427,7 @@ final class AppViewModel: ObservableObject {
             previewStateURL: resolvedPreviewStateURL
         )
         self.lifecycleViewModel = LifecycleViewModel()
+        self.previewSelectionStore = previewSelectionStore
         self.optimizationStore = optimizationStore
         let catalogDirectoryURL = resolvedAppSupportURL
             .appendingPathComponent("Catalog", isDirectory: true)
@@ -2472,6 +2475,9 @@ final class AppViewModel: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &featureViewModelCancellables)
         previewViewModel.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &featureViewModelCancellables)
+        previewSelectionStore?.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &featureViewModelCancellables)
         lifecycleViewModel.objectWillChange
@@ -4084,7 +4090,7 @@ final class AppViewModel: ObservableObject {
             &isLockScreenOnlyActive,
             to: lockScreenOnlyActive
         )
-        Self.setIfChanged(&playbackSpeed, to: status.config.playback_speed)
+        Self.setIfChanged(&previewViewModel.playbackSpeed, to: status.config.playback_speed)
         Self.setIfChanged(&autostartEnabled, to: status.autostart ?? status.config.autostart ?? false)
         if let warning = autostartWarning(for: status) {
             if backgroundUpdate {
@@ -4773,6 +4779,7 @@ final class AppViewModel: ObservableObject {
         posterRefererURL: URL? = nil,
         posterTitle: String? = nil
     ) {
+        previewSelectionStore?.selectVideo()
         cancelPreviewPreparation()
         previewViewModel.selectPendingVideo(url)
         previewViewModel.setPoster(

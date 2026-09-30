@@ -228,17 +228,29 @@ public struct TerminalWallpaperConfig: Codable, Equatable, Sendable {
     public var command: TerminalCommandConfiguration
     public var render: TerminalRenderConfiguration
     public var behavior: TerminalWallpaperBehavior
+    public var playbackSpeed: Double
 
     public init(
         schemaVersion: Int = TerminalWallpaperConfig.currentSchemaVersion,
         command: TerminalCommandConfiguration = TerminalCommandConfiguration(),
         render: TerminalRenderConfiguration = TerminalRenderConfiguration(),
-        behavior: TerminalWallpaperBehavior = TerminalWallpaperBehavior()
+        behavior: TerminalWallpaperBehavior = TerminalWallpaperBehavior(),
+        playbackSpeed: Double = 1
     ) {
         self.schemaVersion = schemaVersion
         self.command = command
         self.render = render
         self.behavior = behavior
+        self.playbackSpeed = playbackSpeed
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? Self.currentSchemaVersion
+        command = try container.decode(TerminalCommandConfiguration.self, forKey: .command)
+        render = try container.decode(TerminalRenderConfiguration.self, forKey: .render)
+        behavior = try container.decode(TerminalWallpaperBehavior.self, forKey: .behavior)
+        playbackSpeed = try container.decodeIfPresent(Double.self, forKey: .playbackSpeed) ?? 1
     }
 
     public static let defaultConfig = TerminalWallpaperConfig()
@@ -253,6 +265,7 @@ public struct TerminalWallpaperConfig: Codable, Equatable, Sendable {
             result.command.workingDirectory = nil
         }
         result.render = render.normalized()
+        result.playbackSpeed = playbackSpeed.isFinite ? min(max(playbackSpeed, 0.1), 4) : 1
         return result
     }
 
@@ -261,6 +274,7 @@ public struct TerminalWallpaperConfig: Codable, Equatable, Sendable {
         case command
         case render
         case behavior
+        case playbackSpeed = "playback_speed"
     }
 }
 

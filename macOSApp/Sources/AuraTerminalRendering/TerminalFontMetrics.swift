@@ -2,13 +2,13 @@ import CoreText
 import Foundation
 import AuraTerminalWallpaperCore
 
-struct TerminalCellMetrics: Equatable {
-    let width: Double
-    let height: Double
+public struct TerminalCellMetrics: Equatable {
+    public let width: Double
+    public let height: Double
 }
 
-enum TerminalFontMetrics {
-    static func cellMetrics(for configuration: TerminalRenderConfiguration) -> TerminalCellMetrics {
+public enum TerminalFontMetrics {
+    public static func cellMetrics(for configuration: TerminalRenderConfiguration) -> TerminalCellMetrics {
         cellMetrics(
             family: configuration.fontFamily,
             pointSize: configuration.effectiveFontSize,

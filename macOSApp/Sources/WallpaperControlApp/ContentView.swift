@@ -138,9 +138,11 @@ private func speedOverlayPillWidth(for availableWidth: CGFloat) -> CGFloat {
 
 struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
+    @ObservedObject var terminalWallpaperViewModel: TerminalWallpaperViewModel
+    @ObservedObject var terminalPreviewModel: TerminalWallpaperPreviewModel
+    @ObservedObject var previewSelectionStore: WallpaperPreviewSelectionStore
     @State private var isAdjustingSpeed: Bool = false
     @State private var window: NSWindow?
-    @StateObject private var terminalWallpaperViewModel = TerminalWallpaperViewModel()
     @StateObject private var terminalAppearance = TerminalPreviewAppearanceModel()
 
     private var terminalAppearanceSource: String? {
@@ -269,6 +271,8 @@ struct ContentView: View {
             Color.clear
 
             PreviewLayer(
+                previewSelectionStore: previewSelectionStore,
+                terminalPreviewModel: terminalPreviewModel,
                 player: viewModel.previewPlayer,
                 wallpaperURL: viewModel.currentVideoURL ?? viewModel.appliedVideoURL,
                 aspectRatio: aspectRatio,
@@ -512,6 +516,8 @@ final class TitlebarInteractionNSView: NSView {
 }
 
 struct PreviewLayer: View {
+    @ObservedObject var previewSelectionStore: WallpaperPreviewSelectionStore
+    @ObservedObject var terminalPreviewModel: TerminalWallpaperPreviewModel
     let player: AVPlayer?
     let wallpaperURL: URL?
     let aspectRatio: CGFloat
@@ -524,7 +530,9 @@ struct PreviewLayer: View {
 
     var body: some View {
         Group {
-            if let wallpaperURL,
+            if previewSelectionStore.kind == .terminal {
+                TerminalWallpaperPreviewSurface(model: terminalPreviewModel)
+            } else if let wallpaperURL,
                WallpaperMediaKind.forURL(wallpaperURL).isStaticImage,
                let image = NSImage(contentsOf: wallpaperURL) {
                 Image(nsImage: image)

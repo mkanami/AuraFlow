@@ -105,7 +105,16 @@ int aura_terminal_pty_set_nonblocking(int master_fd) {
     if (flags < 0) {
         return -1;
     }
-    return fcntl(master_fd, F_SETFL, flags | O_NONBLOCK);
+    if (fcntl(master_fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        return -1;
+    }
+    // A second preview/TUI must never inherit the first session's master.
+    // Inherited PTYs keep each other's terminal/exit lifetime alive.
+    int descriptor_flags = fcntl(master_fd, F_GETFD, 0);
+    if (descriptor_flags < 0) {
+        return -1;
+    }
+    return fcntl(master_fd, F_SETFD, descriptor_flags | FD_CLOEXEC);
 }
 
 int aura_terminal_pty_resize(int master_fd, pid_t child_pid, uint16_t columns, uint16_t rows) {

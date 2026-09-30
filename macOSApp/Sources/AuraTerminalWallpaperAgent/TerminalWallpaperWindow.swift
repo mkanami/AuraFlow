@@ -1,4 +1,5 @@
 import AppKit
+import AuraTerminalRendering
 import AuraTerminalWallpaperCore
 import Metal
 import MetalKit
@@ -9,6 +10,11 @@ final class TerminalWallpaperWindow: NSWindow {
     var onLockScreenFrame: ((Data, Int, Int) -> Void)? {
         get { terminalView.onLockScreenFrame }
         set { terminalView.onLockScreenFrame = newValue }
+    }
+
+    var onSharedFrame: ((TerminalSharedFrameDescriptor, UInt64) -> Void)? {
+        get { terminalView.onSharedFrame }
+        set { terminalView.onSharedFrame = newValue }
     }
 
     init(screen: NSScreen, device: MTLDevice) {
@@ -47,5 +53,9 @@ final class TerminalWallpaperWindow: NSWindow {
 
     func setLockScreenCaptureEnabled(_ enabled: Bool) {
         terminalView.setLockScreenCaptureEnabled(enabled)
+    }
+
+    func requestLockScreenSeedCapture() {
+        terminalView.requestLockScreenSeedCapture()
     }
 }
