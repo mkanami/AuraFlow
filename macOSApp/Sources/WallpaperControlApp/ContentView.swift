@@ -141,6 +141,27 @@ struct ContentView: View {
     @State private var isAdjustingSpeed: Bool = false
     @State private var window: NSWindow?
     @StateObject private var terminalWallpaperViewModel = TerminalWallpaperViewModel()
+    @StateObject private var terminalAppearance = TerminalPreviewAppearanceModel()
+
+    private var terminalAppearanceSource: String? {
+        guard previewSelectionStore.kind == .terminal else { return nil }
+        return TerminalPreviewAppearanceModel.sourceKey(
+            configuration: previewSelectionStore.terminalConfiguration,
+            generation: terminalPreviewModel.previewGeneration,
+            shared: terminalPreviewModel.sharedFrame
+        )
+    }
+
+    private var effectiveGlassAppearance: AdaptiveGlassAppearance {
+        let terminal = terminalAppearance.sourceKey == terminalAppearanceSource
+            ? terminalAppearance.appearance
+            : TerminalPreviewAppearanceModel.fallback(for: previewSelectionStore.terminalConfiguration)
+        return TerminalPreviewAppearanceModel.resolved(
+            kind: previewSelectionStore.kind,
+            video: viewModel.adaptiveGlassAppearance,
+            terminal: terminal
+        )
+    }
 
     private var aspectRatio: CGFloat { mainScreenAspectRatio() }
     private let topOverlayTopPadding: CGFloat = 18
@@ -220,10 +241,16 @@ struct ContentView: View {
         .task {
             await viewModel.loadStatus()
         }
-        .environment(\.adaptiveGlassAppearance, viewModel.adaptiveGlassAppearance)
+        .environment(\.adaptiveGlassAppearance, effectiveGlassAppearance)
+        .environment(\.terminalPreviewUsesRegularGlass, previewSelectionStore.kind == .terminal)
+        .environment(\.terminalPreviewTitle, previewSelectionStore.kind == .terminal
+            ? TerminalPreviewAppearanceModel.title(for: previewSelectionStore.terminalConfiguration?.command) : nil)
+        .onChange(of: terminalAppearanceSource) { source in
+            terminalAppearance.setSource(source, configuration: previewSelectionStore.terminalConfiguration)
+        }
         // Keep every text-bearing control on the same adaptive polarity. The
         // individual surfaces still choose their own backing strength below.
-        .foregroundStyle(viewModel.adaptiveGlassAppearance.textTone.primaryTextColor)
+        .foregroundStyle(effectiveGlassAppearance.textTone.primaryTextColor)
     }
 
     @ViewBuilder
@@ -263,6 +290,19 @@ struct ContentView: View {
             )
             .clipped()
             .ignoresSafeArea()
+
+            if let source = terminalAppearanceSource,
+               let configuration = previewSelectionStore.terminalConfiguration {
+                TerminalPreviewAppearanceObserver(
+                    sourceKey: source,
+                    configuration: configuration,
+                    descriptor: terminalPreviewModel.sharedFrame,
+                    sequence: terminalPreviewModel.frameSequence,
+                    model: terminalAppearance
+                )
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .allowsHitTesting(false)
+            }
 
             TitlebarInteractionOverlay(
                 window: window,
@@ -526,6 +566,7 @@ struct ControlPanel: View {
     let isVeryCompactByHeight: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+    @Environment(\.terminalPreviewTitle) private var terminalPreviewTitle
 
     private var widthScale: CGFloat {
         max(0.82, min(1.0, panelWidth / 1180))
@@ -870,10 +911,10 @@ struct ControlPanel: View {
 
     private var videoInfo: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Video")
+            Text(terminalPreviewTitle == nil ? "Video" : "Terminal Wallpaper")
                 .font(.headline.weight(.semibold))
                 .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-            Text(viewModel.selectedVideoName)
+            Text(terminalPreviewTitle ?? viewModel.selectedVideoName)
                 .font(.caption)
                 .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                 .lineLimit(1)
@@ -2959,6 +3000,8 @@ enum AuraSurfaceMaterial: Equatable {
 }
 
 struct AuraGlassRoundedSurface: View {
+    @Environment(\.terminalPreviewUsesRegularGlass) private var terminalRegularGlass
+    @Environment(\.adaptiveGlassAppearance) private var terminalAppearance
     let cornerRadius: CGFloat
     var material: AuraSurfaceMaterial = .clear
     var washColor: Color = .clear
@@ -2981,17 +3024,17 @@ struct AuraGlassRoundedSurface: View {
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
-                    .glassEffect(material.systemGlass, in: shape)
+                    .glassEffect((terminalRegularGlass ? AuraSurfaceMaterial.regular : material).systemGlass, in: shape)
             } else {
                 // SwiftUI Material maps to the efficient system visual-effect blur
                 // used by macOS 13–15; no custom Core Image filters are involved.
                 shape
-                    .fill(material.legacyMaterial)
+                    .fill((terminalRegularGlass ? AuraSurfaceMaterial.regular : material).legacyMaterial)
                     .opacity(strength)
             }
             #else
             shape
-                .fill(material.legacyMaterial)
+                .fill((terminalRegularGlass ? AuraSurfaceMaterial.regular : material).legacyMaterial)
                 .opacity(strength)
             #endif
         }
@@ -3006,10 +3049,17 @@ struct AuraGlassRoundedSurface: View {
             }
         }
         .clipShape(shape)
+        .transformEnvironment(\.colorScheme) { scheme in
+            if terminalRegularGlass {
+                scheme = terminalAppearance.textTone == .dark ? .light : .dark
+            }
+        }
     }
 }
 
 private struct AuraGlassCapsuleSurface: View {
+    @Environment(\.terminalPreviewUsesRegularGlass) private var terminalRegularGlass
+    @Environment(\.adaptiveGlassAppearance) private var terminalAppearance
     var material: AuraSurfaceMaterial = .clear
     var washColor: Color = .clear
     var alphaMultiplier: CGFloat = 1.0
@@ -3028,15 +3078,15 @@ private struct AuraGlassCapsuleSurface: View {
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
-                    .glassEffect(material.systemGlass, in: shape)
+                    .glassEffect((terminalRegularGlass ? AuraSurfaceMaterial.regular : material).systemGlass, in: shape)
             } else {
                 shape
-                    .fill(material.legacyMaterial)
+                    .fill((terminalRegularGlass ? AuraSurfaceMaterial.regular : material).legacyMaterial)
                     .opacity(strength)
             }
             #else
             shape
-                .fill(material.legacyMaterial)
+                .fill((terminalRegularGlass ? AuraSurfaceMaterial.regular : material).legacyMaterial)
                 .opacity(strength)
             #endif
         }
@@ -3051,6 +3101,11 @@ private struct AuraGlassCapsuleSurface: View {
             }
         }
         .clipShape(shape)
+        .transformEnvironment(\.colorScheme) { scheme in
+            if terminalRegularGlass {
+                scheme = terminalAppearance.textTone == .dark ? .light : .dark
+            }
+        }
     }
 }
 
