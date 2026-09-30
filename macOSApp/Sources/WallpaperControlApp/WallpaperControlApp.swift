@@ -29,6 +29,10 @@ final class AuraFlowApplication {
             runtimeStore: runtimeStore
         )
         viewModel = AppViewModel(previewSelectionStore: previewStore)
+        viewModel.terminalStartAction = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.start() }
+        viewModel.terminalRemoveAction = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.stop() }
+        viewModel.terminalCanStart = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.canStart == true }
+        viewModel.terminalIsActive = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.status.running == true }
     }
 
     func showMainWindow() {
@@ -148,18 +152,12 @@ private struct MenuBarControls: View {
     private var removeTarget: WallpaperMenuRuntimeTarget {
         WallpaperMenuActionPolicy.removeTarget(
             terminalRuntimeActive: terminalRuntimeActive,
-            videoRuntimeActive: videoRuntimeActive
+            videoRuntimeActive: videoRuntimeActive,
+            webRuntimeActive: viewModel.wallpaperEngine.runtimeActive
         )
     }
     private var canStartSelectedPreview: Bool {
-        WallpaperMenuActionPolicy.canStart(
-            previewKind: previewSelectionStore.kind,
-            terminalRuntimeActive: terminalRuntimeActive,
-            videoRuntimeActive: videoRuntimeActive,
-            terminalReady: terminalWallpaperViewModel.canStart,
-            videoReady: viewModel.canStart && !viewModel.isLifecycleBusy,
-            isBusy: terminalWallpaperViewModel.isBusy || viewModel.isBusy || viewModel.isLifecycleBusy
-        )
+        viewModel.canStart && !terminalWallpaperViewModel.isBusy
     }
 
     var body: some View {
@@ -172,11 +170,7 @@ private struct MenuBarControls: View {
         Button("Start") {
             guard allowActionAfterMenuOpen else { return }
             performMenuBarActionAfterDismiss {
-                if previewSelectionStore.kind == .terminal {
-                    terminalWallpaperViewModel.start()
-                } else {
-                    viewModel.start()
-                }
+                viewModel.start()
             }
         }
         .disabled(!canStartSelectedPreview)
@@ -200,22 +194,25 @@ private struct MenuBarControls: View {
         Button("Remove Wallpaper") {
             guard allowActionAfterMenuOpen else { return }
             performMenuBarActionAfterDismiss {
-                if removeTarget == .terminal {
-                    terminalWallpaperViewModel.stop()
-                } else if removeTarget == .video {
-                    viewModel.clearWallpaper()
-                }
+                viewModel.clearWallpaper()
             }
         }
         .disabled(
             removeTarget == .none
+                || viewModel.wallpaperEngine.isBusy
                 || (removeTarget == .video && (!viewModel.canClearWallpaper || viewModel.isBusy || viewModel.isLifecycleBusy))
                 || (removeTarget == .terminal && terminalWallpaperViewModel.isBusy)
         )
 
-        Button("Change Wallpaper…") {
-            guard allowActionAfterMenuOpen else { return }
-            changeWallpaperFromMenuBar()
+        Menu("Change Wallpaper…") {
+            Button("Choose video or image…") {
+                guard allowActionAfterMenuOpen else { return }
+                changeWallpaperFromMenuBar()
+            }
+            Button("Import Wallpaper Engine…") {
+                guard allowActionAfterMenuOpen else { return }
+                performMenuBarActionAfterDismiss { openMainWindow(); viewModel.wallpaperEngine.chooseImport() }
+            }.disabled(viewModel.wallpaperEngine.isImporting)
         }
         .disabled(!viewModel.canClearWallpaper)
 
@@ -223,6 +220,15 @@ private struct MenuBarControls: View {
             guard allowActionAfterMenuOpen else { return }
             openCatalogFromMenuBar()
         }
+
+        Button("Import Wallpaper Engine…") {
+            guard allowActionAfterMenuOpen else { return }
+            performMenuBarActionAfterDismiss {
+                openMainWindow()
+                viewModel.wallpaperEngine.chooseImport()
+            }
+        }
+        .disabled(viewModel.wallpaperEngine.isImporting)
 
         Button("Terminal Wallpaper…") {
             guard allowActionAfterMenuOpen else { return }

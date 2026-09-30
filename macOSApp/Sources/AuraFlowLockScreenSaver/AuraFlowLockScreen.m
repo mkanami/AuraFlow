@@ -2,6 +2,7 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import <ImageIO/ImageIO.h>
+#import <libproc.h>
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
 #import <signal.h>
@@ -18,6 +19,9 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 @property(nonatomic, strong) CALayer *terminalLayer;
 @property(nonatomic, copy, nullable) NSString *terminalFrameRevision;
 @property(nonatomic) BOOL terminalModeActive;
+@property(nonatomic, strong) CALayer *webLayer;
+@property(nonatomic) BOOL webModeActive;
+@property(nonatomic, copy, nullable) NSString *webFrameRevision;
 @property(nonatomic, copy, nullable) NSString *terminalDiagnosticState;
 @property(nonatomic, strong, nullable) AVQueuePlayer *player;
 @property(nonatomic, strong, nullable) AVPlayerLayer *playerLayer;
@@ -81,6 +85,11 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     self.terminalLayer.contentsGravity = kCAGravityResizeAspect;
     self.terminalLayer.hidden = YES;
     [self.layer addSublayer:self.terminalLayer];
+    self.webLayer = [CALayer layer];
+    self.webLayer.contentsGravity = kCAGravityResizeAspect;
+    self.webLayer.backgroundColor = NSColor.blackColor.CGColor;
+    self.webLayer.hidden = YES;
+    [self.layer addSublayer:self.webLayer];
     [self layoutVideoLayers];
 }
 
@@ -92,7 +101,8 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
     [self syncRuntimePauseState];
     [self syncTerminalFrame];
-    if (!self.runtimePaused && !self.terminalModeActive) {
+    [self syncWebFrame];
+    if (!self.runtimePaused && !self.terminalModeActive && !self.webModeActive) {
         [self.player playImmediatelyAtRate:self.playbackRate];
     }
 }
@@ -109,6 +119,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     // player when macOS enters the secure Lock Screen.
     [self syncRuntimePauseState];
     [self syncTerminalFrame];
+    [self syncWebFrame];
 }
 
 - (void)runtimeCommandDidChange:(NSNotification *)notification {
@@ -119,7 +130,8 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         [self syncRuntimePauseState];
         [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
         [self syncTerminalFrame];
-        if (!self.runtimePaused && !self.terminalModeActive) {
+        [self syncWebFrame];
+        if (!self.runtimePaused && !self.terminalModeActive && !self.webModeActive) {
             [self.player playImmediatelyAtRate:self.playbackRate];
         }
     });
@@ -144,6 +156,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     self.playerLayer.frame = self.bounds;
     self.fallbackLayer.frame = self.bounds;
     self.terminalLayer.frame = self.bounds;
+    self.webLayer.frame = self.bounds;
     [CATransaction commit];
 }
 
@@ -182,6 +195,56 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     // Its last frame is still valid as long as that helper process lives;
     // requiring a fresh timer tick made the Lock Screen turn blank after 6 s.
     return kill(pid.intValue, 0) == 0 || errno == EPERM;
+}
+
+// Web owns a separate route/lease. Never borrow terminal publications or the
+// ordinary video fallback configuration for an imported HTML wallpaper.
+- (void)syncWebFrame {
+    NSURL *auraRoot = [[[self terminalRuntimeURLForFile:@"unused"] URLByDeletingLastPathComponent] URLByDeletingLastPathComponent];
+    NSURL *root = [auraRoot URLByAppendingPathComponent:@"wallpaper-engine/runtime" isDirectory:YES];
+    NSDictionary *status = [self JSONDictionaryAtURL:[root URLByAppendingPathComponent:@"status.json"]];
+    NSString *route = [NSString stringWithContentsOfURL:[root URLByAppendingPathComponent:@"route-active"] encoding:NSUTF8StringEncoding error:nil];
+    NSNumber *pid = status[@"pid"];
+    NSString *generation = status[@"generation"];
+    NSDictionary *frames = status[@"frames"];
+    char processPath[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    BOOL ownsProcess = [pid isKindOfClass:NSNumber.class] && pid.intValue > 0 &&
+        proc_pidpath(pid.intValue, processPath, sizeof(processPath)) > 0 &&
+        [[NSString stringWithUTF8String:processPath].lastPathComponent isEqualToString:@"AuraWebWallpaperAgent"];
+    BOOL valid = [pid isKindOfClass:NSNumber.class] && pid.intValue > 0 &&
+        ownsProcess &&
+        [generation isKindOfClass:NSString.class] && [route isEqualToString:generation] &&
+        [frames isKindOfClass:NSDictionary.class];
+    NSString *display = [self.window.screen.deviceDescription[@"NSScreenNumber"] stringValue];
+    NSString *path = valid ? ((display ? frames[display] : nil) ?: frames.allValues.firstObject) : nil;
+    if (![path isKindOfClass:NSString.class] || ![path hasPrefix:[root.path stringByAppendingString:@"/"]]) {
+        if (self.webModeActive) {
+            self.webLayer.hidden = YES; self.webLayer.contents = nil;
+            self.webModeActive = NO; self.webFrameRevision = nil;
+            if (!self.runtimePaused && !self.terminalModeActive) [self.player playImmediatelyAtRate:self.playbackRate];
+        }
+        return;
+    }
+    NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+    if (![self.webFrameRevision hasPrefix:[generation stringByAppendingString:@":"]]) {
+        self.webLayer.contents = nil; self.webLayer.hidden = YES;
+        self.webModeActive = NO;
+    }
+    NSString *revision = [NSString stringWithFormat:@"%@:%@:%0.9f", generation, path, [attributes[NSFileModificationDate] timeIntervalSince1970]];
+    if (![revision isEqualToString:self.webFrameRevision]) {
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:path], NULL);
+        if (source != NULL) {
+            CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+            if (image != NULL) {
+                self.webLayer.contents = (__bridge id)image; self.webFrameRevision = revision;
+                CGImageRelease(image);
+            }
+            CFRelease(source);
+        }
+    }
+    if (self.webLayer.contents != nil) {
+        self.webModeActive = YES; self.webLayer.hidden = NO; [self.player pause];
+    }
 }
 
 - (void)syncTerminalFrame {
@@ -338,7 +401,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 
     self.runtimePaused = NO;
     [self resumePlayerLayer];
-    if (!self.terminalModeActive) {
+    if (!self.terminalModeActive && !self.webModeActive) {
         [self.player playImmediatelyAtRate:self.playbackRate];
     }
 }
@@ -443,7 +506,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
                                    [self fileRevisionAtPath:configuration[@"video_path"]],
                                    [self fileRevisionAtPath:configuration[@"fallback_path"]]];
     if (!force && [signature isEqualToString:self.configurationSignature]) {
-        if (playbackRateChanged && !self.runtimePaused && !self.terminalModeActive && self.player != nil) {
+        if (playbackRateChanged && !self.runtimePaused && !self.terminalModeActive && !self.webModeActive && self.player != nil) {
             [self.player playImmediatelyAtRate:self.playbackRate];
         }
         return;

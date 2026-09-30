@@ -20,9 +20,21 @@ var products: [Product] = [
     .executable(name: "WallpaperControlApp", targets: ["WallpaperControlApp"]),
     .executable(name: "AuraWallpaperAgent", targets: ["AuraWallpaperAgent"]),
     .executable(name: "AuraTerminalWallpaperAgent", targets: ["AuraTerminalWallpaperAgent"]),
+    .executable(name: "AuraWebWallpaperAgent", targets: ["AuraWebWallpaperAgent"]),
 ]
 
 var targets: [Target] = [
+    .target(name: "AuraWallpaperEngineCore", path: "Sources/AuraWallpaperEngineCore"),
+    .executableTarget(
+        name: "AuraWebWallpaperAgent",
+        dependencies: ["AuraWallpaperEngineCore"],
+        path: "Sources/AuraWebWallpaperAgent",
+        swiftSettings: canBuildNativeBridge ? [.unsafeFlags(["-I", privateWallpaperModulesDirectory])] : [],
+        linkerSettings: canBuildNativeBridge ? [.unsafeFlags([
+            "-F\(privateFrameworksDirectory)", "-Xlinker", "-weak_framework", "-Xlinker", "Wallpaper",
+            "-Xlinker", "-weak_framework", "-Xlinker", "WallpaperTypes",
+        ])] : []
+    ),
     .target(
         name: "AuraTerminalPTYKit",
         path: "Sources/AuraTerminalPTYKit",
@@ -61,6 +73,7 @@ var targets: [Target] = [
     .executableTarget(
         name: "WallpaperControlApp",
         dependencies: [
+            "AuraWallpaperEngineCore",
             "AuraWallpaperCore",
             "AuraTerminalWallpaperCore",
             "AuraTerminalRendering",
@@ -73,6 +86,7 @@ var targets: [Target] = [
     .testTarget(
         name: "WallpaperControlAppTests",
         dependencies: [
+            "AuraWallpaperEngineCore",
             "AuraWallpaperCore",
             "AuraTerminalWallpaperCore",
             "WallpaperControlApp",

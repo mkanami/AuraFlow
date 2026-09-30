@@ -1,4 +1,5 @@
 import SwiftUI
+import AuraWallpaperEngineCore
 import AVKit
 import AppKit
 import ImageIO
@@ -155,6 +156,7 @@ struct ContentView: View {
     }
 
     private var effectiveGlassAppearance: AdaptiveGlassAppearance {
+        if previewSelectionStore.kind == .web { return TerminalPreviewAppearanceModel.fallback(for: nil) }
         let terminal = terminalAppearance.sourceKey == terminalAppearanceSource
             ? terminalAppearance.appearance
             : TerminalPreviewAppearanceModel.fallback(for: previewSelectionStore.terminalConfiguration)
@@ -232,6 +234,30 @@ struct ContentView: View {
         .ignoresSafeArea()
         .frame(minWidth: 760, minHeight: 480)
         .background(Color.clear)
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in viewModel.wallpaperEngine.discover(url) }
+            }
+            return true
+        }
+        .sheet(isPresented: Binding(get: { viewModel.wallpaperEngine.showsProjectPicker }, set: { viewModel.wallpaperEngine.showsProjectPicker = $0 })) {
+            WallpaperEngineProjectPicker(model: viewModel.wallpaperEngine)
+        }
+        .sheet(isPresented: Binding(get: { viewModel.wallpaperEngine.showsProperties }, set: { viewModel.wallpaperEngine.showsProperties = $0 })) {
+            WallpaperEnginePropertiesEditor(model: viewModel.wallpaperEngine)
+        }
+        .overlay(alignment: .top) {
+            if let error = viewModel.wallpaperEngine.error {
+                HStack {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                    Button("Dismiss") { viewModel.wallpaperEngine.error = nil }
+                }
+                .font(.callout).padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 30).padding(.top, 78)
+            }
+        }
         .overlay(
             WindowAccessor(
                 window: $window,
@@ -244,9 +270,10 @@ struct ContentView: View {
             await viewModel.loadStatus()
         }
         .environment(\.adaptiveGlassAppearance, effectiveGlassAppearance)
-        .environment(\.terminalPreviewUsesRegularGlass, previewSelectionStore.kind == .terminal)
+        .environment(\.terminalPreviewUsesRegularGlass, previewSelectionStore.kind != .video)
         .environment(\.terminalPreviewTitle, previewSelectionStore.kind == .terminal
-            ? TerminalPreviewAppearanceModel.title(for: previewSelectionStore.terminalConfiguration?.command) : nil)
+            ? TerminalPreviewAppearanceModel.title(for: previewSelectionStore.terminalConfiguration?.command)
+            : (previewSelectionStore.kind == .web ? viewModel.wallpaperEngine.selectedProject?.title : nil))
         .onChange(of: terminalAppearanceSource) { source in
             terminalAppearance.setSource(source, configuration: previewSelectionStore.terminalConfiguration)
         }
@@ -273,6 +300,7 @@ struct ContentView: View {
             PreviewLayer(
                 previewSelectionStore: previewSelectionStore,
                 terminalPreviewModel: terminalPreviewModel,
+                wallpaperEngine: viewModel.wallpaperEngine,
                 player: viewModel.previewPlayer,
                 wallpaperURL: viewModel.currentVideoURL ?? viewModel.appliedVideoURL,
                 aspectRatio: aspectRatio,
@@ -518,6 +546,7 @@ final class TitlebarInteractionNSView: NSView {
 struct PreviewLayer: View {
     @ObservedObject var previewSelectionStore: WallpaperPreviewSelectionStore
     @ObservedObject var terminalPreviewModel: TerminalWallpaperPreviewModel
+    @ObservedObject var wallpaperEngine: WallpaperEngineViewModel
     let player: AVPlayer?
     let wallpaperURL: URL?
     let aspectRatio: CGFloat
@@ -532,6 +561,8 @@ struct PreviewLayer: View {
         Group {
             if previewSelectionStore.kind == .terminal {
                 TerminalWallpaperPreviewSurface(model: terminalPreviewModel)
+            } else if previewSelectionStore.kind == .web {
+                WebWallpaperPreviewSurface(model: wallpaperEngine)
             } else if let wallpaperURL,
                WallpaperMediaKind.forURL(wallpaperURL).isStaticImage,
                let image = NSImage(contentsOf: wallpaperURL) {
@@ -847,9 +878,7 @@ struct ControlPanel: View {
     }
 
     private var changeWallpaperButton: some View {
-        Button {
-            viewModel.chooseVideo()
-        } label: {
+        Button { viewModel.chooseVideo() } label: {
             Text("Change Wallpaper…")
                 .lineLimit(1)
                 .minimumScaleFactor(0.95)
@@ -858,6 +887,11 @@ struct ControlPanel: View {
         }
         .buttonStyle(AuraPanelButtonStyle())
         .disabled(!viewModel.canClearWallpaper)
+        .contextMenu {
+            Button("Choose video or image…") { viewModel.chooseVideo() }
+            Button("Import Wallpaper Engine…") { viewModel.wallpaperEngine.chooseImport() }
+                .disabled(viewModel.wallpaperEngine.isImporting)
+        }
     }
 
     private var settingsButton: some View {
@@ -1466,11 +1500,12 @@ struct DownloadedWallpapersCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            WallpaperEngineLibrarySwitch(model: viewModel.wallpaperEngine)
             HStack {
                 Label("Downloaded Wallpapers", systemImage: "arrow.down.circle.fill")
                     .font(.headline.weight(.semibold))
                 Spacer()
-                Text("\(viewModel.downloadedCatalogWallpapers.count)")
+                Text("\(viewModel.wallpaperEngine.libraryIsSelected ? viewModel.wallpaperEngine.projects.count : viewModel.downloadedCatalogWallpapers.count)")
                     .font(.caption)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 Button {
@@ -1484,7 +1519,9 @@ struct DownloadedWallpapersCard: View {
 
             Divider()
 
-            if viewModel.downloadedCatalogWallpapers.isEmpty {
+            if viewModel.wallpaperEngine.libraryIsSelected {
+                WallpaperEngineLibraryRows(model: viewModel.wallpaperEngine)
+            } else if viewModel.downloadedCatalogWallpapers.isEmpty {
                 Text(UserFacingMessageFormatter.format(
                     "No downloaded wallpapers yet. Use Download to Preview in the catalog."
                 ))
@@ -1750,6 +1787,10 @@ struct WallpaperCatalogView: View {
                 Text("Wallpaper Catalog")
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
+
+                Button("Import Wallpaper Engine…") { viewModel.wallpaperEngine.chooseImport() }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                    .disabled(viewModel.wallpaperEngine.isImporting)
 
                 Spacer()
 

@@ -82,6 +82,33 @@ affecting a wallpaper already running on the Desktop.
 
 ## Compatibility
 
+### Local Wallpaper Engine projects
+
+Open **Downloaded Wallpapers**, switch the library above its heading to
+**Wallpaper Engine**, and choose **Import Wallpaper Engine…**. Import accepts
+an unpacked project folder, `project.json`, or a Workshop `431960` folder with
+projects in its immediate subfolders. You can also drop a project onto AuraFlow
+or use the import action in Wallpaper Catalog or the menu-bar Change Wallpaper
+menu. No Steam account or Workshop downloads are involved.
+
+Video projects use AuraFlow's existing media pipeline. Web projects use WebKit
+for HTML/CSS/JavaScript, Canvas and WebGL, with project property controls. Import
+and Preview do not apply wallpapers: use **Start**, and use **Remove** before
+switching between video, terminal and web runtimes. Imported copies and property
+values are stored separately from the original project. Identical imports are
+deduplicated; edited projects become separate versions.
+
+Web compatibility is intentionally limited: local assets only, no external
+network, downloads, system permissions, audio reaction, music metadata, RGB or
+file/directory property selectors. Workers are disabled because worker contexts
+cannot receive the offline sandbox's WebKit user scripts. Hidden preview and
+fullscreen-paused web content is unloaded and restored with its property values.
+The desktop helper survives closing AuraFlow. Web Lock Screen integration uses
+a **static snapshot**, not a second animated browser; missing or black snapshots
+are reported as errors. Scene, application and ZIP imports are unsupported.
+
+## Platform compatibility
+
 | Environment | Desktop | Lock Screen |
 | --- | --- | --- |
 | macOS 26 or newer | Animated playback | Native animated playback |
@@ -102,6 +129,8 @@ AuraFlow is a Swift Package split into small runtime components:
 | `AuraWallpaperAgent` | Long-running wallpaper playback and lifecycle coordination. |
 | `AuraWallpaperCore` | Shared models, persistence, recovery, and platform operations. |
 | `AuraWallpaperNativeBridge` | Isolated macOS 26 native wallpaper integration. |
+| `AuraWallpaperEngineCore` | Validated local imports, project properties and isolated WebKit rendering. |
+| `AuraWebWallpaperAgent` | Independent desktop web playback and static Lock Screen snapshots. |
 | `AuraFlowLockScreenSaver` | Lock Screen fallback for earlier macOS versions. |
 
 Media playback uses AVFoundation. AppKit bridges are limited to macOS window and
@@ -121,6 +150,15 @@ Run the test suite:
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   swift test --package-path macOSApp
+```
+
+Real WebKit integration tests require an unlocked interactive macOS session.
+They validate Canvas/WebGL snapshots and property/network behavior without
+changing the system wallpaper or Screen Saver:
+
+```sh
+AURAFLOW_WEBKIT_TESTS=1 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --package-path macOSApp --filter WebWallpaperIntegrationTests
 ```
 
 Create a universal `arm64 + x86_64` release:

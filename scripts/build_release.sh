@@ -9,6 +9,7 @@ APP_TARGET="WallpaperControlApp"
 HELPER_TARGET="AuraWallpaperAgent"
 NATIVE_BRIDGE_TARGET="AuraWallpaperNativeBridge"
 TERMINAL_HELPER_TARGET="AuraTerminalWallpaperAgent"
+WEB_HELPER_TARGET="AuraWebWallpaperAgent"
 APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-AuraFlow}"
 APP_VERSION="${AURAFLOW_VERSION:-1.3.1}"
 APP_BUILD="${AURAFLOW_BUILD:-10}"
@@ -305,6 +306,7 @@ build_swift_architecture() {
     log "Failed to build ${TERMINAL_HELPER_TARGET} for $architecture."
     return 1
   fi
+  swift_build_product "$architecture" "$WEB_HELPER_TARGET" || return 1
 
   if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
     log "Building native bridge for $architecture"
@@ -389,6 +391,8 @@ build_swift_app() {
       "$host_bin_path/${HELPER_TARGET}" "$secondary_bin_path/${HELPER_TARGET}"
     lipo -create -output "$universal_dir/${TERMINAL_HELPER_TARGET}" \
       "$host_bin_path/${TERMINAL_HELPER_TARGET}" "$secondary_bin_path/${TERMINAL_HELPER_TARGET}"
+    lipo -create -output "$universal_dir/${WEB_HELPER_TARGET}" \
+      "$host_bin_path/${WEB_HELPER_TARGET}" "$secondary_bin_path/${WEB_HELPER_TARGET}"
     if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
       lipo -create -output "$universal_dir/${NATIVE_BRIDGE_TARGET}" \
         "$host_bin_path/${NATIVE_BRIDGE_TARGET}" "$secondary_bin_path/${NATIVE_BRIDGE_TARGET}"
@@ -400,6 +404,8 @@ build_swift_app() {
   local binary="$bin_path/${APP_TARGET}"
   local helper_path="$bin_path/${HELPER_TARGET}"
   local terminal_helper_path="$bin_path/${TERMINAL_HELPER_TARGET}"
+  local web_helper_path="$bin_path/${WEB_HELPER_TARGET}"
+  [[ -x "$web_helper_path" ]] || { log "Web helper binary not found: $web_helper_path"; exit 1; }
   local native_bridge_path=""
   if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
     native_bridge_path="$bin_path/${NATIVE_BRIDGE_TARGET}"
@@ -430,6 +436,8 @@ build_swift_app() {
 
   cp "$binary" "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
   cp "$helper_path" "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
+  cp "$web_helper_path" "$APP_BUNDLE/Contents/MacOS/${WEB_HELPER_TARGET}"
+  chmod +x "$APP_BUNDLE/Contents/MacOS/${WEB_HELPER_TARGET}"
   cp "$terminal_helper_path" "$terminal_helper_bundle/Contents/MacOS/${TERMINAL_HELPER_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"

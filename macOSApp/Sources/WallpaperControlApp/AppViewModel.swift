@@ -5,6 +5,7 @@ import Combine
 @preconcurrency import ObjectiveC
 import Foundation
 import AuraTerminalWallpaperCore
+import AuraWallpaperEngineCore
 import OSLog
 import UniformTypeIdentifiers
 
@@ -1986,6 +1987,11 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
 
 @MainActor
 final class AppViewModel: ObservableObject {
+    let wallpaperEngine: WallpaperEngineViewModel
+    var terminalStartAction: (() -> Void)?
+    var terminalRemoveAction: (() -> Void)?
+    var terminalCanStart: (() -> Bool)?
+    var terminalIsActive: (() -> Bool)?
     let catalogViewModel: CatalogViewModel
     let previewViewModel: PreviewViewModel
     let lifecycleViewModel: LifecycleViewModel
@@ -2307,7 +2313,11 @@ final class AppViewModel: ObservableObject {
     }
 
     var canStart: Bool {
-        isControllerAvailable
+        if previewSelectionStore?.kind == .web { return wallpaperEngine.canStart && !isBusy && !isLifecycleBusy }
+        if previewSelectionStore?.kind == .terminal {
+            return terminalCanStart?() == true && !hasInstalledWallpaperSessionForControls && !wallpaperEngine.runtimeActive && !wallpaperEngine.isBusy
+        }
+        return !wallpaperEngine.runtimeActive && !wallpaperEngine.isBusy && terminalIsActive?() != true && isControllerAvailable
             && !isBusy
             && !isLifecycleBusy
             && !lifecycleViewModel.hasActiveOrPendingLifecycleOperation
@@ -2317,7 +2327,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canApplyLockScreenOnly: Bool {
-        isControllerAvailable
+        previewSelectionStore?.kind == .video && !wallpaperEngine.runtimeActive && terminalIsActive?() != true && isControllerAvailable
             && !isBusy
             && !isLifecycleBusy
             && !lifecycleViewModel.hasActiveOrPendingLifecycleOperation
@@ -2336,6 +2346,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canTogglePlayback: Bool {
+        if wallpaperEngine.runtimeActive || terminalIsActive?() == true { return false }
         guard isControllerAvailable,
               !isBusy,
               !lifecycleViewModel.hasActiveOrPendingLifecycleOperation,
@@ -2348,7 +2359,9 @@ final class AppViewModel: ObservableObject {
     }
 
     var canClearWallpaper: Bool {
-        isControllerAvailable
+        if wallpaperEngine.runtimeActive { return !wallpaperEngine.isBusy && !isLifecycleBusy }
+        if terminalIsActive?() == true { return !isBusy && !isLifecycleBusy }
+        return isControllerAvailable
     }
 
     var canToggleAutostart: Bool {
@@ -2428,7 +2441,9 @@ final class AppViewModel: ObservableObject {
             previewStateURL: resolvedPreviewStateURL
         )
         self.lifecycleViewModel = LifecycleViewModel()
-        self.previewSelectionStore = previewSelectionStore
+        let selection = previewSelectionStore ?? WallpaperPreviewSelectionStore(selectionURL: resolvedAppSupportURL.appendingPathComponent("preview-selection.json"))
+        self.previewSelectionStore = selection
+        self.wallpaperEngine = WallpaperEngineViewModel(selection: selection, library: WallpaperEngineLibrary(rootURL: resolvedAppSupportURL.appendingPathComponent("wallpaper-engine")))
         self.optimizationStore = optimizationStore
         let catalogDirectoryURL = resolvedAppSupportURL
             .appendingPathComponent("Catalog", isDirectory: true)
@@ -2469,6 +2484,12 @@ final class AppViewModel: ObservableObject {
             statusMessage = warningMessage
         }
         configureLifecycleViewModel()
+        wallpaperEngine.videoPreview = { [weak self] project in
+            self?.selectVideoForPreview(project.entryURL, summary: "Wallpaper Engine video is in preview. Use Start to apply.", posterURL: project.previewURL, posterTitle: project.title)
+        }
+        wallpaperEngine.videoActive = { [weak self] in self?.hasInstalledWallpaperSessionForControls == true }
+        wallpaperEngine.terminalActive = { [weak self] in self?.terminalIsActive?() == true || TerminalWallpaperRuntimeStore().status().running }
+        wallpaperEngine.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &featureViewModelCancellables)
         optimizationHardwareAV1DecodeAvailable = optimizer.supportsHardwareAV1Decode()
         applyOptimizationSettings(optimizationStore.load())
         restoreInitialPreviewFromSavedConfig()
@@ -2478,8 +2499,14 @@ final class AppViewModel: ObservableObject {
         previewViewModel.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &featureViewModelCancellables)
-        previewSelectionStore?.objectWillChange
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+        selection.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if self.previewSelectionStore?.kind == .web { self.previewPlayer?.pause() }
+                }
+            }
             .store(in: &featureViewModelCancellables)
         lifecycleViewModel.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -3404,6 +3431,8 @@ final class AppViewModel: ObservableObject {
 
     func start() {
         guard canStart else { return }
+        if previewSelectionStore?.kind == .web { wallpaperEngine.start(); return }
+        if previewSelectionStore?.kind == .terminal { terminalStartAction?(); return }
         lifecycleViewModel.start(
             selectedVideoURL: selectedVideoURL,
             hasPendingPreview: pendingPreviewVideoURL != nil
@@ -3432,6 +3461,8 @@ final class AppViewModel: ObservableObject {
     }
 
     func clearWallpaper() {
+        if wallpaperEngine.runtimeActive { wallpaperEngine.remove(); return }
+        if terminalIsActive?() == true { terminalRemoveAction?(); return }
         // Preview selection starts a best-effort native Aerial cache warm-up
         // in the background. Remove must cancel that conversion first;
         // otherwise its installer mutation lock can make the button wait for
@@ -3506,7 +3537,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var showsPreviewSpeedControl: Bool {
-        previewSelectionStore?.kind != .terminal || terminalSpeedProfile != nil
+        previewSelectionStore?.kind != .web && (previewSelectionStore?.kind != .terminal || terminalSpeedProfile != nil)
     }
 
     var previewSpeedControlValue: Double {
@@ -5218,7 +5249,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func applyPreviewPlaybackRate(to player: AVPlayer) {
-        guard !previewRenderingSuspended else { return }
+        guard !previewRenderingSuspended, previewSelectionStore?.kind != .web else { return }
         let rate = previewPlaybackRate()
         guard Self.previewPlaybackNeedsRestart(
             currentRate: player.rate,

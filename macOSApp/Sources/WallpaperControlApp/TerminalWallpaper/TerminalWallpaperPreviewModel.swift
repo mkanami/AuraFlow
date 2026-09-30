@@ -7,11 +7,13 @@ import IOSurface
 enum WallpaperPreviewKind: String, Codable {
     case video
     case terminal
+    case web
 }
 
 enum WallpaperMenuRuntimeTarget: Equatable {
     case video
     case terminal
+    case web
     case none
 }
 
@@ -22,18 +24,23 @@ enum WallpaperMenuActionPolicy {
         videoRuntimeActive: Bool,
         terminalReady: Bool,
         videoReady: Bool,
-        isBusy: Bool
+        isBusy: Bool,
+        webRuntimeActive: Bool = false,
+        webReady: Bool = false
     ) -> Bool {
         guard !isBusy else { return false }
         switch previewKind {
         case .terminal:
-            return terminalReady && !videoRuntimeActive
+            return terminalReady && !videoRuntimeActive && !webRuntimeActive
         case .video:
-            return videoReady && !terminalRuntimeActive
+            return videoReady && !terminalRuntimeActive && !webRuntimeActive
+        case .web:
+            return webReady && !terminalRuntimeActive && !videoRuntimeActive
         }
     }
 
-    static func removeTarget(terminalRuntimeActive: Bool, videoRuntimeActive: Bool) -> WallpaperMenuRuntimeTarget {
+    static func removeTarget(terminalRuntimeActive: Bool, videoRuntimeActive: Bool, webRuntimeActive: Bool = false) -> WallpaperMenuRuntimeTarget {
+        if webRuntimeActive { return .web }
         if terminalRuntimeActive { return .terminal }
         if videoRuntimeActive { return .video }
         return .none
@@ -58,12 +65,14 @@ enum TerminalWallpaperPreviewRuntimePolicy {
 private struct WallpaperPreviewSelectionRecord: Codable {
     var kind: WallpaperPreviewKind
     var terminalConfiguration: TerminalWallpaperConfig?
+    var webProjectID: String?
 }
 
 @MainActor
 final class WallpaperPreviewSelectionStore: ObservableObject {
     @Published private(set) var kind: WallpaperPreviewKind = .video
     @Published private(set) var terminalConfiguration: TerminalWallpaperConfig?
+    @Published private(set) var webProjectID: String?
     @Published private(set) var isAdjustingTerminalSpeed = false
     private(set) var hasSavedSelection = false
 
@@ -78,6 +87,7 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
         hasSavedSelection = true
         kind = record.kind
         terminalConfiguration = record.kind == .terminal ? record.terminalConfiguration?.normalized() : nil
+        webProjectID = record.kind == .web ? record.webProjectID : nil
     }
 
     func selectVideo() {
@@ -85,6 +95,7 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
         kind = .video
         isAdjustingTerminalSpeed = false
         terminalConfiguration = nil
+        webProjectID = nil
         persist()
     }
 
@@ -94,7 +105,13 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
         kind = .terminal
         isAdjustingTerminalSpeed = false
         terminalConfiguration = normalized
+        webProjectID = nil
         persist()
+    }
+
+    func selectWeb(_ projectID: String) {
+        kind = .web; terminalConfiguration = nil; webProjectID = projectID
+        isAdjustingTerminalSpeed = false; persist()
     }
 
     func setTerminalNativeSpeed(_ speed: Double) {
@@ -114,7 +131,8 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
         hasSavedSelection = true
         let record = WallpaperPreviewSelectionRecord(
             kind: kind,
-            terminalConfiguration: terminalConfiguration
+            terminalConfiguration: terminalConfiguration,
+            webProjectID: webProjectID
         )
         guard let data = try? JSONEncoder().encode(record) else { return }
         try? FileManager.default.createDirectory(

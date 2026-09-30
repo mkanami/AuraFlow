@@ -1,6 +1,7 @@
 import AuraTerminalWallpaperCore
 import AuraWallpaperCore
 import Foundation
+import AuraWallpaperEngineCore
 
 protocol TerminalWallpaperControlling: Sendable {
     func reconcileLockScreenIfRunning() throws
@@ -248,6 +249,9 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     }
 
     func ensureCanStart() throws {
+        if WebWallpaperRuntime.active {
+            throw TerminalWallpaperControllerError.unavailable("Remove the Web wallpaper before starting Terminal Wallpaper.")
+        }
         if videoRuntimeIsRunning() {
             throw TerminalWallpaperControllerError.videoWallpaperAlreadyRunning
         }

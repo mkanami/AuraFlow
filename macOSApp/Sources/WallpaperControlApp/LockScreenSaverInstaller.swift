@@ -249,6 +249,8 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
     private let selectionCoordinator: ScreenSaverSelectionCoordinator
     private let terminalSelectionCoordinator: ScreenSaverSelectionCoordinator
     private let terminalWallpaperStore: any TerminalScreenSaverStoreCoordinating
+    private let webSelectionCoordinator: ScreenSaverSelectionCoordinator
+    private let webWallpaperStore: TerminalScreenSaverStoreCoordinator
     private let signatureVerifier: (URL) throws -> Void
     private let operationLock = NSLock()
 
@@ -290,6 +292,14 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         )
         self.terminalWallpaperStore = terminalWallpaperStore
             ?? TerminalScreenSaverStoreCoordinator(saverURL: resolvedDestinationURL)
+        let webRoot = resolvedBackupURL.deletingLastPathComponent().appendingPathComponent("wallpaper-engine/runtime")
+        self.webSelectionCoordinator = ScreenSaverSelectionCoordinator(
+            fileManager: fileManager, preferences: preferences, destinationURL: resolvedDestinationURL,
+            backupURL: webRoot.appendingPathComponent("screen-saver-selection-backup.json")
+        )
+        self.webWallpaperStore = TerminalScreenSaverStoreCoordinator(
+            journalURL: webRoot.appendingPathComponent("screen-saver-wallpaper-store-backup.json"), saverURL: resolvedDestinationURL
+        )
     }
 
     var isInstalled: Bool {
@@ -327,6 +337,24 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         try withOperationLock {
             try terminalWallpaperStore.restoreIfOwned()
             try terminalSelectionCoordinator.restoreIfOwned()
+        }
+    }
+
+    func activateForWeb() throws {
+        try withOperationLock {
+            if isInstalled {
+                try refreshInstalledCompatibilityComponentLocked()
+                try webSelectionCoordinator.activate()
+            } else { try installLocked(videoURL: nil, selection: webSelectionCoordinator) }
+            do { try webWallpaperStore.activate() }
+            catch { try? webSelectionCoordinator.restoreIfOwned(); throw error }
+        }
+    }
+
+    func restoreAfterWeb() throws {
+        try withOperationLock {
+            try webWallpaperStore.restoreIfOwned()
+            try webSelectionCoordinator.restoreIfOwned()
         }
     }
 
