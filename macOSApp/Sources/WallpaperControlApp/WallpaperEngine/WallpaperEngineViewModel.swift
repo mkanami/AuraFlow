@@ -62,11 +62,30 @@ final class WallpaperEngineViewModel: ObservableObject {
     }
     var canStart: Bool { selection.kind == .web && selectedProject != nil && !isBusy && videoActive?() != true && terminalActive?() != true && !runtimeActive }
     func chooseImport() {
-        let panel = NSOpenPanel()
-        panel.title = "Import Wallpaper Engine"; panel.prompt = "Import"
-        panel.canChooseDirectories = true; panel.canChooseFiles = true
-        panel.allowedContentTypes = [.json, .folder]; panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { discover(url) }
+        guard !isImporting else { return }
+        let lastPath = UserDefaults.standard.string(forKey: "WallpaperEngineLastImportDirectory")
+        importGeneration += 1; let generation = importGeneration
+        isImporting = true; error = nil
+        importTask = Task {
+            let directory = await Task.detached(priority: .userInitiated) {
+                WallpaperEngineImportLocation.preferredDirectory(
+                    steamRoots: WallpaperEngineImportLocation.defaultSteamRoots(),
+                    lastDirectory: lastPath.map { URL(fileURLWithPath: $0) })
+            }.value
+            guard generation == importGeneration, !Task.isCancelled else { return }
+            isImporting = false
+            let panel = NSOpenPanel()
+            panel.title = "Import Wallpaper Engine"; panel.prompt = "Import"
+            panel.message = "Choose a downloaded project folder, project.json, or the Workshop 431960 folder."
+            panel.directoryURL = directory
+            panel.canChooseDirectories = true; panel.canChooseFiles = true
+            panel.allowedContentTypes = [.json, .folder]; panel.allowsMultipleSelection = false
+            if panel.runModal() == .OK, let url = panel.url {
+                let parent = url.deletingLastPathComponent()
+                UserDefaults.standard.set(parent.path, forKey: "WallpaperEngineLastImportDirectory")
+                discover(url)
+            }
+        }
     }
     func discover(_ url: URL) {
         guard !isImporting else { return }

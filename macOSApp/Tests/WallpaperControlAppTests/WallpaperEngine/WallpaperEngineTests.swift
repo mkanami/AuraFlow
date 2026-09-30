@@ -21,6 +21,59 @@ private final class EngineFixture {
     }
 }
 
+@Test
+func engineImportLocationParsesModernAndLegacySteamLibraries() {
+    let modern = #"""
+    "libraryfolders" {
+        // "path" "/not-a-library"
+        "0" { "path" "/Steam Main" "apps" { "431960" "12345" } }
+        "1" { "path" "/Volumes/Игры/SteamLibrary" }
+        "2" { "path" "D:\\SteamLibrary" }
+        "extra" { "path" "/not-numeric" }
+    }
+    "other" { "path" "/unrelated" }
+    """#
+    #expect(WallpaperEngineImportLocation.libraryPaths(in: modern) == ["/Steam Main", "/Volumes/Игры/SteamLibrary", #"D:\SteamLibrary"#])
+    #expect(WallpaperEngineImportLocation.libraryPaths(in: "LibraryFolders { 0 \"/Steam\" 1 \"/External Steam\" TimeNextStatsReport 42 }") == ["/Steam", "/External Steam"])
+    #expect(WallpaperEngineImportLocation.libraryPaths(in: "\"libraryfolders\" { \"0\" { \"path\" \"/broken\"").isEmpty)
+    #expect(WallpaperEngineImportLocation.libraryPaths(in: String(repeating: "x", count: 1_048_577)).isEmpty)
+}
+
+@Test
+func engineImportLocationFindsWorkshopInAdditionalSteamLibrary() throws {
+    let f = try EngineFixture()
+    let steam = f.root.appendingPathComponent("Steam"), external = f.root.appendingPathComponent("Другие игры")
+    let steamapps = steam.appendingPathComponent("steamapps")
+    let workshop = external.appendingPathComponent("steamapps/workshop/content/431960")
+    try FileManager.default.createDirectory(at: steamapps, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: workshop, withIntermediateDirectories: true)
+    let vdf = "\"libraryfolders\" { \"1\" { \"path\" \"\(external.path)\" } }"
+    try Data(vdf.utf8).write(to: steamapps.appendingPathComponent("libraryfolders.vdf"))
+    let chosen = WallpaperEngineImportLocation.preferredDirectory(steamRoots: [steam], lastDirectory: f.root)
+    #expect(chosen?.resolvingSymlinksInPath() == workshop.resolvingSymlinksInPath())
+    #expect(!FileManager.default.fileExists(atPath: workshop.appendingPathComponent("project.json").path))
+    // Discovery does not import, create files or mutate Steam configuration.
+    #expect(try String(contentsOf: steamapps.appendingPathComponent("libraryfolders.vdf")) == vdf)
+    #expect(f.library.projects().isEmpty)
+}
+
+@Test
+func engineImportLocationFallsBackWithoutSteamOrDownloadedContent() throws {
+    let f = try EngineFixture(), steam = f.root.appendingPathComponent("Steam")
+    #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [steam]) == nil)
+    #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [steam], lastDirectory: f.root) == f.root)
+    let steamapps = steam.appendingPathComponent("steamapps")
+    try FileManager.default.createDirectory(at: steamapps, withIntermediateDirectories: true)
+    #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [steam])?.resolvingSymlinksInPath() == steamapps.resolvingSymlinksInPath())
+    try Data("broken".utf8).write(to: steamapps.appendingPathComponent("libraryfolders.vdf"))
+    let authored = steamapps.appendingPathComponent("common/wallpaper_engine/projects/myprojects")
+    try FileManager.default.createDirectory(at: authored, withIntermediateDirectories: true)
+    #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [steam], lastDirectory: f.root)?.resolvingSymlinksInPath() == authored.resolvingSymlinksInPath())
+    let file = f.root.appendingPathComponent("not-a-directory")
+    try Data().write(to: file)
+    #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [], lastDirectory: file) == nil)
+}
+
 @Test(arguments: ["video", "web"])
 func engineImportsExplicitTypeAndUnicodeWithoutChangingSource(type: String) throws {
     let f = try EngineFixture()

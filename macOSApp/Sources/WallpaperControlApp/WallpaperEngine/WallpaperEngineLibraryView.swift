@@ -6,11 +6,13 @@ struct WallpaperEngineLibrarySwitch: View {
     @ObservedObject var model: WallpaperEngineViewModel
     var body: some View {
         HStack {
-            Picker("Library", selection: $model.libraryIsSelected) {
-                Text("AuraFlow").tag(false)
-                Text("Wallpaper Engine").tag(true)
+            HStack(spacing: 8) {
+                libraryButton("AuraFlow", selected: !model.libraryIsSelected) { model.libraryIsSelected = false }
+                libraryButton("Wallpaper Engine", selected: model.libraryIsSelected) { model.libraryIsSelected = true }
             }
-            .pickerStyle(.segmented).frame(maxWidth: 320)
+            .frame(maxWidth: 320)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Library")
             Spacer()
             if model.isImporting {
                 ProgressView().controlSize(.small)
@@ -20,6 +22,18 @@ struct WallpaperEngineLibrarySwitch: View {
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             }
         }
+    }
+
+    private func libraryButton(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if selected { Image(systemName: "checkmark").font(.caption.weight(.semibold)) }
+                Text(title).lineLimit(1).minimumScaleFactor(0.85)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(AuraGlassButtonStyle(compact: true))
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 }
 

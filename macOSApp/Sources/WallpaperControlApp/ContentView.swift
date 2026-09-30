@@ -606,6 +606,7 @@ struct ControlPanel: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @Environment(\.terminalPreviewTitle) private var terminalPreviewTitle
+    @State private var showsWallpaperSourcePicker = false
 
     private var widthScale: CGFloat {
         max(0.82, min(1.0, panelWidth / 1180))
@@ -878,7 +879,7 @@ struct ControlPanel: View {
     }
 
     private var changeWallpaperButton: some View {
-        Button { viewModel.chooseVideo() } label: {
+        Button { showsWallpaperSourcePicker = true } label: {
             Text("Change Wallpaper…")
                 .lineLimit(1)
                 .minimumScaleFactor(0.95)
@@ -887,10 +888,23 @@ struct ControlPanel: View {
         }
         .buttonStyle(AuraPanelButtonStyle())
         .disabled(!viewModel.canClearWallpaper)
-        .contextMenu {
-            Button("Choose video or image…") { viewModel.chooseVideo() }
-            Button("Import Wallpaper Engine…") { viewModel.wallpaperEngine.chooseImport() }
+        .popover(isPresented: $showsWallpaperSourcePicker, arrowEdge: .top) {
+            VStack(spacing: 10) {
+                Button {
+                    showsWallpaperSourcePicker = false
+                    viewModel.chooseVideo()
+                } label: { Label("Choose video or image…", systemImage: "photo.on.rectangle") }
+                .buttonStyle(AuraGlassButtonStyle())
+                Button {
+                    showsWallpaperSourcePicker = false
+                    viewModel.wallpaperEngine.chooseImport()
+                } label: { Label("Import Wallpaper Engine…", systemImage: "square.and.arrow.down") }
+                .buttonStyle(AuraGlassButtonStyle())
                 .disabled(viewModel.wallpaperEngine.isImporting)
+            }
+            .padding(16)
+            .frame(width: 280)
+            .environment(\.adaptiveGlassAppearance, adaptiveGlassAppearance)
         }
     }
 

@@ -90,6 +90,10 @@ an unpacked project folder, `project.json`, or a Workshop `431960` folder with
 projects in its immediate subfolders. You can also drop a project onto AuraFlow
 or use the import action in Wallpaper Catalog or the menu-bar Change Wallpaper
 menu. No Steam account or Workshop downloads are involved.
+The import picker opens in Steam's local Wallpaper Engine Workshop folder when
+available, including additional libraries from `libraryfolders.vdf`. Otherwise it
+checks authored projects, the last import folder, then the local Steam library;
+you can always navigate to a different folder manually.
 
 Video projects use AuraFlow's existing media pipeline. Web projects use WebKit
 for HTML/CSS/JavaScript, Canvas and WebGL, with project property controls. Import
