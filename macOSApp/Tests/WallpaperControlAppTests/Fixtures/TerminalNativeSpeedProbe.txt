@@ -1,0 +1,29 @@
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <termios.h>
+#include <unistd.h>
+
+// A native-option/input probe, not a clock shim. Revisions keep advancing even
+// at constant speed so preview frame delivery can be tested without a window.
+int main(int argc, char **argv) {
+    int speed = 5;
+    for (int n = 1; n + 1 < argc; n++) {
+        if (argv[n][0] == '-' && (argv[n][1] == 's' || argv[n][1] == 'u')) {
+            speed = atoi(argv[++n]);
+        }
+    }
+    struct termios tty;
+    tcgetattr(STDIN_FILENO, &tty);
+    cfmakeraw(&tty);
+    tcsetattr(STDIN_FILENO, TCSANOW, &tty);
+    fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
+    for (unsigned frame = 0; frame < 500; frame++) {
+        char input;
+        if (read(STDIN_FILENO, &input, 1) == 1 && input >= '0' && input <= '9') speed = input - '0';
+        printf("\033[HSPEED:%02d FRAME:%u", speed, frame);
+        fflush(stdout);
+        usleep(20000);
+    }
+    return 0;
+}

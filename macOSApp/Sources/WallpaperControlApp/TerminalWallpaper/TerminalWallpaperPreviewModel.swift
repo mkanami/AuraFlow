@@ -64,6 +64,7 @@ private struct WallpaperPreviewSelectionRecord: Codable {
 final class WallpaperPreviewSelectionStore: ObservableObject {
     @Published private(set) var kind: WallpaperPreviewKind = .video
     @Published private(set) var terminalConfiguration: TerminalWallpaperConfig?
+    @Published private(set) var isAdjustingTerminalSpeed = false
     private(set) var hasSavedSelection = false
 
     private let selectionURL: URL
@@ -82,6 +83,7 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
     func selectVideo() {
         guard kind != .video || terminalConfiguration != nil || !hasSavedSelection else { return }
         kind = .video
+        isAdjustingTerminalSpeed = false
         terminalConfiguration = nil
         persist()
     }
@@ -90,8 +92,22 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
         let normalized = configuration.normalized()
         guard kind != .terminal || terminalConfiguration != normalized else { return }
         kind = .terminal
+        isAdjustingTerminalSpeed = false
         terminalConfiguration = normalized
         persist()
+    }
+
+    func setTerminalNativeSpeed(_ speed: Double) {
+        guard kind == .terminal, var config = terminalConfiguration,
+              TerminalNativeSpeed.profile(for: config.command) != nil else { return }
+        config.nativeSpeed = speed
+        let normalized = config.normalized()
+        if terminalConfiguration != normalized { terminalConfiguration = normalized }
+    }
+
+    func setAdjustingTerminalSpeed(_ editing: Bool) {
+        isAdjustingTerminalSpeed = editing
+        if !editing { persist() }
     }
 
     private func persist() {
@@ -127,6 +143,10 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
     private var frameObserver: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
     private var refreshTimer: Timer?
+    private var rateUpdateTask: Task<Void, Never>?
+    private var previewRateUpdateTask: Task<Void, Never>?
+    private var speedRestartInFlight = false
+    private let rateUpdateQueue = DispatchQueue(label: "com.andrijvergeles.auraflow.preview-speed", qos: .userInitiated)
     @Published private(set) var previewGeneration: UInt64 = 0
 
     init(
@@ -176,6 +196,8 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         guard selectionStore.kind == .terminal,
               let selected = selectionStore.terminalConfiguration?.normalized()
         else {
+            rateUpdateTask?.cancel()
+            previewRateUpdateTask?.cancel()
             if previewSession != nil { stopPreviewSession() }
             if configuration != nil { configuration = nil }
             if snapshot != nil { snapshot = nil }
@@ -186,6 +208,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
 
         if configuration != selected { configuration = selected }
         let runtimeStatus = runtimeStore.status()
+        synchronizeRuntimeSpeed(selected, status: runtimeStatus)
         let descriptor = runtimeStore.loadSharedFrameDescriptor()
         let runtimeMatches = TerminalWallpaperPreviewRuntimePolicy.canReuseActiveFrames(
             selectedConfiguration: selected,
@@ -218,11 +241,51 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
             previewSession?.setPaused(true)
             return
         }
-        if previewSession == nil {
+        if previewSession == nil, !speedRestartInFlight {
             startPreviewSession(for: selected)
         } else {
             previewSession?.setPaused(false)
+            synchronizePreviewSpeed(selected)
         }
+    }
+
+    private func synchronizePreviewSpeed(_ selected: TerminalWallpaperConfig) {
+        guard !selectionStore.isAdjustingTerminalSpeed, let session = previewSession,
+              let previous = session.configuration,
+              TerminalNativeSpeed.changed(from: previous, to: selected) else { return }
+        scheduleSpeedUpdate(selected, forPreview: true) { [weak self, weak session] in
+            guard let self, let session, self.previewSession === session else { return }
+            do {
+                if let input = TerminalNativeSpeed.profile(for: selected.command)?.input(for: selected) {
+                    try session.writeInput(input)
+                    session.configuration = selected
+                } else {
+                    // Keep the last image while the old child exits; never
+                    // overlap two preview children during a speed restart.
+                    self.speedRestartInFlight = true
+                    self.stopPreviewSession()
+                    session.afterStopped { [weak self] in
+                        Task { @MainActor [weak self] in
+                            self?.speedRestartInFlight = false
+                            self?.reconcile()
+                        }
+                    }
+                }
+            } catch { self.previewError = error.localizedDescription }
+        }
+    }
+
+    private func scheduleSpeedUpdate(_ selected: TerminalWallpaperConfig, forPreview: Bool = false, action: @escaping @MainActor () async -> Void) {
+        if forPreview { previewRateUpdateTask?.cancel() } else { rateUpdateTask?.cancel() }
+        let task = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled, let self,
+                  !self.selectionStore.isAdjustingTerminalSpeed,
+                  self.selectionStore.kind == .terminal,
+                  self.selectionStore.terminalConfiguration == selected else { return }
+            await action()
+        }
+        if forPreview { previewRateUpdateTask = task } else { rateUpdateTask = task }
     }
 
     private func receiveSharedFrame(_ notification: Notification) {
@@ -256,6 +319,34 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         if previewSession != nil { stopPreviewSession() }
     }
 
+    private func synchronizeRuntimeSpeed(_ selected: TerminalWallpaperConfig, status: TerminalWallpaperStatus) {
+        guard !selectionStore.isAdjustingTerminalSpeed, status.running,
+              status.config.command == selected.command,
+              TerminalNativeSpeed.changed(from: status.config, to: selected),
+              let profile = TerminalNativeSpeed.profile(for: selected.command) else { return }
+        let store = runtimeStore
+        scheduleSpeedUpdate(selected) { [weak self] in
+            guard let self else { return }
+            do {
+                // Save only native speed; preserve the active runtime's render
+                // and behavior settings and never start/change its command.
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    self.rateUpdateQueue.async {
+                        do {
+                            let controller = try NativeTerminalWallpaperController(store: store)
+                            _ = try controller.updateNativeSpeed(profile.value(for: selected), matching: selected.command)
+                            continuation.resume()
+                        } catch {
+                            continuation.resume(throwing: error)
+                        }
+                    }
+                }
+            } catch {
+                self.previewError = "Could not update animation speed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func startPreviewSession(for config: TerminalWallpaperConfig) {
         previewGeneration &+= 1
         let generation = previewGeneration
@@ -263,7 +354,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         previewSession = session
         previewError = nil
         do {
-            try session.start(configuration: config) { [weak self] newSnapshot in
+            try session.start(configuration: config, initialRevision: (snapshot?.revision ?? 0) &+ 1) { [weak self] newSnapshot in
                 DispatchQueue.main.async { [weak self] in
                     guard let self,
                           self.previewGeneration == generation,
@@ -294,6 +385,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
 }
 
 private final class TerminalWallpaperPreviewPTY {
+    var configuration: TerminalWallpaperConfig?
     private let session = TerminalPTYSession()
     private let parserQueue = DispatchQueue(
         label: "com.andrijvergeles.auraflow.terminal-preview-parser",
@@ -317,12 +409,14 @@ private final class TerminalWallpaperPreviewPTY {
 
     func start(
         configuration: TerminalWallpaperConfig,
+        initialRevision: UInt64,
         onSnapshot: @escaping (TerminalGridSnapshot) -> Void
     ) throws {
         let config = configuration.normalized()
+        self.configuration = config
         let columns = config.render.columns ?? 153
         let rows = config.render.rows ?? 48
-        parser = VTParser(columns: columns, rows: rows)
+        parser = VTParser(columns: columns, rows: rows, initialRevision: initialRevision)
         snapshotHandler = onSnapshot
         let timer = DispatchSource.makeTimerSource(queue: .main)
         let interval = 1.0 / Double(min(max(config.render.maxFPS, 1), 60))
@@ -339,7 +433,7 @@ private final class TerminalWallpaperPreviewPTY {
         frameTimer = timer
         timer.resume()
         _ = try session.start(
-            command: config.command,
+            command: TerminalNativeSpeed.launchCommand(for: config),
             columns: columns,
             rows: rows,
             onData: { [weak self] data in
@@ -365,6 +459,12 @@ private final class TerminalWallpaperPreviewPTY {
     func setPaused(_ paused: Bool) {
         guard session.childPID != nil else { return }
         try? session.setPaused(paused)
+    }
+
+    func writeInput(_ input: Data) throws { try session.writeInput(input) }
+
+    func afterStopped(_ completion: @escaping () -> Void) {
+        shutdownQueue.async(execute: completion)
     }
 
     func stop(waitForExit: Bool = false) {

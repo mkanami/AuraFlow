@@ -310,7 +310,7 @@ struct ContentView: View {
 
             TitlebarInteractionOverlay(
                 window: window,
-                protectedCenterWidth: viewModel.isCatalogOpen
+                protectedCenterWidth: viewModel.isCatalogOpen || !viewModel.showsPreviewSpeedControl
                     ? nil
                     : speedOverlayPillWidth(for: availableWidth),
                 onDragStateChange: { dragging in
@@ -388,7 +388,7 @@ struct ContentView: View {
                 alignment: .top
             )
             .overlay(alignment: .top) {
-            if !viewModel.isCatalogOpen {
+            if !viewModel.isCatalogOpen && viewModel.showsPreviewSpeedControl {
                 SpeedOverlay(
                     viewModel: viewModel,
                     isAdjustingSpeed: $isAdjustingSpeed,
@@ -2384,22 +2384,23 @@ struct SpeedOverlay: View {
                 .fixedSize(horizontal: true, vertical: false)
 
             AuraLegacySpeedSlider(
-                value: viewModel.playbackSpeed,
-                range: 0.25...2.0,
-                step: 0.05,
+                value: viewModel.previewSpeedControlValue,
+                range: viewModel.previewSpeedRange,
+                step: viewModel.previewSpeedStep,
                 onValueChanged: { newValue in
                     viewModel.setPreviewPlaybackSpeed(newValue)
                 },
                 onEditingChanged: { editing in
                     isAdjustingSpeed = editing
+                    viewModel.setSpeedEditing(editing)
                     if !editing {
-                        viewModel.updateSpeed(viewModel.playbackSpeed)
+                        viewModel.updateSpeed(viewModel.previewSpeedControlValue)
                     }
                 }
             )
             .frame(maxWidth: .infinity)
 
-            Text(String(format: "%.2fx", viewModel.playbackSpeed))
+            Text(viewModel.previewSpeedLabel)
                 .font(.body.weight(.semibold))
                 .monospacedDigit()
                 .foregroundStyle(adaptiveGlassAppearance.topTextTone.secondaryTextColor)

@@ -615,6 +615,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
             workingDirectory: workingDirectory.isEmpty ? nil : workingDirectory,
             environment: environment
         )
+        let speedConfiguration = previewSelectionStore?.terminalConfiguration ?? status.config
+        let preservesSpeed = speedConfiguration.command == command
         return TerminalWallpaperConfig(
             command: command,
             render: render,
@@ -622,7 +624,9 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 launchAtLogin: launchAtLogin,
                 allDisplays: allDisplays,
                 pauseOnFullscreen: pauseOnFullscreen
-            )
+            ),
+            playbackSpeed: preservesSpeed ? speedConfiguration.playbackSpeed : 1,
+            nativeSpeed: preservesSpeed ? speedConfiguration.nativeSpeed : nil
         ).normalized()
     }
 

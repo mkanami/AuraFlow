@@ -229,19 +229,23 @@ public struct TerminalWallpaperConfig: Codable, Equatable, Sendable {
     public var render: TerminalRenderConfiguration
     public var behavior: TerminalWallpaperBehavior
     public var playbackSpeed: Double
+    /// Native program units; nil migrates the old multiplier using native flags.
+    public var nativeSpeed: Double?
 
     public init(
         schemaVersion: Int = TerminalWallpaperConfig.currentSchemaVersion,
         command: TerminalCommandConfiguration = TerminalCommandConfiguration(),
         render: TerminalRenderConfiguration = TerminalRenderConfiguration(),
         behavior: TerminalWallpaperBehavior = TerminalWallpaperBehavior(),
-        playbackSpeed: Double = 1
+        playbackSpeed: Double = 1,
+        nativeSpeed: Double? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.command = command
         self.render = render
         self.behavior = behavior
         self.playbackSpeed = playbackSpeed
+        self.nativeSpeed = nativeSpeed
     }
 
     public init(from decoder: Decoder) throws {
@@ -251,6 +255,7 @@ public struct TerminalWallpaperConfig: Codable, Equatable, Sendable {
         render = try container.decode(TerminalRenderConfiguration.self, forKey: .render)
         behavior = try container.decode(TerminalWallpaperBehavior.self, forKey: .behavior)
         playbackSpeed = try container.decodeIfPresent(Double.self, forKey: .playbackSpeed) ?? 1
+        nativeSpeed = try container.decodeIfPresent(Double.self, forKey: .nativeSpeed)
     }
 
     public static let defaultConfig = TerminalWallpaperConfig()
@@ -266,6 +271,10 @@ public struct TerminalWallpaperConfig: Codable, Equatable, Sendable {
         }
         result.render = render.normalized()
         result.playbackSpeed = playbackSpeed.isFinite ? min(max(playbackSpeed, 0.1), 4) : 1
+        if let nativeSpeed, !nativeSpeed.isFinite { result.nativeSpeed = nil }
+        if result.nativeSpeed != nil, let profile = TerminalNativeSpeed.profile(for: command) {
+            result.nativeSpeed = profile.value(for: result)
+        }
         return result
     }
 
@@ -275,6 +284,7 @@ public struct TerminalWallpaperConfig: Codable, Equatable, Sendable {
         case render
         case behavior
         case playbackSpeed = "playback_speed"
+        case nativeSpeed = "native_speed"
     }
 }
 

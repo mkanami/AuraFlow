@@ -146,6 +146,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
               command.id != lastCommandID
         else { return }
         lastCommandID = command.id
+        let previousConfiguration = config
         if let commandConfig = command.config {
             let oldFPS = config.render.maxFPS
             config = commandConfig.normalized()
@@ -157,7 +158,21 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         case .start, .restart:
             rebuildRuntime()
         case .update:
-            rebuildRuntime(restartChild: false)
+            var previousWithoutRate = previousConfiguration
+            previousWithoutRate.playbackSpeed = config.playbackSpeed
+            previousWithoutRate.nativeSpeed = config.nativeSpeed
+            if previousWithoutRate != config {
+                rebuildRuntime(restartChild: previousConfiguration.command != config.command)
+            }
+            if TerminalNativeSpeed.changed(from: previousConfiguration, to: config),
+               let profile = TerminalNativeSpeed.profile(for: config.command) {
+                if let input = profile.input(for: config), session.childPID != nil {
+                    do { try session.writeInput(input) }
+                    catch { lastError = error.localizedDescription }
+                } else {
+                    rebuildRuntime(preserveWindows: true)
+                }
+            }
         case .resize:
             restartSessionForCurrentGeometry()
         case .stop, .terminate:
@@ -167,8 +182,8 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         writeHealth()
     }
 
-    private func rebuildRuntime(restartChild: Bool = true) {
-        displayGeneration &+= 1
+    private func rebuildRuntime(restartChild: Bool = true, preserveWindows: Bool = false) {
+        if !preserveWindows { displayGeneration &+= 1 }
         snapshotRequestInFlight = false
         parserDirtyLock.lock()
         parserHasPendingData = false
@@ -188,10 +203,13 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             session.stop()
         }
         if restartChild || parserSize == nil {
+            // Retained windows reject older revisions. A new child must begin
+            // after the last displayed snapshot, even though its grid is new.
+            let initialRevision = preserveWindows ? (latestSnapshot?.revision ?? 0) &+ 1 : 0
             parserQueue.sync {
                 parserGeneration = childGeneration
-                parser = VTParser(columns: geometry.columns, rows: geometry.rows)
-                latestSnapshot = parser?.grid.snapshot()
+                parser = VTParser(columns: geometry.columns, rows: geometry.rows, initialRevision: initialRevision)
+                if !preserveWindows { latestSnapshot = parser?.grid.snapshot() }
                 publishedParserRevision = parser?.grid.currentRevision
             }
             parserSize = geometry
@@ -212,7 +230,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             }
             parserSize = geometry
         }
-        rebuildWindows()
+        if !preserveWindows { rebuildWindows() }
         guard restartChild || session.childPID != nil else { return }
         if restartChild {
             childStartedAt = Date()
@@ -221,12 +239,15 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             let generation = childGeneration
             do {
                 _ = try session.start(
-                    command: config.command,
+                    command: TerminalNativeSpeed.launchCommand(for: config),
                     columns: geometry.columns,
                     rows: geometry.rows,
                     onData: { [weak self] data in self?.consume(data, generation: generation) },
                     onExit: { [weak self] _ in
-                        DispatchQueue.main.async { self?.childExited() }
+                        DispatchQueue.main.async {
+                            guard self?.childGeneration == generation else { return }
+                            self?.childExited()
+                        }
                     }
                 )
                 lastError = nil
@@ -238,7 +259,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 logger.error("Could not start child process: \(error.localizedDescription, privacy: .public)")
             }
         }
-        applyLatestSnapshot()
+        if !preserveWindows { applyLatestSnapshot() }
     }
 
     private func restartSessionForCurrentGeometry() {
@@ -279,6 +300,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard hasPendingData else { return }
         snapshotRequestInFlight = true
         let generation = displayGeneration
+        let requestedChildGeneration = childGeneration
         parserQueue.async { [weak self] in
             guard let self else { return }
             var snapshot: TerminalGridSnapshot?
@@ -288,7 +310,8 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 self.publishedParserRevision = snapshot?.revision
             }
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.displayGeneration == generation else { return }
+                guard let self, self.displayGeneration == generation,
+                      self.childGeneration == requestedChildGeneration else { return }
                 self.snapshotRequestInFlight = false
                 guard let snapshot,
                       snapshot.revision != self.latestSnapshot?.revision ||

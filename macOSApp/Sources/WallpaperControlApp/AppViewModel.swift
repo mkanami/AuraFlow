@@ -4,6 +4,7 @@ import AVKit
 import Combine
 @preconcurrency import ObjectiveC
 import Foundation
+import AuraTerminalWallpaperCore
 import OSLog
 import UniformTypeIdentifiers
 
@@ -3465,6 +3466,10 @@ final class AppViewModel: ObservableObject {
 
     func updateSpeed(_ speed: Double) {
         setPreviewPlaybackSpeed(speed)
+        if previewSelectionStore?.kind == .terminal {
+            previewSelectionStore?.setAdjustingTerminalSpeed(false)
+            return
+        }
         guard let controller else { return }
         guard !isBusy else { return }
         Task {
@@ -3488,9 +3493,53 @@ final class AppViewModel: ObservableObject {
     }
 
     func setPreviewPlaybackSpeed(_ speed: Double) {
+        if previewSelectionStore?.kind == .terminal {
+            if let config = previewSelectionStore?.terminalConfiguration,
+               let profile = TerminalNativeSpeed.profile(for: config.command) {
+                previewSelectionStore?.setTerminalNativeSpeed(profile.nativeValue(fromSlider: speed))
+            }
+            return
+        }
         guard abs(playbackSpeed - speed) > 0.0001 else { return }
         playbackSpeed = speed
         syncPreviewPlaybackRate()
+    }
+
+    var showsPreviewSpeedControl: Bool {
+        previewSelectionStore?.kind != .terminal || terminalSpeedProfile != nil
+    }
+
+    var previewSpeedControlValue: Double {
+        guard let profile = terminalSpeedProfile,
+              let config = previewSelectionStore?.terminalConfiguration else { return playbackSpeed }
+        return profile.sliderValue(for: config)
+    }
+
+    private var terminalSpeedProfile: TerminalNativeSpeed? {
+        guard previewSelectionStore?.kind == .terminal,
+              let config = previewSelectionStore?.terminalConfiguration else { return nil }
+        return TerminalNativeSpeed.profile(for: config.command)
+    }
+
+    var previewSpeedRange: ClosedRange<Double> {
+        guard let profile = terminalSpeedProfile,
+              let config = previewSelectionStore?.terminalConfiguration else { return 0.25...2 }
+        return profile.sliderRange(for: config)
+    }
+
+    var previewSpeedLabel: String {
+        guard let profile = terminalSpeedProfile,
+              let config = previewSelectionStore?.terminalConfiguration else {
+            return String(format: "%.2fx", playbackSpeed)
+        }
+        return profile.label(for: config)
+    }
+
+    var previewSpeedStep: Double { terminalSpeedProfile == nil ? 0.05 : 1 }
+
+    func setSpeedEditing(_ editing: Bool) {
+        guard previewSelectionStore?.kind == .terminal else { return }
+        previewSelectionStore?.setAdjustingTerminalSpeed(editing)
     }
 
     func toggleAutostart(_ enabled: Bool) {

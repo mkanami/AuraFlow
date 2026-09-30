@@ -19,8 +19,8 @@ public struct VTParser {
     private var utf8Expected = 0
     private var savedStyle = TerminalCellStyle()
 
-    public init(columns: Int, rows: Int) {
-        grid = TerminalGrid(columns: columns, rows: rows)
+    public init(columns: Int, rows: Int, initialRevision: UInt64 = 0) {
+        grid = TerminalGrid(columns: columns, rows: rows, initialRevision: initialRevision)
     }
 
     public mutating func resize(columns: Int, rows: Int) {

@@ -131,6 +131,20 @@ public final class TerminalPTYSession {
         self.paused = paused
     }
 
+    public func writeInput(_ data: Data) throws {
+        stateLock.lock(); defer { stateLock.unlock() }
+        guard let descriptor = masterDescriptor, !didFinish else { throw TerminalPTYError.notRunning }
+        try data.withUnsafeBytes { buffer in
+            var offset = 0
+            while offset < buffer.count {
+                let count = write(descriptor, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
+                if count > 0 { offset += count }
+                else if count < 0, errno == EINTR { continue }
+                else { throw TerminalPTYError.inputWriteFailed }
+            }
+        }
+    }
+
     public func stop() {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -259,6 +273,7 @@ public enum TerminalPTYError: LocalizedError, Equatable {
     case notRunning
     case resizeFailed
     case pauseFailed
+    case inputWriteFailed
 
     public var errorDescription: String? {
         switch self {
@@ -276,6 +291,8 @@ public enum TerminalPTYError: LocalizedError, Equatable {
             return "Could not resize the terminal PTY."
         case .pauseFailed:
             return "Could not pause or resume the terminal process."
+        case .inputWriteFailed:
+            return "Could not send the native speed key to the terminal process."
         }
     }
 }

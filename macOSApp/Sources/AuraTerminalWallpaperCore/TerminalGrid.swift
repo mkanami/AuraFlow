@@ -153,11 +153,12 @@ public struct TerminalGrid {
 
     public var currentRevision: UInt64 { revision }
 
-    public init(columns: Int, rows: Int) {
+    public init(columns: Int, rows: Int, initialRevision: UInt64 = 0) {
         self.columns = max(columns, 1)
         self.rows = max(rows, 1)
         self.cells = Array(repeating: TerminalCell(), count: max(columns, 1) * max(rows, 1))
         self.scrollBottom = max(rows, 1) - 1
+        self.revision = initialRevision
     }
 
     public mutating func resize(columns: Int, rows: Int) {

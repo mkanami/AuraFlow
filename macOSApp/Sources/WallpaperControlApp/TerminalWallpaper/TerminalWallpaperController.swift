@@ -194,6 +194,23 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         return store.status()
     }
 
+    func updateNativeSpeed(_ speed: Double, matching command: TerminalCommandConfiguration) throws -> TerminalWallpaperStatus {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
+        var current = store.loadConfig()
+        guard current.command == command, TerminalNativeSpeed.profile(for: command) != nil,
+              store.processIsAlive(pid: store.loadPID()) else {
+            return store.status()
+        }
+        let previousSpeed = current.nativeSpeed
+        current.nativeSpeed = speed
+        current = current.normalized()
+        guard current.nativeSpeed != previousSpeed else { return store.status() }
+        try store.saveConfig(current)
+        try send(.update, config: current)
+        return store.status()
+    }
+
     func resize(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
         lockScreenOperationLock.lock()
         defer { lockScreenOperationLock.unlock() }
