@@ -536,3 +536,48 @@ func terminalExactCommandUsesWallpaperWithoutInstallingPackage() async throws {
         }
     }
 }
+
+@Test @MainActor
+func terminalWallpaperPreviewSummaryDoesNotUseDraftOrRuntimeSelection() throws {
+    let store = makePreviewSelectionStore()
+    let controller = StubTerminalWallpaperController()
+    var active = TerminalWallpaperConfig.defaultConfig
+    active.command = TerminalCommandConfiguration(catalogItemID: "cmatrix", executable: "/usr/bin/true")
+    _ = try controller.start(config: active)
+    let viewModel = TerminalWallpaperViewModel(controller: controller, previewSelectionStore: store)
+
+    #expect(viewModel.previewTitle == nil)
+    #expect(viewModel.activeWallpaperTitle == "CMatrix")
+    viewModel.setExecutable("/usr/local/bin/draft-command")
+    #expect(viewModel.previewTitle == nil)
+
+    var preview = active
+    preview.command.catalogItemID = "lavat"
+    store.selectTerminal(preview)
+    #expect(viewModel.previewTitle == "lavat")
+    #expect(viewModel.activeWallpaperTitle == "CMatrix")
+    #expect(viewModel.isActive(TerminalWallpaperPreset.preset(id: "cmatrix")!.item))
+    #expect(!viewModel.isPreviewSelected(TerminalWallpaperPreset.preset(id: "cmatrix")!.item))
+    #expect(viewModel.isPreviewSelected(TerminalWallpaperPreset.preset(id: "lavat")!.item))
+
+    store.selectVideo()
+    #expect(viewModel.previewTitle == nil)
+    #expect(viewModel.activeWallpaperTitle == "CMatrix")
+    store.selectWeb("web-project")
+    #expect(viewModel.previewTitle == nil)
+    #expect(controller.startCount == 1)
+}
+
+@Test @MainActor
+func terminalWallpaperPreviewSummarySupportsCustomCommandsWithoutApplying() {
+    let store = makePreviewSelectionStore()
+    let controller = StubTerminalWallpaperController()
+    let viewModel = TerminalWallpaperViewModel(controller: controller, previewSelectionStore: store)
+    var configuration = TerminalWallpaperConfig.defaultConfig
+    configuration.command = TerminalCommandConfiguration(executable: "/usr/local/bin/my-animation")
+    store.selectTerminal(configuration)
+
+    #expect(viewModel.previewTitle == "my-animation")
+    #expect(viewModel.activeWallpaperTitle == nil)
+    #expect(controller.startCount == 0)
+}

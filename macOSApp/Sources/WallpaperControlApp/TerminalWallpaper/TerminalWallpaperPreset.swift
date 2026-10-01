@@ -12,10 +12,10 @@ struct TerminalWallpaperPreset: Identifiable, Equatable, Sendable {
     }
 
     static let featured: [TerminalWallpaperPreset] = [
-        .init(id: "asciiquarium", description: "Fish and waves", formula: "asciiquarium"),
-        .init(id: "lavat", description: "Flowing lava lamp", formula: "lavat"),
-        .init(id: "cmatrix", description: "Digital rain", formula: "cmatrix"),
-        .init(id: "pipes", description: "Colorful moving lines", formula: "pipes-sh"),
+        .init(id: "asciiquarium", description: "An ASCII aquarium with swimming fish, bubbles and waves.", formula: "asciiquarium"),
+        .init(id: "lavat", description: "A flowing lava lamp with softly moving, merging blobs.", formula: "lavat"),
+        .init(id: "cmatrix", description: "Matrix-style digital rain falling down your screen.", formula: "cmatrix"),
+        .init(id: "pipes", description: "Colorful pipes that turn and weave across your screen.", formula: "pipes-sh"),
     ]
 
     static func preset(id: String) -> TerminalWallpaperPreset? {

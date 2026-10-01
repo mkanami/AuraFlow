@@ -205,6 +205,27 @@ final class TerminalWallpaperViewModel: ObservableObject {
         !isBusy && !executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    // Read the actual selection and runtime separately: editing a command is
+    // not selecting a preview, and selecting a preview is not applying it.
+    var previewTitle: String? {
+        guard previewSelectionStore?.kind == .terminal,
+              let command = previewSelectionStore?.terminalConfiguration?.command else { return nil }
+        return Self.title(for: command)
+    }
+
+    var activeWallpaperTitle: String? {
+        guard status.running else { return nil }
+        return Self.title(for: status.config.command)
+    }
+
+    private static func title(for command: TerminalCommandConfiguration) -> String? {
+        if let id = command.catalogItemID, let item = TerminalWallpaperCatalog.item(id: id) {
+            return item.title
+        }
+        let name = URL(fileURLWithPath: command.executable).lastPathComponent
+        return name.isEmpty ? nil : name
+    }
+
     var featuredPresets: [TerminalWallpaperPreset] {
         TerminalWallpaperPreset.featured.sorted { lhs, rhs in
             let lhsInstalled = cachedExecutablePath(for: lhs.item) != nil
