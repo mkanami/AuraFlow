@@ -61,6 +61,11 @@ final class WallpaperEngineViewModel: ObservableObject {
         return cachedConfig
     }
     var canStart: Bool { selection.kind == .web && selectedProject != nil && !isBusy && videoActive?() != true && terminalActive?() != true && !runtimeActive }
+    static var importContentTypes: [UTType] {
+        [.json, .folder, .movie, .html]
+            + (WallpaperEngineLibrary.videoExtensions + WallpaperEngineLibrary.webExtensions)
+                .compactMap { UTType(filenameExtension: $0) }
+    }
     func chooseImport() {
         guard !isImporting else { return }
         let lastPath = UserDefaults.standard.string(forKey: "WallpaperEngineLastImportDirectory")
@@ -76,10 +81,11 @@ final class WallpaperEngineViewModel: ObservableObject {
             isImporting = false
             let panel = NSOpenPanel()
             panel.title = "Import Wallpaper Engine"; panel.prompt = "Import"
-            panel.message = "Choose a downloaded project folder, project.json, or the Workshop 431960 folder."
+            panel.message = "Choose the wallpaper video or HTML file, a project folder, or the Workshop 431960 folder. project.json is found automatically."
             panel.directoryURL = directory
             panel.canChooseDirectories = true; panel.canChooseFiles = true
-            panel.allowedContentTypes = [.json, .folder]; panel.allowsMultipleSelection = false
+            panel.allowedContentTypes = Self.importContentTypes
+            panel.allowsMultipleSelection = false
             if panel.runModal() == .OK, let url = panel.url {
                 let parent = url.deletingLastPathComponent()
                 UserDefaults.standard.set(parent.path, forKey: "WallpaperEngineLastImportDirectory")

@@ -47,7 +47,7 @@ struct WallpaperEngineLibraryRows: View {
     var body: some View {
         if let message = model.message { Text(message).font(.caption).lineLimit(3) }
         if model.projects.isEmpty {
-            Text("Import a downloaded Wallpaper Engine project folder or project.json. Video and Web are supported.")
+            Text("Choose a downloaded Wallpaper Engine video, HTML file, or project folder. project.json is found automatically. Video and Web are supported; Scene is not.")
                 .font(.caption).foregroundStyle(appearance.centerTextTone.secondaryTextColor)
         } else {
             ScrollView {

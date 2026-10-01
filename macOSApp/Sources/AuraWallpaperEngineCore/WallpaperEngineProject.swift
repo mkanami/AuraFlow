@@ -97,16 +97,15 @@ public final class WallpaperEngineLibrary: @unchecked Sendable {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/AuraFlow/wallpaper-engine")
     }
     public init(rootURL: URL = WallpaperEngineLibrary.defaultRoot) { self.rootURL = rootURL }
+    public static let videoExtensions = ["mp4", "mov", "m4v", "webm", "mkv", "avi"]
+    public static let webExtensions = ["html", "htm"]
     public func projects() -> [WallpaperEngineProject] {
         lock.lock(); defer { lock.unlock() }
         return (try? JSONDecoder().decode([WallpaperEngineProject].self, from: Data(contentsOf: rootURL.appendingPathComponent("library.json")))) ?? []
     }
     public func candidates(at url: URL) throws -> [WallpaperEngineCandidate] {
-        let root = url.lastPathComponent == "project.json" ? url.deletingLastPathComponent() : url
+        let root = try projectRoot(for: url)
         let manager = FileManager.default
-        guard root.hasDirectoryPath || (try? root.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
-            throw WallpaperEngineError.invalid("Choose a project folder or project.json, not an individual asset.")
-        }
         let folders: [URL]
         if manager.fileExists(atPath: root.appendingPathComponent("project.json").path) { folders = [root] }
         else {
@@ -124,6 +123,37 @@ public final class WallpaperEngineLibrary: @unchecked Sendable {
                 catch { return .init(url: folder, title: title, type: type, error: error.localizedDescription) }
             } catch { return .init(url: folder, title: folder.lastPathComponent, type: "unknown", error: error.localizedDescription) }
         }
+    }
+
+    /// A user can select the wallpaper itself; metadata still defines its type and entry point.
+    /// Only the nearest enclosing project is considered, never a sibling project or arbitrary MP4.
+    private func projectRoot(for selection: URL) throws -> URL {
+        let source = selection.standardizedFileURL
+        let values = try source.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey])
+        if values.isDirectory == true { return source.resolvingSymlinksInPath() }
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw WallpaperEngineError.invalid("Choose a regular video file, web entry file, project folder, or project.json.")
+        }
+        if source.lastPathComponent.lowercased() == "project.json" {
+            return source.deletingLastPathComponent().resolvingSymlinksInPath()
+        }
+        guard (Self.videoExtensions + Self.webExtensions).contains(source.pathExtension.lowercased()) else {
+            throw WallpaperEngineError.invalid("Choose the wallpaper video, HTML entry file, project folder, or project.json.")
+        }
+        var folder = source.deletingLastPathComponent().resolvingSymlinksInPath()
+        for _ in 0..<32 {
+            if FileManager.default.fileExists(atPath: folder.appendingPathComponent("project.json").path) {
+                let project = try parse(folder)
+                guard project.entryURL.standardizedFileURL.resolvingSymlinksInPath() == source.resolvingSymlinksInPath() else {
+                    throw WallpaperEngineError.invalid("The selected file is not the wallpaper entry declared in project.json. Choose that entry or the project folder instead.")
+                }
+                return folder
+            }
+            let parent = folder.deletingLastPathComponent()
+            if parent.path == folder.path { break }
+            folder = parent
+        }
+        throw WallpaperEngineError.invalid("No Wallpaper Engine project.json was found beside this file or in its enclosing folders. Choose the downloaded project folder. For a standalone video, use Choose video or image instead.")
     }
     public static func relativePath(_ path: String, in root: URL, mustExist: Bool = true) throws -> String {
         let path = path.replacingOccurrences(of: "\\", with: "/")
@@ -149,7 +179,7 @@ public final class WallpaperEngineLibrary: @unchecked Sendable {
         }
         let entry = try Self.relativePath(meta["file"]?.string ?? "", in: root)
         let ext = URL(fileURLWithPath: entry).pathExtension.lowercased()
-        guard type == .web ? ["html", "htm"].contains(ext) : ["mp4", "mov", "m4v", "webm", "mkv", "avi"].contains(ext) else {
+        guard type == .web ? Self.webExtensions.contains(ext) : Self.videoExtensions.contains(ext) else {
             throw WallpaperEngineError.invalid("The entry file is not a supported \(type.rawValue) file.")
         }
         var warnings: [String] = []
@@ -174,7 +204,7 @@ public final class WallpaperEngineLibrary: @unchecked Sendable {
     public func importProject(at source: URL, cancelled: () -> Bool = { false }) throws -> WallpaperEngineProject {
         lock.lock(); defer { lock.unlock() }
         let manager = FileManager.default
-        let root = (source.lastPathComponent == "project.json" ? source.deletingLastPathComponent() : source).standardizedFileURL.resolvingSymlinksInPath()
+        let root = try projectRoot(for: source)
         var project = try parse(root)
         var enumerationError: Error?
         guard let enumerator = manager.enumerator(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey, .isRegularFileKey, .isDirectoryKey], options: [], errorHandler: { _, error in enumerationError = error; return false }) else {

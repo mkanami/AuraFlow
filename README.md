@@ -86,10 +86,14 @@ affecting a wallpaper already running on the Desktop.
 
 Open **Downloaded Wallpapers**, switch the library above its heading to
 **Wallpaper Engine**, and choose **Import Wallpaper Engine…**. Import accepts
-an unpacked project folder, `project.json`, or a Workshop `431960` folder with
+the wallpaper video or HTML entry file, an unpacked project folder, `project.json`, or a Workshop `431960` folder with
 projects in its immediate subfolders. You can also drop a project onto AuraFlow
 or use the import action in Wallpaper Catalog or the menu-bar Change Wallpaper
 menu. No Steam account or Workshop downloads are involved.
+When selecting a video or HTML file, AuraFlow automatically reads the nearest
+enclosing `project.json` and checks that the selected file is its declared entry.
+Scene projects with MP4 assets are still unsupported. Standalone videos without
+Wallpaper Engine metadata use the existing **Choose video or image…** action.
 The import picker opens in Steam's local Wallpaper Engine Workshop folder when
 available, including additional libraries from `libraryfolders.vdf`. Otherwise it
 checks authored projects, the last import folder, then the local Steam library;

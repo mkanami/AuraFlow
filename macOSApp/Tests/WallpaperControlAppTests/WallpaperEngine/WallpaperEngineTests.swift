@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Testing
+import UniformTypeIdentifiers
 @testable import AuraWallpaperEngineCore
 @testable import WallpaperControlApp
 
@@ -19,6 +20,96 @@ private final class EngineFixture {
         try Data("<html><body style='background:red'>Local</body></html>".utf8).write(to: asset)
         return folder
     }
+}
+
+@Test(arguments: ["video", "web"])
+func engineImportsWallpaperFileAndFindsNestedProjectMetadata(type: String) throws {
+    let f = try EngineFixture()
+    let entry = type == "video" ? "assets\\Обои.MP4" : "assets\\page.htm"
+    let root = try f.project(type: type, entry: entry)
+    let file = root.appendingPathComponent(entry.replacingOccurrences(of: "\\", with: "/"))
+    let before = try Data(contentsOf: root.appendingPathComponent("project.json"))
+    let candidates = try f.library.candidates(at: file)
+    #expect(candidates.count == 1)
+    #expect(candidates.first?.supported == true)
+    #expect(candidates.first?.type == type)
+    let imported = try f.library.importProject(at: file)
+    #expect(imported.type.rawValue == type)
+    #expect(imported.entryPath == entry.replacingOccurrences(of: "\\", with: "/"))
+    #expect(imported.title == "Обои 🌊")
+    #expect(f.library.projects().count == 1)
+    #expect(try f.library.importProject(at: root.appendingPathComponent("project.json")).id == imported.id)
+    #expect(try Data(contentsOf: root.appendingPathComponent("project.json")) == before)
+}
+
+@Test(arguments: ["scene", "application"])
+func engineDoesNotImportSceneVideoAssetsAsVideo(type: String) throws {
+    let f = try EngineFixture(), root = try f.project(type: type, entry: "movie.mp4")
+    let file = root.appendingPathComponent("movie.mp4")
+    #expect(throws: WallpaperEngineError.self) { try f.library.candidates(at: file) }
+    #expect(throws: WallpaperEngineError.self) { try f.library.importProject(at: file) }
+    #expect(f.library.projects().isEmpty)
+}
+
+@Test
+func engineRejectsUnrelatedVideoAndNeverSkipsNearestProject() throws {
+    let f = try EngineFixture(), root = try f.project(type: "video", entry: "main.mp4")
+    let extra = root.appendingPathComponent("extra.mp4")
+    try Data("another asset".utf8).write(to: extra)
+    #expect(throws: WallpaperEngineError.self) { try f.library.candidates(at: extra) }
+    #expect(throws: WallpaperEngineError.self) { try f.library.importProject(at: extra) }
+    let nested = root.appendingPathComponent("assets")
+    try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+    try FileManager.default.moveItem(at: root.appendingPathComponent("main.mp4"), to: nested.appendingPathComponent("main.mp4"))
+    try JSONSerialization.data(withJSONObject: ["type": "video", "file": "assets/main.mp4"]).write(to: root.appendingPathComponent("project.json"))
+    try JSONSerialization.data(withJSONObject: ["type": "scene", "file": "main.mp4"]).write(to: nested.appendingPathComponent("project.json"))
+    #expect(throws: WallpaperEngineError.self) { try f.library.importProject(at: nested.appendingPathComponent("main.mp4")) }
+    #expect(f.library.projects().isEmpty)
+}
+
+@Test
+func engineVideoSelectionRequiresMetadataAndRejectsSymlink() throws {
+    let f = try EngineFixture(), file = f.root.appendingPathComponent("standalone.mp4")
+    try Data("a video".utf8).write(to: file)
+    do {
+        _ = try f.library.importProject(at: file)
+        Issue.record("Imported a video without Wallpaper Engine metadata")
+    } catch { #expect(error.localizedDescription.contains("project.json")) }
+    let root = try f.project(type: "video", entry: "movie.mp4")
+    let link = f.root.appendingPathComponent("link.mp4")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root.appendingPathComponent("movie.mp4"))
+    #expect(throws: WallpaperEngineError.self) { try f.library.candidates(at: link) }
+    try Data("broken".utf8).write(to: root.appendingPathComponent("project.json"))
+    #expect(throws: WallpaperEngineError.self) { try f.library.importProject(at: root.appendingPathComponent("movie.mp4")) }
+    #expect(f.library.projects().isEmpty)
+}
+
+@Test @MainActor
+func engineImportPickerAllowsVideoAndHTMLNotJustJSON() {
+    for ext in WallpaperEngineLibrary.videoExtensions + WallpaperEngineLibrary.webExtensions + ["json"] {
+        let type = UTType(filenameExtension: ext)!
+        #expect(WallpaperEngineViewModel.importContentTypes.contains { type.conforms(to: $0) })
+    }
+    #expect(WallpaperEngineViewModel.importContentTypes.contains(.folder))
+}
+
+@Test @MainActor
+func engineSelectingVideoFileImportsToPreviewOnly() async throws {
+    let f = try EngineFixture(), root = try f.project(type: "video", entry: "movie.mp4")
+    let selection = WallpaperPreviewSelectionStore(selectionURL: f.root.appendingPathComponent("selection.json"))
+    let model = WallpaperEngineViewModel(selection: selection, library: f.library)
+    var preview: WallpaperEngineProject?, starts = 0
+    model.videoPreview = { preview = $0 }
+    model.runtimeIsActive = { false }; model.refreshRuntime()
+    model.startWallpaper = { _ in starts += 1 }
+    model.discover(root.appendingPathComponent("movie.mp4"))
+    while model.isImporting { await Task.yield() }
+    #expect(model.error == nil)
+    #expect(model.projects.count == 1)
+    #expect(preview?.type == .video)
+    #expect(!model.showsProjectPicker)
+    #expect(starts == 0)
+    #expect(!model.runtimeActive)
 }
 
 @Test(arguments: [CGSize(width: 760, height: 480), CGSize(width: 1520, height: 1020)])
