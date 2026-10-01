@@ -42,7 +42,9 @@ func terminalWallpaperPopupAppearance(
 
 /// Make only the header a full-width button: fields inside the expanded
 /// section must stay interactive without collapsing their parent.
-private struct TerminalWallpaperDisclosureStyle: DisclosureGroupStyle {
+struct TerminalWallpaperDisclosureStyle: DisclosureGroupStyle {
+    var usesCard = true
+
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -55,15 +57,35 @@ private struct TerminalWallpaperDisclosureStyle: DisclosureGroupStyle {
                         .accessibilityHidden(true)
                     configuration.label
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, usesCard ? 16 : 0)
+                .padding(.vertical, usesCard ? 12 : 4)
+                .frame(maxWidth: .infinity, minHeight: usesCard ? 64 : 0, alignment: .leading)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AuraPlainPressButtonStyle())
             .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
 
             if configuration.isExpanded {
-                configuration.content
-                    .padding(.leading, 16)
+                if usesCard {
+                    Divider().padding(.horizontal, 16)
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    configuration.content
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, usesCard ? 16 : 0)
+                .padding(.leading, usesCard ? 0 : 16)
+                .padding(.vertical, usesCard ? 16 : 0)
+                // Diagnostics inside a section stay lightweight, not another
+                // nested glass card. Only the four top-level sections get one.
+                .disclosureGroupStyle(TerminalWallpaperDisclosureStyle(usesCard: false))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if usesCard {
+                AuraGlassInsetCard(cornerRadius: 14)
+                    .allowsHitTesting(false)
             }
         }
     }
@@ -144,7 +166,6 @@ struct TerminalWallpaperSettingsView: View {
                             .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Divider()
                     settingsDisclosure(
                         "Appearance & performance", subtitle: "Font, size, background and frame rate",
                         systemImage: "paintbrush.pointed", isExpanded: $showAppearance
@@ -152,7 +173,6 @@ struct TerminalWallpaperSettingsView: View {
                         renderSection
                         applySettingsAction
                     }
-                    Divider()
                     settingsDisclosure(
                         "Behavior", subtitle: "Displays, fullscreen pause and launch at login",
                         systemImage: "gearshape.2", isExpanded: $showBehavior
@@ -160,7 +180,6 @@ struct TerminalWallpaperSettingsView: View {
                         behaviorSection
                         applySettingsAction
                     }
-                    Divider()
                     settingsDisclosure(
                         "Runtime & troubleshooting", subtitle: "Status, restart and diagnostics",
                         systemImage: "heart.text.square", isExpanded: $showRuntime
@@ -259,7 +278,6 @@ struct TerminalWallpaperSettingsView: View {
     ) -> some View {
         DisclosureGroup(isExpanded: isExpanded) {
             VStack(alignment: .leading, spacing: 12, content: content)
-                .padding(.top, 12)
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: systemImage).frame(width: 24)
@@ -270,7 +288,6 @@ struct TerminalWallpaperSettingsView: View {
                         .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 }
             }
-            .padding(.vertical, 5)
         }
         .tint(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
     }
@@ -353,7 +370,7 @@ struct TerminalWallpaperSettingsView: View {
 
                 Divider()
 
-                DisclosureGroup("Add a custom command", isExpanded: $showAdvancedCommand) {
+                DisclosureGroup(isExpanded: $showAdvancedCommand) {
                     Text("Only run commands you trust. Custom commands may be incompatible.")
                         .font(.caption)
                         .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
@@ -372,6 +389,8 @@ struct TerminalWallpaperSettingsView: View {
                     }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                     .disabled(viewModel.isBusy || viewModel.executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } label: {
+                    Text("Add a custom command").font(.headline)
                 }
                 .tint(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
             }
