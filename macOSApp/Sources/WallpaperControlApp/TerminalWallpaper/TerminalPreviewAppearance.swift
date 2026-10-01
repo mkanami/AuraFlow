@@ -1,6 +1,7 @@
 import AppKit
 import AuraTerminalRendering
 import AuraTerminalWallpaperCore
+import Combine
 import IOSurface
 import Metal
 import QuartzCore
@@ -44,6 +45,49 @@ struct TerminalAppearanceSampleBudget {
     mutating func complete() { inFlight = false }
 }
 
+/// Panel identity excludes frame counters, surface IDs and playback speed.
+/// Deduplicate this small value *before* serializing a source key; animation
+/// must not invalidate the window or its scrollable settings on every frame.
+struct TerminalPreviewAppearanceSource: Equatable {
+    let command: TerminalCommandConfiguration?
+    let render: TerminalRenderConfiguration?
+    let generation: UInt64
+    let sharedGeneration: String?
+
+    init(configuration: TerminalWallpaperConfig?, generation: UInt64, sharedGeneration: String?) {
+        command = configuration?.command
+        render = configuration?.render
+        self.generation = generation
+        self.sharedGeneration = sharedGeneration
+    }
+
+    var key: String? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        guard let command, let render,
+              let commandData = try? encoder.encode(command),
+              let renderData = try? encoder.encode(render) else { return nil }
+        return commandData.base64EncodedString() + renderData.base64EncodedString()
+            + "|\(generation)|\(sharedGeneration ?? "preview")"
+    }
+
+    static func publisher<C: Publisher, G: Publisher, S: Publisher>(
+        configuration: C, generation: G, sharedFrame: S
+    ) -> AnyPublisher<String?, Never>
+    where C.Output == TerminalWallpaperConfig?, G.Output == UInt64,
+          S.Output == TerminalSharedFrameDescriptor?,
+          C.Failure == Never, G.Failure == Never, S.Failure == Never {
+        Publishers.CombineLatest3(configuration, generation, sharedFrame)
+            .map { config, generation, shared in
+                Self(configuration: config, generation: generation, sharedGeneration: shared?.generation)
+            }
+            .removeDuplicates()
+            .map(\.key)
+            .removeDuplicates()
+            .eraseToAnyPublisher()
+    }
+}
+
 @MainActor
 final class TerminalPreviewAppearanceModel: ObservableObject {
     @Published private(set) var sourceKey: String?
@@ -52,13 +96,8 @@ final class TerminalPreviewAppearanceModel: ObservableObject {
     private var pendingCount = 0
 
     static func sourceKey(configuration: TerminalWallpaperConfig?, generation: UInt64, shared: TerminalSharedFrameDescriptor?) -> String? {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        guard let configuration,
-              let command = try? encoder.encode(configuration.command),
-              let render = try? encoder.encode(configuration.render) else { return nil }
-        return command.base64EncodedString() + render.base64EncodedString()
-            + "|\(generation)|\(shared?.generation ?? "preview")"
+        TerminalPreviewAppearanceSource(configuration: configuration, generation: generation,
+                                        sharedGeneration: shared?.generation).key
     }
 
     static func fallback(for configuration: TerminalWallpaperConfig?) -> AdaptiveGlassAppearance {
@@ -103,6 +142,23 @@ final class TerminalPreviewAppearanceModel: ObservableObject {
         guard let command else { return nil }
         return TerminalWallpaperCatalog.items.first { $0.id == command.catalogItemID }?.title
             ?? URL(fileURLWithPath: command.executable).lastPathComponent
+    }
+}
+
+/// Only this small observer and the preview surface subscribe to frame-rate
+/// changes. The parent window observes source changes and throttled contrast.
+struct TerminalPreviewAppearanceLayer: View {
+    let sourceKey: String
+    let configuration: TerminalWallpaperConfig
+    @ObservedObject var previewModel: TerminalWallpaperPreviewModel
+    let model: TerminalPreviewAppearanceModel
+
+    var body: some View {
+        TerminalPreviewAppearanceObserver(
+            sourceKey: sourceKey, configuration: configuration,
+            descriptor: previewModel.sharedFrame, sequence: previewModel.frameSequence,
+            model: model
+        )
     }
 }
 

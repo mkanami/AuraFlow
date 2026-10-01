@@ -167,6 +167,12 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
     private let rateUpdateQueue = DispatchQueue(label: "com.andrijvergeles.auraflow.preview-speed", qos: .userInitiated)
     @Published private(set) var previewGeneration: UInt64 = 0
 
+    // A separate, deduplicated subscription for panel appearance. Consumers
+    // displaying frames still observe this model directly at the leaves.
+    lazy var appearanceSourcePublisher = TerminalPreviewAppearanceSource.publisher(
+        configuration: $configuration, generation: $previewGeneration, sharedFrame: $sharedFrame
+    )
+
     init(
         selectionStore: WallpaperPreviewSelectionStore,
         runtimeStore: TerminalWallpaperRuntimeStore = TerminalWallpaperRuntimeStore(),
@@ -332,8 +338,8 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
                 descriptor: descriptor,
                 surfaceAvailable: IOSurfaceLookup(descriptor.surfaceID) != nil
         ) else { return }
-        sharedFrame = descriptor
-        frameSequence = sequence
+        if sharedFrame != descriptor { sharedFrame = descriptor }
+        if frameSequence != sequence { frameSequence = sequence }
         if previewSession != nil { stopPreviewSession() }
     }
 

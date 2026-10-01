@@ -101,11 +101,10 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private var resolvedExecutableCache: [String: String] = [:]
     private let featuredItems: [TerminalWallpaperCatalogItem]
     private var activeInstallationID: UUID?
-    private var statusRefreshInFlight = false
+    private(set) var statusRefreshInFlight = false
     private var statusRefreshGeneration = 0
     private var agentStartObserver: NSObjectProtocol?
     private var previewConfigPersistence: AnyCancellable?
-    private var previewConfigPersistenceTask: Task<Void, Never>?
 
     init(
         controller: TerminalWallpaperControlling? = nil,
@@ -180,19 +179,30 @@ final class TerminalWallpaperViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }
-        previewConfigPersistence = objectWillChange.sink { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self,
-                      self.previewSelectionStore?.kind == .terminal else { return }
-                self.previewConfigPersistenceTask?.cancel()
-                self.previewConfigPersistenceTask = Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: 90_000_000)
-                    guard !Task.isCancelled, let self,
-                          self.previewSelectionStore?.kind == .terminal else { return }
+        // Status polling, search and progress are not configuration edits.
+        // Coalesce actual edits before scheduling persistence on the main actor.
+        previewConfigPersistence = configurationEdits
+            .debounce(for: .milliseconds(90), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.previewSelectionStore?.kind == .terminal else { return }
                     self.previewSelectionStore?.selectTerminal(self.makeConfig())
                 }
             }
+    }
+
+    private var configurationEdits: AnyPublisher<Void, Never> {
+        func edits<T>(_ publisher: Published<T>.Publisher) -> AnyPublisher<Void, Never> {
+            publisher.dropFirst().map { _ in () }.eraseToAnyPublisher()
         }
+        return Publishers.MergeMany([
+            edits($executable), edits($argumentsText), edits($workingDirectory), edits($environmentText),
+            edits($selectedCatalogItemID), edits($pixelMode), edits($fixedWidth), edits($fixedHeight),
+            edits($columns), edits($rows), edits($useAutomaticGrid), edits($fontFamily), edits($fontSize),
+            edits($cellSpacing), edits($maxFPS), edits($textScale), edits($scaleMode),
+            edits($backgroundHex), edits($backgroundOpacity), edits($allDisplays),
+            edits($pauseOnFullscreen), edits($launchAtLogin)
+        ]).eraseToAnyPublisher()
     }
 
     deinit {
@@ -574,9 +584,13 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     private func apply(_ status: TerminalWallpaperStatus) {
-        self.status = status
-        launchAtLogin = status.config.behavior.launchAtLogin
-        pauseOnFullscreen = status.config.behavior.pauseOnFullscreen
+        if self.status != status { self.status = status }
+        if launchAtLogin != status.config.behavior.launchAtLogin {
+            launchAtLogin = status.config.behavior.launchAtLogin
+        }
+        if pauseOnFullscreen != status.config.behavior.pauseOnFullscreen {
+            pauseOnFullscreen = status.config.behavior.pauseOnFullscreen
+        }
     }
 
     private func reconcileLockScreen() {

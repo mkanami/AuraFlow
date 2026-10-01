@@ -1,5 +1,6 @@
 import AppKit
 import AuraTerminalWallpaperCore
+import Combine
 import IOSurface
 import Metal
 import SwiftUI
@@ -8,6 +9,47 @@ import Testing
 
 @Suite(.serialized)
 struct TerminalPreviewAppearanceTests {
+    @Test @MainActor func animationFramesDoNotRepublishPanelIdentity() {
+        var config = TerminalWallpaperConfig()
+        let configuration = CurrentValueSubject<TerminalWallpaperConfig?, Never>(config)
+        let generation = CurrentValueSubject<UInt64, Never>(1)
+        let frame = CurrentValueSubject<TerminalSharedFrameDescriptor?, Never>(nil)
+        var keys: [String?] = []
+        let observation = TerminalPreviewAppearanceSource.publisher(
+            configuration: configuration, generation: generation, sharedFrame: frame
+        ).sink { keys.append($0) }
+        defer { observation.cancel() }
+        let first = keys.last!
+        for i in 0..<180 {
+            // The active agent can rotate its surfaces while the same source
+            // keeps animating. Those updates must reach the renderer, not UI.
+            frame.send(TerminalSharedFrameDescriptor(
+                surfaceID: UInt32(i + 1), width: 1920, height: 1080,
+                agentPID: 42, generation: "active"
+            ))
+        }
+        #expect(keys.count == 2)
+        #expect(keys[1] != first)
+        config.nativeSpeed = 2
+        config.behavior.pauseOnFullscreen.toggle()
+        configuration.send(config)
+        #expect(keys.count == 2)
+        generation.send(2)
+        #expect(keys.count == 3)
+        #expect(keys[2] != keys[1])
+        frame.send(nil)
+        #expect(keys.count == 4)
+        config.render.background = TerminalRGBA(red: 1, green: 1, blue: 1)
+        configuration.send(config)
+        #expect(keys.count == 5)
+        #expect(keys[4] != keys[3])
+        configuration.send(nil)
+        generation.send(3)
+        frame.send(nil)
+        #expect(keys.count == 6)
+        #expect(keys.last! == nil)
+    }
+
     @Test @MainActor func terminalPaletteNeverInheritsTheLastVideoAndVideoIsUnchanged() {
         let terminal = TerminalPreviewAppearanceModel.fallback(for: TerminalWallpaperConfig())
         let video = AdaptiveGlassAppearance.safeFallback

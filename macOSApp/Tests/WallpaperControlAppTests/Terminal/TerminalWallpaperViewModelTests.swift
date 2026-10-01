@@ -1,4 +1,5 @@
 import AuraTerminalWallpaperCore
+import Combine
 import Foundation
 import Testing
 @testable import WallpaperControlApp
@@ -106,6 +107,73 @@ private final class StubTerminalWallpaperController: TerminalWallpaperControllin
         currentStatus.config = config
         return currentStatus
     }
+}
+
+@Test @MainActor
+func terminalStatusPollingPublishesOnlyActualChanges() async throws {
+    let controller = StubTerminalWallpaperController()
+    let viewModel = TerminalWallpaperViewModel(controller: controller, resolveExecutable: { _ in nil })
+    var changes = 0
+    let observation = viewModel.objectWillChange.sink { changes += 1 }
+    defer { observation.cancel() }
+    for _ in 0..<4 {
+        viewModel.refresh()
+        while viewModel.statusRefreshInFlight {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
+    #expect(changes == 0)
+    _ = try controller.start(config: .defaultConfig)
+    viewModel.refresh()
+    while viewModel.statusRefreshInFlight {
+        try await Task.sleep(nanoseconds: 1_000_000)
+    }
+    #expect(viewModel.status.running)
+    #expect(changes == 1)
+    _ = try controller.stop()
+    viewModel.refresh()
+    while viewModel.statusRefreshInFlight {
+        try await Task.sleep(nanoseconds: 1_000_000)
+    }
+    #expect(!viewModel.status.running)
+    #expect(changes == 2)
+}
+
+@Test @MainActor
+func terminalSettingsEditsStillPersistButMessagesCannotOverwriteSelection() async throws {
+    let store = makePreviewSelectionStore()
+    store.selectTerminal(.defaultConfig)
+    let controller = StubTerminalWallpaperController()
+    let viewModel = TerminalWallpaperViewModel(
+        controller: controller, previewSelectionStore: store, resolveExecutable: { _ in nil }
+    )
+    viewModel.fontSize = 20
+    viewModel.fontSize = 24
+    viewModel.textScale = 1.5
+    let deadline = Date().addingTimeInterval(2)
+    while store.terminalConfiguration?.render.fontSize != 24
+            || store.terminalConfiguration?.render.textScale != 1.5 {
+        #expect(Date() < deadline)
+        if Date() >= deadline { return }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    #expect(!controller.currentStatus.running)
+    #expect(controller.startCount == 0)
+
+    var newSelection = TerminalWallpaperConfig.defaultConfig
+    newSelection.command.executable = "/usr/local/bin/new-preview"
+    store.selectTerminal(newSelection)
+    viewModel.statusMessage = "Status updated"
+    viewModel.errorMessage = "Diagnostic only"
+    viewModel.refresh()
+    try await Task.sleep(nanoseconds: 200_000_000)
+    #expect(store.terminalConfiguration == newSelection.normalized())
+
+    store.selectVideo()
+    viewModel.fontSize = 18
+    try await Task.sleep(nanoseconds: 200_000_000)
+    #expect(store.kind == .video)
+    #expect(store.terminalConfiguration == nil)
 }
 
 private final class TerminalPresetAvailability: @unchecked Sendable {

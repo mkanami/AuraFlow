@@ -201,25 +201,17 @@ private struct WallpaperSourceMenu: View {
 struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
     @ObservedObject var terminalWallpaperViewModel: TerminalWallpaperViewModel
-    @ObservedObject var terminalPreviewModel: TerminalWallpaperPreviewModel
+    let terminalPreviewModel: TerminalWallpaperPreviewModel
     @ObservedObject var previewSelectionStore: WallpaperPreviewSelectionStore
     @State private var isAdjustingSpeed: Bool = false
     @State private var window: NSWindow?
     @State private var showsWallpaperSourcePicker = false
     @StateObject private var terminalAppearance = TerminalPreviewAppearanceModel()
-
-    private var terminalAppearanceSource: String? {
-        guard previewSelectionStore.kind == .terminal else { return nil }
-        return TerminalPreviewAppearanceModel.sourceKey(
-            configuration: previewSelectionStore.terminalConfiguration,
-            generation: terminalPreviewModel.previewGeneration,
-            shared: terminalPreviewModel.sharedFrame
-        )
-    }
+    @State private var terminalAppearanceSource: String?
 
     private var effectiveGlassAppearance: AdaptiveGlassAppearance {
         if previewSelectionStore.kind == .web { return TerminalPreviewAppearanceModel.fallback(for: nil) }
-        let terminal = terminalAppearance.sourceKey == terminalAppearanceSource
+        let terminal = terminalAppearanceSource != nil && terminalAppearance.sourceKey == terminalAppearanceSource
             ? terminalAppearance.appearance
             : TerminalPreviewAppearanceModel.fallback(for: previewSelectionStore.terminalConfiguration)
         return TerminalPreviewAppearanceModel.resolved(
@@ -363,6 +355,9 @@ struct ContentView: View {
         .onChange(of: terminalAppearanceSource) { source in
             terminalAppearance.setSource(source, configuration: previewSelectionStore.terminalConfiguration)
         }
+        .onReceive(terminalPreviewModel.appearanceSourcePublisher) { source in
+            if terminalAppearanceSource != source { terminalAppearanceSource = source }
+        }
         // Keep every text-bearing control on the same adaptive polarity. The
         // individual surfaces still choose their own backing strength below.
         .foregroundStyle(effectiveGlassAppearance.textTone.primaryTextColor)
@@ -411,11 +406,10 @@ struct ContentView: View {
 
             if let source = terminalAppearanceSource,
                let configuration = previewSelectionStore.terminalConfiguration {
-                TerminalPreviewAppearanceObserver(
+                TerminalPreviewAppearanceLayer(
                     sourceKey: source,
                     configuration: configuration,
-                    descriptor: terminalPreviewModel.sharedFrame,
-                    sequence: terminalPreviewModel.frameSequence,
+                    previewModel: terminalPreviewModel,
                     model: terminalAppearance
                 )
                 .frame(width: proxy.size.width, height: proxy.size.height)
@@ -632,7 +626,7 @@ final class TitlebarInteractionNSView: NSView {
 
 struct PreviewLayer: View {
     @ObservedObject var previewSelectionStore: WallpaperPreviewSelectionStore
-    @ObservedObject var terminalPreviewModel: TerminalWallpaperPreviewModel
+    let terminalPreviewModel: TerminalWallpaperPreviewModel
     @ObservedObject var wallpaperEngine: WallpaperEngineViewModel
     let player: AVPlayer?
     let wallpaperURL: URL?
