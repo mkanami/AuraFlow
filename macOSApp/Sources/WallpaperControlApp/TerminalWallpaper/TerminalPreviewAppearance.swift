@@ -7,8 +7,8 @@ import Metal
 import QuartzCore
 import SwiftUI
 
-private struct TerminalPreviewMaterialKey: EnvironmentKey {
-    static let defaultValue = false
+private struct WallpaperPreviewGlassKindKey: EnvironmentKey {
+    static let defaultValue = WallpaperPreviewKind.video
 }
 
 private struct TerminalPreviewTitleKey: EnvironmentKey {
@@ -16,9 +16,9 @@ private struct TerminalPreviewTitleKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    var terminalPreviewUsesRegularGlass: Bool {
-        get { self[TerminalPreviewMaterialKey.self] }
-        set { self[TerminalPreviewMaterialKey.self] = newValue }
+    var wallpaperPreviewGlassKind: WallpaperPreviewKind {
+        get { self[WallpaperPreviewGlassKindKey.self] }
+        set { self[WallpaperPreviewGlassKindKey.self] = newValue }
     }
 
     var terminalPreviewTitle: String? {

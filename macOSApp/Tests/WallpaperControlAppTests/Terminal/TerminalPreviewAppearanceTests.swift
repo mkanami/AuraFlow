@@ -57,8 +57,17 @@ struct TerminalPreviewAppearanceTests {
         #expect(video.textTone == .dark)
         #expect(TerminalPreviewAppearanceModel.resolved(kind: .terminal, video: video, terminal: terminal) == terminal)
         #expect(TerminalPreviewAppearanceModel.resolved(kind: .video, video: video, terminal: terminal) == video)
-        #expect(EnvironmentValues().terminalPreviewUsesRegularGlass == false)
+        #expect(EnvironmentValues().wallpaperPreviewGlassKind == .video)
         #expect(EnvironmentValues().terminalPreviewTitle == nil)
+    }
+
+    @Test func terminalUsesTheSameGlassAsVideoWithoutChangingWebBacking() {
+        for material in [AuraSurfaceMaterial.clear, .regular] {
+            #expect(material.forPreviewKind(.terminal) == material.forPreviewKind(.video))
+            #expect(material.forPreviewKind(.video) == material)
+            #expect(material.forPreviewKind(.web) == .regular)
+        }
+        #expect(AuraSurfaceMaterial.clear.forPreviewKind(.terminal) == .clear)
     }
 
     @Test @MainActor func fallbackUsesTerminalBackgroundAndTitlesUseSelectedCommand() {

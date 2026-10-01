@@ -348,7 +348,7 @@ struct ContentView: View {
             await viewModel.loadStatus()
         }
         .environment(\.adaptiveGlassAppearance, effectiveGlassAppearance)
-        .environment(\.terminalPreviewUsesRegularGlass, previewSelectionStore.kind != .video)
+        .environment(\.wallpaperPreviewGlassKind, previewSelectionStore.kind)
         .environment(\.terminalPreviewTitle, previewSelectionStore.kind == .terminal
             ? TerminalPreviewAppearanceModel.title(for: previewSelectionStore.terminalConfiguration?.command)
             : (previewSelectionStore.kind == .web ? viewModel.wallpaperEngine.selectedProject?.title : nil))
@@ -3125,10 +3125,16 @@ private struct AuraPlainPressButton: View {
 enum AuraSurfaceMaterial: Equatable {
     case regular
     case clear
+
+    func forPreviewKind(_ kind: WallpaperPreviewKind) -> Self {
+        // Video and terminal share the existing Liquid Glass material. Keep
+        // the web preview's established regular backing independently.
+        kind == .web ? .regular : self
+    }
 }
 
 struct AuraGlassRoundedSurface: View {
-    @Environment(\.terminalPreviewUsesRegularGlass) private var terminalRegularGlass
+    @Environment(\.wallpaperPreviewGlassKind) private var previewGlassKind
     @Environment(\.adaptiveGlassAppearance) private var terminalAppearance
     let cornerRadius: CGFloat
     var material: AuraSurfaceMaterial = .clear
@@ -3152,17 +3158,17 @@ struct AuraGlassRoundedSurface: View {
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
-                    .glassEffect((terminalRegularGlass ? AuraSurfaceMaterial.regular : material).systemGlass, in: shape)
+                    .glassEffect(material.forPreviewKind(previewGlassKind).systemGlass, in: shape)
             } else {
                 // SwiftUI Material maps to the efficient system visual-effect blur
                 // used by macOS 13–15; no custom Core Image filters are involved.
                 shape
-                    .fill((terminalRegularGlass ? AuraSurfaceMaterial.regular : material).legacyMaterial)
+                    .fill(material.forPreviewKind(previewGlassKind).legacyMaterial)
                     .opacity(strength)
             }
             #else
             shape
-                .fill((terminalRegularGlass ? AuraSurfaceMaterial.regular : material).legacyMaterial)
+                .fill(material.forPreviewKind(previewGlassKind).legacyMaterial)
                 .opacity(strength)
             #endif
         }
@@ -3178,7 +3184,7 @@ struct AuraGlassRoundedSurface: View {
         }
         .clipShape(shape)
         .transformEnvironment(\.colorScheme) { scheme in
-            if terminalRegularGlass {
+            if previewGlassKind != .video {
                 scheme = terminalAppearance.textTone == .dark ? .light : .dark
             }
         }
@@ -3186,7 +3192,7 @@ struct AuraGlassRoundedSurface: View {
 }
 
 private struct AuraGlassCapsuleSurface: View {
-    @Environment(\.terminalPreviewUsesRegularGlass) private var terminalRegularGlass
+    @Environment(\.wallpaperPreviewGlassKind) private var previewGlassKind
     @Environment(\.adaptiveGlassAppearance) private var terminalAppearance
     var material: AuraSurfaceMaterial = .clear
     var washColor: Color = .clear
@@ -3206,15 +3212,15 @@ private struct AuraGlassCapsuleSurface: View {
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
-                    .glassEffect((terminalRegularGlass ? AuraSurfaceMaterial.regular : material).systemGlass, in: shape)
+                    .glassEffect(material.forPreviewKind(previewGlassKind).systemGlass, in: shape)
             } else {
                 shape
-                    .fill((terminalRegularGlass ? AuraSurfaceMaterial.regular : material).legacyMaterial)
+                    .fill(material.forPreviewKind(previewGlassKind).legacyMaterial)
                     .opacity(strength)
             }
             #else
             shape
-                .fill((terminalRegularGlass ? AuraSurfaceMaterial.regular : material).legacyMaterial)
+                .fill(material.forPreviewKind(previewGlassKind).legacyMaterial)
                 .opacity(strength)
             #endif
         }
@@ -3230,7 +3236,7 @@ private struct AuraGlassCapsuleSurface: View {
         }
         .clipShape(shape)
         .transformEnvironment(\.colorScheme) { scheme in
-            if terminalRegularGlass {
+            if previewGlassKind != .video {
                 scheme = terminalAppearance.textTone == .dark ? .light : .dark
             }
         }

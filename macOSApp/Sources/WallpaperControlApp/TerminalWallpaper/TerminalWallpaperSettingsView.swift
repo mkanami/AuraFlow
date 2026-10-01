@@ -61,6 +61,41 @@ private struct TerminalWallpaperDisclosureStyle: DisclosureGroupStyle {
     }
 }
 
+/// Match Settings' compact glass segments instead of AppKit's opaque,
+/// full-width gray segmented picker. One shared surface, not glass per button.
+private struct TerminalWallpaperSegmentedControl<Option: Hashable>: View {
+    let options: [Option]
+    @Binding var selection: Option
+    let title: (Option) -> String
+    @Environment(\.adaptiveGlassAppearance) private var appearance
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(options, id: \.self) { option in
+                Button { selection = option } label: {
+                    Text(title(option))
+                        .font(.callout.weight(selection == option ? .semibold : .medium))
+                        .foregroundStyle(selection == option ? Color.white : appearance.centerTextTone.primaryTextColor)
+                        .frame(width: 72, height: 26)
+                        .background {
+                            if selection == option {
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .fill(Color.accentColor)
+                                    .padding(2)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(AuraPlainPressButtonStyle())
+                .accessibilityValue(selection == option ? "Selected" : "")
+            }
+        }
+        .padding(.vertical, 1)
+        .padding(.horizontal, 2)
+        .background(AuraGlassInsetCard(cornerRadius: 12).allowsHitTesting(false))
+    }
+}
+
 struct TerminalWallpaperSettingsView: View {
     @ObservedObject var viewModel: TerminalWallpaperViewModel
     var onClose: (() -> Void)? = nil
@@ -498,12 +533,13 @@ struct TerminalWallpaperSettingsView: View {
 
     private var renderSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker("Pixel resolution", selection: $viewModel.pixelMode) {
-                ForEach(TerminalPixelMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+            HStack(spacing: 8) {
+                Text("Pixel resolution")
+                TerminalWallpaperSegmentedControl(options: TerminalPixelMode.allCases, selection: $viewModel.pixelMode) {
+                    $0.title
                 }
+                .accessibilityLabel("Pixel resolution")
             }
-            .pickerStyle(.segmented)
 
             if viewModel.pixelMode == .fixed {
                 HStack {
@@ -550,12 +586,13 @@ struct TerminalWallpaperSettingsView: View {
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             }
 
-            Picker("Scale", selection: $viewModel.scaleMode) {
-                ForEach(TerminalScaleMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+            HStack(spacing: 8) {
+                Text("Scale")
+                TerminalWallpaperSegmentedControl(options: TerminalScaleMode.allCases, selection: $viewModel.scaleMode) {
+                    $0.title
                 }
+                .accessibilityLabel("Scale")
             }
-            .pickerStyle(.segmented)
 
             HStack {
                 AuraTerminalTextField(
