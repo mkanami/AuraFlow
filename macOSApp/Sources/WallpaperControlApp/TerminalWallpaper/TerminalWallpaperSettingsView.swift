@@ -351,6 +351,8 @@ struct TerminalWallpaperSettingsView: View {
                         .padding(.vertical, 4)
                 }
 
+                Divider()
+
                 DisclosureGroup("Add a custom command", isExpanded: $showAdvancedCommand) {
                     Text("For advanced users: choose a trusted terminal executable, not a macOS app. Custom commands are unverified and may not work as wallpaper.")
                         .font(.callout)
