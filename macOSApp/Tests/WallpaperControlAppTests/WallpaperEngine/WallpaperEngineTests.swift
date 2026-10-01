@@ -21,6 +21,19 @@ private final class EngineFixture {
     }
 }
 
+@Test(arguments: [CGSize(width: 760, height: 480), CGSize(width: 1520, height: 1020)])
+func engineSourceGlassMenuStaysInsideWindow(container: CGSize) {
+    for button in [CGRect(x: container.width - 200, y: container.height - 140, width: 180, height: 28),
+                   CGRect(x: 5, y: 20, width: 180, height: 28)] {
+        let frame = WallpaperSourceMenuLayout.frame(button: button, container: container)
+        #expect(frame.minX >= 12)
+        #expect(frame.minY >= 12)
+        #expect(frame.maxX <= container.width - 12)
+        #expect(frame.maxY <= container.height - 12)
+        #expect(frame.height == 116)
+    }
+}
+
 @Test
 func engineImportLocationParsesModernAndLegacySteamLibraries() {
     let modern = #"""

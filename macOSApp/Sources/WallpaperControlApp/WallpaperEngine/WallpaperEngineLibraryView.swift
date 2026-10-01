@@ -10,7 +10,7 @@ struct WallpaperEngineLibrarySwitch: View {
                 libraryButton("AuraFlow", selected: !model.libraryIsSelected) { model.libraryIsSelected = false }
                 libraryButton("Wallpaper Engine", selected: model.libraryIsSelected) { model.libraryIsSelected = true }
             }
-            .frame(maxWidth: 320)
+            .frame(maxWidth: 360)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Library")
             Spacer()
@@ -18,7 +18,10 @@ struct WallpaperEngineLibrarySwitch: View {
                 ProgressView().controlSize(.small)
                 Button("Cancel") { model.cancelImport() }.buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             } else {
-                Button { model.chooseImport() } label: { Label("Import Wallpaper Engine…", systemImage: "square.and.arrow.down") }
+                Button { model.chooseImport() } label: {
+                    Label("Import Wallpaper Engine…", systemImage: "square.and.arrow.down")
+                        .frame(height: 18)
+                }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             }
         }
@@ -28,11 +31,12 @@ struct WallpaperEngineLibrarySwitch: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 if selected { Image(systemName: "checkmark").font(.caption.weight(.semibold)) }
-                Text(title).lineLimit(1).minimumScaleFactor(0.85)
+                Text(title).lineLimit(1)
             }
             .frame(maxWidth: .infinity)
+            .frame(height: 18)
         }
-        .buttonStyle(AuraGlassButtonStyle(compact: true))
+        .buttonStyle(AuraGlassButtonStyle())
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 }

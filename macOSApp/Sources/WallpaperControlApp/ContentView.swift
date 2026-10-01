@@ -137,6 +137,67 @@ private func speedOverlayPillWidth(for availableWidth: CGFloat) -> CGFloat {
     min(max(availableWidth * 0.46, 420), 720)
 }
 
+private struct WallpaperSourceButtonAnchorKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
+enum WallpaperSourceMenuLayout {
+    static func frame(button: CGRect, container: CGSize) -> CGRect {
+        let inset: CGFloat = 12
+        let width = min(300, max(0, container.width - inset * 2))
+        let height: CGFloat = 116
+        let x = min(max(button.maxX - width, inset), max(inset, container.width - width - inset))
+        let y = min(max(inset, button.minY - height - 10), max(inset, container.height - height - inset))
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+private struct WallpaperSourceMenu: View {
+    @ObservedObject var viewModel: AppViewModel
+    @Binding var isPresented: Bool
+    @Environment(\.adaptiveGlassAppearance) private var appearance
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Button {
+                isPresented = false
+                viewModel.chooseVideo()
+            } label: { Label("Choose video or image…", systemImage: "photo.on.rectangle") }
+            .buttonStyle(AuraGlassButtonStyle())
+            Button {
+                isPresented = false
+                viewModel.wallpaperEngine.chooseImport()
+            } label: { Label("Import Wallpaper Engine…", systemImage: "square.and.arrow.down") }
+            .buttonStyle(AuraGlassButtonStyle())
+            .disabled(viewModel.wallpaperEngine.isImporting)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(AuraGlassRoundedSurface(
+            cornerRadius: 16,
+            material: .clear,
+            alphaMultiplier: appearance.bottomGlassAlpha,
+            protectionOverlayOpacity: appearance.bottomProtectionOverlayOpacity,
+            protectionOverlayColor: appearance.bottomTextTone.contrastSurfaceColor
+        ))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.14)))
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Change Wallpaper")
+        .background {
+            Button("Close wallpaper source menu") { isPresented = false }
+                .keyboardShortcut(.cancelAction)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
+        .onExitCommand { isPresented = false }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
     @ObservedObject var terminalWallpaperViewModel: TerminalWallpaperViewModel
@@ -144,6 +205,7 @@ struct ContentView: View {
     @ObservedObject var previewSelectionStore: WallpaperPreviewSelectionStore
     @State private var isAdjustingSpeed: Bool = false
     @State private var window: NSWindow?
+    @State private var showsWallpaperSourcePicker = false
     @StateObject private var terminalAppearance = TerminalPreviewAppearanceModel()
 
     private var terminalAppearanceSource: String? {
@@ -168,6 +230,10 @@ struct ContentView: View {
     }
 
     private var aspectRatio: CGFloat { mainScreenAspectRatio() }
+    private var sourceMenuIsAvailable: Bool {
+        !viewModel.isCatalogOpen && !viewModel.isSettingsOpen && !viewModel.isMonitoringOpen
+            && !viewModel.isDownloadedWallpapersOpen && !viewModel.isTerminalWallpaperOpen
+    }
     private let topOverlayTopPadding: CGFloat = 18
     private let zoomedTopOverlayPadding: CGFloat = 38
     private let fullScreenTopOverlayPadding: CGFloat = 38
@@ -230,10 +296,30 @@ struct ContentView: View {
                     )
                 }
             }
+            .overlayPreferenceValue(WallpaperSourceButtonAnchorKey.self) { anchor in
+                GeometryReader { menuProxy in
+                    if showsWallpaperSourcePicker, sourceMenuIsAvailable, let anchor {
+                        let frame = WallpaperSourceMenuLayout.frame(button: menuProxy[anchor], container: menuProxy.size)
+                        ZStack(alignment: .topLeading) {
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onTapGesture { showsWallpaperSourcePicker = false }
+                                .accessibilityHidden(true)
+                            WallpaperSourceMenu(viewModel: viewModel, isPresented: $showsWallpaperSourcePicker)
+                                .frame(width: frame.width, height: frame.height)
+                                .position(x: frame.midX, y: frame.midY)
+                        }
+                    }
+                }
+            }
         }
         .ignoresSafeArea()
         .frame(minWidth: 760, minHeight: 480)
         .background(Color.clear)
+        .onExitCommand { showsWallpaperSourcePicker = false }
+        .onChange(of: sourceMenuIsAvailable) { available in
+            if !available { showsWallpaperSourcePicker = false }
+        }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -446,6 +532,7 @@ struct ContentView: View {
                     ControlPanel(
                         viewModel: viewModel,
                         isAdjustingSpeed: $isAdjustingSpeed,
+                        showsWallpaperSourcePicker: $showsWallpaperSourcePicker,
                         panelWidth: controlPanelWidth,
                         isCompactBySize: isCompactBySize,
                         isVeryCompactByHeight: isVeryCompactByHeight
@@ -600,13 +687,13 @@ struct PreviewLayer: View {
 struct ControlPanel: View {
     @ObservedObject var viewModel: AppViewModel
     @Binding var isAdjustingSpeed: Bool
+    @Binding var showsWallpaperSourcePicker: Bool
     let panelWidth: CGFloat
     let isCompactBySize: Bool
     let isVeryCompactByHeight: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @Environment(\.terminalPreviewTitle) private var terminalPreviewTitle
-    @State private var showsWallpaperSourcePicker = false
 
     private var widthScale: CGFloat {
         max(0.82, min(1.0, panelWidth / 1180))
@@ -879,7 +966,7 @@ struct ControlPanel: View {
     }
 
     private var changeWallpaperButton: some View {
-        Button { showsWallpaperSourcePicker = true } label: {
+        Button { showsWallpaperSourcePicker.toggle() } label: {
             Text("Change Wallpaper…")
                 .lineLimit(1)
                 .minimumScaleFactor(0.95)
@@ -888,24 +975,7 @@ struct ControlPanel: View {
         }
         .buttonStyle(AuraPanelButtonStyle())
         .disabled(!viewModel.canClearWallpaper)
-        .popover(isPresented: $showsWallpaperSourcePicker, arrowEdge: .top) {
-            VStack(spacing: 10) {
-                Button {
-                    showsWallpaperSourcePicker = false
-                    viewModel.chooseVideo()
-                } label: { Label("Choose video or image…", systemImage: "photo.on.rectangle") }
-                .buttonStyle(AuraGlassButtonStyle())
-                Button {
-                    showsWallpaperSourcePicker = false
-                    viewModel.wallpaperEngine.chooseImport()
-                } label: { Label("Import Wallpaper Engine…", systemImage: "square.and.arrow.down") }
-                .buttonStyle(AuraGlassButtonStyle())
-                .disabled(viewModel.wallpaperEngine.isImporting)
-            }
-            .padding(16)
-            .frame(width: 280)
-            .environment(\.adaptiveGlassAppearance, adaptiveGlassAppearance)
-        }
+        .anchorPreference(key: WallpaperSourceButtonAnchorKey.self, value: .bounds) { $0 }
     }
 
     private var settingsButton: some View {
