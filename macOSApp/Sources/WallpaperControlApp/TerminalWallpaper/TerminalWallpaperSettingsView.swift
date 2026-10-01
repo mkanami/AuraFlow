@@ -32,6 +32,35 @@ func terminalWallpaperPopupAppearance(
     return adjusted
 }
 
+/// Make only the header a full-width button: fields inside the expanded
+/// section must stay interactive without collapsing their parent.
+private struct TerminalWallpaperDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                configuration.isExpanded.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .frame(width: 10)
+                        .accessibilityHidden(true)
+                    configuration.label
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
+
+            if configuration.isExpanded {
+                configuration.content
+                    .padding(.leading, 16)
+            }
+        }
+    }
+}
+
 struct TerminalWallpaperSettingsView: View {
     @ObservedObject var viewModel: TerminalWallpaperViewModel
     var onClose: (() -> Void)? = nil
@@ -128,6 +157,7 @@ struct TerminalWallpaperSettingsView: View {
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
         .environment(\.colorScheme, .dark)
+        .disclosureGroupStyle(TerminalWallpaperDisclosureStyle())
         .task {
             viewModel.prepareCatalogIfNeeded()
             while !Task.isCancelled {
