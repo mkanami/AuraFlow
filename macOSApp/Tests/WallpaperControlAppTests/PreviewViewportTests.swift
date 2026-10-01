@@ -30,7 +30,7 @@ struct PreviewViewportTests {
             let layer = try #require(view.layer as? AVPlayerLayer)
             #expect(abs(view.bounds.width - size.width) < 1)
             #expect(abs(view.bounds.height - size.height) < 1)
-            #expect(layer.videoGravity == .resize)
+            #expect(layer.videoGravity == .resizeAspectFill)
             #expect(layer.player === fixture.player)
             if let originalView { #expect(view === originalView) }
             else { originalView = view }
@@ -38,11 +38,11 @@ struct PreviewViewportTests {
     }
 
     @Test(arguments: [false, true], [false, true])
-    func imageAndPosterFillTallAndWideWindowsWithoutCropping(isPortrait: Bool, isPoster: Bool) async throws {
+    func imageAndPosterScaleUniformlyWithoutBarsInTallAndWideWindows(isPortrait: Bool, isPoster: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let imageURL = root.appendingPathComponent("edges.png")
+        let imageURL = root.appendingPathComponent("square.png")
         let width = isPortrait ? 90 : 160
         let height = isPortrait ? 160 : 90
         let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
@@ -50,9 +50,10 @@ struct PreviewViewportTests {
             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
         for y in 0..<height {
             for x in 0..<width {
-                bitmap.setColor(NSColor(deviceRed: x < width * 3 / 4 ? 1 : 0,
-                                        green: x >= width / 4 ? 1 : 0,
-                                        blue: x >= width / 4 && x < width * 3 / 4 ? 1 : 0, alpha: 1), atX: x, y: y)
+                let insideSquare = (width / 2 - 6..<width / 2 + 6).contains(x)
+                    && (height / 2 - 6..<height / 2 + 6).contains(y)
+                bitmap.setColor(NSColor(deviceRed: 1, green: insideSquare ? 0 : 1,
+                                        blue: insideSquare ? 0 : 1, alpha: 1), atX: x, y: y)
             }
         }
         try #require(bitmap.representation(using: .png, properties: [:])).write(to: imageURL)
@@ -73,14 +74,28 @@ struct PreviewViewportTests {
             hosting.layoutSubtreeIfNeeded()
             let rendered = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
             hosting.cacheDisplay(in: hosting.bounds, to: rendered)
-            let left = try #require(rendered.colorAt(x: rendered.pixelsWide / 10,
-                                                    y: rendered.pixelsHigh / 2)?.usingColorSpace(.deviceRGB))
-            let right = try #require(rendered.colorAt(x: rendered.pixelsWide * 9 / 10,
-                                                     y: rendered.pixelsHigh / 2)?.usingColorSpace(.deviceRGB))
-            #expect(left.redComponent > 0.8 && left.greenComponent < 0.2)
-            #expect(right.greenComponent > 0.8 && right.redComponent < 0.2)
+            func isRed(x: Int, y: Int) -> Bool {
+                guard let color = rendered.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
+                // Sample the midpoint of the interpolated edge, not just its
+                // fully saturated center (which shrinks at large GPU scales).
+                return color.redComponent > 0.8 && color.greenComponent < 0.5
+            }
+            let squareWidth = (0..<rendered.pixelsWide).filter {
+                isRed(x: $0, y: rendered.pixelsHigh / 2)
+            }.count
+            let squareHeight = (0..<rendered.pixelsHigh).filter {
+                isRed(x: rendered.pixelsWide / 2, y: $0)
+            }.count
+            let uniformScale = max(CGFloat(rendered.pixelsWide) / CGFloat(width),
+                                   CGFloat(rendered.pixelsHigh) / CGFloat(height))
+            // Filtered edges may move by one source pixel. The two axes must
+            // still match within two output pixels regardless of that filter.
+            let edgeTolerance = max(2, uniformScale)
+            #expect(abs(CGFloat(squareWidth) - 12 * uniformScale) <= edgeTolerance)
+            #expect(abs(CGFloat(squareHeight) - 12 * uniformScale) <= edgeTolerance)
+            #expect(abs(squareWidth - squareHeight) <= 2)
             let corner = try #require(rendered.colorAt(x: 1, y: 1)?.usingColorSpace(.deviceRGB))
-            #expect(corner.redComponent > 0.8 && corner.greenComponent < 0.2)
+            #expect(corner.redComponent > 0.8 && corner.greenComponent > 0.8)
         }
     }
 

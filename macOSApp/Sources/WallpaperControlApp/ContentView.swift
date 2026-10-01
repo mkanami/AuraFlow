@@ -635,16 +635,16 @@ struct PreviewLayer: View {
 
     var body: some View {
         GeometryReader { viewport in
-            previewContent
+            previewContent(in: viewport.size)
                 .frame(width: viewport.size.width, height: viewport.size.height)
                 .background(Color.black)
         }
         .clipped()
     }
 
-    // Fill the current window without cropping or letterboxing. Preview-only
-    // stretching is independent of desktop settings and the monitor's ratio.
-    private var previewContent: some View {
+    // Scale uniformly to cover the actual window, not the monitor. No stretching
+    // or letterboxing; excess content is cropped symmetrically at the edges.
+    private func previewContent(in size: CGSize) -> some View {
         Group {
             if previewSelectionStore.kind == .terminal {
                 TerminalWallpaperPreviewSurface(model: terminalPreviewModel)
@@ -655,18 +655,21 @@ struct PreviewLayer: View {
                let image = NSImage(contentsOf: wallpaperURL) {
                 Image(nsImage: image)
                     .resizable()
+                    .scaledToFill()
             } else {
                 ZStack {
                     CatalogPreviewImage(
                         url: posterURL,
                         title: posterTitle,
                         referer: posterRefererURL,
-                        contentMode: nil
+                        contentMode: .fill
                     )
+                    .frame(width: size.width, height: size.height)
+                    .clipped()
 
                     VideoPreview(
                         player: player,
-                        videoGravity: .resize,
+                        videoGravity: .resizeAspectFill,
                         onReadyForDisplayChange: { isReady in
                             onVideoReadyForDisplayChange(player, isReady)
                         }
@@ -2322,8 +2325,7 @@ struct CatalogPreviewImage: View {
     let url: URL?
     let title: String
     let referer: URL?
-    // nil fills the proposal without cropping or preserving the source ratio.
-    var contentMode: ContentMode? = .fill
+    var contentMode: ContentMode = .fill
     var fallbackURL: URL? = nil
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @StateObject private var loader = CatalogPreviewImageLoader()
@@ -2331,13 +2333,9 @@ struct CatalogPreviewImage: View {
     var body: some View {
         Group {
             if let image = loader.image {
-                if let contentMode {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: contentMode)
-                } else {
-                    Image(nsImage: image).resizable()
-                }
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
             } else {
                 previewFallback
             }
