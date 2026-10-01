@@ -212,7 +212,6 @@ struct TerminalWallpaperSettingsView: View {
             if let onClose {
                 Button(action: onClose) {
                     Label("Back to preview", systemImage: "play.rectangle")
-                        .padding(.vertical, 5)
                 }
                 .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             }
@@ -282,7 +281,7 @@ struct TerminalWallpaperSettingsView: View {
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                     .accessibilityLabel("Refresh wallpaper choices")
                 }
 
@@ -386,10 +385,8 @@ struct TerminalWallpaperSettingsView: View {
                 viewModel.use(item)
             } label: {
                 Label(presentation.actionTitle, systemImage: presentation.installed ? "play.rectangle" : "arrow.down.circle")
-                    .padding(.vertical, 4)
-                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(AuraGlassButtonStyle())
+            .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             .disabled(presentation.actionDisabled)
             .accessibilityLabel("\(presentation.actionTitle): \(item.title)")
             .accessibilityHint(presentation.installed
@@ -518,7 +515,7 @@ struct TerminalWallpaperSettingsView: View {
                     .monospacedDigit()
                     .frame(width: 48, alignment: .trailing)
                 Button("Reset") { viewModel.textScale = 1.5 }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             }
 
             Picker("Scale", selection: $viewModel.scaleMode) {
