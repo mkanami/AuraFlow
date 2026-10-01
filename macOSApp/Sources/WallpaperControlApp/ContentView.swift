@@ -221,7 +221,6 @@ struct ContentView: View {
         )
     }
 
-    private var aspectRatio: CGFloat { mainScreenAspectRatio() }
     private var sourceMenuIsAvailable: Bool {
         !viewModel.isCatalogOpen && !viewModel.isSettingsOpen && !viewModel.isMonitoringOpen
             && !viewModel.isDownloadedWallpapersOpen && !viewModel.isTerminalWallpaperOpen
@@ -384,8 +383,6 @@ struct ContentView: View {
                 wallpaperEngine: viewModel.wallpaperEngine,
                 player: viewModel.previewPlayer,
                 wallpaperURL: viewModel.currentVideoURL ?? viewModel.appliedVideoURL,
-                aspectRatio: aspectRatio,
-                scaleMode: viewModel.scaleMode,
                 isVideoReadyForDisplay: viewModel.isPreviewReadyForDisplay,
                 posterURL: viewModel.previewPosterURL,
                 posterRefererURL: viewModel.previewPosterRefererURL,
@@ -630,8 +627,6 @@ struct PreviewLayer: View {
     @ObservedObject var wallpaperEngine: WallpaperEngineViewModel
     let player: AVPlayer?
     let wallpaperURL: URL?
-    let aspectRatio: CGFloat
-    let scaleMode: WallpaperScaleMode
     let isVideoReadyForDisplay: Bool
     let posterURL: URL?
     let posterRefererURL: URL?
@@ -639,6 +634,17 @@ struct PreviewLayer: View {
     let onVideoReadyForDisplayChange: (AVPlayer?, Bool) -> Void
 
     var body: some View {
+        GeometryReader { viewport in
+            previewContent
+                .frame(width: viewport.size.width, height: viewport.size.height)
+                .background(Color.black)
+        }
+        .clipped()
+    }
+
+    // Fill the current window without cropping or letterboxing. Preview-only
+    // stretching is independent of desktop settings and the monitor's ratio.
+    private var previewContent: some View {
         Group {
             if previewSelectionStore.kind == .terminal {
                 TerminalWallpaperPreviewSurface(model: terminalPreviewModel)
@@ -649,32 +655,26 @@ struct PreviewLayer: View {
                let image = NSImage(contentsOf: wallpaperURL) {
                 Image(nsImage: image)
                     .resizable()
-                    .aspectRatio(
-                        contentMode: scaleMode == .fit ? .fit : .fill
-                    )
             } else {
                 ZStack {
                     CatalogPreviewImage(
                         url: posterURL,
                         title: posterTitle,
                         referer: posterRefererURL,
-                        contentMode: scaleMode == .fit ? .fit : .fill
+                        contentMode: nil
                     )
 
                     VideoPreview(
                         player: player,
-                        videoGravity: scaleMode.previewGravity,
+                        videoGravity: .resize,
                         onReadyForDisplayChange: { isReady in
                             onVideoReadyForDisplayChange(player, isReady)
                         }
                     )
-                    .aspectRatio(aspectRatio, contentMode: .fill)
                     .opacity(isVideoReadyForDisplay ? 1 : 0)
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
     }
 }
 
@@ -2322,7 +2322,8 @@ struct CatalogPreviewImage: View {
     let url: URL?
     let title: String
     let referer: URL?
-    var contentMode: ContentMode = .fill
+    // nil fills the proposal without cropping or preserving the source ratio.
+    var contentMode: ContentMode? = .fill
     var fallbackURL: URL? = nil
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @StateObject private var loader = CatalogPreviewImageLoader()
@@ -2330,9 +2331,13 @@ struct CatalogPreviewImage: View {
     var body: some View {
         Group {
             if let image = loader.image {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: contentMode)
+                if let contentMode {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: contentMode)
+                } else {
+                    Image(nsImage: image).resizable()
+                }
             } else {
                 previewFallback
             }
