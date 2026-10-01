@@ -430,7 +430,6 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 }
                 select(item)
                 previewSelectionStore?.selectTerminal(makeConfig())
-                statusMessage = "\(item.title) is showing in AuraFlow preview. Use Start to apply it."
             } catch {
                 errorMessage = error.localizedDescription
                 if case TerminalWallpaperInstallError.unsupportedHomebrewPlatform = error {
@@ -454,7 +453,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         workingDirectory = ""
         environmentText = ""
         previewSelectionStore?.selectTerminal(makeConfig())
-        statusMessage = "\(url.deletingPathExtension().lastPathComponent) is showing in AuraFlow preview. Use Start to apply it."
+        statusMessage = nil
         return true
     }
 
@@ -470,7 +469,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         }
         errorMessage = nil
         previewSelectionStore?.selectTerminal(makeConfig())
-        statusMessage = "Terminal command is showing in AuraFlow preview. Use Start to apply it."
+        statusMessage = nil
     }
 
     func apply() {

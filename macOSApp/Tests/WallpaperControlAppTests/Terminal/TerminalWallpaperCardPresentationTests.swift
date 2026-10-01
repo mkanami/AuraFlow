@@ -26,7 +26,7 @@ func terminalWallpaperAppliedBadgeDoesNotDisablePreview(installed: Bool, applied
     )
     #expect(card.actionDisabled)
     #expect(card.actionTitle == "In preview")
-    #expect(card.availabilityTitle == "Installed")
+    #expect(card.availabilityTitle == nil)
     #expect(!card.applied)
 }
 
@@ -36,4 +36,24 @@ func terminalWallpaperBusyCardsCannotSubmitAgain(installed: Bool, selected: Bool
         installed: installed, selectedForPreview: selected, applied: false, busy: true
     )
     #expect(card.actionDisabled)
+}
+
+@Test func terminalWallpaperFooterShowsSelectionWithoutInventingAppliedState() {
+    let empty = TerminalWallpaperSelectionPresentation(previewTitle: nil, appliedTitle: nil)
+    #expect(empty.previewLabel == "No preview selected")
+    #expect(empty.appliedLabel == nil)
+
+    let preview = TerminalWallpaperSelectionPresentation(previewTitle: "CMatrix", appliedTitle: nil)
+    #expect(preview.previewLabel == "Preview: CMatrix")
+    #expect(preview.appliedLabel == nil)
+}
+
+@Test func terminalWallpaperFooterKeepsDifferentAppliedWallpaperVisible() {
+    let selection = TerminalWallpaperSelectionPresentation(previewTitle: "lavat", appliedTitle: "CMatrix")
+    #expect(selection.previewLabel == "Preview: lavat")
+    #expect(selection.appliedLabel == "Applied: CMatrix")
+
+    let videoPreview = TerminalWallpaperSelectionPresentation(previewTitle: nil, appliedTitle: "CMatrix")
+    #expect(videoPreview.previewLabel == "No preview selected")
+    #expect(videoPreview.appliedLabel == "Applied: CMatrix")
 }

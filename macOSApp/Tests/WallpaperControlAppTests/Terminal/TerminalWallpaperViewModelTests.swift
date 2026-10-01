@@ -492,12 +492,14 @@ func terminalPresetInstallationThenPreviewAndSwitchDoesNotStartRuntime() async t
     #expect(previewStore.kind == .terminal)
     #expect(previewStore.terminalConfiguration?.command.catalogItemID == "asciiquarium")
     #expect(viewModel.isPreviewSelected(TerminalWallpaperPreset.preset(id: "asciiquarium")!.item))
+    #expect(viewModel.statusMessage == nil)
 
     viewModel.use(TerminalWallpaperPreset.preset(id: "lavat")!.item)
     try await waitForTerminalAction(viewModel)
     #expect(installer.calls == ["asciiquarium"])
     #expect(controller.startCount == 0)
     #expect(previewStore.terminalConfiguration?.command.catalogItemID == "lavat")
+    #expect(viewModel.statusMessage == nil)
 }
 
 @Test @MainActor
@@ -647,5 +649,24 @@ func terminalWallpaperPreviewSummarySupportsCustomCommandsWithoutApplying() {
 
     #expect(viewModel.previewTitle == "my-animation")
     #expect(viewModel.activeWallpaperTitle == nil)
+    #expect(controller.startCount == 0)
+}
+
+@Test @MainActor
+func terminalCustomPreviewUsesSelectionStateInsteadOfRepeatedInstructions() {
+    let store = makePreviewSelectionStore()
+    let controller = StubTerminalWallpaperController()
+    let viewModel = TerminalWallpaperViewModel(controller: controller, previewSelectionStore: store)
+    viewModel.statusMessage = "Previous runtime action"
+
+    #expect(viewModel.selectCustomExecutable(URL(fileURLWithPath: "/usr/local/bin/my-animation")))
+    #expect(viewModel.previewTitle == "my-animation")
+    #expect(viewModel.statusMessage == nil)
+    #expect(viewModel.errorMessage == nil)
+
+    viewModel.statusMessage = "Previous runtime action"
+    viewModel.showCurrentCommandInPreview()
+    #expect(viewModel.previewTitle == "my-animation")
+    #expect(viewModel.statusMessage == nil)
     #expect(controller.startCount == 0)
 }

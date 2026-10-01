@@ -13,7 +13,15 @@ struct TerminalWallpaperCardPresentation: Equatable {
     }
 
     var actionDisabled: Bool { busy || (installed && selectedForPreview) }
-    var availabilityTitle: String { installed ? "Installed" : "Installation required" }
+    var availabilityTitle: String? { installed ? nil : "Installation required" }
+}
+
+struct TerminalWallpaperSelectionPresentation: Equatable {
+    let previewTitle: String?
+    let appliedTitle: String?
+
+    var previewLabel: String { previewTitle.map { "Preview: \($0)" } ?? "No preview selected" }
+    var appliedLabel: String? { appliedTitle.map { "Applied: \($0)" } }
 }
 
 func terminalWallpaperPopupAppearance(
@@ -113,8 +121,6 @@ struct TerminalWallpaperSettingsView: View {
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    gettingStarted
-
                     if let errorMessage = viewModel.errorMessage {
                         terminalMessage(
                             errorMessage,
@@ -133,11 +139,10 @@ struct TerminalWallpaperSettingsView: View {
 
                     catalogSection
                     if let statusMessage = viewModel.statusMessage {
-                        terminalMessage(
-                            statusMessage,
-                            systemImage: "checkmark.circle.fill",
-                            color: .green
-                        )
+                        Label(statusMessage, systemImage: "checkmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Divider()
                     settingsDisclosure(
@@ -207,13 +212,8 @@ struct TerminalWallpaperSettingsView: View {
             Image(systemName: "terminal")
                 .font(.title2.weight(.semibold))
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Terminal Wallpaper")
-                    .font(.title2.weight(.semibold))
-                Text("Choose an animation. Try it before applying it.")
-                    .font(.callout)
-                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-            }
+            Text("Terminal Wallpaper")
+                .font(.title2.weight(.semibold))
 
             Spacer()
 
@@ -229,49 +229,19 @@ struct TerminalWallpaperSettingsView: View {
         .padding(.horizontal, 4)
     }
 
-    private var gettingStarted: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 16) {
-                workflowStep("1", title: "Choose an animation")
-                workflowStep("2", title: "See live preview")
-                workflowStep("3", title: "Use Start to apply")
-            }
-            Text("Choosing changes only the preview. Use Start for desktop & Lock Screen; Remove first if other wallpaper is running.")
-                .font(.caption)
-                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                .fixedSize(horizontal: false, vertical: true)
-            if let active = viewModel.activeWallpaperTitle {
-                Label("Applied wallpaper: \(active)", systemImage: "desktopcomputer")
-                    .font(.callout.weight(.medium))
-            }
-        }
-    }
-
-    private func workflowStep(_ number: String, title: String) -> some View {
-        HStack(spacing: 8) {
-            Text(number)
-                .font(.callout.weight(.semibold))
-                .frame(width: 24, height: 24)
-                .background(Circle().fill(adaptiveGlassAppearance.centerTextTone.primaryTextColor.opacity(0.10)))
-            Text(title)
-                .font(.callout.weight(.semibold))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-    }
-
     private var previewFooter: some View {
-        HStack(spacing: 16) {
+        let selection = TerminalWallpaperSelectionPresentation(
+            previewTitle: viewModel.previewTitle, appliedTitle: viewModel.activeWallpaperTitle
+        )
+        return HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(viewModel.previewTitle.map { "Preview: \($0)" } ?? "Choose an animation to begin")
+                Text(selection.previewLabel)
                     .font(.callout.weight(.semibold))
-                Text(viewModel.previewTitle == nil
-                     ? "Your current wallpaper stays unchanged."
-                     : "Close this panel to see it live. Use Start to apply it.")
-                    .font(.caption)
-                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let appliedLabel = selection.appliedLabel {
+                    Label(appliedLabel, systemImage: "desktopcomputer")
+                        .font(.caption)
+                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                }
             }
             Spacer(minLength: 0)
             if let onClose {
@@ -320,7 +290,7 @@ struct TerminalWallpaperSettingsView: View {
     }
 
     private var catalogSection: some View {
-        TerminalWallpaperSection(title: "Choose a wallpaper", systemImage: "rectangle.grid.2x2") {
+        TerminalWallpaperSection(title: "Animations", systemImage: "rectangle.grid.2x2") {
             LazyVStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 10) {
                     AuraCatalogSearchField(
@@ -365,7 +335,7 @@ struct TerminalWallpaperSettingsView: View {
                         }
                     }
                     if viewModel.catalogItems.isEmpty && !viewModel.catalogIsLoading {
-                        Label("No match. Try an exact command name or choose a file.", systemImage: "magnifyingglass")
+                        Label("No matching animation or command.", systemImage: "magnifyingglass")
                             .font(.callout)
                             .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                     }
@@ -374,11 +344,6 @@ struct TerminalWallpaperSettingsView: View {
                             .controlSize(.small)
                     }
                 }
-
-                Text("Looking for something else? Search an exact installed command name, or add a custom command below.")
-                    .font(.caption)
-                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                    .fixedSize(horizontal: false, vertical: true)
 
                 if let stage = viewModel.installStage {
                     ProgressView(stage)
@@ -389,15 +354,15 @@ struct TerminalWallpaperSettingsView: View {
                 Divider()
 
                 DisclosureGroup("Add a custom command", isExpanded: $showAdvancedCommand) {
-                    Text("For advanced users: choose a trusted terminal executable, not a macOS app. Custom commands are unverified and may not work as wallpaper.")
-                        .font(.callout)
+                    Text("Only run commands you trust. Custom commands may be incompatible.")
+                        .font(.caption)
                         .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                         .padding(.vertical, 8)
                     Button {
                         guard let url = TerminalExecutablePicker.choose() else { return }
                         _ = viewModel.selectCustomExecutable(url)
                     } label: {
-                        Label("Choose file…", systemImage: "folder")
+                        Label("Choose executable…", systemImage: "folder")
                     }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                     .disabled(viewModel.isBusy)
@@ -428,15 +393,14 @@ struct TerminalWallpaperSettingsView: View {
                     .frame(width: 32, height: 32)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title).font(.headline)
-                    Text(presentation.availabilityTitle)
-                        .font(.caption)
-                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                    if let availabilityTitle = presentation.availabilityTitle {
+                        Text(availabilityTitle)
+                            .font(.caption)
+                            .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                    }
                 }
                 Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: 4) {
-                    if presentation.selectedForPreview {
-                        Label("In preview", systemImage: "play.rectangle")
-                    }
                     if presentation.applied {
                         Label("Applied", systemImage: "desktopcomputer")
                     }
@@ -628,14 +592,10 @@ struct TerminalWallpaperSettingsView: View {
     }
 
     private var applySettingsAction: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("The preview updates automatically. Apply also updates the terminal wallpaper runtime with these settings.")
-                .font(.caption)
-                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-            Button("Apply settings") { viewModel.apply() }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .disabled(viewModel.isBusy)
-        }
+        Button("Apply settings") { viewModel.apply() }
+            .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+            .disabled(viewModel.isBusy)
+            .help("Preview updates automatically. Apply settings also updates the active terminal wallpaper.")
     }
 
     private var runtimeActions: some View {
@@ -676,7 +636,7 @@ struct TerminalWallpaperSettingsView: View {
                     .padding(.top, 6)
                 }
             } else {
-                Text(viewModel.status.running ? "Waiting for runtime diagnostics…" : "No terminal wallpaper is applied. A live preview is not an active wallpaper.")
+                Text(viewModel.status.running ? "Waiting for runtime diagnostics…" : "No terminal wallpaper applied.")
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             }
         }
