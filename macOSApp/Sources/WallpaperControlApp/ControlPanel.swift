@@ -12,12 +12,15 @@ struct ControlPanel: View {
     private var horizontalInset: CGFloat { isCompactBySize ? 18 : 22 }
     private var verticalInset: CGFloat { isVeryCompactByHeight ? 10 : (isCompactBySize ? 12 : 14) }
     private var rowSpacing: CGFloat { isVeryCompactByHeight ? 8 : (isCompactBySize ? 10 : 12) }
+    private var buttonHeight: CGFloat {
+        MainControlPanelMetrics.buttonHeight(panelWidth: panelWidth, isVeryCompactByHeight: isVeryCompactByHeight)
+    }
     private var compactTitles: Bool {
         MainControlRowLayout.usesCompactTitles(contentWidth: panelWidth - horizontalInset * 2)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: rowSpacing) {
-            MainControlRowLayout(row: .playback) {
+            MainControlRowLayout(row: .playback, height: buttonHeight) {
                 startButton
                 lockButton
                 playbackButton
@@ -25,7 +28,7 @@ struct ControlPanel: View {
                 changeButton
             }
 
-            MainControlRowLayout(row: .library) {
+            MainControlRowLayout(row: .library, height: buttonHeight) {
                 terminalButton
                 downloadedButton
                 catalogButton
@@ -72,6 +75,7 @@ struct ControlPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: Color.black.opacity(0.18), radius: 4, x: 0, y: 2)
         .environment(\.colorScheme, .dark)
+        .environment(\.mainControlButtonHeight, buttonHeight)
     }
 
     private var startButton: some View {
@@ -155,6 +159,7 @@ struct ControlPanel: View {
 
 /// Sizing is inside the button style so the entire compact glass surface is clickable.
 struct MainPanelActionButton: View {
+    @Environment(\.mainControlButtonHeight) private var buttonHeight
     let title: String
     var icon: String? = nil
     let id: String
@@ -190,9 +195,9 @@ struct MainPanelActionButton: View {
             .lineLimit(1)
             .frame(maxWidth: .infinity)
         }
-        .buttonStyle(AuraPanelButtonStyle(height: MainControlRowLayout.buttonHeight,
+        .buttonStyle(AuraPanelButtonStyle(height: buttonHeight,
                                         horizontalPadding: iconOnly ? 0 : 12,
-                                        cornerRadius: MainControlRowLayout.buttonHeight / 2))
+                                        cornerRadius: buttonHeight / 2))
         .disabled(!enabled)
         .help(help)
         .accessibilityLabel(accessibilityTitle ?? title)

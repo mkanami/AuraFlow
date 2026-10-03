@@ -242,13 +242,13 @@ struct ContentView: View {
             let availableWidth = max(proxy.size.width - (horizontalPadding * 2), 0)
             let availableHeight = max(proxy.size.height - 48, 0)
             let controlPanelMaxWidth: CGFloat = 1440
-            let controlPanelWidth = min(availableWidth, controlPanelMaxWidth)
-            let isCompactBySize = controlPanelWidth < 1080 || availableHeight < 620
+            let controlPanelWidth = MainControlPanelMetrics.width(availableWidth: availableWidth)
+            let isCompactBySize = min(availableWidth, controlPanelMaxWidth) < 1080 || availableHeight < 620
             let isVeryCompactByHeight = availableHeight < 560
             let catalogMaxWidth: CGFloat = 1040
             let overlayWidth = viewModel.isCatalogOpen
                 ? min(availableWidth, catalogMaxWidth)
-                : controlPanelWidth
+                : min(availableWidth, controlPanelMaxWidth)
             let topOverlayPadding = resolvedTopOverlayPadding()
             let bottomOverlayPadding = resolvedBottomOverlayPadding()
 
@@ -528,9 +528,11 @@ struct ContentView: View {
                         isAdjustingSpeed: $isAdjustingSpeed,
                         showsWallpaperSourcePicker: $showsWallpaperSourcePicker,
                         panelWidth: controlPanelWidth,
-                        isCompactBySize: isCompactBySize,
+                        isCompactBySize: controlPanelWidth < 1080 || containerHeight - 48 < 620,
                         isVeryCompactByHeight: isVeryCompactByHeight
                     )
+                    .frame(width: controlPanelWidth)
+                    .frame(maxWidth: .infinity, alignment: .center)
                     .disabled(!viewModel.isControllerAvailable)
                     .overlay(
                         Group {

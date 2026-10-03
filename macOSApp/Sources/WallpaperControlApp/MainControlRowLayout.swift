@@ -1,5 +1,32 @@
 import SwiftUI
 
+/// Expand normally in small windows, then taper toward a comfortable desktop width.
+enum MainControlPanelMetrics {
+    static func width(availableWidth: CGFloat) -> CGFloat {
+        let available = max(0, availableWidth)
+        let extra = max(0, available - 900)
+        return min(available, 900 + 280 * extra / (280 + extra))
+    }
+
+    static func buttonHeight(panelWidth: CGFloat, isVeryCompactByHeight: Bool) -> CGFloat {
+        guard !isVeryCompactByHeight else { return 22 }
+        let progress = min(max((panelWidth - 900) / 200, 0), 1)
+        let eased = progress * progress * (3 - 2 * progress)
+        return 22 + 6 * eased
+    }
+}
+
+private struct MainControlButtonHeightKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 22
+}
+
+extension EnvironmentValues {
+    var mainControlButtonHeight: CGFloat {
+        get { self[MainControlButtonHeightKey.self] }
+        set { self[MainControlButtonHeightKey.self] = newValue }
+    }
+}
+
 /// Five stable actions per row: playback + source, then library + utilities.
 struct MainControlRowLayout: Layout {
     enum Row { case playback, library }
@@ -8,6 +35,7 @@ struct MainControlRowLayout: Layout {
     static let utilityButtonWidth: CGFloat = 32
     static let spacing: CGFloat = 8
     let row: Row
+    var height: CGFloat = buttonHeight
 
     static func usesCompactTitles(contentWidth: CGFloat) -> Bool {
         contentWidth < 900
@@ -17,7 +45,6 @@ struct MainControlRowLayout: Layout {
         guard idealWidths.count == 5 else { return [] }
         let width = max(0, width)
         let spacing = Self.spacing
-        let height = Self.buttonHeight
         switch row {
         case .playback:
             let preferred = max(104, idealWidths.prefix(4).max() ?? 0)
@@ -43,7 +70,7 @@ struct MainControlRowLayout: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let ideals = idealWidths(subviews)
         return CGSize(width: proposal.width ?? (ideals.reduce(0, +) + Self.spacing * 4),
-                      height: Self.buttonHeight)
+                      height: height)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {

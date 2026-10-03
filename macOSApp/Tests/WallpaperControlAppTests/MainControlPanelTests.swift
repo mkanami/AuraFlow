@@ -37,21 +37,21 @@ struct MainControlPanelTests {
         #expect(frames[4].maxX == 676)
     }
 
-    @Test
-    func hostedGlassButtonsStayInTwoRowsAndMatchLayoutDuringResize() async throws {
+    @Test(arguments: [22.0, 25, 28])
+    func hostedGlassButtonsStayInTwoRowsAndMatchLayoutDuringResize(height: Double) async throws {
         let state = PanelState()
-        let hosting = NSHostingView(rootView: RowsFixture(state: state))
+        let hosting = NSHostingView(rootView: RowsFixture(state: state, height: height))
         let window = makeWindow(hosting)
         defer { window.orderOut(nil); window.close() }
 
         for width in [676.0, 899, 900, 901, 1036, 1396, 676] {
-            window.setContentSize(NSSize(width: width, height: 52))
+            window.setContentSize(NSSize(width: width, height: height * 2 + 8))
             try await settle(hosting)
             #expect(state.frames.count == 10)
             for row in 0..<2 {
                 let frames = try (0..<5).map { try #require(state.frames["\(row)-\($0)"]) }
                 #expect(frames.allSatisfy { $0.minX >= -0.1 && $0.maxX <= width + 0.1 })
-                #expect(frames.allSatisfy { abs($0.height - 22) < 0.1 && abs($0.minY - frames[0].minY) < 0.1 })
+                #expect(frames.allSatisfy { abs($0.height - height) < 0.1 && abs($0.minY - frames[0].minY) < 0.1 })
                 for pair in zip(frames, frames.dropFirst()) { #expect(pair.0.maxX < pair.1.minX) }
                 if row == 1 {
                     #expect(abs(frames[0].width - frames[2].width) < 0.1)
@@ -60,7 +60,7 @@ struct MainControlPanelTests {
                 }
             }
             #expect(abs(try #require(state.frames["0-0"]).minY) < 0.1)
-            #expect(abs(try #require(state.frames["1-0"]).minY - 30) < 0.1)
+            #expect(abs(try #require(state.frames["1-0"]).minY - (height + 8)) < 0.1)
         }
     }
 
@@ -138,6 +138,31 @@ struct MainControlPanelTests {
     }
 
     @Test
+    func panelGrowthTapersSmoothlyWithoutFlatteningTallWindows() {
+        #expect(MainControlPanelMetrics.width(availableWidth: 712) == 712)
+        #expect(MainControlPanelMetrics.width(availableWidth: 900) == 900)
+        #expect(MainControlPanelMetrics.width(availableWidth: 1180) == 1040)
+        #expect(MainControlPanelMetrics.buttonHeight(panelWidth: 900, isVeryCompactByHeight: false) == 22)
+        #expect(MainControlPanelMetrics.buttonHeight(panelWidth: 1000, isVeryCompactByHeight: false) == 25)
+        #expect(MainControlPanelMetrics.buttonHeight(panelWidth: 1100, isVeryCompactByHeight: false) == 28)
+        #expect(MainControlPanelMetrics.buttonHeight(panelWidth: 1180, isVeryCompactByHeight: true) == 22)
+        var previousWidth: CGFloat = 900
+        var previousGrowth: CGFloat = 1
+        var previousHeight: CGFloat = 22
+        for available in stride(from: CGFloat(901), through: 4000, by: 1) {
+            let width = MainControlPanelMetrics.width(availableWidth: available)
+            let growth = width - previousWidth
+            let height = MainControlPanelMetrics.buttonHeight(panelWidth: width, isVeryCompactByHeight: false)
+            #expect(width <= available && width < 1180)
+            #expect(growth > 0 && growth <= previousGrowth + 0.00001)
+            #expect(height >= previousHeight && height <= 28)
+            previousWidth = width
+            previousGrowth = growth
+            previousHeight = height
+        }
+    }
+
+    @Test
     func resizingPanelDoesNotIntroduceWallpaperTitleRow() async throws {
         let model = AppViewModel(controller: MockNativeWallpaperController(),
                                  catalogProvider: MockCatalogProvider(wallpapers: []))
@@ -148,19 +173,26 @@ struct MainControlPanelTests {
         let window = makeWindow(hosting)
         defer { window.orderOut(nil); window.close() }
 
-        for (size, expectedHeight) in [
-            (CGSize(width: 760, height: 480), 72.0),
-            (CGSize(width: 984, height: 620), 78.0),
-            (CGSize(width: 1440, height: 900), 84.0),
-            (CGSize(width: 2000, height: 1200), 84.0),
-            (CGSize(width: 760, height: 480), 72.0),
+        for size in [
+            CGSize(width: 760, height: 480),
+            CGSize(width: 984, height: 620),
+            CGSize(width: 1440, height: 900),
+            CGSize(width: 2000, height: 1200),
+            CGSize(width: 2000, height: 480),
+            CGSize(width: 760, height: 480),
         ] {
             window.setContentSize(size)
             try await settle(hosting)
             let panel = try #require(state.frames["panel"])
+            let width = MainControlPanelMetrics.width(availableWidth: size.width - 48)
+            let short = size.height - 48 < 560
+            let compact = width < 1080 || size.height - 48 < 620
+            let buttonHeight = MainControlPanelMetrics.buttonHeight(panelWidth: width, isVeryCompactByHeight: short)
+            let expectedHeight = buttonHeight * 2 + (short ? 8 : (compact ? 10 : 12))
+                + (short ? 20 : (compact ? 24 : 28))
             // Only the two button rows and existing insets/spacing remain.
             #expect(abs(panel.height - expectedHeight) < 0.1)
-            #expect(abs(panel.width - min(size.width - 48, 1440)) < 0.1)
+            #expect(abs(panel.width - width) < 0.1)
         }
     }
 
@@ -235,19 +267,20 @@ private struct ButtonFramesKey: PreferenceKey {
 
 private struct RowsFixture: View {
     let state: PanelState
+    var height: CGFloat = 22
 
     var body: some View {
         GeometryReader { proxy in
             let compact = MainControlRowLayout.usesCompactTitles(contentWidth: proxy.size.width)
             VStack(spacing: 8) {
-                MainControlRowLayout(row: .playback) {
+                MainControlRowLayout(row: .playback, height: height) {
                     recordedButton("Start", icon: "desktopcomputer", id: "0-0")
                     recordedButton("Lock", icon: "lock.display", id: "0-1")
                     recordedButton("Resume", icon: "play.fill", id: "0-2")
                     recordedButton("Remove", icon: "trash", id: "0-3")
                     recordedButton(compact ? "Change…" : "Change Wallpaper…", icon: "photo.on.rectangle", id: "0-4")
                 }
-                MainControlRowLayout(row: .library) {
+                MainControlRowLayout(row: .library, height: height) {
                     recordedButton(compact ? "Terminal" : "Terminal Wallpaper", icon: "terminal", id: "1-0")
                     recordedButton(compact ? "Downloaded" : "Downloaded Wallpapers", icon: "arrow.down.circle", id: "1-1")
                     recordedButton(compact ? "Catalog" : "Wallpaper Catalog", icon: "square.grid.2x2", id: "1-2")
@@ -255,6 +288,7 @@ private struct RowsFixture: View {
                     recordedButton("Monitoring", icon: "gauge.with.dots.needle.67percent", id: "1-4", iconOnly: true)
                 }
             }
+            .environment(\.mainControlButtonHeight, height)
             .coordinateSpace(name: "controls")
             .onPreferenceChange(ButtonFramesKey.self) { state.frames = $0 }
         }
@@ -275,7 +309,7 @@ private struct PanelFixture: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let width = min(proxy.size.width - 48, 1440)
+            let width = MainControlPanelMetrics.width(availableWidth: proxy.size.width - 48)
             let height = proxy.size.height - 48
             ControlPanel(viewModel: model, isAdjustingSpeed: .constant(false),
                          showsWallpaperSourcePicker: $state.showsSourcePicker,
