@@ -138,6 +138,33 @@ struct MainControlPanelTests {
     }
 
     @Test
+    func resizingPanelDoesNotIntroduceWallpaperTitleRow() async throws {
+        let model = AppViewModel(controller: MockNativeWallpaperController(),
+                                 catalogProvider: MockCatalogProvider(wallpapers: []))
+        model.statusMessage = nil
+        let state = PanelState()
+        let hosting = NSHostingView(rootView: PanelFixture(model: model, state: state)
+            .environment(\.terminalPreviewTitle, String(repeating: "Wallpaper title ", count: 30)))
+        let window = makeWindow(hosting)
+        defer { window.orderOut(nil); window.close() }
+
+        for (size, expectedHeight) in [
+            (CGSize(width: 760, height: 480), 72.0),
+            (CGSize(width: 984, height: 620), 78.0),
+            (CGSize(width: 1440, height: 900), 84.0),
+            (CGSize(width: 2000, height: 1200), 84.0),
+            (CGSize(width: 760, height: 480), 72.0),
+        ] {
+            window.setContentSize(size)
+            try await settle(hosting)
+            let panel = try #require(state.frames["panel"])
+            // Only the two button rows and existing insets/spacing remain.
+            #expect(abs(panel.height - expectedHeight) < 0.1)
+            #expect(abs(panel.width - min(size.width - 48, 1440)) < 0.1)
+        }
+    }
+
+    @Test
     func sourceMenuStaysAnchoredAndInsideSmallAndWideWindows() {
         for size in [CGSize(width: 760, height: 480), CGSize(width: 900, height: 600),
                      CGSize(width: 984, height: 620), CGSize(width: 1440, height: 900)] {

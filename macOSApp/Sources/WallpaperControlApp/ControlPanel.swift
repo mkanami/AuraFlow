@@ -2,7 +2,6 @@ import SwiftUI
 
 struct ControlPanel: View {
     @Environment(\.adaptiveGlassAppearance) private var appearance
-    @Environment(\.terminalPreviewTitle) private var terminalPreviewTitle
     @ObservedObject var viewModel: AppViewModel
     @Binding var isAdjustingSpeed: Bool
     @Binding var showsWallpaperSourcePicker: Bool
@@ -16,24 +15,8 @@ struct ControlPanel: View {
     private var compactTitles: Bool {
         MainControlRowLayout.usesCompactTitles(contentWidth: panelWidth - horizontalInset * 2)
     }
-    private var previewTitle: String {
-        if let terminalPreviewTitle { return terminalPreviewTitle }
-        if viewModel.wallpaperEngine.selection.kind == .web,
-           let project = viewModel.wallpaperEngine.selectedProject { return project.title }
-        return viewModel.selectedVideoName
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: rowSpacing) {
-            if !isVeryCompactByHeight {
-                Text(previewTitle)
-                    .font(.caption)
-                    .foregroundStyle(appearance.bottomTextTone.secondaryTextColor)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
             MainControlRowLayout(row: .playback) {
                 startButton
                 lockButton
