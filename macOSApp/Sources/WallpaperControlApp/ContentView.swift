@@ -2247,6 +2247,7 @@ struct AuraPanelButtonStyle: ButtonStyle {
     var region: Region = .bottom
     var height: CGFloat? = nil
     var horizontalPadding: CGFloat? = nil
+    var cornerRadius: CGFloat = 10
 
     func makeBody(configuration: Configuration) -> some View {
         AuraPanelButton(
@@ -2256,7 +2257,8 @@ struct AuraPanelButtonStyle: ButtonStyle {
             selected: selected,
             region: region,
             height: height,
-            horizontalPadding: horizontalPadding
+            horizontalPadding: horizontalPadding,
+            cornerRadius: cornerRadius
         )
     }
 }
@@ -2269,13 +2271,14 @@ private struct AuraPanelButton: View {
     let region: AuraPanelButtonStyle.Region
     let height: CGFloat?
     let horizontalPadding: CGFloat?
+    let cornerRadius: CGFloat
 
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     private var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
     private var usesNativeLiquidGlass: Bool {

@@ -4,7 +4,8 @@ import SwiftUI
 struct MainControlRowLayout: Layout {
     enum Row { case playback, library }
 
-    static let buttonHeight: CGFloat = 32
+    static let buttonHeight: CGFloat = 22
+    static let utilityButtonWidth: CGFloat = 32
     static let spacing: CGFloat = 8
     let row: Row
 
@@ -28,12 +29,13 @@ struct MainControlRowLayout: Layout {
                 CGRect(x: CGFloat($0) * (buttonWidth + spacing), y: 0, width: buttonWidth, height: height)
             } + [CGRect(x: width - sourceWidth, y: 0, width: sourceWidth, height: height)]
         case .library:
-            let libraryWidth = max(0, (width - height * 2 - spacing * 4) / 3)
+            let utilityWidth = Self.utilityButtonWidth
+            let libraryWidth = max(0, (width - utilityWidth * 2 - spacing * 4) / 3)
             return (0..<3).map {
                 CGRect(x: CGFloat($0) * (libraryWidth + spacing), y: 0, width: libraryWidth, height: height)
             } + (0..<2).map {
-                CGRect(x: width - height * 2 - spacing + CGFloat($0) * (height + spacing),
-                       y: 0, width: height, height: height)
+                CGRect(x: width - utilityWidth * 2 - spacing + CGFloat($0) * (utilityWidth + spacing),
+                       y: 0, width: utilityWidth, height: height)
             }
         }
     }

@@ -11,15 +11,19 @@ struct MainControlPanelTests {
         for row in [MainControlRowLayout.Row.playback, .library] {
             let frames = MainControlRowLayout(row: row).frames(width: width, idealWidths: [88, 82, 103, 76, 161])
             #expect(frames.count == 5)
-            #expect(frames.allSatisfy { $0.minX >= 0 && $0.maxX <= width && $0.height == 32 })
+            #expect(frames.allSatisfy { $0.minX >= 0 && $0.maxX <= width && $0.height == 22 })
             for pair in zip(frames, frames.dropFirst()) {
                 #expect(pair.0.maxX + 8 <= pair.1.minX + 0.01)
             }
             if row == .library {
                 #expect(frames[0].width == frames[1].width)
                 #expect(frames[1].width == frames[2].width)
-                #expect(frames[3].size == CGSize(width: 32, height: 32))
-                #expect(frames[4].size == CGSize(width: 32, height: 32))
+                #expect(frames[3].size == CGSize(width: 32, height: 22))
+                #expect(frames[4].size == CGSize(width: 32, height: 22))
+                // Vertical compaction must not change any horizontal allocation.
+                #expect(abs(frames[0].width - (width - 96) / 3) < 0.01)
+                #expect(abs(frames[3].minX - (width - 72)) < 0.01)
+                #expect(abs(frames[4].minX - (width - 32)) < 0.01)
             }
         }
         #expect(MainControlRowLayout.usesCompactTitles(contentWidth: width) == (width < 900))
@@ -41,13 +45,13 @@ struct MainControlPanelTests {
         defer { window.orderOut(nil); window.close() }
 
         for width in [676.0, 899, 900, 901, 1036, 1396, 676] {
-            window.setContentSize(NSSize(width: width, height: 72))
+            window.setContentSize(NSSize(width: width, height: 52))
             try await settle(hosting)
             #expect(state.frames.count == 10)
             for row in 0..<2 {
                 let frames = try (0..<5).map { try #require(state.frames["\(row)-\($0)"]) }
                 #expect(frames.allSatisfy { $0.minX >= -0.1 && $0.maxX <= width + 0.1 })
-                #expect(frames.allSatisfy { abs($0.height - 32) < 0.1 && abs($0.minY - frames[0].minY) < 0.1 })
+                #expect(frames.allSatisfy { abs($0.height - 22) < 0.1 && abs($0.minY - frames[0].minY) < 0.1 })
                 for pair in zip(frames, frames.dropFirst()) { #expect(pair.0.maxX < pair.1.minX) }
                 if row == 1 {
                     #expect(abs(frames[0].width - frames[2].width) < 0.1)
@@ -56,7 +60,7 @@ struct MainControlPanelTests {
                 }
             }
             #expect(abs(try #require(state.frames["0-0"]).minY) < 0.1)
-            #expect(abs(try #require(state.frames["1-0"]).minY - 40) < 0.1)
+            #expect(abs(try #require(state.frames["1-0"]).minY - 30) < 0.1)
         }
     }
 
@@ -67,21 +71,21 @@ struct MainControlPanelTests {
         let makeButton = { (enabled: Bool) in
             MainPanelActionButton("Settings", icon: "slider.horizontal.3", id: "settings",
                                   help: "Playback Settings", enabled: enabled, iconOnly: iconOnly) { count += 1 }
-                .frame(width: width, height: 32)
+                .frame(width: width, height: 22)
         }
         let hosting = NSHostingView(rootView: makeButton(true))
         let window = makeWindow(hosting)
         defer { window.orderOut(nil); window.close() }
-        window.setContentSize(NSSize(width: width, height: 32))
+        window.setContentSize(NSSize(width: width, height: 22))
         try await settle(hosting)
-        for (index, point) in [NSPoint(x: 4, y: 16), NSPoint(x: width / 2, y: 3),
-                               NSPoint(x: width - 4, y: 16), NSPoint(x: width / 2, y: 29)].enumerated() {
+        for (index, point) in [NSPoint(x: 4, y: 11), NSPoint(x: width / 2, y: 3),
+                               NSPoint(x: width - 4, y: 11), NSPoint(x: width / 2, y: 19)].enumerated() {
             try click(point, window: window, eventNumber: index * 2)
             #expect(count == index + 1)
         }
         hosting.rootView = makeButton(false)
         try await settle(hosting)
-        try click(NSPoint(x: width / 2, y: 16), window: window, eventNumber: 20)
+        try click(NSPoint(x: width / 2, y: 11), window: window, eventNumber: 20)
         #expect(count == 4)
     }
 
@@ -97,21 +101,21 @@ struct MainControlPanelTests {
         try await settle(hosting)
 
         // Actual panel buttons at the minimum window size, in window coordinates.
-        try click(NSPoint(x: 600, y: 90), window: window, eventNumber: 0)
+        try click(NSPoint(x: 600, y: 75), window: window, eventNumber: 0)
         #expect(state.showsSourcePicker)
-        try click(NSPoint(x: 662, y: 50), window: window, eventNumber: 2)
+        try click(NSPoint(x: 662, y: 45), window: window, eventNumber: 2)
         #expect(model.isSettingsOpen)
         model.closeSettings()
-        try click(NSPoint(x: 702, y: 50), window: window, eventNumber: 4)
+        try click(NSPoint(x: 702, y: 45), window: window, eventNumber: 4)
         #expect(model.isMonitoringOpen)
         model.closeMonitoring()
-        try click(NSPoint(x: 540, y: 50), window: window, eventNumber: 6)
+        try click(NSPoint(x: 540, y: 45), window: window, eventNumber: 6)
         #expect(model.isTerminalWallpaperOpen)
         model.closeTerminalWallpaper()
-        try click(NSPoint(x: 130, y: 50), window: window, eventNumber: 8)
+        try click(NSPoint(x: 130, y: 45), window: window, eventNumber: 8)
         #expect(model.isCatalogOpen)
         model.navigateBackFromCatalog()
-        try click(NSPoint(x: 335, y: 50), window: window, eventNumber: 10)
+        try click(NSPoint(x: 335, y: 45), window: window, eventNumber: 10)
         #expect(model.isDownloadedWallpapersOpen)
         model.closeDownloadedWallpapers()
         #expect(controller.startCallCount == 0)
@@ -120,23 +124,23 @@ struct MainControlPanelTests {
         model.isBusy = true
         model.isPlaybackPaused = true
         try await settle(hosting)
-        try click(NSPoint(x: 662, y: 50), window: window, eventNumber: 12)
+        try click(NSPoint(x: 662, y: 45), window: window, eventNumber: 12)
         #expect(!model.isSettingsOpen)
         #expect(!model.canTogglePlayback)
-        #expect(try #require(state.frames["panel"]).height == 92)
+        #expect(try #require(state.frames["panel"]).height == 72)
 
         model.isBusy = false
         model.statusMessage = String(repeating: "Status ", count: 100)
         model.optimizationInProgress = true
         model.optimizationLabel = String(repeating: "Progress ", count: 100)
         try await settle(hosting)
-        #expect(try #require(state.frames["panel"]).height == 92)
+        #expect(try #require(state.frames["panel"]).height == 72)
     }
 
     @Test
     func sourceMenuStaysAnchoredAndInsideSmallAndWideWindows() {
         for size in [CGSize(width: 760, height: 480), CGSize(width: 1440, height: 900)] {
-            let button = CGRect(x: size.width - 270, y: size.height - 106, width: 228, height: 32)
+            let button = CGRect(x: size.width - 270, y: size.height - 86, width: 228, height: 22)
             let menu = WallpaperSourceMenuLayout.frame(button: button, container: size)
             #expect(menu.minX >= 12 && menu.maxX <= size.width - 12)
             #expect(menu.minY >= 12 && menu.maxY <= size.height - 12)

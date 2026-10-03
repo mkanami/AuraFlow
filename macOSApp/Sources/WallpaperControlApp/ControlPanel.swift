@@ -170,7 +170,7 @@ struct ControlPanel: View {
     }
 }
 
-/// Sizing is inside the button style so the entire 32-point glass surface is clickable.
+/// Sizing is inside the button style so the entire compact glass surface is clickable.
 struct MainPanelActionButton: View {
     let title: String
     var icon: String? = nil
@@ -208,7 +208,8 @@ struct MainPanelActionButton: View {
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(AuraPanelButtonStyle(height: MainControlRowLayout.buttonHeight,
-                                        horizontalPadding: iconOnly ? 0 : 12))
+                                        horizontalPadding: iconOnly ? 0 : 12,
+                                        cornerRadius: MainControlRowLayout.buttonHeight / 2))
         .disabled(!enabled)
         .help(help)
         .accessibilityLabel(accessibilityTitle ?? title)
