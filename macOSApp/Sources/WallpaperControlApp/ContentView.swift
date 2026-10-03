@@ -702,7 +702,7 @@ struct SettingsPopupOverlay: View {
                         viewModel.closeSettings()
                     }
 
-                SettingsPopupCard(viewModel: viewModel)
+                SettingsPopupCard(viewModel: viewModel, maximumHeight: popupHeight)
                     .frame(
                         maxWidth: min(620, max(proxy.size.width - 48, 1)),
                         maxHeight: popupHeight
@@ -720,13 +720,23 @@ struct SettingsPopupOverlay: View {
 
 struct SettingsPopupCard: View {
     @ObservedObject var viewModel: AppViewModel
+    var maximumHeight: CGFloat = 520
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+    @State private var contentHeight: CGFloat = 0
+
     var body: some View {
         ScrollView(.vertical) {
             settingsContents
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(GeometryReader { proxy in
+                    Color.clear.preference(key: SettingsPopupContentHeightKey.self, value: proxy.size.height)
+                })
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(height: min(max(maximumHeight, 1), contentHeight > 0 ? contentHeight : maximumHeight))
+        .frame(maxWidth: .infinity, alignment: .top)
+        .onPreferenceChange(SettingsPopupContentHeightKey.self) { height in
+            if abs(contentHeight - height) > 0.5 { contentHeight = height }
+        }
         .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
         .background(
             AuraGlassRoundedSurface(
@@ -911,6 +921,13 @@ struct SettingsPopupCard: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
+    }
+}
+
+struct SettingsPopupContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
