@@ -1220,7 +1220,7 @@ struct DownloadedWallpapersCard: View {
                 Label("Downloaded Wallpapers", systemImage: "arrow.down.circle.fill")
                     .font(.headline.weight(.semibold))
                 Spacer()
-                Text("\(viewModel.wallpaperEngine.libraryIsSelected ? viewModel.wallpaperEngine.projects.count : viewModel.downloadedCatalogWallpapers.count)")
+                Text("\(viewModel.wallpaperEngine.libraryIsSelected ? viewModel.wallpaperEngine.libraryCount : viewModel.downloadedCatalogWallpapers.count)")
                     .font(.caption)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 Button {

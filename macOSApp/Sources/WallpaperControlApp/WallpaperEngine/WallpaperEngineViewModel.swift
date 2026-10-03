@@ -10,6 +10,9 @@ import UniformTypeIdentifiers
 @MainActor
 final class WallpaperEngineViewModel: ObservableObject {
     @Published private(set) var projects: [WallpaperEngineProject]
+    @Published private(set) var localProjects: [WallpaperEngineCandidate] = []
+    @Published private(set) var isScanningLibrary = false
+    @Published private(set) var libraryWarnings: [String] = []
     @Published var candidates: [WallpaperEngineCandidate] = []
     @Published var selectedCandidates: Set<String> = []
     @Published var showsProjectPicker = false
@@ -39,9 +42,15 @@ final class WallpaperEngineViewModel: ObservableObject {
     private var propertyTask: Task<Void, Never>?
     private var observer: AnyCancellable?
     private var cachedConfig: WebWallpaperConfiguration?
+    private var scanTask: Task<WallpaperEngineLocalSnapshot, Never>?
+    private let steamRootsProvider: @Sendable () -> [URL]
+    private let libraryDefaults: UserDefaults
 
-    init(selection: WallpaperPreviewSelectionStore, library: WallpaperEngineLibrary = WallpaperEngineLibrary()) {
+    init(selection: WallpaperPreviewSelectionStore, library: WallpaperEngineLibrary = WallpaperEngineLibrary(),
+         libraryDefaults: UserDefaults = .standard,
+         steamRootsProvider: @escaping @Sendable () -> [URL] = { WallpaperEngineImportLocation.defaultSteamRoots() }) {
         self.selection = selection; self.library = library; projects = library.projects()
+        self.libraryDefaults = libraryDefaults; self.steamRootsProvider = steamRootsProvider
         observer = selection.objectWillChange.sink { [weak self] _ in
             Task { @MainActor in self?.reloadValues() }
         }
@@ -50,7 +59,54 @@ final class WallpaperEngineViewModel: ObservableObject {
         }
         reloadValues()
     }
-    deinit { timer?.invalidate(); importTask?.cancel(); propertyTask?.cancel() }
+    deinit { timer?.invalidate(); importTask?.cancel(); propertyTask?.cancel(); scanTask?.cancel() }
+    var managedProjects: [WallpaperEngineProject] {
+        let localPaths = Set(localProjects.map(\.id))
+        return projects.filter { project in
+            guard let source = project.sourcePath else { return true }
+            return !localPaths.contains(source)
+        }
+    }
+    var libraryCount: Int { localProjects.count + managedProjects.count }
+
+    func refreshLocalLibrary() async {
+        guard !isScanningLibrary, !Task.isCancelled else { return }
+        isScanningLibrary = true
+        defer { isScanningLibrary = false; scanTask = nil }
+        let rootsProvider = steamRootsProvider
+        let directories = (libraryDefaults.stringArray(forKey: "WallpaperEngineLibraryDirectories") ?? [])
+            .map { URL(fileURLWithPath: $0) }
+        let worker = Task.detached(priority: .utility) {
+            WallpaperEngineLocalLibrary.scan(steamRoots: rootsProvider(), additionalDirectories: directories,
+                                             cancelled: { Task.isCancelled })
+        }
+        scanTask = worker
+        let snapshot = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+        guard !Task.isCancelled else { return }
+        if localProjects != snapshot.candidates { localProjects = snapshot.candidates }
+        if libraryWarnings != snapshot.warnings { libraryWarnings = snapshot.warnings }
+    }
+
+    func rememberLibraryDirectory(_ directory: URL) {
+        let path = directory.standardizedFileURL.resolvingSymlinksInPath().path
+        var directories = libraryDefaults.stringArray(forKey: "WallpaperEngineLibraryDirectories") ?? []
+        if !directories.contains(path) {
+            directories.append(path)
+            libraryDefaults.set(directories, forKey: "WallpaperEngineLibraryDirectories")
+        }
+    }
+
+    func chooseLibraryDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "Locate Wallpaper Engine Library"; panel.prompt = "Add Library"
+        panel.message = "Choose the 431960 folder or a local Wallpaper Engine project collection. All projects will appear automatically."
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let directory = panel.url {
+            rememberLibraryDirectory(directory)
+            Task { await refreshLocalLibrary() }
+        }
+    }
     var selectedProject: WallpaperEngineProject? { projects.first { $0.id == selection.webProjectID } }
     var previewConfiguration: WebWallpaperConfiguration? {
         guard let project = selectedProject else { return nil }
@@ -89,6 +145,8 @@ final class WallpaperEngineViewModel: ObservableObject {
             if panel.runModal() == .OK, let url = panel.url {
                 let parent = url.deletingLastPathComponent()
                 UserDefaults.standard.set(parent.path, forKey: "WallpaperEngineLastImportDirectory")
+                let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                rememberLibraryDirectory(isDirectory ? url : parent)
                 discover(url)
             }
         }
@@ -113,6 +171,14 @@ final class WallpaperEngineViewModel: ObservableObject {
     func importSelected() {
         guard !isImporting else { return }
         let sources = candidates.filter { $0.supported && selectedCandidates.contains($0.id) }.map(\.url)
+        importSources(sources)
+    }
+    func previewLocalProject(_ candidate: WallpaperEngineCandidate, editProperties: Bool = false) {
+        guard candidate.supported, !isImporting else { return }
+        importSources([candidate.url], editProperties: editProperties)
+    }
+    private func importSources(_ sources: [URL], editProperties: Bool = false) {
+        guard !sources.isEmpty else { return }
         showsProjectPicker = false; isImporting = true; error = nil
         importGeneration += 1; let generation = importGeneration
         importTask = Task {
@@ -131,6 +197,7 @@ final class WallpaperEngineViewModel: ObservableObject {
                 guard generation == importGeneration, !Task.isCancelled else { return }
                 projects = library.projects(); libraryIsSelected = true
                 if let project = imported.first { select(project) }
+                if editProperties, imported.first?.type == .web { showsProperties = true }
                 message = "Imported \(imported.count) project(s). Preview only; use Start to apply."
             } catch is CancellationError { }
             catch { if generation == importGeneration { self.error = error.localizedDescription; projects = library.projects() } }

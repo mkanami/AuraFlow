@@ -18,8 +18,22 @@ struct WallpaperEngineLibrarySwitch: View {
                 ProgressView().controlSize(.small)
                 Button("Cancel") { model.cancelImport() }.buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             } else {
-                Button { model.chooseImport() } label: {
-                    Label("Import Wallpaper Engine…", systemImage: "square.and.arrow.down")
+                if model.libraryIsSelected {
+                    Button { Task { await model.refreshLocalLibrary() } } label: {
+                        if model.isScanningLibrary { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "arrow.clockwise") }
+                    }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                    .disabled(model.isScanningLibrary)
+                    .help("Refresh local Wallpaper Engine library")
+                    .accessibilityLabel("Refresh Wallpaper Engine library")
+                }
+                Button {
+                    if model.libraryIsSelected { model.chooseLibraryDirectory() }
+                    else { model.chooseImport() }
+                } label: {
+                    Label(model.libraryIsSelected ? "Library Folder…" : "Import Wallpaper Engine…",
+                          systemImage: model.libraryIsSelected ? "folder.badge.plus" : "square.and.arrow.down")
                         .frame(height: 18)
                 }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
@@ -45,46 +59,99 @@ struct WallpaperEngineLibraryRows: View {
     @ObservedObject var model: WallpaperEngineViewModel
     @Environment(\.adaptiveGlassAppearance) private var appearance
     var body: some View {
-        if let message = model.message { Text(message).font(.caption).lineLimit(3) }
-        if model.projects.isEmpty {
-            Text("Choose a downloaded Wallpaper Engine video, HTML file, or project folder. project.json is found automatically. Video and Web are supported; Scene is not.")
-                .font(.caption).foregroundStyle(appearance.centerTextTone.secondaryTextColor)
-        } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(model.projects) { project in
-                        HStack(spacing: 12) {
-                            CatalogPreviewImage(url: project.previewURL, title: project.title, referer: nil)
-                                .frame(width: 140, height: 80)
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(project.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                                Text("\(project.type == .video ? "Video" : "Web") · Wallpaper Engine").font(.caption)
-                                    .foregroundStyle(appearance.centerTextTone.secondaryTextColor)
-                                Text(project.entryPath).font(.caption2).lineLimit(1).truncationMode(.middle)
-                                    .foregroundStyle(appearance.centerTextTone.secondaryTextColor)
-                                if !project.warnings.isEmpty {
-                                    Label("Compatibility notes", systemImage: "info.circle").font(.caption2)
-                                        .help(project.warnings.joined(separator: "\n"))
-                                }
-                            }
-                            Spacer(minLength: 10)
-                            VStack(spacing: 6) {
-                                Button { model.select(project) } label: { Label("Preview", systemImage: "play.rectangle") }
-                                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
-                                Button { NSWorkspace.shared.activateFileViewerSelecting([project.rootURL]) } label: { Label("Open in Finder", systemImage: "folder") }
-                                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
-                                if project.type == .web {
-                                    Button("Properties…") { model.select(project); model.showsProperties = true }
-                                        .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
-                                }
-                            }.frame(width: 142)
+        VStack(alignment: .leading, spacing: 10) {
+            if let message = model.message { Text(message).font(.caption).lineLimit(3) }
+            if !model.libraryWarnings.isEmpty {
+                Label("Some library folders could not be read", systemImage: "exclamationmark.triangle")
+                    .font(.caption).help(model.libraryWarnings.joined(separator: "\n"))
+            }
+            if model.libraryCount == 0 {
+                Text(model.isScanningLibrary ? "Finding local Wallpaper Engine wallpapers…" :
+                     "No local Wallpaper Engine projects found. Connect the disk with your Steam library, or use Library Folder once for a custom location.")
+                    .font(.caption).foregroundStyle(appearance.centerTextTone.secondaryTextColor)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(model.localProjects) { candidate in
+                            WallpaperEngineLibraryRow(title: candidate.title, type: candidate.type,
+                                previewURL: candidate.previewURL, rootURL: candidate.url,
+                                entry: candidate.entryPath ?? candidate.url.lastPathComponent,
+                                warnings: candidate.warnings, failure: candidate.error,
+                                enabled: candidate.supported && !model.isImporting,
+                                preview: { model.previewLocalProject(candidate) },
+                                properties: candidate.supported && candidate.type == "web"
+                                    ? { model.previewLocalProject(candidate, editProperties: true) } : nil)
                         }
-                        .padding(8).background(AuraGlassInsetCard())
+                        ForEach(model.managedProjects) { project in
+                            WallpaperEngineLibraryRow(title: project.title, type: project.type.rawValue,
+                                previewURL: project.previewURL, rootURL: project.rootURL,
+                                entry: project.entryPath, warnings: project.warnings,
+                                enabled: !model.isImporting,
+                                preview: { model.select(project) },
+                                properties: project.type == .web
+                                    ? { model.select(project); model.showsProperties = true } : nil)
+                        }
                     }
-                }
-            }.frame(maxHeight: 360)
+                }.frame(maxHeight: 360)
+            }
         }
+        .task {
+            while !Task.isCancelled {
+                if !NSApp.isHidden, NSApp.windows.contains(where: { $0.isVisible && !$0.isMiniaturized }) {
+                    await model.refreshLocalLibrary()
+                }
+                do { try await Task.sleep(nanoseconds: 15_000_000_000) }
+                catch { return }
+            }
+        }
+    }
+}
+
+private struct WallpaperEngineLibraryRow: View {
+    let title: String
+    let type: String
+    let previewURL: URL?
+    let rootURL: URL
+    let entry: String
+    let warnings: [String]
+    var failure: String? = nil
+    let enabled: Bool
+    let preview: () -> Void
+    var properties: (() -> Void)? = nil
+    @Environment(\.adaptiveGlassAppearance) private var appearance
+
+    var body: some View {
+        HStack(spacing: 12) {
+            CatalogPreviewImage(url: previewURL, title: title, referer: nil)
+                .frame(width: 140, height: 80)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text("\(type.capitalized) · Wallpaper Engine").font(.caption)
+                    .foregroundStyle(appearance.centerTextTone.secondaryTextColor)
+                Text(entry).font(.caption2).lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(appearance.centerTextTone.secondaryTextColor)
+                if let failure {
+                    Label(["video", "web"].contains(type) ? "Project unavailable" : "Not supported",
+                          systemImage: "exclamationmark.triangle").font(.caption2).help(failure)
+                } else if !warnings.isEmpty {
+                    Label("Compatibility notes", systemImage: "info.circle").font(.caption2)
+                        .help(warnings.joined(separator: "\n"))
+                }
+            }
+            Spacer(minLength: 10)
+            VStack(spacing: 6) {
+                Button(action: preview) { Label("Preview", systemImage: "play.rectangle") }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true)).disabled(!enabled)
+                Button { NSWorkspace.shared.activateFileViewerSelecting([rootURL]) } label: { Label("Open in Finder", systemImage: "folder") }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
+                if let properties {
+                    Button("Properties…", action: properties)
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: true)).disabled(!enabled)
+                }
+            }.frame(width: 142)
+        }
+        .padding(8).background(AuraGlassInsetCard())
     }
 }
 

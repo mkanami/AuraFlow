@@ -1,32 +1,44 @@
 import Foundation
 
-/// Finds local Steam content without scanning projects or downloading anything.
+/// Finds local Steam content without downloading anything or scanning entire disks.
 public enum WallpaperEngineImportLocation {
     public static func defaultSteamRoots(fileManager: FileManager = .default) -> [URL] {
         let home = fileManager.homeDirectoryForCurrentUser
         var roots = [home.appendingPathComponent("Library/Application Support/Steam"),
-                     home.appendingPathComponent(".steam/steam")]
+                     home.appendingPathComponent(".steam/steam"),
+                     home.appendingPathComponent(".local/share/Steam")]
         let volumes = (try? fileManager.contentsOfDirectory(at: URL(fileURLWithPath: "/Volumes"),
             includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         for volume in volumes {
+            roots.append(volume)
             // Bounded checks for common external/Windows Steam installations.
             for path in ["SteamLibrary", "Steam", "Program Files (x86)/Steam", "Program Files/Steam"] {
                 roots.append(volume.appendingPathComponent(path))
             }
         }
+        let bottles = home.appendingPathComponent("Library/Application Support/CrossOver/Bottles")
+        let prefixes = [home.appendingPathComponent(".wine")]
+            + ((try? fileManager.contentsOfDirectory(at: bottles, includingPropertiesForKeys: nil,
+                                                     options: [.skipsHiddenFiles])) ?? [])
+        for prefix in prefixes {
+            for path in ["drive_c/Program Files (x86)/Steam", "drive_c/Program Files/Steam"] {
+                roots.append(prefix.appendingPathComponent(path))
+            }
+        }
         return roots
     }
 
-    public static func preferredDirectory(steamRoots: [URL], lastDirectory: URL? = nil,
-                                          fileManager: FileManager = .default) -> URL? {
+    public static func steamLibraries(steamRoots: [URL], fileManager: FileManager = .default) -> [URL] {
         var libraries = [URL]()
         var seen = Set<String>()
         func append(_ url: URL) {
             let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
             if seen.insert(canonical.path).inserted { libraries.append(canonical) }
         }
-        for root in steamRoots {
-            append(root)
+        steamRoots.forEach(append)
+        var index = 0
+        while index < libraries.count {
+            let root = libraries[index]; index += 1
             for relative in ["steamapps/libraryfolders.vdf", "config/libraryfolders.vdf"] {
                 let manifest = root.appendingPathComponent(relative)
                 // A malformed or inaccessible Steam manifest must not block manual import.
@@ -34,11 +46,39 @@ public enum WallpaperEngineImportLocation {
                       size <= 1_048_576,
                       let data = try? Data(contentsOf: manifest),
                       let text = String(data: data, encoding: .utf8) else { continue }
-                for path in libraryPaths(in: text) where path.hasPrefix("/") {
-                    append(URL(fileURLWithPath: path))
+                for path in libraryPaths(in: text) {
+                    if path.hasPrefix("/") { append(URL(fileURLWithPath: path)) }
+                    else {
+                        // A Windows library manifest on a mounted disk uses drive letters.
+                        // Resolve only against detected volume roots, never arbitrary paths.
+                        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+                        guard normalized.count >= 3, normalized.dropFirst().hasPrefix(":/"),
+                              !normalized.split(separator: "/").contains("..") else { continue }
+                        let relative = String(normalized.dropFirst(3))
+                        guard !relative.hasPrefix("/") else { continue }
+                        var driveRoots = steamRoots.filter { $0.deletingLastPathComponent().path == "/Volumes" }
+                        for source in steamRoots {
+                            if let range = source.path.range(of: "/drive_c/") {
+                                let prefix = URL(fileURLWithPath: String(source.path[..<range.lowerBound]))
+                                let drive = String(normalized.prefix(1)).lowercased()
+                                driveRoots.append(prefix.appendingPathComponent("drive_" + drive))
+                                driveRoots.append(prefix.appendingPathComponent("dosdevices/" + drive + ":"))
+                            }
+                        }
+                        for driveRoot in driveRoots {
+                            let candidate = driveRoot.appendingPathComponent(relative)
+                            if fileManager.fileExists(atPath: candidate.appendingPathComponent("steamapps").path) { append(candidate) }
+                        }
+                    }
                 }
             }
         }
+        return libraries
+    }
+
+    public static func preferredDirectory(steamRoots: [URL], lastDirectory: URL? = nil,
+                                          fileManager: FileManager = .default) -> URL? {
+        let libraries = steamLibraries(steamRoots: steamRoots, fileManager: fileManager)
         func isDirectory(_ url: URL) -> Bool {
             var directory: ObjCBool = false
             return fileManager.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue

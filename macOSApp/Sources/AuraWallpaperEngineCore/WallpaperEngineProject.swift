@@ -71,17 +71,21 @@ public struct WallpaperEngineProject: Codable, Equatable, Sendable, Identifiable
     public var properties: [WallpaperEngineProperty]
     public var warnings: [String]
     public var importedAt: Date
+    public var sourcePath: String? = nil
     public var rootURL: URL { URL(fileURLWithPath: rootPath, isDirectory: true) }
     public var entryURL: URL { rootURL.appendingPathComponent(entryPath) }
     public var previewURL: URL? { previewPath.map { rootURL.appendingPathComponent($0) } }
 }
 
-public struct WallpaperEngineCandidate: Identifiable, Sendable {
+public struct WallpaperEngineCandidate: Identifiable, Equatable, Sendable {
     public var id: String { url.path }
     public var url: URL
     public var title: String
     public var type: String
     public var error: String?
+    public var previewURL: URL? = nil
+    public var entryPath: String? = nil
+    public var warnings: [String] = []
     public var supported: Bool { error == nil && ["video", "web"].contains(type) }
 }
 
@@ -119,8 +123,15 @@ public final class WallpaperEngineLibrary: @unchecked Sendable {
                 let data = try metadata(folder)
                 let type = data["type"]?.string?.lowercased() ?? "unknown"
                 let title = data["title"]?.string ?? folder.lastPathComponent
-                do { _ = try parse(folder); return .init(url: folder, title: title, type: type, error: nil) }
-                catch { return .init(url: folder, title: title, type: type, error: error.localizedDescription) }
+                let preview = data["preview"]?.string.flatMap { path in
+                    (try? Self.relativePath(path, in: folder)).map { folder.appendingPathComponent($0) }
+                }
+                do {
+                    let project = try parse(folder)
+                    return .init(url: folder, title: title, type: type, error: nil,
+                                 previewURL: preview, entryPath: project.entryPath, warnings: project.warnings)
+                }
+                catch { return .init(url: folder, title: title, type: type, error: error.localizedDescription, previewURL: preview) }
             } catch { return .init(url: folder, title: folder.lastPathComponent, type: "unknown", error: error.localizedDescription) }
         }
     }
@@ -169,6 +180,8 @@ public final class WallpaperEngineLibrary: @unchecked Sendable {
     }
     private func metadata(_ root: URL) throws -> [String: ProjectValue] {
         let path = try Self.relativePath("project.json", in: root)
+        guard let size = try root.appendingPathComponent(path).resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size <= 1_048_576 else { throw WallpaperEngineError.invalid("project.json is too large (maximum 1 MiB).") }
         do { return try JSONDecoder().decode([String: ProjectValue].self, from: Data(contentsOf: root.appendingPathComponent(path))) }
         catch { throw WallpaperEngineError.invalid("Invalid project.json: \(error.localizedDescription)") }
     }
@@ -253,12 +266,19 @@ public final class WallpaperEngineLibrary: @unchecked Sendable {
         let manifest = rootURL.appendingPathComponent("library.json")
         let libraryData = manager.fileExists(atPath: manifest.path) ? try Data(contentsOf: manifest) : nil
         var library = try libraryData.map { try JSONDecoder().decode([WallpaperEngineProject].self, from: $0) } ?? []
-        if let existing = library.first(where: { $0.id == project.id }), manager.fileExists(atPath: existing.entryURL.path) { return existing }
+        if let index = library.firstIndex(where: { $0.id == project.id }), manager.fileExists(atPath: library[index].entryURL.path) {
+            if library[index].sourcePath == nil {
+                library[index].sourcePath = root.path
+                try JSONEncoder().encode(library).write(to: manifest, options: .atomic)
+            }
+            return library[index]
+        }
         let destination = rootURL.appendingPathComponent(project.id, isDirectory: true)
         // Recover an interrupted import only inside our explicitly owned hash directory.
         if manager.fileExists(atPath: destination.path) { try manager.removeItem(at: destination) }
         try manager.moveItem(at: stage, to: destination)
         project.rootPath = destination.path
+        project.sourcePath = root.path
         library.removeAll { $0.id == project.id }; library.insert(project, at: 0)
         do {
             if cancelled() { throw CancellationError() }
