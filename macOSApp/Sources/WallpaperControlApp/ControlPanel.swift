@@ -29,11 +29,11 @@ struct ControlPanel: View {
             }
 
             MainControlRowLayout(row: .library, height: buttonHeight) {
+                settingsButton
+                monitoringButton
                 terminalButton
                 downloadedButton
                 catalogButton
-                settingsButton
-                monitoringButton
             }
 
             if !isVeryCompactByHeight, panelWidth >= 860, let message = viewModel.statusMessage {

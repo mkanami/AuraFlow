@@ -27,7 +27,7 @@ extension EnvironmentValues {
     }
 }
 
-/// Five stable actions per row: playback + source, then library + utilities.
+/// Five stable actions per row: playback + source, then utilities + library.
 struct MainControlRowLayout: Layout {
     enum Row { case playback, library }
 
@@ -58,11 +58,12 @@ struct MainControlRowLayout: Layout {
         case .library:
             let utilityWidth = Self.utilityButtonWidth
             let libraryWidth = max(0, (width - utilityWidth * 2 - spacing * 4) / 3)
-            return (0..<3).map {
-                CGRect(x: CGFloat($0) * (libraryWidth + spacing), y: 0, width: libraryWidth, height: height)
-            } + (0..<2).map {
-                CGRect(x: width - utilityWidth * 2 - spacing + CGFloat($0) * (utilityWidth + spacing),
+            return (0..<2).map {
+                CGRect(x: CGFloat($0) * (utilityWidth + spacing),
                        y: 0, width: utilityWidth, height: height)
+            } + (0..<3).map {
+                CGRect(x: (utilityWidth + spacing) * 2 + CGFloat($0) * (libraryWidth + spacing),
+                       y: 0, width: libraryWidth, height: height)
             }
         }
     }

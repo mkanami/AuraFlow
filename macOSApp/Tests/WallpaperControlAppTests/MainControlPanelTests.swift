@@ -16,14 +16,15 @@ struct MainControlPanelTests {
                 #expect(pair.0.maxX + 8 <= pair.1.minX + 0.01)
             }
             if row == .library {
-                #expect(frames[0].width == frames[1].width)
-                #expect(frames[1].width == frames[2].width)
-                #expect(frames[3].size == CGSize(width: 32, height: 22))
-                #expect(frames[4].size == CGSize(width: 32, height: 22))
+                #expect(frames[2].width == frames[3].width)
+                #expect(frames[3].width == frames[4].width)
+                #expect(frames[0].size == CGSize(width: 32, height: 22))
+                #expect(frames[1].size == CGSize(width: 32, height: 22))
                 // Vertical compaction must not change any horizontal allocation.
-                #expect(abs(frames[0].width - (width - 96) / 3) < 0.01)
-                #expect(abs(frames[3].minX - (width - 72)) < 0.01)
-                #expect(abs(frames[4].minX - (width - 32)) < 0.01)
+                #expect(abs(frames[2].width - (width - 96) / 3) < 0.01)
+                #expect(frames[0].minX == 0)
+                #expect(frames[1].minX == 40)
+                #expect(frames[2].minX == 80)
             }
         }
         #expect(MainControlRowLayout.usesCompactTitles(contentWidth: width) == (width < 900))
@@ -54,9 +55,9 @@ struct MainControlPanelTests {
                 #expect(frames.allSatisfy { abs($0.height - height) < 0.1 && abs($0.minY - frames[0].minY) < 0.1 })
                 for pair in zip(frames, frames.dropFirst()) { #expect(pair.0.maxX < pair.1.minX) }
                 if row == 1 {
-                    #expect(abs(frames[0].width - frames[2].width) < 0.1)
-                    #expect(abs(frames[3].width - 32) < 0.1)
-                    #expect(abs(frames[4].width - 32) < 0.1)
+                    #expect(abs(frames[2].width - frames[4].width) < 0.1)
+                    #expect(abs(frames[0].width - 32) < 0.1)
+                    #expect(abs(frames[1].width - 32) < 0.1)
                 }
             }
             #expect(abs(try #require(state.frames["0-0"]).minY) < 0.1)
@@ -103,19 +104,19 @@ struct MainControlPanelTests {
         // Actual panel buttons at the minimum window size, in window coordinates.
         try click(NSPoint(x: 600, y: 75), window: window, eventNumber: 0)
         #expect(state.showsSourcePicker)
-        try click(NSPoint(x: 662, y: 45), window: window, eventNumber: 2)
+        try click(NSPoint(x: 58, y: 45), window: window, eventNumber: 2)
         #expect(model.isSettingsOpen)
         model.closeSettings()
-        try click(NSPoint(x: 702, y: 45), window: window, eventNumber: 4)
+        try click(NSPoint(x: 98, y: 45), window: window, eventNumber: 4)
         #expect(model.isMonitoringOpen)
         model.closeMonitoring()
-        try click(NSPoint(x: 130, y: 45), window: window, eventNumber: 6)
+        try click(NSPoint(x: 218, y: 45), window: window, eventNumber: 6)
         #expect(model.isTerminalWallpaperOpen)
         model.closeTerminalWallpaper()
-        try click(NSPoint(x: 540, y: 45), window: window, eventNumber: 8)
+        try click(NSPoint(x: 610, y: 45), window: window, eventNumber: 8)
         #expect(model.isCatalogOpen)
         model.navigateBackFromCatalog()
-        try click(NSPoint(x: 335, y: 45), window: window, eventNumber: 10)
+        try click(NSPoint(x: 420, y: 45), window: window, eventNumber: 10)
         #expect(model.isDownloadedWallpapersOpen)
         model.closeDownloadedWallpapers()
         #expect(controller.startCallCount == 0)
@@ -124,7 +125,7 @@ struct MainControlPanelTests {
         model.isBusy = true
         model.isPlaybackPaused = true
         try await settle(hosting)
-        try click(NSPoint(x: 662, y: 45), window: window, eventNumber: 12)
+        try click(NSPoint(x: 58, y: 45), window: window, eventNumber: 12)
         #expect(!model.isSettingsOpen)
         #expect(!model.canTogglePlayback)
         #expect(try #require(state.frames["panel"]).height == 72)
@@ -281,11 +282,11 @@ private struct RowsFixture: View {
                     recordedButton(compact ? "Change…" : "Change Wallpaper…", icon: "photo.on.rectangle", id: "0-4")
                 }
                 MainControlRowLayout(row: .library, height: height) {
-                    recordedButton(compact ? "Terminal" : "Terminal Wallpaper", icon: "terminal", id: "1-0")
-                    recordedButton(compact ? "Downloaded" : "Downloaded Wallpapers", icon: "arrow.down.circle", id: "1-1")
-                    recordedButton(compact ? "Catalog" : "Wallpaper Catalog", icon: "square.grid.2x2", id: "1-2")
-                    recordedButton("Settings", icon: "slider.horizontal.3", id: "1-3", iconOnly: true)
-                    recordedButton("Monitoring", icon: "gauge.with.dots.needle.67percent", id: "1-4", iconOnly: true)
+                    recordedButton("Settings", icon: "slider.horizontal.3", id: "1-0", iconOnly: true)
+                    recordedButton("Monitoring", icon: "gauge.with.dots.needle.67percent", id: "1-1", iconOnly: true)
+                    recordedButton(compact ? "Terminal" : "Terminal Wallpaper", icon: "terminal", id: "1-2")
+                    recordedButton(compact ? "Downloaded" : "Downloaded Wallpapers", icon: "arrow.down.circle", id: "1-3")
+                    recordedButton(compact ? "Catalog" : "Wallpaper Catalog", icon: "square.grid.2x2", id: "1-4")
                 }
             }
             .environment(\.mainControlButtonHeight, height)
