@@ -137,7 +137,7 @@ private func speedOverlayPillWidth(for availableWidth: CGFloat) -> CGFloat {
     min(max(availableWidth * 0.46, 420), 720)
 }
 
-private struct WallpaperSourceButtonAnchorKey: PreferenceKey {
+struct WallpaperSourceButtonAnchorKey: PreferenceKey {
     static let defaultValue: Anchor<CGRect>? = nil
     static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
         value = nextValue() ?? value
@@ -678,372 +678,6 @@ struct PreviewLayer: View {
                 }
             }
         }
-    }
-}
-
-struct ControlPanel: View {
-    @ObservedObject var viewModel: AppViewModel
-    @Binding var isAdjustingSpeed: Bool
-    @Binding var showsWallpaperSourcePicker: Bool
-    let panelWidth: CGFloat
-    let isCompactBySize: Bool
-    let isVeryCompactByHeight: Bool
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
-    @Environment(\.terminalPreviewTitle) private var terminalPreviewTitle
-
-    private var widthScale: CGFloat {
-        max(0.82, min(1.0, panelWidth / 1180))
-    }
-
-    private var panelHorizontalInset: CGFloat {
-        isCompactBySize ? 18 : 22
-    }
-
-    private var panelVerticalInset: CGFloat {
-        if isVeryCompactByHeight {
-            return 10
-        }
-        return isCompactBySize ? 12 : 14
-    }
-
-    private var rowSpacing: CGFloat {
-        if isVeryCompactByHeight {
-            return 8
-        }
-        return isCompactBySize ? 10 : 12
-    }
-
-    private var primarySpacing: CGFloat {
-        if isVeryCompactByHeight {
-            return 6
-        }
-        return isCompactBySize ? 8 : 12
-    }
-
-    private var secondarySpacing: CGFloat {
-        if isVeryCompactByHeight {
-            return 6
-        }
-        return isCompactBySize ? 8 : 12
-    }
-
-    private var controlSize: ControlSize {
-        if isVeryCompactByHeight {
-            return .mini
-        }
-        return isCompactBySize ? .small : .regular
-    }
-
-    private var primaryButtonWidth: CGFloat {
-        scaledWidth(104, min: 92)
-    }
-
-    private var removeButtonWidth: CGFloat {
-        scaledWidth(178, min: 154)
-    }
-
-    private var catalogButtonWidth: CGFloat {
-        scaledWidth(184, min: 160)
-    }
-
-    private var downloadedButtonWidth: CGFloat {
-        scaledWidth(226, min: 198)
-    }
-
-    private var changeWallpaperButtonWidth: CGFloat {
-        scaledWidth(228, min: 196)
-    }
-
-    private var settingsButtonWidth: CGFloat {
-        scaledWidth(126, min: 112)
-    }
-
-    private var monitoringButtonWidth: CGFloat {
-        scaledWidth(154, min: 136)
-    }
-
-    private var terminalWallpaperButtonWidth: CGFloat {
-        scaledWidth(190, min: 168)
-    }
-
-    private var rowContentWidth: CGFloat {
-        max(panelWidth - (panelHorizontalInset * 2), 0)
-    }
-
-    private var controlButtonsRowWidth: CGFloat {
-        (primaryButtonWidth * 3) + removeButtonWidth + (primarySpacing * 3)
-    }
-
-    private var actionButtonsRowWidth: CGFloat {
-        controlButtonsRowWidth + changeWallpaperButtonWidth
-    }
-
-    private var libraryButtonsRowWidth: CGFloat {
-        catalogButtonWidth + downloadedButtonWidth + primarySpacing
-    }
-
-    private var secondaryButtonsWithoutTerminalWidth: CGFloat {
-        settingsButtonWidth + monitoringButtonWidth + secondarySpacing
-    }
-
-    private var secondaryButtonsRowWidth: CGFloat {
-        secondaryButtonsWithoutTerminalWidth + terminalWallpaperButtonWidth + secondarySpacing
-    }
-
-    private var actionRowGap: CGFloat {
-        max(primarySpacing, rowContentWidth - actionButtonsRowWidth)
-    }
-
-    private var bottomRowGap: CGFloat {
-        max(secondarySpacing, rowContentWidth - secondaryButtonsRowWidth - libraryButtonsRowWidth)
-    }
-
-    private var bottomRowFitsTerminalButton: Bool {
-        rowContentWidth >= secondaryButtonsRowWidth + libraryButtonsRowWidth + secondarySpacing
-    }
-
-    private var showsStatusMessage: Bool {
-        !isVeryCompactByHeight && panelWidth >= 860
-    }
-
-    private var showsOptimizationProgress: Bool {
-        !isVeryCompactByHeight && panelWidth >= 820
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: rowSpacing) {
-            if !isVeryCompactByHeight {
-                HStack(alignment: .top, spacing: 0) {
-                    videoInfo
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            HStack(alignment: .center, spacing: 0) {
-                ControlButtons(
-                    viewModel: viewModel,
-                    spacing: primarySpacing,
-                    primaryButtonWidth: primaryButtonWidth,
-                    removeButtonWidth: removeButtonWidth
-                )
-                .frame(width: controlButtonsRowWidth, alignment: .leading)
-
-                Color.clear
-                    .frame(width: actionRowGap, height: 1)
-
-                changeWallpaperButton
-                    .frame(width: changeWallpaperButtonWidth)
-                    .layoutPriority(2)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if bottomRowFitsTerminalButton {
-                HStack(alignment: .center, spacing: 0) {
-                    HStack(alignment: .center, spacing: secondarySpacing) {
-                        settingsButton
-                            .frame(width: settingsButtonWidth)
-
-                        monitoringButton
-                            .frame(width: monitoringButtonWidth)
-
-                        terminalWallpaperButton
-                            .frame(width: terminalWallpaperButtonWidth)
-                    }
-                    .frame(width: secondaryButtonsRowWidth, alignment: .leading)
-
-                    Color.clear
-                        .frame(width: bottomRowGap, height: 1)
-
-                    libraryButtons
-                        .frame(width: libraryButtonsRowWidth, alignment: .trailing)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                HStack(alignment: .center, spacing: 0) {
-                    HStack(alignment: .center, spacing: secondarySpacing) {
-                        settingsButton
-                            .frame(width: settingsButtonWidth)
-
-                        monitoringButton
-                            .frame(width: monitoringButtonWidth)
-                    }
-                    .frame(width: secondaryButtonsWithoutTerminalWidth, alignment: .leading)
-
-                    Color.clear
-                        .frame(
-                            width: max(
-                                secondarySpacing,
-                                rowContentWidth - secondaryButtonsWithoutTerminalWidth - libraryButtonsRowWidth
-                            ),
-                            height: 1
-                        )
-
-                    libraryButtons
-                        .frame(width: libraryButtonsRowWidth, alignment: .trailing)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                terminalWallpaperButton
-                    .frame(maxWidth: .infinity)
-            }
-
-            if showsStatusMessage, let message = viewModel.statusMessage {
-                Text(UserFacingMessageFormatter.format(message))
-                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            if viewModel.optimizationInProgress && showsOptimizationProgress {
-                VStack(alignment: .leading, spacing: 6) {
-                    if let label = viewModel.optimizationLabel {
-                        Text(UserFacingMessageFormatter.format(label))
-                            .font(.caption)
-                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    ProgressView(value: viewModel.optimizationProgress)
-                        .progressViewStyle(.linear)
-                }
-            }
-        }
-        .controlSize(controlSize)
-        .padding(.vertical, panelVerticalInset)
-        .padding(.horizontal, panelHorizontalInset)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            AuraGlassRoundedSurface(
-                cornerRadius: 14,
-                material: .clear,
-                alphaMultiplier: adaptiveGlassAppearance.bottomGlassAlpha,
-                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity,
-                protectionOverlayColor: adaptiveGlassAppearance.bottomTextTone.contrastSurfaceColor
-            )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: Color.black.opacity(0.18), radius: 4, x: 0, y: 2)
-        .environment(\.colorScheme, .dark)
-    }
-
-    private var catalogButton: some View {
-        Button {
-            viewModel.openCatalog()
-        } label: {
-            Text("Wallpaper Catalog")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canClearWallpaper)
-    }
-
-    private var downloadedWallpapersButton: some View {
-        Button {
-            viewModel.openDownloadedWallpapers()
-        } label: {
-            Text("Downloaded Wallpapers")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canClearWallpaper)
-    }
-
-    private var changeWallpaperButton: some View {
-        Button { showsWallpaperSourcePicker.toggle() } label: {
-            Text("Change Wallpaper…")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canClearWallpaper)
-        .anchorPreference(key: WallpaperSourceButtonAnchorKey.self, value: .bounds) { $0 }
-    }
-
-    private var settingsButton: some View {
-        Button {
-            viewModel.openSettings()
-        } label: {
-            Label("Settings", systemImage: "slider.horizontal.3.circle.fill")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(viewModel.isBusy)
-    }
-
-    private var monitoringButton: some View {
-        Button {
-            viewModel.openMonitoring()
-        } label: {
-            Label("Monitoring", systemImage: "gauge.with.dots.needle.67percent")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canOpenMonitoring)
-    }
-
-    private var terminalWallpaperButton: some View {
-        Button {
-            viewModel.openTerminalWallpaper()
-        } label: {
-            Label("Terminal Wallpaper", systemImage: "terminal")
-                .lineLimit(1)
-                .minimumScaleFactor(0.88)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-    }
-
-    private var libraryButtons: some View {
-        HStack(alignment: .center, spacing: primarySpacing) {
-            catalogButton
-                .frame(width: catalogButtonWidth)
-                .layoutPriority(2)
-
-            downloadedWallpapersButton
-                .frame(width: downloadedButtonWidth)
-                .layoutPriority(2)
-        }
-    }
-
-    private func scaledWidth(_ base: CGFloat, min minWidth: CGFloat) -> CGFloat {
-        max(minWidth, base * widthScale)
-    }
-
-    private var videoInfo: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(terminalPreviewTitle == nil ? "Video" : "Terminal Wallpaper")
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-            Text(terminalPreviewTitle ?? viewModel.selectedVideoName)
-                .font(.caption)
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .layoutPriority(0)
     }
 }
 
@@ -1680,89 +1314,6 @@ struct DownloadedWallpapersCard: View {
         )
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
         .environment(\.colorScheme, .dark)
-    }
-}
-
-struct ControlButtons: View {
-    @ObservedObject var viewModel: AppViewModel
-    let spacing: CGFloat
-    let primaryButtonWidth: CGFloat
-    let removeButtonWidth: CGFloat
-
-    var body: some View {
-        HStack(spacing: spacing) {
-            startButton
-                .frame(width: primaryButtonWidth)
-            lockScreenOnlyButton
-                .frame(width: primaryButtonWidth)
-            stopButton
-                .frame(width: primaryButtonWidth)
-            clearButton
-                .frame(width: removeButtonWidth)
-        }
-    }
-
-    private var startButton: some View {
-        Button {
-            viewModel.start()
-        } label: {
-            Label("Start", systemImage: "desktopcomputer")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canStart)
-    }
-
-    private var lockScreenOnlyButton: some View {
-        Button {
-            viewModel.applyLockScreenOnly()
-        } label: {
-            Label("Lock", systemImage: "lock.display")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .accessibilityLabel("Apply wallpaper to Lock Screen only")
-        .help("Apply wallpaper to Lock Screen only")
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canApplyLockScreenOnly)
-    }
-
-    private var stopButton: some View {
-        Button(role: viewModel.isPlaybackPaused ? nil : .destructive) {
-            viewModel.togglePlayback()
-        } label: {
-            Label(
-                viewModel.playbackButtonTitle,
-                systemImage: viewModel.playbackButtonSystemImage
-            )
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .accessibilityLabel(viewModel.playbackButtonTitle)
-        .help(viewModel.isPlaybackPaused ? "Resume wallpaper" : "Stop wallpaper")
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canTogglePlayback)
-    }
-
-    private var clearButton: some View {
-        Button(role: .destructive) {
-            viewModel.clearWallpaper()
-        } label: {
-            Text("Remove")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canClearWallpaper)
     }
 }
 
@@ -2694,6 +2245,8 @@ struct AuraPanelButtonStyle: ButtonStyle {
     var emphasized = false
     var selected = false
     var region: Region = .bottom
+    var height: CGFloat? = nil
+    var horizontalPadding: CGFloat? = nil
 
     func makeBody(configuration: Configuration) -> some View {
         AuraPanelButton(
@@ -2701,7 +2254,9 @@ struct AuraPanelButtonStyle: ButtonStyle {
             fillWidth: fillWidth,
             emphasized: emphasized,
             selected: selected,
-            region: region
+            region: region,
+            height: height,
+            horizontalPadding: horizontalPadding
         )
     }
 }
@@ -2712,6 +2267,8 @@ private struct AuraPanelButton: View {
     let emphasized: Bool
     let selected: Bool
     let region: AuraPanelButtonStyle.Region
+    let height: CGFloat?
+    let horizontalPadding: CGFloat?
 
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @Environment(\.isEnabled) private var isEnabled
@@ -2801,7 +2358,8 @@ private struct AuraPanelButton: View {
                 y: 1
             )
             .padding(.vertical, fillWidth ? 3 : 6)
-            .padding(.horizontal, fillWidth ? 12 : 9)
+            .padding(.horizontal, horizontalPadding ?? (fillWidth ? 12 : 9))
+            .frame(height: height)
             .background {
                 ZStack {
                     #if compiler(>=6.2)
