@@ -43,9 +43,9 @@ struct ControlPanel: View {
             }
 
             MainControlRowLayout(row: .library) {
-                catalogButton
-                downloadedButton
                 terminalButton
+                downloadedButton
+                catalogButton
                 settingsButton
                 monitoringButton
             }
@@ -116,14 +116,14 @@ struct ControlPanel: View {
     }
 
     private var removeButton: some View {
-        MainPanelActionButton("Remove", id: "remove", help: "Remove the active wallpaper",
+        MainPanelActionButton("Remove", icon: "trash", id: "remove", help: "Remove the active wallpaper",
                               enabled: viewModel.canClearWallpaper, role: .destructive) {
             viewModel.clearWallpaper()
         }
     }
 
     private var changeButton: some View {
-        MainPanelActionButton(compactTitles ? "Change…" : "Change Wallpaper…", id: "change",
+        MainPanelActionButton(compactTitles ? "Change…" : "Change Wallpaper…", icon: "photo.on.rectangle", id: "change",
                               help: "Choose video or image, or import Wallpaper Engine",
                               enabled: viewModel.canClearWallpaper,
                               accessibilityTitle: "Change Wallpaper") {
@@ -133,7 +133,7 @@ struct ControlPanel: View {
     }
 
     private var catalogButton: some View {
-        MainPanelActionButton(compactTitles ? "Catalog" : "Wallpaper Catalog", id: "catalog",
+        MainPanelActionButton(compactTitles ? "Catalog" : "Wallpaper Catalog", icon: "square.grid.2x2", id: "catalog",
                               help: "Browse the wallpaper catalog", enabled: viewModel.canClearWallpaper,
                               accessibilityTitle: "Wallpaper Catalog") {
             viewModel.openCatalog()
@@ -141,7 +141,7 @@ struct ControlPanel: View {
     }
 
     private var downloadedButton: some View {
-        MainPanelActionButton(compactTitles ? "Downloaded" : "Downloaded Wallpapers", id: "downloaded",
+        MainPanelActionButton(compactTitles ? "Downloaded" : "Downloaded Wallpapers", icon: "arrow.down.circle", id: "downloaded",
                               help: "Open downloaded and imported wallpapers", enabled: viewModel.canClearWallpaper,
                               accessibilityTitle: "Downloaded Wallpapers") {
             viewModel.openDownloadedWallpapers()
@@ -201,7 +201,7 @@ struct MainPanelActionButton: View {
             Group {
                 if let icon {
                     if iconOnly { Image(systemName: icon) }
-                    else { Label(title, systemImage: icon) }
+                    else { Label(title, systemImage: icon).imageScale(.small) }
                 } else { Text(title) }
             }
             .lineLimit(1)
