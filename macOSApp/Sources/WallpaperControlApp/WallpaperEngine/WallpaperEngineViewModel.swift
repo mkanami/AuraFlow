@@ -13,6 +13,8 @@ final class WallpaperEngineViewModel: ObservableObject {
     @Published private(set) var localProjects: [WallpaperEngineCandidate] = []
     @Published private(set) var isScanningLibrary = false
     @Published private(set) var libraryWarnings: [String] = []
+    @Published private(set) var collectionDirectories: [URL] = []
+    @Published private(set) var isLocatingLibrary = false
     @Published var candidates: [WallpaperEngineCandidate] = []
     @Published var selectedCandidates: Set<String> = []
     @Published var showsProjectPicker = false
@@ -43,6 +45,11 @@ final class WallpaperEngineViewModel: ObservableObject {
     private var observer: AnyCancellable?
     private var cachedConfig: WebWallpaperConfiguration?
     private var scanTask: Task<WallpaperEngineLocalSnapshot, Never>?
+    private var locationTask: Task<Void, Never>?
+    private var locationGeneration = 0
+    private var libraryRefreshRequested = false
+    var chooseCollectionLocation: @MainActor ([URL]) -> URL? = WallpaperEngineLocationPanels.chooseCollection
+    var showLocationPanel: @MainActor (WallpaperEngineLocationPanelRequest) throws -> URL? = WallpaperEngineLocationPanels.chooseLocation
     private let steamRootsProvider: @Sendable () -> [URL]
     private let libraryDefaults: UserDefaults
 
@@ -59,7 +66,7 @@ final class WallpaperEngineViewModel: ObservableObject {
         }
         reloadValues()
     }
-    deinit { timer?.invalidate(); importTask?.cancel(); propertyTask?.cancel(); scanTask?.cancel() }
+    deinit { timer?.invalidate(); importTask?.cancel(); propertyTask?.cancel(); scanTask?.cancel(); locationTask?.cancel() }
     var managedProjects: [WallpaperEngineProject] {
         let localPaths = Set(localProjects.map(\.id))
         return projects.filter { project in
@@ -70,14 +77,25 @@ final class WallpaperEngineViewModel: ObservableObject {
     var libraryCount: Int { localProjects.count + managedProjects.count }
 
     func refreshLocalLibrary() async {
-        guard !isScanningLibrary, !Task.isCancelled else { return }
+        guard !Task.isCancelled else { return }
+        guard !isScanningLibrary else { libraryRefreshRequested = true; return }
         isScanningLibrary = true
-        defer { isScanningLibrary = false; scanTask = nil }
+        defer {
+            isScanningLibrary = false; scanTask = nil
+            if libraryRefreshRequested {
+                libraryRefreshRequested = false
+                Task { await refreshLocalLibrary() }
+            }
+        }
         let rootsProvider = steamRootsProvider
+        let excludedDirectories = [library.rootURL]
+        let confirmedCollection = libraryDefaults.string(forKey: "WallpaperEngineLastLibraryDirectory").map { URL(fileURLWithPath: $0) }
         let directories = (libraryDefaults.stringArray(forKey: "WallpaperEngineLibraryDirectories") ?? [])
             .map { URL(fileURLWithPath: $0) }
         let worker = Task.detached(priority: .utility) {
             WallpaperEngineLocalLibrary.scan(steamRoots: rootsProvider(), additionalDirectories: directories,
+                                             confirmedCollection: confirmedCollection,
+                                             excludedDirectories: excludedDirectories,
                                              cancelled: { Task.isCancelled })
         }
         scanTask = worker
@@ -85,6 +103,7 @@ final class WallpaperEngineViewModel: ObservableObject {
         guard !Task.isCancelled else { return }
         if localProjects != snapshot.candidates { localProjects = snapshot.candidates }
         if libraryWarnings != snapshot.warnings { libraryWarnings = snapshot.warnings }
+        if collectionDirectories != snapshot.collectionDirectories { collectionDirectories = snapshot.collectionDirectories }
     }
 
     func rememberLibraryDirectory(_ directory: URL) {
@@ -97,15 +116,7 @@ final class WallpaperEngineViewModel: ObservableObject {
     }
 
     func chooseLibraryDirectory() {
-        let panel = NSOpenPanel()
-        panel.title = "Locate Wallpaper Engine Library"; panel.prompt = "Add Library"
-        panel.message = "Choose the 431960 folder or a local Wallpaper Engine project collection. All projects will appear automatically."
-        panel.canChooseDirectories = true; panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let directory = panel.url {
-            rememberLibraryDirectory(directory)
-            Task { await refreshLocalLibrary() }
-        }
+        locationTask = Task { await chooseLocation(importing: false) }
     }
     var selectedProject: WallpaperEngineProject? { projects.first { $0.id == selection.webProjectID } }
     var previewConfiguration: WebWallpaperConfiguration? {
@@ -123,36 +134,88 @@ final class WallpaperEngineViewModel: ObservableObject {
                 .compactMap { UTType(filenameExtension: $0) }
     }
     func chooseImport() {
-        guard !isImporting else { return }
-        let lastPath = UserDefaults.standard.string(forKey: "WallpaperEngineLastImportDirectory")
-        importGeneration += 1; let generation = importGeneration
-        isImporting = true; error = nil
-        importTask = Task {
-            let directory = await Task.detached(priority: .userInitiated) {
-                WallpaperEngineImportLocation.preferredDirectory(
-                    steamRoots: WallpaperEngineImportLocation.defaultSteamRoots(),
-                    lastDirectory: lastPath.map { URL(fileURLWithPath: $0) })
-            }.value
-            guard generation == importGeneration, !Task.isCancelled else { return }
-            isImporting = false
-            let panel = NSOpenPanel()
-            panel.title = "Import Wallpaper Engine"; panel.prompt = "Import"
-            panel.message = "Choose the wallpaper video or HTML file, a project folder, or the Workshop 431960 folder. project.json is found automatically."
-            panel.directoryURL = directory
-            panel.canChooseDirectories = true; panel.canChooseFiles = true
-            panel.allowedContentTypes = Self.importContentTypes
-            panel.allowsMultipleSelection = false
-            if panel.runModal() == .OK, let url = panel.url {
-                let parent = url.deletingLastPathComponent()
-                UserDefaults.standard.set(parent.path, forKey: "WallpaperEngineLastImportDirectory")
-                let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-                rememberLibraryDirectory(isDirectory ? url : parent)
-                discover(url)
+        locationTask = Task { await chooseLocation(importing: true) }
+    }
+
+    func chooseLocation(importing: Bool) async {
+        guard !isLocatingLibrary, !isImporting, !Task.isCancelled else { return }
+        locationGeneration += 1; let generation = locationGeneration
+        isLocatingLibrary = true; isImporting = importing; error = nil
+        var handedOffToImport = false
+        defer {
+            if generation == locationGeneration {
+                isLocatingLibrary = false
+                if !handedOffToImport { isImporting = false }
             }
         }
+        let rootsProvider = steamRootsProvider
+        let directories = (libraryDefaults.stringArray(forKey: "WallpaperEngineLibraryDirectories") ?? [])
+            .map { URL(fileURLWithPath: $0) }
+        let lastPath = libraryDefaults.string(forKey: "WallpaperEngineLastLibraryDirectory")
+            ?? libraryDefaults.string(forKey: "WallpaperEngineLastImportDirectory")
+        let confirmedCollection = libraryDefaults.string(forKey: "WallpaperEngineLastLibraryDirectory").map { URL(fileURLWithPath: $0) }
+        let excluded = [library.rootURL]
+        let worker = Task.detached(priority: .utility) {
+            WallpaperEngineLibraryLocations.resolve(steamRoots: rootsProvider(), additionalDirectories: directories,
+                confirmedCollection: confirmedCollection,
+                excludedDirectories: excluded, cancelled: { Task.isCancelled })
+        }
+        let locations = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+        guard generation == locationGeneration, !Task.isCancelled else { return }
+        var directory = WallpaperEngineLibraryLocations.preferredDirectory(in: locations,
+            lastDirectory: lastPath.map { URL(fileURLWithPath: $0) })
+        if directory == nil, !locations.collections.isEmpty {
+            guard let chosen = chooseCollectionLocation(locations.collections.map(\.url)),
+                  locations.collections.contains(where: { $0.url == chosen }) else { return }
+            directory = chosen
+        }
+        do {
+            // Also protects injected/native presentations against a disk removed after selection.
+            if let directory, !WallpaperEngineLibraryLocations.isAccessibleDirectory(directory) {
+                throw WallpaperEngineError.invalid("The wallpaper folder is no longer available: \(directory.path). Reconnect the disk and try again.")
+            }
+            guard let chosen = try showLocationPanel(WallpaperEngineLocationPanelRequest(directory: directory, importing: importing)),
+                  generation == locationGeneration, !Task.isCancelled else { return }
+            if importing {
+                let library = self.library
+                // Resolve nested assets to their actual project root before remembering a location.
+                let found = try await Task.detached(priority: .userInitiated) { try library.candidates(at: chosen) }.value
+                guard generation == locationGeneration, !Task.isCancelled else { return }
+                let isDirectory = (try? chosen.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                guard let collection = isDirectory ? chosen : found.first?.url else {
+                    throw WallpaperEngineError.invalid("No Wallpaper Engine project was found beside this file.")
+                }
+                rememberLibraryDirectory(collection)
+                libraryDefaults.set(collection.path, forKey: "WallpaperEngineLastImportDirectory")
+                isImporting = false
+                isLocatingLibrary = false
+                handedOffToImport = true
+                discover(chosen)
+            } else {
+                guard WallpaperEngineLibraryLocations.isAccessibleDirectory(chosen) else {
+                    throw WallpaperEngineError.invalid("The selected wallpaper folder cannot be read: \(chosen.path)")
+                }
+                let checked = await Task.detached(priority: .utility) {
+                    WallpaperEngineLibraryLocations.resolve(steamRoots: [], additionalDirectories: [chosen],
+                        confirmedCollection: confirmedCollection, excludedDirectories: excluded)
+                }.value
+                guard generation == locationGeneration, !Task.isCancelled else { return }
+                guard !checked.collections.isEmpty else {
+                    throw WallpaperEngineError.invalid("No Wallpaper Engine collection was found in this folder. Choose the 431960 folder or a folder containing Wallpaper Engine projects.")
+                }
+                rememberLibraryDirectory(chosen)
+                if let collection = checked.collections.first(where: { $0.url == chosen.standardizedFileURL.resolvingSymlinksInPath() })
+                    ?? (checked.collections.count == 1 ? checked.collections.first : nil) {
+                    libraryDefaults.set(collection.url.path, forKey: "WallpaperEngineLastLibraryDirectory")
+                    // Remember the resolved collection as well when the user connected a whole Steam folder.
+                    rememberLibraryDirectory(collection.url)
+                }
+                await refreshLocalLibrary()
+            }
+        } catch { if generation == locationGeneration { self.error = error.localizedDescription } }
     }
     func discover(_ url: URL) {
-        guard !isImporting else { return }
+        guard !isImporting, !isLocatingLibrary else { return }
         importGeneration += 1; let generation = importGeneration
         isImporting = true; error = nil
         importTask = Task {
@@ -174,7 +237,7 @@ final class WallpaperEngineViewModel: ObservableObject {
         importSources(sources)
     }
     func previewLocalProject(_ candidate: WallpaperEngineCandidate, editProperties: Bool = false) {
-        guard candidate.supported, !isImporting else { return }
+        guard candidate.supported, !isImporting, !isLocatingLibrary else { return }
         importSources([candidate.url], editProperties: editProperties)
     }
     private func importSources(_ sources: [URL], editProperties: Bool = false) {
@@ -205,6 +268,7 @@ final class WallpaperEngineViewModel: ObservableObject {
         }
     }
     func cancelImport() {
+        locationGeneration += 1; locationTask?.cancel(); locationTask = nil; isLocatingLibrary = false
         importGeneration += 1; importTask?.cancel(); importTask = nil; isImporting = false; showsProjectPicker = false
     }
     func select(_ project: WallpaperEngineProject) {

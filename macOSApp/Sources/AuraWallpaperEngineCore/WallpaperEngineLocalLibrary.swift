@@ -3,21 +3,31 @@ import Foundation
 public struct WallpaperEngineLocalSnapshot: Sendable {
     public var candidates: [WallpaperEngineCandidate] = []
     public var warnings: [String] = []
+    public var collectionDirectories: [URL] = []
     public init() {}
 }
 
 /// Lightweight, read-only catalog. Assets are copied only when the user previews a project.
 public enum WallpaperEngineLocalLibrary {
     public static func scan(steamRoots: [URL], additionalDirectories: [URL] = [],
+                            confirmedCollection: URL? = nil,
+                            excludedDirectories: [URL] = [WallpaperEngineLibrary.defaultRoot],
                             cancelled: () -> Bool = { false }) -> WallpaperEngineLocalSnapshot {
         let manager = FileManager.default
         let reader = WallpaperEngineLibrary()
         var result = WallpaperEngineLocalSnapshot()
+        let locations = WallpaperEngineLibraryLocations.resolve(steamRoots: steamRoots,
+            additionalDirectories: additionalDirectories, confirmedCollection: confirmedCollection,
+            excludedDirectories: excludedDirectories, cancelled: cancelled)
+        result.collectionDirectories = locations.collections.map(\.url)
+        result.warnings = locations.warnings
+        let excluded = excludedDirectories.map { $0.standardizedFileURL.resolvingSymlinksInPath().path }
         var seenDirectories = Set<String>(), seenProjects = Set<String>()
 
         func scanDirectory(_ directory: URL, nestedCollections: Bool = false) {
             guard !cancelled() else { return }
             let root = directory.standardizedFileURL.resolvingSymlinksInPath()
+            guard !excluded.contains(where: { root.path == $0 || root.path.hasPrefix($0 + "/") }) else { return }
             guard seenDirectories.insert(root.path).inserted else { return }
             do {
                 let attributes = try root.resourceValues(forKeys: [.isDirectoryKey])
@@ -50,15 +60,9 @@ public enum WallpaperEngineLocalLibrary {
             }
         }
 
-        for steam in WallpaperEngineImportLocation.steamLibraries(steamRoots: steamRoots + additionalDirectories) {
+        for collection in locations.collections {
             guard !cancelled() else { return WallpaperEngineLocalSnapshot() }
-            scanDirectory(steam.appendingPathComponent("steamapps/workshop/content/431960"))
-            // Includes default projects, myprojects, backup, and user-named project collections.
-            scanDirectory(steam.appendingPathComponent("steamapps/common/wallpaper_engine/projects"), nestedCollections: true)
-        }
-        for directory in additionalDirectories {
-            guard !cancelled() else { return WallpaperEngineLocalSnapshot() }
-            scanDirectory(directory, nestedCollections: true)
+            scanDirectory(collection.url, nestedCollections: collection.nestedCollections)
         }
         guard !cancelled() else { return WallpaperEngineLocalSnapshot() }
         result.candidates.sort {

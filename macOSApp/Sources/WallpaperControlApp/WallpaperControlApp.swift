@@ -209,10 +209,6 @@ private struct MenuBarControls: View {
                 guard allowActionAfterMenuOpen else { return }
                 changeWallpaperFromMenuBar()
             }
-            Button("Import Wallpaper Engine…") {
-                guard allowActionAfterMenuOpen else { return }
-                performMenuBarActionAfterDismiss { openMainWindow(); viewModel.wallpaperEngine.chooseImport() }
-            }.disabled(viewModel.wallpaperEngine.isImporting)
         }
         .disabled(!viewModel.canClearWallpaper)
 
@@ -220,15 +216,6 @@ private struct MenuBarControls: View {
             guard allowActionAfterMenuOpen else { return }
             openCatalogFromMenuBar()
         }
-
-        Button("Import Wallpaper Engine…") {
-            guard allowActionAfterMenuOpen else { return }
-            performMenuBarActionAfterDismiss {
-                openMainWindow()
-                viewModel.wallpaperEngine.chooseImport()
-            }
-        }
-        .disabled(viewModel.wallpaperEngine.isImporting)
 
         Button("Terminal Wallpaper…") {
             guard allowActionAfterMenuOpen else { return }

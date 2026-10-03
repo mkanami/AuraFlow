@@ -78,22 +78,24 @@ public enum WallpaperEngineImportLocation {
 
     public static func preferredDirectory(steamRoots: [URL], lastDirectory: URL? = nil,
                                           fileManager: FileManager = .default) -> URL? {
-        let libraries = steamLibraries(steamRoots: steamRoots, fileManager: fileManager)
-        func isDirectory(_ url: URL) -> Bool {
-            var directory: ObjCBool = false
-            return fileManager.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue
-        }
-        for library in libraries {
-            let workshop = library.appendingPathComponent("steamapps/workshop/content/431960")
-            if isDirectory(workshop) { return workshop }
-        }
-        for library in libraries {
-            let authored = library.appendingPathComponent("steamapps/common/wallpaper_engine/projects/myprojects")
-            if isDirectory(authored) { return authored }
-        }
-        if let lastDirectory, isDirectory(lastDirectory) { return lastDirectory }
-        // Without downloaded WE content, start in Steam's library rather than an arbitrary folder.
-        return libraries.map { $0.appendingPathComponent("steamapps") }.first(where: isDirectory)
+        let locations = WallpaperEngineLibraryLocations.resolve(steamRoots: steamRoots,
+            additionalDirectories: lastDirectory.map { [$0] } ?? [], fileManager: fileManager)
+        return WallpaperEngineLibraryLocations.preferredDirectory(in: locations, lastDirectory: lastDirectory)
+    }
+
+    /// The Steam installation folder is relative to steamapps/common, never an arbitrary path.
+    public static func installationDirectory(in text: String) -> String? {
+        guard text.utf8.count <= 1_048_576 else { return nil }
+        var parser = VDFParser(text)
+        guard let root = parser.object(), parser.atEnd,
+              case .object(let app)? = root.first(where: { $0.0.lowercased() == "appstate" })?.1,
+              case .string("431960")? = app.first(where: { $0.0.lowercased() == "appid" })?.1,
+              case .string(let path)? = app.first(where: { $0.0.lowercased() == "installdir" })?.1 else { return nil }
+        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+        let components = normalized.split(separator: "/", omittingEmptySubsequences: false)
+        guard !components.isEmpty, !normalized.contains(":"), !normalized.contains("\0"),
+              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { return nil }
+        return normalized
     }
 
     /// Read both modern { "path" "…" } and legacy numeric-library VDF entries.

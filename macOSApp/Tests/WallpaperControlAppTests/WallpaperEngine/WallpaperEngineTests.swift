@@ -162,17 +162,17 @@ func engineImportLocationFindsWorkshopInAdditionalSteamLibrary() throws {
 }
 
 @Test
-func engineImportLocationFallsBackWithoutSteamOrDownloadedContent() throws {
+func engineImportLocationDoesNotMistakeSteamOrArbitraryFoldersForWallpapers() throws {
     let f = try EngineFixture(), steam = f.root.appendingPathComponent("Steam")
     #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [steam]) == nil)
-    #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [steam], lastDirectory: f.root) == f.root)
+    #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [steam], lastDirectory: f.root) == nil)
     let steamapps = steam.appendingPathComponent("steamapps")
     try FileManager.default.createDirectory(at: steamapps, withIntermediateDirectories: true)
-    #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [steam])?.resolvingSymlinksInPath() == steamapps.resolvingSymlinksInPath())
+    #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [steam]) == nil)
     try Data("broken".utf8).write(to: steamapps.appendingPathComponent("libraryfolders.vdf"))
     let authored = steamapps.appendingPathComponent("common/wallpaper_engine/projects/myprojects")
     try FileManager.default.createDirectory(at: authored, withIntermediateDirectories: true)
-    #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [steam], lastDirectory: f.root)?.resolvingSymlinksInPath() == authored.resolvingSymlinksInPath())
+    #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [steam])?.resolvingSymlinksInPath() == authored.deletingLastPathComponent().resolvingSymlinksInPath())
     let file = f.root.appendingPathComponent("not-a-directory")
     try Data().write(to: file)
     #expect(WallpaperEngineImportLocation.preferredDirectory(steamRoots: [], lastDirectory: file) == nil)

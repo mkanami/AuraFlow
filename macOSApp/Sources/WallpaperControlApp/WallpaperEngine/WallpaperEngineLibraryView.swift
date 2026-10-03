@@ -17,26 +17,21 @@ struct WallpaperEngineLibrarySwitch: View {
             if model.isImporting {
                 ProgressView().controlSize(.small)
                 Button("Cancel") { model.cancelImport() }.buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-            } else {
-                if model.libraryIsSelected {
-                    Button { Task { await model.refreshLocalLibrary() } } label: {
-                        if model.isScanningLibrary { ProgressView().controlSize(.small) }
-                        else { Image(systemName: "arrow.clockwise") }
-                    }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                    .disabled(model.isScanningLibrary)
-                    .help("Refresh local Wallpaper Engine library")
-                    .accessibilityLabel("Refresh Wallpaper Engine library")
+            } else if model.libraryIsSelected {
+                Button { Task { await model.refreshLocalLibrary() } } label: {
+                    if model.isScanningLibrary { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "arrow.clockwise") }
                 }
-                Button {
-                    if model.libraryIsSelected { model.chooseLibraryDirectory() }
-                    else { model.chooseImport() }
-                } label: {
-                    Label(model.libraryIsSelected ? "Library Folder…" : "Import Wallpaper Engine…",
-                          systemImage: model.libraryIsSelected ? "folder.badge.plus" : "square.and.arrow.down")
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                .disabled(model.isScanningLibrary)
+                .help("Refresh local Wallpaper Engine library")
+                .accessibilityLabel("Refresh Wallpaper Engine library")
+                Button { model.chooseLibraryDirectory() } label: {
+                    Label("Library Folder…", systemImage: "folder.badge.plus")
                         .frame(height: 18)
                 }
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                    .disabled(model.isLocatingLibrary)
             }
         }
     }

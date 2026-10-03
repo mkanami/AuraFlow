@@ -1442,10 +1442,6 @@ struct WallpaperCatalogView: View {
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
 
-                Button("Import Wallpaper Engine…") { viewModel.wallpaperEngine.chooseImport() }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                    .disabled(viewModel.wallpaperEngine.isImporting)
-
                 Spacer()
 
                 if catalogViewModel.isRefreshing || catalogViewModel.isSearching {
