@@ -139,13 +139,30 @@ struct MainControlPanelTests {
 
     @Test
     func sourceMenuStaysAnchoredAndInsideSmallAndWideWindows() {
-        for size in [CGSize(width: 760, height: 480), CGSize(width: 1440, height: 900)] {
+        for size in [CGSize(width: 760, height: 480), CGSize(width: 900, height: 600),
+                     CGSize(width: 984, height: 620), CGSize(width: 1440, height: 900)] {
             let button = CGRect(x: size.width - 270, y: size.height - 86, width: 228, height: 22)
             let menu = WallpaperSourceMenuLayout.frame(button: button, container: size)
             #expect(menu.minX >= 12 && menu.maxX <= size.width - 12)
             #expect(menu.minY >= 12 && menu.maxY <= size.height - 12)
-            #expect(menu.maxX == button.maxX)
-            #expect(menu.maxY < button.minY)
+            #expect(menu.midX == button.midX)
+            #expect(menu.width == 288)
+            #expect(menu.maxY == button.minY - 10)
+        }
+    }
+
+    @Test
+    func sourceMenuCentersWithoutShiftingAtEitherWindowEdge() {
+        let size = CGSize(width: 760, height: 480)
+        for button in [CGRect(x: 42, y: 394, width: 228, height: 22),
+                       CGRect(x: 266, y: 394, width: 228, height: 22),
+                       CGRect(x: 490, y: 394, width: 228, height: 22)] {
+            let menu = WallpaperSourceMenuLayout.frame(button: button, container: size)
+            #expect(menu.midX == button.midX)
+            #expect(menu.minX >= 12 && menu.maxX <= size.width - 12)
+            #expect(menu.width == (button.midX == size.width / 2 ? 300 : 288))
+            #expect(menu.height == 116)
+            #expect(menu.maxY == button.minY - 10)
         }
     }
 

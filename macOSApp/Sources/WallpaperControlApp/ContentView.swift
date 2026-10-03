@@ -147,9 +147,12 @@ struct WallpaperSourceButtonAnchorKey: PreferenceKey {
 enum WallpaperSourceMenuLayout {
     static func frame(button: CGRect, container: CGSize) -> CGRect {
         let inset: CGFloat = 12
-        let width = min(300, max(0, container.width - inset * 2))
+        // Keep the source picker centered over its button, including near a
+        // window edge. Reduce its width symmetrically instead of shifting it.
+        let availableHalfWidth = max(0, min(button.midX - inset, container.width - inset - button.midX))
+        let width = min(300, availableHalfWidth * 2)
         let height: CGFloat = 116
-        let x = min(max(button.maxX - width, inset), max(inset, container.width - width - inset))
+        let x = button.midX - width / 2
         let y = min(max(inset, button.minY - height - 10), max(inset, container.height - height - inset))
         return CGRect(x: x, y: y, width: width, height: height)
     }
