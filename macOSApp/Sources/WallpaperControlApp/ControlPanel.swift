@@ -201,7 +201,7 @@ struct MainPanelActionButton: View {
             Group {
                 if let icon {
                     if iconOnly { Image(systemName: icon) }
-                    else { Label(title, systemImage: icon).imageScale(.small) }
+                    else { Label(title, systemImage: icon).imageScale(.medium) }
                 } else { Text(title) }
             }
             .lineLimit(1)
