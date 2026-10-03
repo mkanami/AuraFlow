@@ -1,11 +1,19 @@
 import AppKit
 import Foundation
+import AuraTerminalWallpaperCore
 
 protocol TerminalWallpaperInstalling: Sendable {
+    var homebrewAvailable: Bool { get }
+    func prepareHomebrew(onStage: @escaping @Sendable (String) -> Void) async throws
     func install(
         preset: TerminalWallpaperPreset,
         onStage: @escaping @Sendable (String) -> Void
     ) async throws
+}
+
+extension TerminalWallpaperInstalling {
+    var homebrewAvailable: Bool { true }
+    func prepareHomebrew(onStage: @escaping @Sendable (String) -> Void) async throws {}
 }
 
 enum TerminalWallpaperInstallError: LocalizedError {
@@ -17,13 +25,14 @@ enum TerminalWallpaperInstallError: LocalizedError {
     case homebrewDidNotAppear
     case commandFailed(String)
     case executableStillMissing
+    case homebrewRequired
 
     var errorDescription: String? {
         switch self {
         case .unsupportedHomebrewPlatform:
             return "Automatic Homebrew setup needs Apple Silicon and macOS 15 or newer. See docs.brew.sh/Installation."
         case .invalidPreset:
-            return "Only featured terminal wallpapers can be installed automatically."
+            return "Only reviewed animations from the catalog can be installed automatically."
         case .downloadFailed:
             return "Could not download the official Homebrew installer. Try again."
         case .invalidPackage:
@@ -36,13 +45,22 @@ enum TerminalWallpaperInstallError: LocalizedError {
             return "Homebrew could not install this wallpaper: \(detail)"
         case .executableStillMissing:
             return "Installation finished, but the wallpaper executable is not available."
+        case .homebrewRequired:
+            return "Homebrew is required. Set it up first, then install this animation."
         }
     }
 }
 
-/// Installs only four reviewed formulae. Search text and manually selected
+/// Installs only reviewed catalog formulae. Search text and manually selected
 /// executable paths never become package-manager arguments.
 final class SystemTerminalWallpaperInstaller: TerminalWallpaperInstalling {
+    var homebrewAvailable: Bool { Self.brewExecutable() != nil }
+
+    func prepareHomebrew(onStage: @escaping @Sendable (String) -> Void) async throws {
+        guard !homebrewAvailable else { return }
+        _ = try await installHomebrew(onStage: onStage)
+    }
+
     func install(
         preset: TerminalWallpaperPreset,
         onStage: @escaping @Sendable (String) -> Void
@@ -50,17 +68,13 @@ final class SystemTerminalWallpaperInstaller: TerminalWallpaperInstalling {
         guard let allowed = TerminalWallpaperPreset.preset(id: preset.id),
               allowed == preset else { throw TerminalWallpaperInstallError.invalidPreset }
 
-        var brew = Self.brewExecutable()
-        if brew == nil {
-            onStage("Preparing Homebrew…")
-            brew = try await installHomebrew(onStage: onStage)
-        }
-        guard let brew else { throw TerminalWallpaperInstallError.homebrewDidNotAppear }
+        try Task.checkCancellation()
+        guard let brew = Self.brewExecutable() else { throw TerminalWallpaperInstallError.homebrewRequired }
 
         onStage("Installing \(preset.item.title)…")
         let result = try await Self.run(
             brew,
-            arguments: ["install", "--formula", preset.formula],
+            arguments: ["install", "--formula", "homebrew/core/\(preset.formula)"],
             environment: ["HOMEBREW_NO_AUTO_UPDATE": "1"]
         )
         guard result.code == 0 else {
@@ -68,6 +82,7 @@ final class SystemTerminalWallpaperInstaller: TerminalWallpaperInstalling {
                 String(result.output.suffix(500)).trimmingCharacters(in: .whitespacesAndNewlines)
             )
         }
+        try Task.checkCancellation()
         guard preset.item.resolvedExecutable() != nil else {
             throw TerminalWallpaperInstallError.executableStillMissing
         }
@@ -93,6 +108,7 @@ final class SystemTerminalWallpaperInstaller: TerminalWallpaperInstalling {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AuraFlow-Homebrew-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
         let package = directory.appendingPathComponent("Homebrew.pkg")
         try FileManager.default.moveItem(at: download, to: package)
 
@@ -126,33 +142,21 @@ final class SystemTerminalWallpaperInstaller: TerminalWallpaperInstalling {
     }
 
     private static func brewExecutable() -> String? {
-        ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-            .first { FileManager.default.isExecutableFile(atPath: $0) }
+        TerminalWallpaperCatalogItem(
+            id: "homebrew", title: "Homebrew", subtitle: "", category: .utilities,
+            systemImage: "terminal", executableCandidates: ["/opt/homebrew/bin/brew", "/usr/local/bin/brew", "brew"]
+        ).resolvedExecutable()
     }
 
-    private static func run(
+    static func run(
         _ executable: String,
         arguments: [String],
         environment extraEnvironment: [String: String] = [:]
     ) async throws -> (code: Int32, output: String) {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: executable)
-                process.arguments = arguments
-                process.environment = ProcessInfo.processInfo.environment.merging(extraEnvironment) { _, new in new }
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = pipe
-                do {
-                    try process.run()
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    process.waitUntilExit()
-                    continuation.resume(returning: (process.terminationStatus, String(decoding: data, as: UTF8.self)))
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        let operation = TerminalInstallCommandOperation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await operation.run(executable: executable, arguments: arguments, environment: extraEnvironment)
+        } onCancel: { operation.cancel() }
     }
 }

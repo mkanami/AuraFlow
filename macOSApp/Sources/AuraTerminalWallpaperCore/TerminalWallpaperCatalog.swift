@@ -71,6 +71,18 @@ public struct TerminalWallpaperCatalogItem: Identifiable, Equatable, Sendable {
 public enum TerminalWallpaperCatalog {
     public static let items: [TerminalWallpaperCatalogItem] = [
         TerminalWallpaperCatalogItem(
+            id: "cbonsai", title: "cbonsai", subtitle: "Growing bonsai trees",
+            category: .applications, systemImage: "tree",
+            executableCandidates: ["/opt/homebrew/bin/cbonsai", "/usr/local/bin/cbonsai", "cbonsai"],
+            arguments: ["-l", "-i"]
+        ),
+        TerminalWallpaperCatalogItem(
+            id: "nyancat", title: "Nyan Cat", subtitle: "Animated rainbow cat",
+            category: .applications, systemImage: "cat",
+            executableCandidates: ["/opt/homebrew/bin/nyancat", "/usr/local/bin/nyancat", "nyancat"],
+            arguments: ["-n", "-s"]
+        ),
+        TerminalWallpaperCatalogItem(
             id: "asciiquarium",
             title: "Asciiquarium",
             subtitle: "Animated fish and ocean waves",

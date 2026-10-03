@@ -248,6 +248,16 @@ public final class TerminalPTYSession {
     private func resolveExecutable(for command: TerminalCommandConfiguration, environment: [String: String]) throws -> String {
         if let catalogItemID = command.catalogItemID,
            let catalogItem = TerminalWallpaperCatalog.item(id: catalogItemID) {
+            // The app may have found a reviewed command in a user package
+            // directory or via Spotlight. Keep that verified absolute path,
+            // while rejecting unrelated executable hints under a catalog ID.
+            let value = command.executable
+            let name = URL(fileURLWithPath: value).lastPathComponent
+            let names = catalogItem.executableCandidates.map { URL(fileURLWithPath: $0).lastPathComponent }
+            if value.hasPrefix("/"), names.contains(name),
+               let executable = TerminalExecutableLocator.resolve(value, environment: environment) {
+                return executable
+            }
             if let executable = catalogItem.resolvedExecutable(environment: environment) {
                 return executable
             }

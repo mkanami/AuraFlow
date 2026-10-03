@@ -16,14 +16,6 @@ struct TerminalWallpaperCardPresentation: Equatable {
     var availabilityTitle: String? { installed ? nil : "Installation required" }
 }
 
-struct TerminalWallpaperSelectionPresentation: Equatable {
-    let previewTitle: String?
-    let appliedTitle: String?
-
-    var previewLabel: String { previewTitle.map { "Preview: \($0)" } ?? "No preview selected" }
-    var appliedLabel: String? { appliedTitle.map { "Applied: \($0)" } }
-}
-
 func terminalWallpaperPopupAppearance(
     from appearance: AdaptiveGlassAppearance
 ) -> AdaptiveGlassAppearance {
@@ -192,10 +184,6 @@ struct TerminalWallpaperSettingsView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 14)
             }
-            Divider()
-            previewFooter
-                .padding(.horizontal, 20)
-                .padding(.vertical, 14)
         }
         .frame(minWidth: 0, minHeight: 0)
         .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
@@ -248,30 +236,6 @@ struct TerminalWallpaperSettingsView: View {
         .padding(.horizontal, 4)
     }
 
-    private var previewFooter: some View {
-        let selection = TerminalWallpaperSelectionPresentation(
-            previewTitle: viewModel.previewTitle, appliedTitle: viewModel.activeWallpaperTitle
-        )
-        return HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(selection.previewLabel)
-                    .font(.callout.weight(.semibold))
-                if let appliedLabel = selection.appliedLabel {
-                    Label(appliedLabel, systemImage: "desktopcomputer")
-                        .font(.caption)
-                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                }
-            }
-            Spacer(minLength: 0)
-            if let onClose {
-                Button(action: onClose) {
-                    Label("Back to preview", systemImage: "play.rectangle")
-                }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-            }
-        }
-    }
-
     private func settingsDisclosure<Content: View>(
         _ title: String, subtitle: String, systemImage: String,
         isExpanded: Binding<Bool>, @ViewBuilder content: @escaping () -> Content
@@ -315,8 +279,8 @@ struct TerminalWallpaperSettingsView: View {
                             get: { viewModel.catalogSearch },
                             set: { viewModel.setCatalogSearch($0) }
                         ),
-                        placeholder: "Search animations or exact command",
-                        accessibilityLabel: "Search wallpapers or exact command",
+                        placeholder: "Search animations…",
+                        accessibilityLabel: "Search animations",
                         maxWidth: .infinity
                     )
                     if !viewModel.catalogSearch.isEmpty {
@@ -337,35 +301,38 @@ struct TerminalWallpaperSettingsView: View {
                     .accessibilityLabel("Refresh wallpaper choices")
                 }
 
-                if viewModel.catalogSearch.isEmpty {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 12)], spacing: 12) {
-                        ForEach(viewModel.featuredPresets) { preset in
-                            presetCard(preset)
-                        }
-                    }
-                } else {
+                if !viewModel.catalogSearch.isEmpty {
                     ForEach(viewModel.catalogItems) { item in
                         if let preset = TerminalWallpaperPreset.preset(id: item.id) {
-                            presetCard(preset)
-                        } else {
-                            catalogRow(item)
+                            presetCard(preset, compact: true)
                         }
                     }
                     if viewModel.catalogItems.isEmpty && !viewModel.catalogIsLoading {
-                        Label("No matching animation or command.", systemImage: "magnifyingglass")
+                        Label("No matching animation. Other commands can be added below.", systemImage: "magnifyingglass")
                             .font(.callout)
                             .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                     }
                     if viewModel.catalogIsLoading {
-                        ProgressView("Looking for an exact executable…")
+                        ProgressView("Checking animations…")
                             .controlSize(.small)
                     }
                 }
 
-                if let stage = viewModel.installStage {
-                    ProgressView(stage)
-                        .controlSize(.small)
-                        .padding(.vertical, 4)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 12)], spacing: 12) {
+                    ForEach(viewModel.libraryPresets) { preset in
+                        presetCard(preset)
+                    }
+                }
+
+                if viewModel.needsHomebrew {
+                    Button("Set up Homebrew…") { viewModel.prepareHomebrew() }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                        .disabled(viewModel.isBusy)
+                }
+                if viewModel.isBusy, viewModel.installingAnimationID == nil, let stage = viewModel.installStage {
+                    ProgressView(stage).controlSize(.small)
+                    Button("Cancel") { viewModel.cancelInstallation() }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                 }
 
                 Divider()
@@ -397,8 +364,9 @@ struct TerminalWallpaperSettingsView: View {
         }
     }
 
-    private func presetCard(_ preset: TerminalWallpaperPreset) -> some View {
+    private func presetCard(_ preset: TerminalWallpaperPreset, compact: Bool = false) -> some View {
         let item = preset.item
+        let availability = viewModel.availability[item.id] ?? .checking
         let presentation = TerminalWallpaperCardPresentation(
             installed: viewModel.cachedExecutablePath(for: item) != nil,
             selectedForPreview: viewModel.isPreviewSelected(item),
@@ -412,8 +380,8 @@ struct TerminalWallpaperSettingsView: View {
                     .frame(width: 32, height: 32)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title).font(.headline)
-                    if let availabilityTitle = presentation.availabilityTitle {
-                        Text(availabilityTitle)
+                    if !presentation.installed {
+                        Text(availability.message)
                             .font(.caption)
                             .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                     }
@@ -426,45 +394,38 @@ struct TerminalWallpaperSettingsView: View {
                 }
                 .font(.caption.weight(.medium))
             }
-            Text(preset.description)
-                .font(.callout)
-                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                .frame(maxWidth: .infinity, minHeight: 32, alignment: .topLeading)
-                .fixedSize(horizontal: false, vertical: true)
-            Button {
-                viewModel.use(item)
-            } label: {
-                Label(presentation.actionTitle, systemImage: presentation.installed ? "play.rectangle" : "arrow.down.circle")
+            if !compact {
+                Text(preset.description)
+                    .font(.callout)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .topLeading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-            .disabled(presentation.actionDisabled)
-            .accessibilityLabel("\(presentation.actionTitle): \(item.title)")
-            .accessibilityHint(presentation.installed
-                               ? "Changes only the AuraFlow preview, not your applied wallpaper."
-                               : "Installs this program with Homebrew, then opens it only in preview.")
+            if viewModel.installingAnimationID == item.id {
+                ProgressView(viewModel.installStage ?? "Checking animation…").controlSize(.small)
+                Button("Cancel") { viewModel.cancelInstallation() }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+            } else {
+                Button {
+                    viewModel.use(item)
+                } label: {
+                    Label(presentation.actionTitle, systemImage: presentation.installed ? "play.rectangle" : "arrow.down.circle")
+                }
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                .disabled(presentation.actionDisabled || (!presentation.installed && !availability.canInstall))
+                .accessibilityLabel("\(presentation.actionTitle): \(item.title)")
+                .accessibilityHint(presentation.installed
+                                   ? "Changes only the AuraFlow preview, not your applied wallpaper."
+                                   : "Installs this program with Homebrew, then opens it only in preview.")
+                if case .failed = availability {
+                    Button("Retry package check") { viewModel.checkAvailability(preset) }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                        .disabled(viewModel.isBusy)
+                }
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(catalogRowBackground)
-    }
-
-    private func catalogRow(_ item: TerminalWallpaperCatalogItem) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: item.systemImage)
-                .font(.title3)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.title).font(.body.weight(.semibold))
-                Text("Unverified command · may not draw a wallpaper")
-                    .font(.callout)
-                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-            }
-            Spacer(minLength: 4)
-            Button(viewModel.isPreviewSelected(item) ? "Previewing" : "Show in preview") { viewModel.use(item) }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .disabled(viewModel.isBusy || viewModel.isPreviewSelected(item) || viewModel.cachedExecutablePath(for: item) == nil)
-        }
-        .padding(12)
         .background(catalogRowBackground)
     }
 

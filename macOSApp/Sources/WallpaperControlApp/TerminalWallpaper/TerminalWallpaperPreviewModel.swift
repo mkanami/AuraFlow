@@ -75,6 +75,9 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
     @Published private(set) var webProjectID: String?
     @Published private(set) var isAdjustingTerminalSpeed = false
     private(set) var hasSavedSelection = false
+    private(set) var selectionRevision: UInt64 = 0
+    private(set) var pendingOperationID: UUID?
+    private var previousSelection: WallpaperPreviewSelectionRecord?
 
     private let selectionURL: URL
 
@@ -91,6 +94,7 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
     }
 
     func selectVideo() {
+        invalidateTemporarySelection()
         guard kind != .video || terminalConfiguration != nil || !hasSavedSelection else { return }
         kind = .video
         isAdjustingTerminalSpeed = false
@@ -100,6 +104,7 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
     }
 
     func selectTerminal(_ configuration: TerminalWallpaperConfig) {
+        invalidateTemporarySelection()
         let normalized = configuration.normalized()
         guard kind != .terminal || terminalConfiguration != normalized else { return }
         kind = .terminal
@@ -110,6 +115,7 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
     }
 
     func selectWeb(_ projectID: String) {
+        invalidateTemporarySelection()
         kind = .web; terminalConfiguration = nil; webProjectID = projectID
         isAdjustingTerminalSpeed = false; persist()
     }
@@ -128,6 +134,7 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
     }
 
     private func persist() {
+        guard pendingOperationID == nil else { return }
         hasSavedSelection = true
         let record = WallpaperPreviewSelectionRecord(
             kind: kind,
@@ -140,6 +147,40 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
             withIntermediateDirectories: true
         )
         try? data.write(to: selectionURL, options: .atomic)
+    }
+
+    private func invalidateTemporarySelection() {
+        selectionRevision &+= 1
+        pendingOperationID = nil
+        previousSelection = nil
+    }
+
+    func beginTemporaryTerminal(_ configuration: TerminalWallpaperConfig, operationID: UUID) {
+        previousSelection = WallpaperPreviewSelectionRecord(kind: kind, terminalConfiguration: terminalConfiguration, webProjectID: webProjectID)
+        pendingOperationID = operationID
+        kind = .terminal
+        terminalConfiguration = configuration.normalized()
+        webProjectID = nil
+        isAdjustingTerminalSpeed = false
+    }
+
+    func commitTemporaryTerminal(operationID: UUID) throws {
+        guard pendingOperationID == operationID else { throw CancellationError() }
+        let record = WallpaperPreviewSelectionRecord(kind: kind, terminalConfiguration: terminalConfiguration, webProjectID: webProjectID)
+        let data = try JSONEncoder().encode(record)
+        try FileManager.default.createDirectory(at: selectionURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: selectionURL, options: .atomic)
+        hasSavedSelection = true
+        invalidateTemporarySelection()
+    }
+
+    func rollbackTemporaryTerminal(operationID: UUID) {
+        guard pendingOperationID == operationID, let previousSelection else { return }
+        kind = previousSelection.kind
+        terminalConfiguration = previousSelection.terminalConfiguration
+        webProjectID = previousSelection.webProjectID
+        isAdjustingTerminalSpeed = false
+        invalidateTemporarySelection()
     }
 }
 
@@ -234,7 +275,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         let runtimeStatus = runtimeStore.status()
         synchronizeRuntimeSpeed(selected, status: runtimeStatus)
         let descriptor = runtimeStore.loadSharedFrameDescriptor()
-        let runtimeMatches = TerminalWallpaperPreviewRuntimePolicy.canReuseActiveFrames(
+        let runtimeMatches = selectionStore.pendingOperationID == nil && TerminalWallpaperPreviewRuntimePolicy.canReuseActiveFrames(
             selectedConfiguration: selected,
             runtimeStatus: runtimeStatus,
             descriptor: descriptor,
@@ -304,6 +345,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         let task = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled, let self,
+                  forPreview || self.selectionStore.pendingOperationID == nil,
                   !self.selectionStore.isAdjustingTerminalSpeed,
                   self.selectionStore.kind == .terminal,
                   self.selectionStore.terminalConfiguration == selected else { return }
@@ -330,6 +372,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         )
         let runtimeStatus = runtimeStore.status()
         guard selectionStore.kind == .terminal,
+              selectionStore.pendingOperationID == nil,
               let selected = selectionStore.terminalConfiguration,
               runtimeStatus.pid == agentPID,
               TerminalWallpaperPreviewRuntimePolicy.canReuseActiveFrames(
@@ -344,7 +387,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
     }
 
     private func synchronizeRuntimeSpeed(_ selected: TerminalWallpaperConfig, status: TerminalWallpaperStatus) {
-        guard !selectionStore.isAdjustingTerminalSpeed, status.running,
+        guard selectionStore.pendingOperationID == nil, !selectionStore.isAdjustingTerminalSpeed, status.running,
               status.config.command == selected.command,
               TerminalNativeSpeed.changed(from: status.config, to: selected),
               let profile = TerminalNativeSpeed.profile(for: selected.command) else { return }
@@ -372,6 +415,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
     }
 
     private func startPreviewSession(for config: TerminalWallpaperConfig) {
+        if selectionStore.pendingOperationID != nil { snapshot = nil }
         previewGeneration &+= 1
         let generation = previewGeneration
         let session = TerminalWallpaperPreviewPTY()
@@ -406,9 +450,35 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         }
     }
 
+    func waitUntilReady(configuration: TerminalWallpaperConfig, operationID: UUID, timeout: TimeInterval = 10) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        reconcile()
+        while Date() < deadline {
+            try Task.checkCancellation()
+            guard selectionStore.pendingOperationID == operationID,
+                  selectionStore.terminalConfiguration == configuration.normalized() else { throw CancellationError() }
+            if let previewError { throw TerminalWallpaperControllerError.unavailable(previewError) }
+            if let session = previewSession, !session.isRunning {
+                throw TerminalWallpaperControllerError.unavailable("The animation exited before its preview was ready.")
+            }
+            if previewSession?.isRunning == true,
+               snapshot?.cells.contains(where: {
+                   !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                       || ($0.style.background != .default && $0.style.background != .indexed(0)
+                           && $0.style.background != .rgb(0, 0, 0))
+               }) == true {
+                return
+            }
+            if sharedFrame != nil, frameSequence > 0, runtimeStore.status().health?.childRunning == true { return }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        throw TerminalWallpaperControllerError.unavailable("The animation did not produce a live frame within 10 seconds.")
+    }
+
 }
 
 private final class TerminalWallpaperPreviewPTY {
+    var isRunning: Bool { session.childPID != nil }
     var configuration: TerminalWallpaperConfig?
     private let session = TerminalPTYSession()
     private let parserQueue = DispatchQueue(
