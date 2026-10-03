@@ -12,7 +12,8 @@ enum MainControlPanelMetrics {
         guard !isVeryCompactByHeight else { return 22 }
         let progress = min(max((panelWidth - 900) / 200, 0), 1)
         let eased = progress * progress * (3 - 2 * progress)
-        return 22 + 6 * eased
+        // Large windows need only a little extra breathing room, not oversized controls.
+        return 22 + 2 * eased
     }
 }
 

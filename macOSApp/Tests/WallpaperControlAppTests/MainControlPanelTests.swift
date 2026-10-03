@@ -38,7 +38,7 @@ struct MainControlPanelTests {
         #expect(frames[4].maxX == 676)
     }
 
-    @Test(arguments: [22.0, 25, 28])
+    @Test(arguments: [22.0, 23, 24])
     func hostedGlassButtonsStayInTwoRowsAndMatchLayoutDuringResize(height: Double) async throws {
         let state = PanelState()
         let hosting = NSHostingView(rootView: RowsFixture(state: state, height: height))
@@ -144,8 +144,12 @@ struct MainControlPanelTests {
         #expect(MainControlPanelMetrics.width(availableWidth: 900) == 900)
         #expect(MainControlPanelMetrics.width(availableWidth: 1180) == 1040)
         #expect(MainControlPanelMetrics.buttonHeight(panelWidth: 900, isVeryCompactByHeight: false) == 22)
-        #expect(MainControlPanelMetrics.buttonHeight(panelWidth: 1000, isVeryCompactByHeight: false) == 25)
-        #expect(MainControlPanelMetrics.buttonHeight(panelWidth: 1100, isVeryCompactByHeight: false) == 28)
+        #expect(MainControlPanelMetrics.buttonHeight(panelWidth: 1000, isVeryCompactByHeight: false) == 23)
+        #expect(MainControlPanelMetrics.buttonHeight(panelWidth: 1100, isVeryCompactByHeight: false) == 24)
+        for width in [1180.0, 1920, 2560, 3840, 7680] {
+            #expect(MainControlPanelMetrics.buttonHeight(panelWidth: width, isVeryCompactByHeight: false) == 24)
+            #expect(MainControlPanelMetrics.buttonHeight(panelWidth: width, isVeryCompactByHeight: true) == 22)
+        }
         #expect(MainControlPanelMetrics.buttonHeight(panelWidth: 1180, isVeryCompactByHeight: true) == 22)
         var previousWidth: CGFloat = 900
         var previousGrowth: CGFloat = 1
@@ -156,7 +160,7 @@ struct MainControlPanelTests {
             let height = MainControlPanelMetrics.buttonHeight(panelWidth: width, isVeryCompactByHeight: false)
             #expect(width <= available && width < 1180)
             #expect(growth > 0 && growth <= previousGrowth + 0.00001)
-            #expect(height >= previousHeight && height <= 28)
+            #expect(height >= previousHeight && height <= 24)
             previousWidth = width
             previousGrowth = growth
             previousHeight = height
