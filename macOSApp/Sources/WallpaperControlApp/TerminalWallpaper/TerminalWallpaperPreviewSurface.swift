@@ -12,12 +12,24 @@ struct TerminalWallpaperPreviewSurface: View {
 
     var body: some View {
         ZStack {
-            Color.black
+            let render = model.configuration?.render ?? TerminalRenderConfiguration()
+            Color(red: render.background.red * render.backgroundOpacity,
+                  green: render.background.green * render.backgroundOpacity,
+                  blue: render.background.blue * render.backgroundOpacity)
             if let sharedFrame = model.sharedFrame {
-                TerminalIOSurfacePreview(descriptor: sharedFrame, sequence: model.frameSequence)
+                TerminalIOSurfacePreview(descriptor: sharedFrame, sequence: model.frameSequence,
+                    scaleMode: model.configuration?.render.scaleMode ?? .fill)
+                    .padding(8) // Keep glyphs inside the window's rounded corners.
             } else if let snapshot = model.snapshot, let configuration = model.configuration {
-                TerminalSnapshotPreview(snapshot: snapshot, configuration: configuration)
-                    .id(model.previewGeneration)
+                GeometryReader { viewport in
+                    TerminalSnapshotPreview(snapshot: snapshot, configuration: configuration)
+                        .id(model.previewGeneration)
+                        .aspectRatio(TerminalSnapshotPreview.sourceSize(snapshot: snapshot, render: configuration.render),
+                                     contentMode: configuration.render.scaleMode == .fill ? .fill : .fit)
+                        .frame(width: viewport.size.width, height: viewport.size.height)
+                        .clipped()
+                }
+                .padding(8)
             } else if let previewError = model.previewError {
                 VStack(spacing: 8) {
                     Image(systemName: "terminal")
@@ -31,6 +43,8 @@ struct TerminalWallpaperPreviewSurface: View {
                 .padding(24)
             }
         }
+        // Window resizing scales the existing canvas, like image/video previews.
+        // It must not expand the PTY and expose blank, not-yet-painted cells.
         .clipped()
     }
 }
@@ -38,13 +52,14 @@ struct TerminalWallpaperPreviewSurface: View {
 private struct TerminalIOSurfacePreview: NSViewRepresentable {
     let descriptor: TerminalSharedFrameDescriptor
     let sequence: UInt64
+    let scaleMode: TerminalScaleMode
 
     func makeNSView(context: Context) -> TerminalIOSurfacePreviewView {
         TerminalIOSurfacePreviewView(frame: .zero, device: MTLCreateSystemDefaultDevice())
     }
 
     func updateNSView(_ view: TerminalIOSurfacePreviewView, context: Context) {
-        view.display(descriptor: descriptor, sequence: sequence)
+        view.display(descriptor: descriptor, sequence: sequence, scaleMode: scaleMode)
     }
 }
 
@@ -55,6 +70,7 @@ private final class TerminalIOSurfacePreviewView: MTKView {
     private var sourceTexture: MTLTexture?
     private var descriptor: TerminalSharedFrameDescriptor?
     private var lastSequence: UInt64 = 0
+    private var scaleMode: TerminalScaleMode = .fill
 
     override init(frame: CGRect, device: MTLDevice?) {
         let resolvedDevice = device ?? MTLCreateSystemDefaultDevice()
@@ -83,7 +99,13 @@ private final class TerminalIOSurfacePreviewView: MTKView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func display(descriptor newDescriptor: TerminalSharedFrameDescriptor, sequence: UInt64) {
+    func display(descriptor newDescriptor: TerminalSharedFrameDescriptor, sequence: UInt64,
+                 scaleMode newMode: TerminalScaleMode) {
+        let descriptorChanged = descriptor != newDescriptor
+        // Preview never distorts cells, including a user-selected Stretch.
+        let previewMode: TerminalScaleMode = newMode == .stretch ? .fit : newMode
+        let modeChanged = scaleMode != previewMode
+        scaleMode = previewMode
         if descriptor != newDescriptor {
             descriptor = newDescriptor
             surface = IOSurfaceLookup(newDescriptor.surfaceID)
@@ -105,9 +127,14 @@ private final class TerminalIOSurfacePreviewView: MTKView {
                 sourceTexture = nil
             }
         }
-        guard sequence != lastSequence else { return }
+        guard sequence != lastSequence || descriptorChanged || modeChanged else { return }
         lastSequence = sequence
         needsDisplay = true
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsDisplay = true // Static output must also adapt when resized.
     }
 
     override func draw(_ rect: NSRect) {
@@ -119,17 +146,13 @@ private final class TerminalIOSurfacePreviewView: MTKView {
         else { return }
         encoder.setRenderPipelineState(renderPipeline)
         encoder.setFragmentTexture(sourceTexture, index: 0)
-        var sourceAspect = Float(sourceTexture.width) / Float(max(sourceTexture.height, 1))
-        var destinationAspect = Float(drawable.texture.width) / Float(max(drawable.texture.height, 1))
-        sourceAspect = max(sourceAspect, 0.001)
-        destinationAspect = max(destinationAspect, 0.001)
-        var fitScale = SIMD2<Float>(1, 1)
-        if sourceAspect > destinationAspect {
-            fitScale.y = destinationAspect / sourceAspect
-        } else {
-            fitScale.x = sourceAspect / destinationAspect
-        }
-        encoder.setVertexBytes(&fitScale, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
+        let presentation = TerminalRenderGeometry.scaleFactors(
+            contentWidth: Double(sourceTexture.width), contentHeight: Double(sourceTexture.height),
+            targetWidth: Double(drawable.texture.width), targetHeight: Double(drawable.texture.height), mode: scaleMode)
+        var scale = SIMD2<Float>(
+            Float(Double(sourceTexture.width) * presentation.x / Double(drawable.texture.width)),
+            Float(Double(sourceTexture.height) * presentation.y / Double(drawable.texture.height)))
+        encoder.setVertexBytes(&scale, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
         commandBuffer.present(drawable)
@@ -172,17 +195,25 @@ private struct TerminalSnapshotPreview: NSViewRepresentable {
         guard let device = MTLCreateSystemDefaultDevice() else { return NSView() }
         return TerminalMetalView(
             frame: .zero,
-            logicalSize: NSScreen.main?.frame.size ?? CGSize(width: 1530, height: 960),
+            logicalSize: Self.sourceSize(snapshot: snapshot, render: configuration.render),
             device: device
         )
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        // A preview always fits its viewport; wallpaper Fill/Stretch settings
-        // must not crop the preview or distort terminal cells.
+        // Rasterize the complete source canvas; the outer viewport handles
+        // uniform Fill cropping, just as it does for ordinary wallpaper previews.
         var render = configuration.render
         render.scaleMode = .fit
         (view as? TerminalMetalView)?.update(snapshot: snapshot, configuration: render)
+    }
+
+    static func sourceSize(snapshot: TerminalGridSnapshot, render: TerminalRenderConfiguration) -> CGSize {
+        if render.pixelMode == .fixed {
+            return CGSize(width: render.fixedWidth ?? 1920, height: render.fixedHeight ?? 1080)
+        }
+        let metrics = TerminalFontMetrics.cellMetrics(for: render)
+        return CGSize(width: Double(snapshot.columns) * metrics.width, height: Double(snapshot.rows) * metrics.height)
     }
 
     static func dismantleNSView(_ view: NSView, coordinator: ()) {
