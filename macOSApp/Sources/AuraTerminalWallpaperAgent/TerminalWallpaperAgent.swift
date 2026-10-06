@@ -96,10 +96,12 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
-        session.stop()
-        framePublisher.revoke()
         for window in windows { window.orderOut(nil) }
         windows.removeAll()
+        framePublisher.revoke()
+        store.removeSharedFrameDescriptor()
+        // Release visible surfaces before waiting for the CLI process group.
+        session.stop()
         store.removePID()
         store.removeHealth()
     }

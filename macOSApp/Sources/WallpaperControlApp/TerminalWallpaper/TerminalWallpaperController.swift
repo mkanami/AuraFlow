@@ -143,7 +143,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         defer { lockScreenOperationLock.unlock() }
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.stop, config: store.loadConfig())
-            guard store.terminateAgent(timeout: 2) else {
+            guard store.terminateAgent(timeout: 0.3, gracePeriod: 1.2) else {
                 throw TerminalWallpaperControllerError.unavailable(
                     "The Terminal Wallpaper agent did not stop."
                 )
@@ -162,7 +162,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         defer { lockScreenOperationLock.unlock() }
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.terminate, config: store.loadConfig())
-            guard store.terminateAgent(timeout: 2) else {
+            guard store.terminateAgent(timeout: 0.3, gracePeriod: 1.2) else {
                 throw TerminalWallpaperControllerError.unavailable(
                     "The Terminal Wallpaper agent did not terminate."
                 )

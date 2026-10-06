@@ -235,10 +235,20 @@ public final class TerminalWallpaperRuntimeStore {
     }
 
     @discardableResult
-    public func terminateAgent(timeout: TimeInterval = 1.5) -> Bool {
+    public func terminateAgent(timeout: TimeInterval = 1.5, gracePeriod: TimeInterval = 0) -> Bool {
         guard let pid = loadPID(), processIsAlive(pid: pid) else {
             removePID()
             return true
+        }
+        // The controller already sent Stop/Terminate. Let the agent close its
+        // windows and reap the CLI group; immediate SIGTERM bypasses that work.
+        let gracefulDeadline = Date().addingTimeInterval(max(gracePeriod, 0))
+        while Date() < gracefulDeadline {
+            if loadPID() != pid || !processIsAlive(pid: pid) {
+                if loadPID() == pid { removePID() }
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.01)
         }
         kill(pid_t(pid), SIGTERM)
         let deadline = Date().addingTimeInterval(max(timeout, 0.2))
@@ -250,8 +260,13 @@ public final class TerminalWallpaperRuntimeStore {
             Thread.sleep(forTimeInterval: 0.05)
         }
         kill(pid_t(pid), SIGKILL)
+        let killDeadline = Date().addingTimeInterval(0.3)
+        while processIsAlive(pid: pid), Date() < killDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        guard !processIsAlive(pid: pid) else { return false }
         removePID()
-        return !processIsAlive(pid: pid)
+        return true
     }
 
     private func runLaunchctl(_ arguments: [String]) -> Int32 {

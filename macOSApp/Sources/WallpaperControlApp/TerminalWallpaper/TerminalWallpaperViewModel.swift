@@ -393,6 +393,22 @@ final class TerminalWallpaperViewModel: ObservableObject {
     func stop() { applyRuntime(.stop) }
     func restart() { applyRuntime(.restart) }
 
+    func remove() {
+        guard !isBusy else { return }
+        let selection = previewSelectionStore
+        let previous = selection?.kind == .terminal ? selection?.terminalConfiguration : nil
+        if previous != nil { selection?.selectVideo() }
+        let revision = selection?.selectionRevision
+        let controller = controller
+        perform(successMessage: "Terminal Wallpaper removed.", onFailure: {
+            // Restore the preview for retry, unless the user selected another
+            // source while the system was restoring its wallpaper route.
+            guard let previous, let selection, selection.kind == .video,
+                  selection.selectionRevision == revision else { return }
+            selection.selectTerminal(previous)
+        }) { try controller.terminate() }
+    }
+
     func select(_ item: TerminalWallpaperCatalogItem) {
         let command = TerminalCommandConfiguration(
             catalogItemID: item.id,
@@ -634,12 +650,14 @@ final class TerminalWallpaperViewModel: ObservableObject {
 
     private func perform(
         successMessage: String? = nil,
+        onFailure: (() -> Void)? = nil,
         _ work: @escaping () throws -> TerminalWallpaperStatus
     ) {
         guard !isBusy else { return }
         isBusy = true
         statusRefreshGeneration &+= 1
         errorMessage = nil
+        statusMessage = nil
         Task { @MainActor in
             defer { isBusy = false }
             do {
@@ -655,6 +673,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 apply(status)
                 statusMessage = successMessage
             } catch {
+                onFailure?()
                 errorMessage = error.localizedDescription
             }
         }

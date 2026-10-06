@@ -1990,6 +1990,7 @@ final class AppViewModel: ObservableObject {
     let wallpaperEngine: WallpaperEngineViewModel
     var terminalStartAction: (() -> Void)?
     var terminalRemoveAction: (() -> Void)?
+    var terminalCanRemove: (() -> Bool)?
     var terminalCanStart: (() -> Bool)?
     var terminalIsActive: (() -> Bool)?
     let catalogViewModel: CatalogViewModel
@@ -2313,6 +2314,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canStart: Bool {
+        guard terminalCanRemove?() != false else { return false }
         if previewSelectionStore?.kind == .web { return wallpaperEngine.canStart && !isBusy && !isLifecycleBusy }
         if previewSelectionStore?.kind == .terminal {
             return terminalCanStart?() == true && !hasInstalledWallpaperSessionForControls && !wallpaperEngine.runtimeActive && !wallpaperEngine.isBusy
@@ -2327,7 +2329,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canApplyLockScreenOnly: Bool {
-        previewSelectionStore?.kind == .video && !wallpaperEngine.runtimeActive && terminalIsActive?() != true && isControllerAvailable
+        previewSelectionStore?.kind == .video && terminalCanRemove?() != false && !wallpaperEngine.runtimeActive && terminalIsActive?() != true && isControllerAvailable
             && !isBusy
             && !isLifecycleBusy
             && !lifecycleViewModel.hasActiveOrPendingLifecycleOperation
@@ -2359,8 +2361,11 @@ final class AppViewModel: ObservableObject {
     }
 
     var canClearWallpaper: Bool {
+        guard terminalCanRemove?() != false else { return false }
         if wallpaperEngine.runtimeActive { return !wallpaperEngine.isBusy && !isLifecycleBusy }
-        if terminalIsActive?() == true { return !isBusy && !isLifecycleBusy }
+        if terminalIsActive?() == true || previewSelectionStore?.kind == .terminal {
+            return !isBusy && !isLifecycleBusy && (terminalCanRemove?() ?? true)
+        }
         return isControllerAvailable
     }
 
@@ -3461,8 +3466,13 @@ final class AppViewModel: ObservableObject {
     }
 
     func clearWallpaper() {
+        guard terminalCanRemove?() != false else { return }
         if wallpaperEngine.runtimeActive { wallpaperEngine.remove(); return }
         if terminalIsActive?() == true { terminalRemoveAction?(); return }
+        if !hasInstalledWallpaperSessionForControls, previewSelectionStore?.kind == .terminal {
+            terminalRemoveAction?()
+            return
+        }
         // Preview selection starts a best-effort native Aerial cache warm-up
         // in the background. Remove must cancel that conversion first;
         // otherwise its installer mutation lock can make the button wait for

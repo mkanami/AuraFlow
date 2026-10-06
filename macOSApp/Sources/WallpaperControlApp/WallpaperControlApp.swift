@@ -36,7 +36,8 @@ final class AuraFlowApplication {
         )
         viewModel = AppViewModel(previewSelectionStore: previewStore)
         viewModel.terminalStartAction = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.start() }
-        viewModel.terminalRemoveAction = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.stop() }
+        viewModel.terminalRemoveAction = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.remove() }
+        viewModel.terminalCanRemove = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.isBusy == false }
         viewModel.terminalCanStart = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.canStart == true }
         viewModel.terminalIsActive = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.status.running == true }
     }
@@ -159,7 +160,8 @@ private struct MenuBarControls: View {
         WallpaperMenuActionPolicy.removeTarget(
             terminalRuntimeActive: terminalRuntimeActive,
             videoRuntimeActive: videoRuntimeActive,
-            webRuntimeActive: viewModel.wallpaperEngine.runtimeActive
+            webRuntimeActive: viewModel.wallpaperEngine.runtimeActive,
+            terminalPreviewSelected: previewSelectionStore.kind == .terminal
         )
     }
     private var canStartSelectedPreview: Bool {
