@@ -44,12 +44,12 @@ struct TerminalPreviewWindowResizeTests {
             if let firstRenderer { #expect(renderer === firstRenderer) }
             else { firstRenderer = renderer }
             let frame = renderer.convert(renderer.bounds, to: hosting)
-            let viewport = CGRect(x: 8, y: 8, width: hosting.bounds.width - 16, height: hosting.bounds.height - 16)
+            let viewport = hosting.bounds
             #expect(abs(frame.width / frame.height - sourceAspect) < 0.01)
             #expect(abs(frame.midX - viewport.midX) < 1 && abs(frame.midY - viewport.midY) < 1)
             if mode == .fill {
                 #expect(frame.width >= viewport.width - 1 && frame.height >= viewport.height - 1,
-                        "Fill must cover both edges after wide and tall resizes")
+                        "Fill must cover the entire window without an inset after wide and tall resizes")
             } else {
                 #expect(frame.width <= viewport.width + 1 && frame.height <= viewport.height + 1)
             }

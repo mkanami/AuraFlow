@@ -19,7 +19,6 @@ struct TerminalWallpaperPreviewSurface: View {
             if let sharedFrame = model.sharedFrame {
                 TerminalIOSurfacePreview(descriptor: sharedFrame, sequence: model.frameSequence,
                     scaleMode: model.configuration?.render.scaleMode ?? .fill)
-                    .padding(8) // Keep glyphs inside the window's rounded corners.
             } else if let snapshot = model.snapshot, let configuration = model.configuration {
                 GeometryReader { viewport in
                     TerminalSnapshotPreview(snapshot: snapshot, configuration: configuration)
@@ -29,7 +28,6 @@ struct TerminalWallpaperPreviewSurface: View {
                         .frame(width: viewport.size.width, height: viewport.size.height)
                         .clipped()
                 }
-                .padding(8)
             } else if let previewError = model.previewError {
                 VStack(spacing: 8) {
                     Image(systemName: "terminal")
