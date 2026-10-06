@@ -209,18 +209,13 @@ struct ContentView: View {
     @State private var isAdjustingSpeed: Bool = false
     @State private var window: NSWindow?
     @State private var showsWallpaperSourcePicker = false
-    @StateObject private var terminalAppearance = TerminalPreviewAppearanceModel()
-    @State private var terminalAppearanceSource: String?
 
     private var effectiveGlassAppearance: AdaptiveGlassAppearance {
         if previewSelectionStore.kind == .web { return TerminalPreviewAppearanceModel.fallback(for: nil) }
-        let terminal = terminalAppearanceSource != nil && terminalAppearance.sourceKey == terminalAppearanceSource
-            ? terminalAppearance.appearance
-            : TerminalPreviewAppearanceModel.fallback(for: previewSelectionStore.terminalConfiguration)
         return TerminalPreviewAppearanceModel.resolved(
             kind: previewSelectionStore.kind,
             video: viewModel.adaptiveGlassAppearance,
-            terminal: terminal
+            terminal: TerminalPreviewAppearanceModel.fixedAppearance
         )
     }
 
@@ -354,11 +349,8 @@ struct ContentView: View {
         .environment(\.terminalPreviewTitle, previewSelectionStore.kind == .terminal
             ? TerminalPreviewAppearanceModel.title(for: previewSelectionStore.terminalConfiguration?.command)
             : (previewSelectionStore.kind == .web ? viewModel.wallpaperEngine.selectedProject?.title : nil))
-        .onChange(of: terminalAppearanceSource) { source in
-            terminalAppearance.setSource(source, configuration: previewSelectionStore.terminalConfiguration)
-        }
-        .onReceive(terminalPreviewModel.appearanceSourcePublisher) { source in
-            if terminalAppearanceSource != source { terminalAppearanceSource = source }
+        .transformEnvironment(\.colorScheme) { scheme in
+            if previewSelectionStore.kind == .terminal { scheme = .dark }
         }
         // Keep every text-bearing control on the same adaptive polarity. The
         // individual surfaces still choose their own backing strength below.
@@ -403,18 +395,6 @@ struct ContentView: View {
             )
             .clipped()
             .ignoresSafeArea()
-
-            if let source = terminalAppearanceSource,
-               let configuration = previewSelectionStore.terminalConfiguration {
-                TerminalPreviewAppearanceLayer(
-                    sourceKey: source,
-                    configuration: configuration,
-                    previewModel: terminalPreviewModel,
-                    model: terminalAppearance
-                )
-                .frame(width: proxy.size.width, height: proxy.size.height)
-                .allowsHitTesting(false)
-            }
 
             TitlebarInteractionOverlay(
                 window: window,

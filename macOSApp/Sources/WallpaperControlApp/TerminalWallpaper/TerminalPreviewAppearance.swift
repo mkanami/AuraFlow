@@ -90,10 +90,11 @@ struct TerminalPreviewAppearanceSource: Equatable {
 
 @MainActor
 final class TerminalPreviewAppearanceModel: ObservableObject {
+    // Terminal animations frequently change from black to almost white.
+    // Keep every control in the requested dark-glass/white-text palette.
+    static let fixedAppearance = AdaptiveGlassAppearance.emptyState
     @Published private(set) var sourceKey: String?
-    @Published private(set) var appearance = AdaptiveGlassAppearance.emptyState
-    private var pendingTone: AdaptiveTextTone?
-    private var pendingCount = 0
+    let appearance = fixedAppearance
 
     static func sourceKey(configuration: TerminalWallpaperConfig?, generation: UInt64, shared: TerminalSharedFrameDescriptor?) -> String? {
         TerminalPreviewAppearanceSource(configuration: configuration, generation: generation,
@@ -101,41 +102,22 @@ final class TerminalPreviewAppearanceModel: ObservableObject {
     }
 
     static func fallback(for configuration: TerminalWallpaperConfig?) -> AdaptiveGlassAppearance {
-        guard let render = configuration?.render else { return .emptyState }
-        let color = render.background
-        let luminance = (0.2126 * color.red + 0.7152 * color.green + 0.0722 * color.blue) * render.backgroundOpacity
-        var result = AdaptiveGlassAppearance.emptyState
-        result.textTone = luminance > 0.5 ? .dark : .light
-        return result
+        fixedAppearance
     }
 
     func setSource(_ key: String?, configuration: TerminalWallpaperConfig?) {
         guard sourceKey != key else { return }
         sourceKey = key
-        appearance = Self.fallback(for: configuration)
-        pendingTone = nil
-        pendingCount = 0
     }
 
     func receive(_ candidate: AdaptiveGlassAppearance, source: String) {
-        guard sourceKey == source else { return }
-        if candidate.textTone == appearance.textTone {
-            pendingTone = nil
-            pendingCount = 0
-            if appearance != candidate { appearance = candidate }
-        } else {
-            pendingCount = pendingTone == candidate.textTone ? pendingCount + 1 : 1
-            pendingTone = candidate.textTone
-            guard pendingCount >= 2 else { return }
-            appearance = candidate
-            pendingTone = nil
-            pendingCount = 0
-        }
+        // Ignore frame-derived candidates, including callbacks queued before
+        // the source changed. Animation must not restyle the interface.
     }
 
     static func resolved(kind: WallpaperPreviewKind, video: AdaptiveGlassAppearance,
                          terminal: AdaptiveGlassAppearance) -> AdaptiveGlassAppearance {
-        kind == .terminal ? terminal : video
+        kind == .terminal ? fixedAppearance : video
     }
 
     static func title(for command: TerminalCommandConfiguration?) -> String? {

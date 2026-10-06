@@ -56,6 +56,7 @@ struct TerminalPreviewAppearanceTests {
         #expect(terminal.textTone == .light)
         #expect(video.textTone == .dark)
         #expect(TerminalPreviewAppearanceModel.resolved(kind: .terminal, video: video, terminal: terminal) == terminal)
+        #expect(TerminalPreviewAppearanceModel.resolved(kind: .terminal, video: video, terminal: video) == terminal)
         #expect(TerminalPreviewAppearanceModel.resolved(kind: .video, video: video, terminal: terminal) == video)
         #expect(EnvironmentValues().wallpaperPreviewGlassKind == .video)
         #expect(EnvironmentValues().terminalPreviewTitle == nil)
@@ -70,34 +71,39 @@ struct TerminalPreviewAppearanceTests {
         #expect(AuraSurfaceMaterial.clear.forPreviewKind(.terminal) == .clear)
     }
 
-    @Test @MainActor func fallbackUsesTerminalBackgroundAndTitlesUseSelectedCommand() {
+    @Test @MainActor func terminalBackgroundDoesNotRestyleControlsAndTitlesUseSelectedCommand() {
         var config = TerminalWallpaperConfig()
         config.render.background = TerminalRGBA(red: 1, green: 1, blue: 1)
-        #expect(TerminalPreviewAppearanceModel.fallback(for: config).textTone == .dark)
+        #expect(TerminalPreviewAppearanceModel.fallback(for: config) == .emptyState)
         config.render.backgroundOpacity = 0
         #expect(TerminalPreviewAppearanceModel.fallback(for: config).textTone == .light)
         #expect(TerminalPreviewAppearanceModel.title(for: TerminalCommandConfiguration(catalogItemID: "cmatrix", executable: "/opt/homebrew/bin/cmatrix")) == "CMatrix")
         #expect(TerminalPreviewAppearanceModel.title(for: TerminalCommandConfiguration(executable: "/Users/test/.local/bin/neo")) == "neo")
     }
 
-    @Test @MainActor func polarityNeedsTwoConsecutiveSamplesAndRejectsOldSource() {
+    @Test @MainActor func animatedFramesAndSourceChangesCannotRestyleOrRepublishControls() {
         let model = TerminalPreviewAppearanceModel()
         model.setSource("A", configuration: TerminalWallpaperConfig())
-        let bright = AdaptiveGlassAppearance.safeFallback
-        let dark = AdaptiveGlassAppearance.emptyState
-        model.receive(bright, source: "A")
-        #expect(model.appearance.textTone == .light)
-        model.receive(dark, source: "A")
-        model.receive(bright, source: "A")
-        #expect(model.appearance.textTone == .light)
-        model.receive(bright, source: "A")
-        #expect(model.appearance.textTone == .dark)
-        model.setSource("B", configuration: TerminalWallpaperConfig())
-        model.receive(bright, source: "A")
-        model.receive(bright, source: "A")
-        #expect(model.appearance.textTone == .light)
+        var changes = 0
+        let observation = model.objectWillChange.sink { changes += 1 }
+        defer { observation.cancel() }
+        let candidates = [AdaptiveGlassAppearance.safeFallback, .emptyState, .previewTransitionFallback]
+        for index in 0..<300 {
+            model.receive(candidates[index % candidates.count], source: "A")
+            #expect(model.appearance == .emptyState)
+        }
+        #expect(changes == 0)
+        var configuration = TerminalWallpaperConfig()
+        configuration.render.background = .init(red: 1, green: 1, blue: 1)
+        model.setSource("B", configuration: configuration)
+        for source in ["A", "B"] {
+            for candidate in candidates {
+                model.receive(candidate, source: source)
+                #expect(model.appearance == .emptyState)
+            }
+        }
         model.setSource(nil, configuration: nil)
-        model.receive(bright, source: "B")
+        model.receive(.safeFallback, source: "B")
         #expect(model.sourceKey == nil)
         #expect(model.appearance == .emptyState)
     }
