@@ -407,8 +407,10 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func applyLatestSnapshot() {
         guard let latestSnapshot else { return }
+        let render = TerminalWallpaperCanvas.renderConfiguration(
+            command: config.command, render: config.render, snapshot: latestSnapshot)
         for window in windows {
-            window.update(snapshot: latestSnapshot, configuration: config.render)
+            window.update(snapshot: latestSnapshot, configuration: render)
             renderedFrames += 1
         }
         guard !lockScreenIsLocked,

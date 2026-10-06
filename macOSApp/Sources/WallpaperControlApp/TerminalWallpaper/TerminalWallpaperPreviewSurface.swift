@@ -201,7 +201,8 @@ private struct TerminalSnapshotPreview: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) {
         // Rasterize the complete source canvas; the outer viewport handles
         // uniform Fill cropping, just as it does for ordinary wallpaper previews.
-        var render = configuration.render
+        var render = TerminalWallpaperCanvas.renderConfiguration(
+            command: configuration.command, render: configuration.render, snapshot: snapshot)
         render.scaleMode = .fit
         (view as? TerminalMetalView)?.update(snapshot: snapshot, configuration: render)
     }
