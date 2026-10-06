@@ -39,12 +39,10 @@ enum WallpaperMenuActionPolicy {
         }
     }
 
-    static func removeTarget(terminalRuntimeActive: Bool, videoRuntimeActive: Bool, webRuntimeActive: Bool = false,
-                             terminalPreviewSelected: Bool = false) -> WallpaperMenuRuntimeTarget {
+    static func removeTarget(terminalRuntimeActive: Bool, videoRuntimeActive: Bool, webRuntimeActive: Bool = false) -> WallpaperMenuRuntimeTarget {
         if webRuntimeActive { return .web }
         if terminalRuntimeActive { return .terminal }
         if videoRuntimeActive { return .video }
-        if terminalPreviewSelected { return .terminal }
         return .none
     }
 }
