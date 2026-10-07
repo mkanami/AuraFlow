@@ -44,6 +44,9 @@ final class TerminalLockScreenPresentation {
     #endif
 
     func start() {
+        // Resolve the system entry point while the desktop is still visible,
+        // rather than loading login.framework at the secure-screen boundary.
+        _ = Self.startFunction
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep],
             reason: "Keep terminal frames and Lock Screen handoff alive"
@@ -119,7 +122,10 @@ final class TerminalLockScreenPresentation {
         logger.notice("Terminal Lock Screen notification locked=\(changed)")
         onLockStateChange?(changed)
         if changed { startSaver() }
-        prepare(reloadRoute: changed)
+        // Lock changes presentation, not the selected saver route. Reuse the
+        // display assertions prepared on the desktop; rebuilding them here
+        // puts provider startup on the first-frame path.
+        prepare()
     }
 
     private func prepare(reloadRoute: Bool = false) {

@@ -24,6 +24,13 @@ var products: [Product] = [
 ]
 
 var targets: [Target] = [
+    .target(
+        name: "AuraLockScreenRendering",
+        path: "Sources/AuraLockScreenRendering",
+        publicHeadersPath: "include",
+        linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("Metal"),
+                         .linkedFramework("QuartzCore"), .linkedFramework("IOSurface")]
+    ),
     .target(name: "AuraWallpaperEngineCore", path: "Sources/AuraWallpaperEngineCore"),
     .executableTarget(
         name: "AuraWebWallpaperAgent",
@@ -93,6 +100,7 @@ var targets: [Target] = [
             "AuraWallpaperAgent",
             "AuraTerminalWallpaperAgent",
             "AuraTerminalRendering",
+            "AuraLockScreenRendering",
         ],
         path: "Tests/WallpaperControlAppTests",
         resources: [

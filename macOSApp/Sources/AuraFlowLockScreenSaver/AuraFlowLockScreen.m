@@ -1,4 +1,5 @@
 #import "AuraFlowLockScreen.h"
+#import "AuraFlowTerminalSurface.h"
 
 #import <AVFoundation/AVFoundation.h>
 #import <ImageIO/ImageIO.h>
@@ -17,6 +18,8 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 @interface AuraFlowLockScreen ()
 @property(nonatomic, strong) CALayer *fallbackLayer;
 @property(nonatomic, strong) CALayer *terminalLayer;
+@property(nonatomic, strong) AuraFlowTerminalSurfaceLayer *terminalSurfaceLayer;
+@property(nonatomic) BOOL sharedSurfacePresentationEnabled;
 @property(nonatomic, copy, nullable) NSString *terminalFrameRevision;
 @property(nonatomic) BOOL terminalModeActive;
 @property(nonatomic, strong) CALayer *webLayer;
@@ -50,7 +53,14 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         self.scaleMode = @"fill";
         self.playbackRate = 1.0;
         [self createLayers];
-        [self applyResolvedConfiguration:[self resolvedConfiguration] force:YES];
+        // The agent has already published a frame before Lock. Paint it while
+        // the view is constructed, without waiting for startAnimation or
+        // preparing an unrelated video underneath the terminal/web route.
+        [self syncTerminalFrame];
+        [self syncWebFrame];
+        if (!self.terminalModeActive && !self.webModeActive) {
+            [self applyResolvedConfiguration:[self resolvedConfiguration] force:YES];
+        }
         [[NSDistributedNotificationCenter defaultCenter]
             addObserver:self
                selector:@selector(runtimeCommandDidChange:)
@@ -82,9 +92,12 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     [self.layer addSublayer:self.fallbackLayer];
     self.terminalLayer = [CALayer layer];
     self.terminalLayer.backgroundColor = NSColor.blackColor.CGColor;
-    self.terminalLayer.contentsGravity = kCAGravityResizeAspect;
+    self.terminalLayer.contentsGravity = kCAGravityResizeAspectFill;
     self.terminalLayer.hidden = YES;
     [self.layer addSublayer:self.terminalLayer];
+    // Image frames must replace one another, not cross-fade for the default
+    // quarter-second Core Animation transaction duration.
+    self.terminalLayer.actions = @{@"contents":NSNull.null, @"hidden":NSNull.null};
     self.webLayer = [CALayer layer];
     self.webLayer.contentsGravity = kCAGravityResizeAspect;
     self.webLayer.backgroundColor = NSColor.blackColor.CGColor;
@@ -95,13 +108,18 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 
 - (void)startAnimation {
     [super startAnimation];
+    // Construction paints the existing PNG immediately. Metal is needed only
+    // for live presentation; do not compile its pipeline before the first frame.
+    self.sharedSurfacePresentationEnabled = YES;
 
     // ScreenSaverView instances can be reused. Refresh only when the effective
     // paths or scale mode changed so a pre-rolled first frame is preserved.
-    [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
-    [self syncRuntimePauseState];
     [self syncTerminalFrame];
     [self syncWebFrame];
+    if (!self.terminalModeActive && !self.webModeActive) {
+        [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
+    }
+    [self syncRuntimePauseState];
     if (!self.runtimePaused && !self.terminalModeActive && !self.webModeActive) {
         [self.player playImmediatelyAtRate:self.playbackRate];
     }
@@ -117,9 +135,16 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     // cross-process Stop contract: ScreenSaverView is a separate process from
     // AuraWallpaperAgent, so the agent's CALayer pause alone cannot stop this
     // player when macOS enters the secure Lock Screen.
+    BOOL hadLiveSource = self.terminalModeActive || self.webModeActive;
     [self syncRuntimePauseState];
     [self syncTerminalFrame];
     [self syncWebFrame];
+    if (hadLiveSource && !self.terminalModeActive && !self.webModeActive) {
+        // A route can expire after the initial video setup was skipped.
+        [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
+        [self syncRuntimePauseState];
+        if (!self.runtimePaused) [self.player playImmediatelyAtRate:self.playbackRate];
+    }
 }
 
 - (void)runtimeCommandDidChange:(NSNotification *)notification {
@@ -127,10 +152,12 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     // Hop to the screen-saver view's thread so the player is paused before
     // the next secure-surface refresh, without waiting for animateOneFrame.
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self syncRuntimePauseState];
-        [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
         [self syncTerminalFrame];
         [self syncWebFrame];
+        if (!self.terminalModeActive && !self.webModeActive) {
+            [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
+        }
+        [self syncRuntimePauseState];
         if (!self.runtimePaused && !self.terminalModeActive && !self.webModeActive) {
             [self.player playImmediatelyAtRate:self.playbackRate];
         }
@@ -156,6 +183,8 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     self.playerLayer.frame = self.bounds;
     self.fallbackLayer.frame = self.bounds;
     self.terminalLayer.frame = self.bounds;
+    self.terminalSurfaceLayer.frame = self.bounds;
+    self.terminalSurfaceLayer.contentsScale = self.window.backingScaleFactor ?: NSScreen.mainScreen.backingScaleFactor;
     self.webLayer.frame = self.bounds;
     [CATransaction commit];
 }
@@ -256,7 +285,9 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         self.terminalDiagnosticState = diagnostic;
         NSLog(@"AuraFlow terminal saver %@ path=%@", diagnostic, frameURL.path);
     }
-    if (!alive || !readable) {
+    if (!alive) {
+        self.terminalSurfaceLayer.hidden = YES;
+        [self.terminalSurfaceLayer resetSource];
         if (self.terminalModeActive) {
             self.terminalModeActive = NO;
             self.terminalLayer.hidden = YES;
@@ -267,6 +298,35 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         }
         return;
     }
+
+    NSDictionary *terminalConfig = [self JSONDictionaryAtURL:[self terminalRuntimeURLForFile:@"config.json"]];
+    id render = terminalConfig[@"render"];
+    id configuredMode = [render isKindOfClass:NSDictionary.class] ? render[@"scaleMode"] : nil;
+    NSString *mode = [configuredMode isKindOfClass:NSString.class] ? configuredMode : @"fill";
+    id fps = [render isKindOfClass:NSDictionary.class] ? render[@"maxFPS"] : nil;
+    if ([fps isKindOfClass:NSNumber.class]) self.animationTimeInterval = 1.0 / MAX(1, MIN(60, [fps integerValue]));
+    NSDictionary *heartbeat = [self JSONDictionaryAtURL:[self terminalRuntimeURLForFile:@"lock-screen-heartbeat.json"]];
+    NSDictionary *surface = [self JSONDictionaryAtURL:[self terminalRuntimeURLForFile:@"shared-frame.json"]];
+    if (self.sharedSurfacePresentationEnabled && self.terminalSurfaceLayer == nil &&
+        [surface[@"surfaceID"] isKindOfClass:NSNumber.class] &&
+        [surface[@"surfaceID"] unsignedIntValue] > 0 &&
+        [surface[@"agentPID"] isKindOfClass:NSNumber.class] &&
+        [surface[@"agentPID"] intValue] == [heartbeat[@"pid"] intValue]) {
+        self.terminalSurfaceLayer = [AuraFlowTerminalSurfaceLayer layer];
+        self.terminalSurfaceLayer.hidden = YES;
+        [self.layer insertSublayer:self.terminalSurfaceLayer below:self.webLayer];
+        [self layoutVideoLayers];
+    }
+    if ([self.terminalSurfaceLayer presentDescriptor:surface ?: @{}
+        expectedAgentPID:[heartbeat[@"pid"] intValue] scaleMode:mode]) {
+        self.terminalModeActive = YES;
+        self.terminalSurfaceLayer.hidden = NO;
+        self.terminalLayer.hidden = YES;
+        [self.player pause];
+        return;
+    }
+    self.terminalSurfaceLayer.hidden = YES;
+    if (!readable) return;
 
     // PNGs are replaced atomically several times per second. The generic
     // revision formatter rounds NSDate to whole seconds, which would make
@@ -282,6 +342,11 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         if (source != NULL) {
             CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
             if (image != NULL) {
+                // Use the terminal route's own scaling policy, never the video
+                // configuration. Fill reflows the producer's terminal grid;
+                // presenting its complete image must not crop it a second time.
+                self.terminalLayer.contentsGravity = [mode isEqualToString:@"stretch"]
+                    ? kCAGravityResize : kCAGravityResizeAspect;
                 self.terminalLayer.contents = (__bridge id)image;
                 self.terminalFrameRevision = revision;
                 CGImageRelease(image);
