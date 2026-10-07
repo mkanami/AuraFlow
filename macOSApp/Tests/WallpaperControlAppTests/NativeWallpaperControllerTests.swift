@@ -73,7 +73,6 @@ private enum TestInstallerError: Error {
     case installFailed
     case uninstallFailed
     case scaleModeUpdateFailed
-    case playbackPauseFailed
 }
 
 private final class RuntimeModernInstaller: ModernLockScreenInstalling {
@@ -298,12 +297,10 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     var failNextDesktopInstall = false
     var uninstallError: TestInstallerError?
     var scaleModeUpdateError: TestInstallerError?
-    var playbackPauseError: TestInstallerError?
-    private(set) var playbackPauseCount = 0
-    private(set) var playbackResumeCount = 0
-    var handlesPlaybackResume = true
     var lockScreenOnlyStatusOverride: LockScreenOnlyGenerationStatus?
     var runtimeAliveProbe: (() -> Bool)?
+    var onUninstall: (() -> Void)?
+    private(set) var playbackPauseCount = 0
     private(set) var runtimeAliveDuringUninstall: Bool?
 
     var isInstalled: Bool {
@@ -347,6 +344,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     }
 
     func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {
+        onUninstall?()
         runtimeAliveDuringUninstall = runtimeAliveProbe?()
         if let uninstallError {
             throw uninstallError
@@ -355,19 +353,13 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
         uninstallCallCount += 1
     }
 
-    var requiresLockScreenSessionPromotion: Bool {
-        requiresSessionPromotion
-    }
-
     func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
-        if let playbackPauseError { throw playbackPauseError }
         playbackPauseCount += 1
         return true
     }
 
-    func resumeLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
-        playbackResumeCount += 1
-        return handlesPlaybackResume
+    var requiresLockScreenSessionPromotion: Bool {
+        requiresSessionPromotion
     }
 
     func updatePlaybackSpeed(
@@ -791,14 +783,14 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(installer.installedLockScreenOnlyVideoURL == nil)
 }
 
-@Test func failedLockScreenPlaybackPausePreservesSource() async throws {
-    let fixture = try NativeRuntimeFixture("lock-screen-playback-pause-failure")
+@Test func failedLockScreenUninstallPreservesSource() async throws {
+    let fixture = try NativeRuntimeFixture("lock-screen-uninstall-failure")
     defer { fixture.cleanup() }
 
     try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
     let installer = RecordingLockScreenSaverInstaller()
     try await installer.installLockScreenOnly(videoURL: fixture.videoURL)
-    installer.playbackPauseError = .playbackPauseFailed
+    installer.uninstallError = .uninstallFailed
     let original = fixture.store.loadConfig()
     let controller = try NativeWallpaperController(
         store: fixture.store,
@@ -814,67 +806,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
             == fixture.videoURL.standardizedFileURL
     )
     #expect(installer.isInstalled)
-    #expect(installer.uninstallCallCount == 0)
     #expect(fixture.store.loadConfig() == original)
-}
-
-@Test func lockScreenPlaybackToggleKeepsRouteAndResumesWithoutReinstall() async throws {
-    let fixture = try NativeRuntimeFixture("lock-playback-toggle")
-    defer { fixture.cleanup() }
-    try fixture.store.saveConfig(ControlConfig(video_path: fixture.videoURL.path, playback_speed: 1))
-    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
-    let installer = RecordingLockScreenSaverInstaller()
-    try await installer.installLockScreenOnly(videoURL: fixture.videoURL)
-    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
-                                                  lockScreenSaverInstaller: installer)
-    let paused = try await controller.setShowOnLockScreen(false)
-    #expect(paused.config.show_on_lock_screen == true)
-    #expect(paused.config.lock_screen_playback_paused == true)
-    #expect(!paused.config.lockScreenPlaybackEnabled)
-    #expect(paused.config.video_path == fixture.videoURL.path)
-    #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
-    #expect(installer.isInstalled)
-    #expect(installer.playbackPauseCount == 1)
-    #expect(installer.uninstallCallCount == 0)
-    _ = try await controller.setShowOnLockScreen(false)
-    let restarted = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
-                                                 lockScreenSaverInstaller: installer)
-    try await restarted.syncLockScreenSaver()
-    #expect(installer.playbackPauseCount == 1)
-    #expect(installer.desktopAgentInstallCallCount == 0)
-    let resumed = try await controller.setShowOnLockScreen(true)
-    #expect(resumed.config.lockScreenPlaybackEnabled)
-    #expect(resumed.config.lock_screen_playback_paused == false)
-    #expect(installer.playbackResumeCount == 1)
-    #expect(installer.desktopAgentInstallCallCount == 0)
-    #expect(installer.uninstallCallCount == 0)
-}
-
-@Test(arguments: [false, true])
-func lockScreenPlaybackPauseKeepsAgentRunning(lockOnly: Bool) async throws {
-    let fixture = try NativeRuntimeFixture("lock-playback-desktop-alive")
-    defer { fixture.cleanup() }
-    try fixture.store.saveConfig(ControlConfig(video_path: fixture.videoURL.path, playback_speed: 1))
-    let agent = try launchReadyTestAgent()
-    defer { terminateAndReapTestAgent(agent) }
-    try fixture.store.savePID(agent.processIdentifier)
-    let installer = RecordingLockScreenSaverInstaller()
-    try installer.install(videoURL: fixture.videoURL)
-    if lockOnly {
-        try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
-        fixture.store.markLockScreenOnlyAgent(true)
-    }
-    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
-                                                  lockScreenSaverInstaller: installer)
-    let paused = try await controller.setShowOnLockScreen(false)
-    #expect(fixture.store.isLockScreenOnlyAgent() == lockOnly)
-    #expect(agent.isRunning)
-    #expect(paused.running == !lockOnly)
-    #expect(paused.lock_screen_only == lockOnly)
-    #expect(!fixture.store.isPaused())
-    #expect(fixture.store.loadCommand()?.action == .update)
-    #expect(installer.uninstallCallCount == 0)
-    #expect(installer.playbackPauseCount == 1)
 }
 
 @Test func failedClearRestartsPreviousLockScreenAgent() async throws {
@@ -1144,7 +1076,8 @@ func lockScreenPlaybackPauseKeepsAgentRunning(lockOnly: Bool) async throws {
 
     try await controller.syncLockScreenSaver()
 
-    #expect(fixture.store.loadLockScreenOnlySource() == nil)
+    #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
+    #expect(!fixture.store.isLockScreenOnlyMode())
     #expect(fixture.store.isLockScreenOnlyAgent() == false)
     #expect(fixture.store.loadPID() == nil)
     #expect(fixture.store.loadCommand() == nil)
@@ -2445,20 +2378,74 @@ func lockScreenPlaybackPauseKeepsAgentRunning(lockOnly: Bool) async throws {
     #expect(legacyBackup == backup)
 }
 
-@Test func lockScreenPlaybackEnableReinstallsWhenNativeResumeCannotUseGeneration() async throws {
-    let fixture = try NativeRuntimeFixture("lock-playback-stale-generation")
+@Test func disablingLockScreenRestoresUserRouteAndKeepsDesktopPlayback() async throws {
+    let fixture = try NativeRuntimeFixture("disable-lock-restores-user")
     defer { fixture.cleanup() }
-    try fixture.store.saveConfig(ControlConfig(video_path: fixture.videoURL.path,
-        playback_speed: 1, show_on_lock_screen: true, lock_screen_playback_paused: true))
+    try fixture.store.saveConfig(ControlConfig(video_path: fixture.videoURL.path, playback_speed: 1))
+    let agent = try launchReadyTestAgent()
+    defer { terminateAndReapTestAgent(agent) }
+    try fixture.store.savePID(agent.processIdentifier)
     let installer = RecordingLockScreenSaverInstaller()
     try installer.install(videoURL: fixture.videoURL)
-    installer.handlesPlaybackResume = false
+    var enabledDuringUninstall: Bool?
+    installer.onUninstall = { enabledDuringUninstall = fixture.store.loadConfig().show_on_lock_screen }
+    installer.runtimeAliveProbe = { agent.isRunning }
     let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
                                                   lockScreenSaverInstaller: installer)
-    let status = try await controller.setShowOnLockScreen(true)
-    #expect(status.config.lockScreenPlaybackEnabled)
-    #expect(installer.playbackResumeCount == 1)
-    #expect(installer.desktopAgentInstallCallCount == 1)
+    let disabled = try await controller.setShowOnLockScreen(false)
+    #expect(enabledDuringUninstall == false)
+    #expect(disabled.config.show_on_lock_screen == false)
+    #expect(disabled.config.video_path == fixture.videoURL.path)
+    #expect(agent.isRunning)
+    #expect(disabled.running)
+    #expect(installer.runtimeAliveDuringUninstall == true)
+    #expect(installer.preservingUninstallCallCount == 1)
     #expect(installer.playbackPauseCount == 0)
-    #expect(installer.uninstallCallCount == 0)
+    #expect(!installer.isInstalled)
+    #expect(fixture.store.loadCommand()?.config?.show_on_lock_screen == false)
+}
+
+@Test func disablingLockScreenStopsOnlyDedicatedAgentAndRemembersSelection() async throws {
+    let fixture = try NativeRuntimeFixture("disable-lock-only-remembers-selection")
+    defer { fixture.cleanup() }
+    try fixture.store.saveConfig(ControlConfig(video_path: "", playback_speed: 1))
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+    let agent = try launchReadyTestAgent()
+    defer { terminateAndReapTestAgent(agent) }
+    try fixture.store.savePID(agent.processIdentifier)
+    fixture.store.markLockScreenOnlyAgent(true)
+    let installer = RecordingLockScreenSaverInstaller()
+    try await installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    installer.runtimeAliveProbe = { fixture.store.processIsAlive(pid: Int(agent.processIdentifier)) }
+    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+                                                  lockScreenSaverInstaller: installer)
+    let disabled = try await controller.setShowOnLockScreen(false)
+    #expect(disabled.config.show_on_lock_screen == false)
+    #expect(disabled.lock_screen_only == false)
+    #expect(!fixture.store.isLockScreenOnlyAgent())
+    #expect(fixture.store.loadPID() == nil)
+    #expect(installer.runtimeAliveDuringUninstall == false)
+    #expect(installer.playbackPauseCount == 0)
+    #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
+    #expect(fixture.store.loadCommand() == nil)
+    #expect(!installer.isInstalled)
+}
+
+@Test(arguments: [false, true])
+func reenablingLockScreenAfterDisableReusesSelection(secure: Bool) async throws {
+    let fixture = try NativeRuntimeFixture("reenable-legacy-lock-selection")
+    defer { fixture.cleanup() }
+    try fixture.store.saveConfig(ControlConfig(video_path: "", playback_speed: 1))
+    try fixture.store.saveLockScreenOnlySource(fixture.videoURL)
+    let installer = RecordingLockScreenSaverInstaller()
+    installer.supportsSecureLockScreen = secure
+    try await installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+                                                  lockScreenSaverInstaller: installer)
+    _ = try await controller.setShowOnLockScreen(false)
+    let enabled = try await controller.setShowOnLockScreen(true)
+    #expect(enabled.config.show_on_lock_screen == true)
+    #expect(enabled.lock_screen_only == true)
+    #expect(installer.installedLockScreenOnlyVideoURL == fixture.videoURL)
+    #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
 }

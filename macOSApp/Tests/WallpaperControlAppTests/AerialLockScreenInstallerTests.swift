@@ -4034,3 +4034,31 @@ private func wallpaperStoreText(_ value: Any) -> String {
     }
     return String(describing: value)
 }
+
+@Test func lockScreenDisableRestoresLatestUserWallpaperAfterFrozenAuraGeneration() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    let video = fixture.root.appendingPathComponent("frozen-aura.mp4")
+    try await writeAerialTestVideo(to: video)
+    try await fixture.installer.installLockScreenOnly(videoURL: video)
+    #expect(try await fixture.installer.pauseLockScreenOnlyPlayback(videoURL: video))
+    let userProvider = "com.apple.wallpaper.choice.latest-user-wallpaper"
+    let current = replaceTestDesktopModes(in: try readWallpaperStore(fixture.storeURL), provider: userProvider)
+    try writeWallpaperStore(current, to: fixture.storeURL)
+    try await fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
+    let restored = try readWallpaperStore(fixture.storeURL)
+    for container in testWallpaperContainers(in: restored) {
+        if (container["Type"] as? String) == "linked" {
+            let linked = try #require(container["Linked"] as? [String: Any])
+            #expect(wallpaperStoreContains(linked, provider: userProvider, assetID: nil))
+        } else {
+            let desktop = try #require(container["Desktop"] as? [String: Any])
+            let idle = try #require(container["Idle"] as? [String: Any])
+            #expect(wallpaperModeData(idle) == wallpaperModeData(desktop))
+            #expect(wallpaperStoreContains(idle, provider: userProvider, assetID: nil))
+        }
+    }
+    #expect(!wallpaperStoreContains(restored, provider: "com.apple.wallpaper.choice.aerials",
+                                   assetID: AerialLockScreenFixture.assetID))
+    #expect(!fixture.installer.isInstalled)
+}

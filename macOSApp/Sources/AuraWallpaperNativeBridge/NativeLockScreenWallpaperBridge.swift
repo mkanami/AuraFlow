@@ -118,7 +118,7 @@ final class NativeLockScreenWallpaperBridge {
         // Stop persists its marker before the runtime command reaches this
         // process. Pick it up before creating a new assertion so a late
         // preparation cannot start the Lock Screen video again.
-        if lockScreenPlaybackIsPaused {
+        if WallpaperRuntimeStore().isPaused() {
             paused = true
         }
 
@@ -213,9 +213,13 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     func showForLockTransition(completion: ((Bool, String?) -> Void)? = nil) {
+        guard WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false else {
+            completion?(false, "Lock Screen is disabled.")
+            return
+        }
         // Close the small Stop -> Lock race: the marker is committed before
         // the .pause command is delivered to the agent.
-        if lockScreenPlaybackIsPaused {
+        if WallpaperRuntimeStore().isPaused() {
             paused = true
         }
 
@@ -292,16 +296,7 @@ final class NativeLockScreenWallpaperBridge {
         }
     }
 
-    private var lockScreenPlaybackIsPaused: Bool {
-        let store = WallpaperRuntimeStore()
-        return store.isPaused() || store.loadConfig().lock_screen_playback_paused == true
-    }
-
     func resumeAfterPause() {
-        guard !lockScreenPlaybackIsPaused else {
-            pause()
-            return
-        }
         pauseEnforcementTask?.cancel()
         pauseEnforcementTask = nil
         if let layer = displayAssertion?.layer, layer.speed == 0 {

@@ -461,7 +461,8 @@ public final class WallpaperRuntimeStore {
     /// Legacy screen-saver installs do not need a separate agent, so the
     /// source marker is also part of the persisted mode state.
     public func isLockScreenOnlyMode() -> Bool {
-        isLockScreenOnlyAgent() || loadLockScreenOnlySource() != nil
+        isLockScreenOnlyAgent()
+            || (loadConfig().show_on_lock_screen != false && loadLockScreenOnlySource() != nil)
     }
 
     public func healthForStatus(alive: Bool, paused: Bool) -> DaemonHealth {

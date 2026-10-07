@@ -9,9 +9,6 @@ public struct ControlConfig: Codable, Equatable, Sendable {
     public var blend_interpolation: Bool?
     public var pause_on_fullscreen: Bool?
     public var show_on_lock_screen: Bool?
-    // Playback can be stopped while keeping Aura's installed static route.
-    // Removing the route is exclusively the explicit Remove operation.
-    public var lock_screen_playback_paused: Bool?
     public var scale_mode: String?
 
     public init(
@@ -22,7 +19,6 @@ public struct ControlConfig: Codable, Equatable, Sendable {
         blend_interpolation: Bool? = false,
         pause_on_fullscreen: Bool? = true,
         show_on_lock_screen: Bool? = true,
-        lock_screen_playback_paused: Bool? = false,
         scale_mode: String? = WallpaperScaleMode.fill.rawValue
     ) {
         self.video_path = video_path
@@ -32,7 +28,6 @@ public struct ControlConfig: Codable, Equatable, Sendable {
         self.blend_interpolation = blend_interpolation
         self.pause_on_fullscreen = pause_on_fullscreen
         self.show_on_lock_screen = show_on_lock_screen
-        self.lock_screen_playback_paused = lock_screen_playback_paused
         self.scale_mode = scale_mode
     }
 
@@ -41,10 +36,6 @@ public struct ControlConfig: Codable, Equatable, Sendable {
         playback_speed: 1.0,
         show_on_lock_screen: true
     )
-
-    public var lockScreenPlaybackEnabled: Bool {
-        (show_on_lock_screen ?? true) && !(lock_screen_playback_paused ?? false)
-    }
 }
 
 public enum WallpaperRestoreStatus: String, Codable, Equatable, Sendable {
