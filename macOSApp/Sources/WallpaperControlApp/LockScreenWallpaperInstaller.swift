@@ -89,6 +89,14 @@ final class LegacyMacOSAdapter: LockScreenSaverInstalling {
         try installer.uninstall()
     }
 
+    func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try await installer.pauseLockScreenOnlyPlayback(videoURL: videoURL)
+    }
+
+    func resumeLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try await installer.resumeLockScreenOnlyPlayback(videoURL: videoURL)
+    }
+
     func uninstallAsync() async throws {
         try await installer.uninstallAsync()
     }
@@ -384,6 +392,14 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
             try await modern.uninstallAsync()
         }
         try await legacy.uninstallAsync()
+    }
+
+    func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try await selectedPlatform.pauseLockScreenOnlyPlayback(videoURL: videoURL)
+    }
+
+    func resumeLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        try await selectedPlatform.resumeLockScreenOnlyPlayback(videoURL: videoURL)
     }
 
     func uninstallLockScreenOnlyPreservingCurrentDesktop() throws {

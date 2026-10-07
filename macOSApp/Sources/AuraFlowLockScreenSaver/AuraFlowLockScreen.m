@@ -448,7 +448,11 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 }
 
 - (void)syncRuntimePauseState {
-    BOOL paused = [self runtimePauseMarkerExists];
+    // Playback settings apply only to this saver, independently of Desktop
+    // Stop. Use the runtime root outside the extension's container HOME.
+    NSURL *root = [[[self terminalRuntimeURLForFile:@"config.json"] URLByDeletingLastPathComponent] URLByDeletingLastPathComponent];
+    NSDictionary *config = [self JSONDictionaryAtURL:[root URLByAppendingPathComponent:@"config.json"]];
+    BOOL paused = [self runtimePauseMarkerExists] || [config[@"lock_screen_playback_paused"] boolValue];
     if (paused) {
         self.runtimePaused = YES;
         // Enforce the paused state on every saver tick as well as on the

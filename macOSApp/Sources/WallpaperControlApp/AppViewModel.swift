@@ -1245,7 +1245,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             try await installLockScreenSaver(
                 videoURL: normalizedURL,
                 ensureStillFrame: true,
-                lockScreenOnly: true
+                lockScreenOnly: true,
+                preservePausedPlayback: false
             )
             lockScreenLifecycleLogger.notice("Lock Screen route transaction completed")
             guard lockScreenPlatform.installationConfirmed else {
@@ -1259,6 +1260,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
         let config = try updateConfig { config in
             config.show_on_lock_screen = true
+            config.lock_screen_playback_paused = false
         }
         if daemonProcessManager.isRunning,
            (!store.isLockScreenOnlyAgent() || !requiresDedicatedLockScreenAgent) {
@@ -1408,8 +1410,18 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
         let currentConfig = store.loadConfig()
         var migratedLockScreenOnlySource: URL?
+        let sourceURL = store.effectiveLockScreenSourceURL(for: currentConfig)
+        let keepsInstalledRoute = lockScreenPlatform.isInstalled && sourceURL != nil
         if enabled {
-            if let sourceURL = store.effectiveLockScreenSourceURL(for: currentConfig) {
+            var needsInstallation = true
+            if keepsInstalledRoute, currentConfig.lock_screen_playback_paused == true,
+               let sourceURL {
+                let resumed = try await lockScreenPlatform.resumeLockScreenOnlyPlayback(videoURL: sourceURL)
+                // A changed or missing native generation needs a new install;
+                // the legacy saver resumes directly from config.json.
+                needsInstallation = !resumed && lockScreenCapabilities.supportsSecureLockScreen
+            }
+            if needsInstallation, let sourceURL {
                 guard FileManager.default.fileExists(atPath: sourceURL.path) else {
                     throw NativeWallpaperControllerError.unavailable(
                         "Video file not found: \(sourceURL.path)"
@@ -1441,28 +1453,32 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 try await installLockScreenSaver(
                     videoURL: sourceURL,
                     ensureStillFrame: true,
-                    lockScreenOnly: useLockScreenOnly
+                    lockScreenOnly: useLockScreenOnly,
+                    preservePausedPlayback: false
                 )
             }
         } else {
-            try await lockScreenPlatform.uninstallAsync()
-            if store.isLockScreenOnlyAgent() {
-                if daemonProcessManager.isRunning {
-                    guard daemonProcessManager.terminate(timeout: 2.0).succeeded else {
-                        throw NativeWallpaperControllerError.unavailable(
-                            "The Lock Screen agent did not stop after disabling Lock Screen wallpaper."
-                        )
+            if keepsInstalledRoute, currentConfig.lock_screen_playback_paused != true, let sourceURL {
+                // Stop automatic repair/rearm before replacing the native
+                // movie. Otherwise the helper can race and restore animation.
+                do {
+                    let pausedConfig = try updateConfig { config in
+                        config.show_on_lock_screen = true
+                        config.lock_screen_playback_paused = true
                     }
+                    if daemonProcessManager.isRunning { try send(.update, config: pausedConfig) }
+                    _ = try await lockScreenPlatform.pauseLockScreenOnlyPlayback(videoURL: sourceURL)
+                } catch {
+                    try? store.saveConfig(currentConfig)
+                    if daemonProcessManager.isRunning { try? send(.update, config: currentConfig) }
+                    throw error
                 }
-                store.removeCommand()
-                store.removeHealth()
-                store.markLockScreenOnlyAgent(false)
             }
-            store.clearLockScreenOnlySource()
         }
 
         let config = try updateConfig { config in
-            config.show_on_lock_screen = enabled
+            config.show_on_lock_screen = enabled || keepsInstalledRoute
+            config.lock_screen_playback_paused = !enabled
             if let migratedLockScreenOnlySource {
                 config.video_path = migratedLockScreenOnlySource.path
             }
@@ -1472,6 +1488,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
         if daemonProcessManager.isRunning {
             try send(.update, config: config)
+        } else {
+            postRuntimeCommandDidChange()
         }
         return store.status()
     }
@@ -1534,6 +1552,9 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
               FileManager.default.fileExists(atPath: sourceURL.path)
         else {
             return
+        }
+        if config.lock_screen_playback_paused == true, lockScreenPlatform.isInstalled {
+            return // Retain the frozen generation across app restarts.
         }
         let useLockScreenOnly = lockScreenOnlySource != nil
             && supportsLockScreenOnly
@@ -1639,6 +1660,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 // routes or a genuine missing generation; paused playback is
                 // journaled and will use this mode on Resume.
                 if !didUpdate,
+                   config.lock_screen_playback_paused != true,
                    !store.isPaused(),
                    !WallpaperMediaKind.forURL(sourceURL).isStaticImage {
                     throw NativeWallpaperControllerError.unavailable(
@@ -1897,7 +1919,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
     private func installLockScreenSaver(
         videoURL: URL,
         ensureStillFrame: Bool,
-        lockScreenOnly: Bool
+        lockScreenOnly: Bool,
+        preservePausedPlayback: Bool = true
     ) async throws {
         let useLegacyFallback = shouldUseLegacyNativeFallback
         // Keep a cached frame for the app's desktop recovery path, but do not
@@ -1953,6 +1976,9 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 )
             }
         }
+        if preservePausedPlayback, store.loadConfig().lock_screen_playback_paused == true {
+            _ = try await lockScreenPlatform.pauseLockScreenOnlyPlayback(videoURL: videoURL)
+        }
     }
 
     private var shouldUseLegacyNativeFallback: Bool {
@@ -2001,6 +2027,9 @@ final class AppViewModel: ObservableObject {
     @Published var blendInterpolationEnabled: Bool = false
     @Published var pauseOnFullscreenEnabled: Bool = true
     @Published var showOnLockScreenEnabled: Bool = true
+    @Published private(set) var isUpdatingLockScreenPlayback = false
+    private var pendingLockScreenPlayback: Bool?
+    private var lockScreenPlaybackTask: Task<Void, Never>?
     @Published var isSettingsOpen: Bool = false
     @Published var isMonitoringOpen: Bool = false
     @Published var isTerminalWallpaperOpen: Bool = false
@@ -2379,7 +2408,7 @@ final class AppViewModel: ObservableObject {
     var canToggleShowOnLockScreen: Bool {
         isControllerAvailable
             && lockScreenCapabilities.supportsLockScreen
-            && !isBusy
+            && (!isBusy || isUpdatingLockScreenPlayback)
     }
 
     var canPreviewLockScreen: Bool {
@@ -3674,36 +3703,47 @@ final class AppViewModel: ObservableObject {
     }
 
     func toggleShowOnLockScreen(_ enabled: Bool) {
-        guard !isBusy else {
-            showOnLockScreenEnabled = !enabled
-            return
-        }
-
+        guard canToggleShowOnLockScreen, let controller else { return }
         let previous = showOnLockScreenEnabled
         showOnLockScreenEnabled = enabled
-        guard let controller else { return }
-        Task {
-            isBusy = true
-            defer { isBusy = false }
-            do {
-                let status = try await runAsync {
-                    try await controller.setShowOnLockScreen(enabled)
-                }
-                apply(status: status)
-                recordBridgeSuccess()
-                if enabled, status.config.video_path.isEmpty {
-                    statusMessage = "Lock Screen enabled; it will activate when wallpaper starts."
-                } else {
-                    statusMessage = enabled
-                        ? "AuraFlow Lock Screen installed and selected."
-                        : "AuraFlow Lock Screen removed."
-                }
-                alertMessage = nil
-            } catch {
-                showOnLockScreenEnabled = previous
-                recordBridgeFailure(error, context: "set-lock-screen")
-                if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to update Lock Screen: \(error.localizedDescription)"
+        pendingLockScreenPlayback = enabled
+        guard lockScreenPlaybackTask == nil else { return }
+        isUpdatingLockScreenPlayback = true
+        isBusy = true
+        lockScreenPlaybackTask = Task {
+            var confirmed = previous
+            defer {
+                lockScreenPlaybackTask = nil
+                isUpdatingLockScreenPlayback = false
+                isBusy = false
+            }
+            while let requested = pendingLockScreenPlayback {
+                pendingLockScreenPlayback = nil
+                do {
+                    // The platform performs filesystem/provider operations.
+                    // Keep those off Main Actor and serialize rapid toggles;
+                    // an old response must not replace the user's latest choice.
+                    let status = try await Task.detached(priority: .userInitiated) {
+                        try await controller.setShowOnLockScreen(requested)
+                    }.value
+                    confirmed = status.config.lockScreenPlaybackEnabled
+                    apply(status: status)
+                    recordBridgeSuccess()
+                    if pendingLockScreenPlayback == nil {
+                        showOnLockScreenEnabled = status.config.lockScreenPlaybackEnabled
+                        statusMessage = requested
+                            ? "AuraFlow Lock Screen playback enabled."
+                            : "Lock Screen playback stopped; AuraFlow wallpaper stays visible."
+                        alertMessage = nil
+                    }
+                } catch {
+                    if pendingLockScreenPlayback == nil {
+                        showOnLockScreenEnabled = confirmed
+                        recordBridgeFailure(error, context: "set-lock-screen")
+                        if bridgeFailureCount < bridgeFailureThreshold {
+                            alertMessage = "Failed to update Lock Screen: \(error.localizedDescription)"
+                        }
+                    }
                 }
             }
         }
@@ -4181,7 +4221,9 @@ final class AppViewModel: ObservableObject {
         }
         Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
         Self.setIfChanged(&pauseOnFullscreenEnabled, to: status.config.pause_on_fullscreen ?? true)
-        Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.show_on_lock_screen ?? true)
+        if !isUpdatingLockScreenPlayback {
+            Self.setIfChanged(&showOnLockScreenEnabled, to: status.config.lockScreenPlaybackEnabled)
+        }
         let previousScaleMode = scaleMode
         let resolvedScaleMode = WallpaperScaleMode(rawValue: status.config.scale_mode ?? "fill") ?? .fill
         Self.setIfChanged(&scaleMode, to: resolvedScaleMode)

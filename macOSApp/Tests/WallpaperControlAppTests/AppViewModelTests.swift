@@ -2523,6 +2523,9 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
     var statusPaused: Bool?
     var statusHealth: DaemonHealth?
     var statusShowOnLockScreen = false
+    var lockScreenPlaybackDelay: UInt64 = 0
+    var lockScreenPlaybackError: Error?
+    var lockScreenPlaybackRequests: [Bool] = []
     var statusLockScreenOnly = false
     var statusConfigAutostart: Bool? = false
     var statusAutostart: Bool? = false
@@ -2644,6 +2647,11 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
     }
 
     func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus {
+        lockScreenPlaybackRequests.append(enabled)
+        if lockScreenPlaybackDelay > 0 {
+            try await Task.sleep(nanoseconds: lockScreenPlaybackDelay)
+        }
+        if let lockScreenPlaybackError { throw lockScreenPlaybackError }
         statusShowOnLockScreen = enabled
         return try status()
     }
@@ -2877,4 +2885,49 @@ actor FailingCatalogProvider: WallpaperCatalogProviding {
 
     #expect(selected > normal)
     #expect(selected <= 0.42)
+}
+
+@MainActor
+@Test func lockScreenPlaybackToggleStaysResponsiveAndLatestChoiceWins() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.statusShowOnLockScreen = true
+    controller.lockScreenPlaybackDelay = 150_000_000
+    let viewModel = AppViewModel(controller: controller)
+    await viewModel.loadStatus()
+    viewModel.toggleShowOnLockScreen(false)
+    #expect(!viewModel.showOnLockScreenEnabled)
+    #expect(viewModel.isUpdatingLockScreenPlayback)
+    #expect(viewModel.canToggleShowOnLockScreen)
+    // Permit the first operation to start, then change the desired state while
+    // its provider is still working. Polling must not undo that UI choice.
+    try await Task.sleep(nanoseconds: 40_000_000)
+    await viewModel.loadStatus()
+    #expect(!viewModel.showOnLockScreenEnabled)
+    viewModel.toggleShowOnLockScreen(true)
+    #expect(viewModel.showOnLockScreenEnabled)
+    for _ in 0..<60 {
+        if !viewModel.isUpdatingLockScreenPlayback { break }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    #expect(!viewModel.isUpdatingLockScreenPlayback)
+    #expect(!viewModel.isBusy)
+    #expect(viewModel.showOnLockScreenEnabled)
+    #expect(controller.lockScreenPlaybackRequests == [false, true])
+}
+
+@MainActor
+@Test func failedLockScreenPlaybackToggleRestoresConfirmedState() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.statusShowOnLockScreen = true
+    controller.lockScreenPlaybackError = CocoaError(.fileWriteNoPermission)
+    let viewModel = AppViewModel(controller: controller)
+    await viewModel.loadStatus()
+    viewModel.toggleShowOnLockScreen(false)
+    for _ in 0..<60 {
+        if !viewModel.isUpdatingLockScreenPlayback { break }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    #expect(viewModel.showOnLockScreenEnabled)
+    #expect(!viewModel.isBusy)
+    #expect(viewModel.alertMessage?.contains("Failed to update Lock Screen") == true)
 }

@@ -47,6 +47,7 @@ private struct WallpaperAgentRearmGuardState: Sendable {
     var wallpaperRevision: UInt64 = 0
     var sessionInactive = false
     var showOnLockScreen = false
+    var lockScreenPlaybackPaused = false
     var terminating = false
     var lastSessionTransitionUptime = -Double.infinity
 }
@@ -82,6 +83,8 @@ private final class WallpaperAgentRearmGuard: @unchecked Sendable {
               snapshot.wallpaperRevision == token.wallpaperRevision,
               !snapshot.sessionInactive,
               snapshot.showOnLockScreen,
+              !snapshot.lockScreenPlaybackPaused,
+              WallpaperRuntimeStore().loadConfig().lock_screen_playback_paused != true,
               videoURL.path == token.videoPath,
               agentSystemSessionIsLocked() == false
         else {
@@ -102,6 +105,8 @@ private final class WallpaperAgentRearmGuard: @unchecked Sendable {
             && snapshot.wallpaperRevision == token.wallpaperRevision
             && !snapshot.sessionInactive
             && snapshot.showOnLockScreen
+            && !snapshot.lockScreenPlaybackPaused
+            && WallpaperRuntimeStore().loadConfig().lock_screen_playback_paused != true
             && videoURL.path == token.videoPath
             && agentSystemSessionIsLocked() == false
     }
@@ -1319,7 +1324,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             )
             manualPaused = false
             store.markPaused(false)
-            nativeLockScreenBridge.resumeAfterPause()
+            syncLockScreenPlaybackPause()
             if lockScreenOnlyMode {
                 restoreDesktopStoreAfterSession()
             } else {
@@ -1353,16 +1358,19 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 // frame as a visible grey flash.
                 manualPaused = false
                 store.markPaused(false)
-                restoreLockScreenOnlyPlaybackAfterResume(
-                    resumeNativeSurfaceWhenReady: true
-                )
+                if config.lock_screen_playback_paused != true {
+                    restoreLockScreenOnlyPlaybackAfterResume(
+                        resumeNativeSurfaceWhenReady: true
+                    )
+                }
             } else {
-                nativeLockScreenBridge.resumeAfterPause()
-                showWindows()
                 manualPaused = false
                 store.markPaused(false)
+                syncLockScreenPlaybackPause()
+                showWindows()
                 applyPlaybackRate()
-                if config.show_on_lock_screen == true,
+                if config.lock_screen_playback_paused != true,
+                   config.show_on_lock_screen == true,
                    lockScreenPlatform.capabilities.supportsSecureLockScreen,
                    lockScreenPlatform.isInstalled {
                     restoreLockScreenOnlyPlaybackAfterResume()
@@ -1447,6 +1455,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                         isCurrent: { [weak self] in
                             guard let self else { return false }
                             return !self.isTerminating && !self.manualPaused
+                                && self.config.lock_screen_playback_paused != true
                         },
                         revealAnimatedSurface: { [weak self] in
                             self?.nativeLockScreenBridge.resumeAfterPause()
@@ -1635,6 +1644,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                         videoURL: videoURL,
                         shouldProceed: {
                             lifecycleGuard.isCurrent(operation.operationID)
+                                && WallpaperRuntimeStore().loadConfig().lock_screen_playback_paused != true
                         }
                     )
             } catch {
@@ -2184,7 +2194,16 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func syncLockScreenPlaybackPause() {
+        if manualPaused || config.lock_screen_playback_paused == true {
+            nativeLockScreenBridge.pause()
+        } else {
+            nativeLockScreenBridge.resumeAfterPause()
+        }
+    }
+
     private func applyRuntimeSettings() {
+        syncLockScreenPlaybackPause()
         syncLockScreenSetting(reason: "lock-setting")
         player?.volume = Float(max(0, min(config.volume ?? 0, 1)))
         let gravity = videoGravity(for: config.scale_mode)
@@ -2471,6 +2490,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !lockScreenOnlyMode,
               !manualPaused,
               !store.isPaused(),
+              config.lock_screen_playback_paused != true,
               config.show_on_lock_screen == true,
               let videoURL = effectiveLockScreenVideoURL(),
               lockScreenPlatform.isInstalled,
@@ -2534,6 +2554,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !lockScreenOnlyMode,
               !manualPaused,
               !store.isPaused(),
+              config.lock_screen_playback_paused != true,
               config.show_on_lock_screen == true,
               let videoURL = effectiveLockScreenVideoURL(),
               lockScreenPlatform.isInstalled,
@@ -2655,6 +2676,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             wallpaperRevision: wallpaperRevision,
             sessionInactive: sessionInactive,
             showOnLockScreen: config.show_on_lock_screen == true,
+            lockScreenPlaybackPaused: config.lock_screen_playback_paused == true,
             terminating: isTerminating,
             lastSessionTransitionUptime: lastSessionTransitionUptime
             )

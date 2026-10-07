@@ -3,6 +3,7 @@
 #import <unistd.h>
 
 static NSURL *runtimeRoot;
+static BOOL lockPlaybackPaused;
 
 @interface FirstFrameSaver : AuraFlowLockScreen
 @property(nonatomic) NSUInteger videoConfigurationReads;
@@ -13,6 +14,14 @@ static NSURL *runtimeRoot;
     return [runtimeRoot URLByAppendingPathComponent:name];
 }
 - (BOOL)runtimePauseMarkerExists { return NO; }
+- (NSDictionary *)JSONDictionaryAtURL:(NSURL *)url {
+    if ([url.lastPathComponent isEqualToString:@"config.json"]
+        && ![url.URLByDeletingLastPathComponent isEqual:runtimeRoot]) {
+        return @{@"lock_screen_playback_paused":@(lockPlaybackPaused)};
+    }
+    NSData *data = [NSData dataWithContentsOfURL:url];
+    return data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+}
 - (NSDictionary *)resolvedConfiguration {
     self.videoConfigurationReads += 1;
     return @{@"video_path":@"", @"fallback_path":@"", @"scale_mode":@"fill", @"playback_rate":@"1"};
@@ -56,6 +65,12 @@ int main(int argc, char **argv) {
         [saver animateOneFrame];
         if ([[saver valueForKey:@"terminalModeActive"] boolValue] || !frame.hidden
             || saver.videoConfigurationReads == 0) return 5;
+        lockPlaybackPaused = YES;
+        [saver animateOneFrame];
+        if (![[saver valueForKey:@"runtimePaused"] boolValue]) return 7;
+        lockPlaybackPaused = NO;
+        [saver animateOneFrame];
+        if ([[saver valueForKey:@"runtimePaused"] boolValue]) return 8;
         [saver stopAnimation];
         // A fresh view without a live lease must not expose a stale PNG.
         FirstFrameSaver *stale = [[FirstFrameSaver alloc] initWithFrame:NSMakeRect(0,0,320,240) isPreview:YES];

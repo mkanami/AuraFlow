@@ -37,6 +37,8 @@ private final class RecordingModernInstaller: ModernLockScreenInstalling {
     var isInstalled: Bool
     private(set) var installCallCount = 0
     private(set) var repairCallCount = 0
+    private(set) var playbackPauses: [URL] = []
+    private(set) var playbackResumes: [URL] = []
     private(set) var scaleModeUpdates: [(URL, WallpaperScaleMode)] = []
     var lockScreenOnlyStatusOverride: LockScreenOnlyGenerationStatus?
     var restoreError: Error?
@@ -90,6 +92,16 @@ private final class RecordingModernInstaller: ModernLockScreenInstalling {
         mode: WallpaperScaleMode
     ) async throws -> Bool {
         scaleModeUpdates.append((videoURL, mode))
+        return true
+    }
+
+    func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        playbackPauses.append(videoURL)
+        return true
+    }
+
+    func resumeLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {
+        playbackResumes.append(videoURL)
         return true
     }
 
@@ -635,4 +647,26 @@ private func makeRuntimeBridgeFixture(
         #expect(!rollbackError.isEmpty)
     }
     #expect(modernInstaller.isInstalled == false)
+}
+
+@Test func wallpaperPlatformAdapterForwardsPlaybackWithoutRemovingRoute() async throws {
+    let installer = RecordingModernInstaller(isAvailable: true, isInstalled: true)
+    let modern = ModernMacOS26Adapter(installer: installer,
+        operatingSystemVersion: OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0))
+    let adapter = WallpaperPlatformAdapter(modern: modern,
+        legacy: LegacyMacOSAdapter(installer: PlatformRecordingInstaller()))
+    let source = URL(fileURLWithPath: "/tmp/lock-playback.mov")
+    #expect(try await adapter.pauseLockScreenOnlyPlayback(videoURL: source))
+    #expect(try await adapter.resumeLockScreenOnlyPlayback(videoURL: source))
+    #expect(installer.playbackPauses == [source])
+    #expect(installer.playbackResumes == [source])
+    #expect(installer.installCallCount == 0)
+    #expect(installer.isInstalled)
+}
+
+@Test func oldControlConfigKeepsLockScreenPlaybackEnabled() throws {
+    let data = Data(#"{"video_path":"/tmp/wallpaper.mov","playback_speed":1,"show_on_lock_screen":true}"#.utf8)
+    let config = try JSONDecoder().decode(ControlConfig.self, from: data)
+    #expect(config.lock_screen_playback_paused == nil)
+    #expect(config.lockScreenPlaybackEnabled)
 }
