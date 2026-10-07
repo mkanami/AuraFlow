@@ -145,6 +145,15 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
         }
     }
 
+    func invalidatePreparation() {
+        ioQueue.sync {
+            presentationGeneration &+= 1
+            // The display assertion belongs to the old provider route. Hide
+            // alone keeps it cached and cannot rebind after OFF -> ON.
+            closeTransport(finalState: .stopped, terminateProcess: true)
+        }
+    }
+
     private func ensureReady(
         _ continuation: @escaping @Sendable (Bool) -> Void
     ) {

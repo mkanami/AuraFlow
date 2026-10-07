@@ -26,6 +26,7 @@ struct TerminalLockTransition {
 final class TerminalLockScreenPresentation {
     private let logger = Logger(subsystem: "com.andrijvergeles.auraflow", category: "terminal-lock-screen")
     private var timer: Timer?
+    private var started = false
     private var transition = TerminalLockTransition()
     private var notifiedLockState: Bool?
     private var generation: UInt64 = 0
@@ -44,6 +45,10 @@ final class TerminalLockScreenPresentation {
     #endif
 
     func start() {
+        guard !started else { return }
+        started = true
+        transition = TerminalLockTransition()
+        notifiedLockState = nil
         // Resolve the system entry point while the desktop is still visible,
         // rather than loading login.framework at the secure-screen boundary.
         _ = Self.startFunction
@@ -83,6 +88,7 @@ final class TerminalLockScreenPresentation {
     }
 
     func stop() {
+        started = false
         timer?.invalidate()
         timer = nil
         if let observer { DistributedNotificationCenter.default().removeObserver(observer) }
@@ -104,6 +110,7 @@ final class TerminalLockScreenPresentation {
     }
 
     private func pollSession() {
+        guard started else { return }
         let session = CGSessionCopyCurrentDictionary() as? [String: Any]
         let locked = session.map { ($0["CGSSessionScreenIsLocked"] as? Bool) ?? false }
         let resolved = notifiedLockState ?? locked
@@ -117,6 +124,7 @@ final class TerminalLockScreenPresentation {
     private var sessionObservers: [NSObjectProtocol] = []
 
     private func handleLockNotification(_ locked: Bool) {
+        guard started else { return }
         notifiedLockState = locked
         guard let changed = transition.update(locked) else { return }
         logger.notice("Terminal Lock Screen notification locked=\(changed)")
@@ -129,6 +137,16 @@ final class TerminalLockScreenPresentation {
     }
 
     private func prepare(reloadRoute: Bool = false) {
+        guard started else { return }
+        #if canImport(Wallpaper)
+        if reloadRoute {
+            // A Lock arriving during reload must not reuse the display
+            // assertion bound to the user's previous Idle provider.
+            presentations.removeAll()
+            displays.removeAll()
+            displayIDs.removeAll()
+        }
+        #endif
         generation &+= 1
         let requestedGeneration = generation
         let locked = transition.locked
@@ -173,7 +191,7 @@ final class TerminalLockScreenPresentation {
 
     private func startSaver() {
         // Never call this from app startup or an unconfirmed workspace event.
-        guard transition.locked else { return }
+        guard started, transition.locked else { return }
         guard let function = Self.startFunction else {
             logger.error("SACScreenSaverStartNow is unavailable")
             return

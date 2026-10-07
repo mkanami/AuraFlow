@@ -232,3 +232,59 @@ private struct TerminalControllerFixture {
     #expect(lockScreen.activations == 0)
     #expect(fixture.store.loadCommand() == nil)
 }
+
+@Test func terminalLockScreenOffOnPreservesDesktopProcessAndRefreshesFrame() throws {
+    let fixture = try TerminalControllerFixture("lock-checkbox-cycle")
+    defer { fixture.cleanup() }
+    let coordinator = MockTerminalLockScreenCoordinator()
+    let sharedConfig = fixture.root.appendingPathComponent("config.json")
+    func setEnabled(_ enabled: Bool) throws {
+        try JSONSerialization.data(withJSONObject: ["show_on_lock_screen": enabled]).write(to: sharedConfig, options: .atomic)
+    }
+    try setEnabled(false)
+    var readinessChecks = 0
+    let controller = try NativeTerminalWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }, lockScreenVideoIsActive: { false }, lockScreenCoordinator: coordinator,
+        lockScreenFrameReadinessWaiter: { _, _ in readinessChecks += 1; return true })
+    _ = try controller.start(config: TerminalWallpaperConfig(command: TerminalCommandConfiguration(executable: "/bin/echo", arguments: ["static wallpaper"])))
+    let pid = try #require(fixture.store.loadPID())
+    #expect(readinessChecks == 0)
+    #expect(coordinator.activations == 0)
+    try controller.reconcileLockScreenIfRunning()
+    #expect(coordinator.activations == 0)
+    try setEnabled(true)
+    try controller.setShowOnLockScreen(true)
+    #expect(readinessChecks == 1)
+    #expect(coordinator.activations == 1)
+    try setEnabled(false)
+    try controller.setShowOnLockScreen(false)
+    #expect(coordinator.restorations == 1)
+    #expect(fixture.store.processIsAlive(pid: pid))
+    #expect(fixture.store.loadPID() == pid)
+    #expect(fixture.store.loadCommand()?.action == .update)
+    try controller.reconcileLockScreenIfRunning()
+    #expect(coordinator.activations == 1)
+    try setEnabled(true)
+    try controller.setShowOnLockScreen(true)
+    #expect(readinessChecks == 2)
+    #expect(coordinator.activations == 2)
+    #expect(fixture.store.loadPID() == pid)
+}
+
+@Test func terminalLockScreenDoesNotActivateWithoutFreshFrame() throws {
+    let fixture = try TerminalControllerFixture("lock-checkbox-unready")
+    defer { fixture.cleanup() }
+    let coordinator = MockTerminalLockScreenCoordinator()
+    let task = Process()
+    task.executableURL = fixture.helperURL
+    try task.run()
+    try fixture.store.savePID(task.processIdentifier)
+    let controller = try NativeTerminalWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }, lockScreenVideoIsActive: { false }, lockScreenCoordinator: coordinator,
+        lockScreenFrameReadinessWaiter: { _, _ in false })
+    #expect(throws: TerminalWallpaperControllerError.lockScreenFrameNotReady) {
+        try controller.setShowOnLockScreen(true)
+    }
+    #expect(coordinator.activations == 0)
+    #expect(task.isRunning)
+}

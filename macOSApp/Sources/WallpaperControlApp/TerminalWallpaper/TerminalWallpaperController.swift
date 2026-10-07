@@ -19,6 +19,11 @@ protocol TerminalWallpaperControlling: Sendable {
 protocol TerminalLockScreenCoordinating: Sendable {
     func activate() throws
     func restore() throws
+    func restoreUserWallpaper() throws
+}
+
+extension TerminalLockScreenCoordinating {
+    func restoreUserWallpaper() throws { try restore() }
 }
 
 private final class SystemTerminalLockScreenCoordinator: TerminalLockScreenCoordinating, @unchecked Sendable {
@@ -32,6 +37,7 @@ private final class SystemTerminalLockScreenCoordinator: TerminalLockScreenCoord
         )
     }
     func restore() throws { try installer.restoreAfterTerminal() }
+    func restoreUserWallpaper() throws { try installer.restoreAfterTerminal(preferCurrentDesktop: true) }
 }
 
 extension TerminalWallpaperControlling {
@@ -87,10 +93,9 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
             WallpaperRuntimeStore().status().running
         }
         self.lockScreenVideoIsActive = lockScreenVideoIsActive ?? {
-            FileManager.default.fileExists(
-                atPath: WallpaperRuntimeStore.defaultAppSupportURL()
-                    .appendingPathComponent("lock_screen_only_source.json").path
-            )
+            let videoStore = WallpaperRuntimeStore()
+            return videoStore.loadConfig().show_on_lock_screen != false
+                && videoStore.loadLockScreenOnlySource() != nil
         }
         self.lockScreenCoordinator = lockScreenCoordinator ?? SystemTerminalLockScreenCoordinator()
         self.lockScreenFrameReadinessWaiter = lockScreenFrameReadinessWaiter ?? {
@@ -124,13 +129,15 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
                 try launchAgent()
                 try send(.start, config: normalized)
             }
-            guard lockScreenFrameReadinessWaiter(startedAt, previousFrameRevision) else {
-                throw TerminalWallpaperControllerError.lockScreenFrameNotReady
-            }
             // Match the ordinary wallpaper Start sequence: first make the new
             // source available, then re-arm WallpaperAgent so its secure
             // Lock Screen surface binds to that source instead of a stale one.
-            try lockScreenCoordinator.activate()
+            if store.lockScreenPlaybackEnabled {
+                guard lockScreenFrameReadinessWaiter(startedAt, previousFrameRevision) else {
+                    throw TerminalWallpaperControllerError.lockScreenFrameNotReady
+                }
+                try lockScreenCoordinator.activate()
+            }
         } catch {
             if !wasRunning { try? lockScreenCoordinator.restore() }
             throw error
@@ -264,8 +271,28 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         lockScreenOperationLock.lock()
         defer { lockScreenOperationLock.unlock() }
         guard store.processIsAlive(pid: store.loadPID()) else { return }
+        guard store.lockScreenPlaybackEnabled else { return }
         try ensureCanStart()
         try lockScreenCoordinator.activate()
+    }
+
+    // The caller persists the shared checkbox before notifying the helper.
+    // Leave its desktop PTY and preview surface alive on either transition.
+    func setShowOnLockScreen(_ enabled: Bool) throws {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
+        guard store.processIsAlive(pid: store.loadPID()) else { return }
+        let startedAt = Date().timeIntervalSince1970
+        let previousRevision = Self.lockScreenFrameRevision(in: store)
+        try send(.update, config: store.loadConfig())
+        if enabled {
+            guard lockScreenFrameReadinessWaiter(startedAt, previousRevision) else {
+                throw TerminalWallpaperControllerError.lockScreenFrameNotReady
+            }
+            try lockScreenCoordinator.activate()
+        } else {
+            try lockScreenCoordinator.restoreUserWallpaper()
+        }
     }
 
     private func validated(_ config: TerminalWallpaperConfig) throws -> TerminalWallpaperConfig {

@@ -23,7 +23,9 @@ int main(int argc, char **argv) {
     @autoreleasepool {
         if (argc != 2) return 2;
         [NSApplication sharedApplication];
-        runtimeRoot = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
+        NSURL *root = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
+        runtimeRoot = [root URLByAppendingPathComponent:@"terminal-wallpaper"];
+        [[NSFileManager defaultManager] createDirectoryAtURL:runtimeRoot withIntermediateDirectories:YES attributes:nil error:nil];
         NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc]
             initWithBitmapDataPlanes:NULL pixelsWide:2 pixelsHigh:2 bitsPerSample:8
             samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace
@@ -51,6 +53,15 @@ int main(int argc, char **argv) {
         printf("first-frame-before-start %.6f\n", NSProcessInfo.processInfo.systemUptime - started);
         [saver startAnimation];
         if (saver.videoConfigurationReads != 0 || frame.hidden) return 4;
+        // OFF must reject a live terminal lease immediately, even if the
+        // helper has not consumed its update command yet.
+        NSURL *configURL = [root URLByAppendingPathComponent:@"config.json"];
+        [[NSJSONSerialization dataWithJSONObject:@{@"show_on_lock_screen":@NO} options:0 error:nil] writeToURL:configURL atomically:YES];
+        [saver animateOneFrame];
+        if ([[saver valueForKey:@"terminalModeActive"] boolValue] || !frame.hidden) return 7;
+        [[NSJSONSerialization dataWithJSONObject:@{@"show_on_lock_screen":@YES} options:0 error:nil] writeToURL:configURL atomically:YES];
+        [saver animateOneFrame];
+        if (![[saver valueForKey:@"terminalModeActive"] boolValue] || frame.hidden) return 8;
         // An expired route must still restore the normal wallpaper lazily.
         [[NSFileManager defaultManager] removeItemAtURL:heartbeat error:nil];
         [saver animateOneFrame];

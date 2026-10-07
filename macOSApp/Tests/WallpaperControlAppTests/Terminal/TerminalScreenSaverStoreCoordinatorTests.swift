@@ -237,3 +237,24 @@ private final class TerminalSaverStoreFixture {
     }
     #expect(starts == 1)
 }
+
+@Test func terminalSaverCheckboxOffRestoresCurrentUserDesktopInsteadOfOldIdle() throws {
+    let fixture = try TerminalSaverStoreFixture()
+    defer { fixture.cleanup() }
+    let desktop = try fixture.mode(provider: WallpaperPlatformConstants.imageProviderID, config: ["user": "original"])
+    let oldIdle = try fixture.mode(provider: WallpaperPlatformConstants.aerialProviderID, config: ["asset": "Golden Gate"])
+    try fixture.save(["SystemDefault": ["Type": "individual", "Desktop": desktop, "Idle": oldIdle]])
+    let coordinator = fixture.coordinator()
+    try coordinator.activate()
+    var active = try fixture.load()
+    let latestDesktop = try fixture.mode(provider: WallpaperPlatformConstants.imageProviderID, config: ["user": "new selection"])
+    var route = active["SystemDefault"] as! [String: Any]
+    route["Desktop"] = latestDesktop
+    active["SystemDefault"] = route
+    try fixture.save(active)
+    try coordinator.restoreCurrentDesktopIfOwned()
+    let restored = (try fixture.load())["SystemDefault"] as! [String: Any]
+    #expect((restored["Idle"] as? NSDictionary)?.isEqual(latestDesktop) == true)
+    #expect((restored["Desktop"] as? NSDictionary)?.isEqual(latestDesktop) == true)
+    #expect(!FileManager.default.fileExists(atPath: fixture.journalURL.path))
+}

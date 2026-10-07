@@ -106,6 +106,16 @@ public struct TerminalGridSnapshot: Codable, Equatable, Sendable {
     public let cursorVisible: Bool
     public let revision: UInt64
 
+    /// A cursor or an untouched background is not a program's first frame.
+    /// Colored spaces count as content (for example, Nyancat's pixels).
+    public var hasVisibleContent: Bool {
+        cells.contains {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || ($0.style.background != .default && $0.style.background != .indexed(0)
+                    && $0.style.background != .rgb(0, 0, 0))
+        }
+    }
+
     public init(
         columns: Int,
         rows: Int,

@@ -2449,3 +2449,61 @@ func reenablingLockScreenAfterDisableReusesSelection(secure: Bool) async throws 
     #expect(installer.installedLockScreenOnlyVideoURL == fixture.videoURL)
     #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
 }
+
+@Test func enablingLockScreenWithoutDesktopStartsDedicatedRuntime() async throws {
+    let fixture = try NativeRuntimeFixture("enable-without-desktop")
+    defer { fixture.cleanup() }
+    try fixture.store.saveConfig(ControlConfig(video_path: fixture.videoURL.path, playback_speed: 1, show_on_lock_screen: false))
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+                                                   lockScreenSaverInstaller: installer)
+    _ = try await controller.setShowOnLockScreen(true)
+    #expect(fixture.store.processIsAlive(pid: fixture.store.loadPID()))
+    #expect(fixture.store.isLockScreenOnlyAgent())
+    #expect(installer.installedLockScreenOnlyVideoURL == fixture.videoURL)
+    #expect(installer.desktopAgentInstallCallCount == 0)
+    _ = try await controller.setShowOnLockScreen(false)
+    #expect(!fixture.store.processIsAlive(pid: fixture.store.loadPID()))
+    _ = try await controller.setShowOnLockScreen(true)
+    #expect(fixture.store.processIsAlive(pid: fixture.store.loadPID()))
+    #expect(fixture.store.isLockScreenOnlyAgent())
+}
+
+@Test func lockScreenCheckboxRoutesToRunningTerminalInsteadOfSavedVideo() async throws {
+    let fixture = try NativeRuntimeFixture("terminal-lock-checkbox")
+    defer { fixture.cleanup() }
+    try fixture.store.saveConfig(ControlConfig(video_path: fixture.videoURL.path, playback_speed: 1, show_on_lock_screen: true))
+    let installer = RecordingLockScreenSaverInstaller()
+    var transitions: [Bool] = []
+    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer, terminalRuntimeIsRunning: { true },
+        terminalLockScreenToggle: { enabled in
+            #expect(fixture.store.loadConfig().show_on_lock_screen == enabled)
+            transitions.append(enabled)
+        })
+    _ = try await controller.setShowOnLockScreen(false)
+    _ = try await controller.setShowOnLockScreen(true)
+    #expect(transitions == [false, true])
+    #expect(installer.desktopAgentInstallCallCount == 0)
+    #expect(installer.installedLockScreenOnlyVideoURL == nil)
+    #expect(installer.preservingUninstallCallCount == 0)
+    #expect(fixture.store.loadPID() == nil)
+}
+
+@Test func lockScreenCheckboxRestoresFlagWhenTerminalCannotPrepareFrame() async throws {
+    let fixture = try NativeRuntimeFixture("terminal-lock-checkbox-failure")
+    defer { fixture.cleanup() }
+    try fixture.store.saveConfig(ControlConfig(video_path: fixture.videoURL.path, playback_speed: 1, show_on_lock_screen: false))
+    var transitions: [Bool] = []
+    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller(), terminalRuntimeIsRunning: { true },
+        terminalLockScreenToggle: { enabled in
+            transitions.append(enabled)
+            if enabled { throw TerminalWallpaperControllerError.lockScreenFrameNotReady }
+        })
+    await #expect(throws: TerminalWallpaperControllerError.lockScreenFrameNotReady) {
+        _ = try await controller.setShowOnLockScreen(true)
+    }
+    #expect(fixture.store.loadConfig().show_on_lock_screen == false)
+    #expect(transitions == [true, false])
+}

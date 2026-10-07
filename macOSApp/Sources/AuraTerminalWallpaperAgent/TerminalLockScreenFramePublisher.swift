@@ -15,20 +15,41 @@ final class TerminalLockScreenFramePublisher {
     private var lastPublishedAt: TimeInterval = 0 // Main thread only.
     private var lockScreenActive = false // Main thread only.
     private var didPublishDesktopSeed = false // Main thread only.
+    private var desktopSeedCount = 0
+    private var lastDesktopSeedAt: TimeInterval = 0
+    private let clock: () -> TimeInterval
     private var maxFPS = 30 // Main thread only.
 
-    init(store: TerminalWallpaperRuntimeStore) {
+    init(store: TerminalWallpaperRuntimeStore, clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.store = store
+        self.clock = clock
     }
 
+    var needsDesktopSeed: Bool {
+        guard !lockScreenActive, !writing else { return false }
+        guard didPublishDesktopSeed else { return true }
+        // A CLI often paints its first screen in multiple PTY chunks. Briefly
+        // settle that seed with at most four captures, then stop desktop
+        // readbacks entirely. Slow PNG/GPU completion must not exhaust a
+        // wall-clock settling window before a complete frame arrives. Full-rate
+        // publication remains restricted to the actual Lock Screen session.
+        let now = clock()
+        return desktopSeedCount < 4 && now - lastDesktopSeedAt >= 0.5
+    }
+
+    var isWritingFrame: Bool { writing }
+
     func publish(_ bytes: Data, width: Int, height: Int) {
-        let now = Date().timeIntervalSince1970
+        let now = clock()
         guard lockScreenActive,
               !writing,
               width > 0,
               height > 0,
               now - lastPublishedAt >= 1.0 / Double(max(maxFPS, 1)) else { return }
         writing = true
+        // Pace capture starts, not completion + another frame interval. PNG
+        // encoding is only a fallback and must not add an artificial cooldown.
+        lastPublishedAt = now
         let currentGeneration = generation
         let store = store
         queue.async { [weak self] in
@@ -45,18 +66,14 @@ final class TerminalLockScreenFramePublisher {
                 guard let self else { return }
                 self.writing = false
                 guard success, self.generation == currentGeneration else { return }
-                self.lastPublishedAt = Date().timeIntervalSince1970
                 try? store.saveLockScreenHeartbeat(TerminalLockScreenHeartbeat(pid: Int(getpid())))
             }
         }
     }
 
-    /// Publishes one current desktop frame so the Screen Saver source is ready
-    /// before the Mac locks. Animation frames are still only encoded while locked.
+    /// Seed and bounded startup settling, not continuous desktop PNG encoding.
     func publishDesktopSeed(_ bytes: Data, width: Int, height: Int) {
-        guard !lockScreenActive,
-              !didPublishDesktopSeed,
-              !writing,
+        guard needsDesktopSeed,
               width > 0,
               height > 0 else { return }
         writing = true
@@ -78,7 +95,9 @@ final class TerminalLockScreenFramePublisher {
                 guard success, self.generation == currentGeneration,
                       !self.lockScreenActive else { return }
                 self.didPublishDesktopSeed = true
-                self.lastPublishedAt = Date().timeIntervalSince1970
+                self.desktopSeedCount += 1
+                self.lastDesktopSeedAt = self.clock()
+                self.lastPublishedAt = self.clock()
                 try? store.saveLockScreenHeartbeat(TerminalLockScreenHeartbeat(pid: Int(getpid())))
             }
         }
@@ -90,6 +109,8 @@ final class TerminalLockScreenFramePublisher {
         generation &+= 1
         lastPublishedAt = 0
         didPublishDesktopSeed = false
+        desktopSeedCount = 0
+        lastDesktopSeedAt = 0
     }
 
     func configure(maxFPS: Int) {
@@ -113,6 +134,8 @@ final class TerminalLockScreenFramePublisher {
         generation &+= 1
         lastPublishedAt = 0
         didPublishDesktopSeed = false
+        desktopSeedCount = 0
+        lastDesktopSeedAt = 0
         store.removeLockScreenPublication()
     }
 

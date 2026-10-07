@@ -12,6 +12,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     )
     private let store: TerminalWallpaperRuntimeStore
     private let framePublisher: TerminalLockScreenFramePublisher
+    private let managesLockScreenPresentation: Bool
     private var lockScreenPresentation: TerminalLockScreenPresentation?
     private let metalDevice = MTLCreateSystemDefaultDevice()
     private var config: TerminalWallpaperConfig
@@ -34,7 +35,8 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var fullscreenTimer: Timer?
     private var fullscreenPausePolicy = TerminalFullscreenPausePolicy()
     private var lockScreenIsLocked = false
-    private var lockScreenSeedCaptureGeneration: UInt64?
+    private var lockScreenPlaybackEnabled = false
+    private var outputPublication = TerminalOutputPublicationState()
     private var lastCommandID: String?
     private var frames = 0
     private var renderedFrames = 0
@@ -45,10 +47,11 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var terminating = false
     private var publishedSharedFrameDescriptor: TerminalSharedFrameDescriptor?
 
-    init(configurationURL: URL) {
+    init(configurationURL: URL, managesLockScreenPresentation: Bool = true) {
         let supportURL = configurationURL.deletingLastPathComponent()
         store = TerminalWallpaperRuntimeStore(appSupportURL: supportURL)
         framePublisher = TerminalLockScreenFramePublisher(store: store)
+        self.managesLockScreenPresentation = managesLockScreenPresentation
         config = store.loadConfig()
         super.init()
     }
@@ -60,12 +63,12 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         logger.info("Terminal Wallpaper agent started")
         try? store.savePID()
         installNotifications()
-        lockScreenPresentation = TerminalLockScreenPresentation()
+        lockScreenPresentation = managesLockScreenPresentation ? TerminalLockScreenPresentation() : nil
         lockScreenPresentation?.onLockStateChange = { [weak self] locked in
             self?.lockScreenIsLocked = locked
             self?.lockScreenStateChanged(locked)
         }
-        lockScreenPresentation?.start()
+        syncLockScreenPlaybackPolicy()
         framePublisher.configure(maxFPS: config.render.maxFPS)
         rebuildRuntime()
         startFrameTimer()
@@ -147,6 +150,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         else { return }
         lastCommandID = command.id
         let previousConfiguration = config
+        syncLockScreenPlaybackPolicy(forceSeed: command.action == .update)
         if let commandConfig = command.config {
             let oldFPS = config.render.maxFPS
             config = commandConfig.normalized()
@@ -190,6 +194,8 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         parserDirtyLock.unlock()
         guard !config.command.executable.isEmpty else {
             lastError = "No executable configured."
+            childGeneration &+= 1
+            outputPublication = TerminalOutputPublicationState()
             session.stop()
             rebuildWindows()
             return
@@ -201,6 +207,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             // loses its only content source before the new PTY paints a frame.
             childGeneration &+= 1
             session.stop()
+            outputPublication = TerminalOutputPublicationState()
         }
         if restartChild || parserSize == nil {
             // Retained windows reject older revisions. A new child must begin
@@ -214,19 +221,13 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             }
             parserSize = geometry
         } else if parserSize?.columns != geometry.columns || parserSize?.rows != geometry.rows {
+            parserQueue.sync {
+                parser?.resize(columns: geometry.columns, rows: geometry.rows)
+                latestSnapshot = parser?.grid.snapshot()
+                publishedParserRevision = parser?.grid.currentRevision
+            }
             if session.childPID != nil {
-                parserQueue.sync {
-                    parser?.resize(columns: geometry.columns, rows: geometry.rows)
-                    latestSnapshot = parser?.grid.snapshot()
-                    publishedParserRevision = parser?.grid.currentRevision
-                }
                 try? session.resize(columns: geometry.columns, rows: geometry.rows)
-            } else {
-                parserQueue.sync {
-                    parser = VTParser(columns: geometry.columns, rows: geometry.rows)
-                    latestSnapshot = parser?.grid.snapshot()
-                    publishedParserRevision = parser?.grid.currentRevision
-                }
             }
             parserSize = geometry
         }
@@ -243,10 +244,10 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     columns: geometry.columns,
                     rows: geometry.rows,
                     onData: { [weak self] data in self?.consume(data, generation: generation) },
-                    onExit: { [weak self] _ in
+                    onExit: { [weak self] code in
                         DispatchQueue.main.async {
                             guard self?.childGeneration == generation else { return }
-                            self?.childExited()
+                            self?.childExited(code: code)
                         }
                     }
                 )
@@ -263,7 +264,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func restartSessionForCurrentGeometry() {
-        guard session.childPID != nil else {
+        guard session.childPID != nil || outputPublication.exitCode == 0 else {
             rebuildRuntime()
             return
         }
@@ -271,12 +272,14 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func consume(_ data: Data, generation: UInt64) {
-        parserDirtyLock.lock()
-        parserHasPendingData = true
-        parserDirtyLock.unlock()
         parserQueue.async { [weak self] in
             guard let self, self.parserGeneration == generation else { return }
             self.parser?.feed(data)
+            // Do not let the timer consume the dirty flag before the bytes
+            // have entered the parser (a single static chunk may be the last).
+            self.parserDirtyLock.lock()
+            self.parserHasPendingData = true
+            self.parserDirtyLock.unlock()
         }
     }
 
@@ -292,6 +295,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func publishLatestSnapshot() {
+        requestDesktopSeedIfNeeded()
         guard !terminating, !snapshotRequestInFlight else { return }
         parserDirtyLock.lock()
         let hasPendingData = parserHasPendingData
@@ -314,13 +318,14 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                       self.childGeneration == requestedChildGeneration else { return }
                 self.snapshotRequestInFlight = false
                 guard let snapshot,
-                      snapshot.revision != self.latestSnapshot?.revision ||
+                      snapshot.revision > (self.latestSnapshot?.revision ?? 0) ||
                       snapshot.columns != self.latestSnapshot?.columns ||
                       snapshot.rows != self.latestSnapshot?.rows
                 else { return }
                 self.latestSnapshot = snapshot
+                self.outputPublication.receive(snapshot)
                 self.frames += 1
-                if self.frames == self.framesAtChildStart + 1 {
+                if self.frames == self.framesAtChildStart + 1, self.outputPublication.exitCode == nil {
                     self.lastError = nil
                     self.reportedNoOutput = false
                 }
@@ -329,10 +334,32 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func childExited() {
+    private func childExited(code: Int32) {
         guard !terminating else { return }
-        lastError = "The terminal process exited."
-        logger.error("Terminal child process exited; retaining the last valid frame")
+        // EOF follows all PTY data. Drain the parser before deciding whether
+        // this is a successful static wallpaper, even if no timer has fired.
+        let previousRevision = latestSnapshot?.revision
+        parserQueue.sync {
+            latestSnapshot = parser?.grid.snapshot()
+            publishedParserRevision = latestSnapshot?.revision
+        }
+        if let latestSnapshot { outputPublication.receive(latestSnapshot) }
+        if latestSnapshot?.revision != previousRevision { frames += 1 }
+        outputPublication.finish(code)
+        lastError = outputPublication.error
+        if lastError == nil {
+            logger.info("Terminal program completed successfully; retaining static output")
+            // A multi-chunk static program may have seeded the Lock Screen
+            // with its first partial frame. Replace that seed with the final
+            // snapshot, invalidating any readback still owned by the old one.
+            framePublisher.beginDesktopGeneration()
+            applyLatestSnapshot()
+            if lockScreenPlaybackEnabled {
+                windows.first?.requestLockScreenSeedCapture(refresh: true)
+            }
+        } else {
+            logger.error("Terminal program exited with status \(code)")
+        }
         writeHealth()
     }
 
@@ -340,7 +367,6 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         framePublisher.beginDesktopGeneration()
         store.removeSharedFrameDescriptor()
         publishedSharedFrameDescriptor = nil
-        lockScreenSeedCaptureGeneration = nil
         for window in windows {
             window.onLockScreenFrame = nil
             window.onSharedFrame = nil
@@ -361,7 +387,9 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 guard let self,
                       self.displayGeneration == generation,
                       !self.terminating,
-                      self.session.childPID != nil else { return }
+                      self.lockScreenPlaybackEnabled,
+                      self.store.lockScreenPlaybackEnabled,
+                      self.outputPublication.canPublish(childRunning: self.session.childPID != nil) else { return }
                 if self.lockScreenIsLocked {
                     self.framePublisher.publish(bytes, width: width, height: height)
                 } else {
@@ -372,7 +400,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 guard let self,
                       self.displayGeneration == generation,
                       !self.terminating,
-                      self.session.childPID != nil else { return }
+                      self.outputPublication.canPublish(childRunning: self.session.childPID != nil) else { return }
                 if self.publishedSharedFrameDescriptor != descriptor {
                     do {
                         try self.store.saveSharedFrameDescriptor(descriptor)
@@ -413,19 +441,48 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             window.update(snapshot: latestSnapshot, configuration: render)
             renderedFrames += 1
         }
-        guard !lockScreenIsLocked,
-              session.childPID != nil,
-              lockScreenSeedCaptureGeneration != displayGeneration,
+        requestDesktopSeedIfNeeded()
+    }
+
+    private func requestDesktopSeedIfNeeded() {
+        guard !terminating,
+              lockScreenPlaybackEnabled,
+              store.lockScreenPlaybackEnabled,
+              outputPublication.canPublish(childRunning: session.childPID != nil),
+              framePublisher.needsDesktopSeed,
               let firstWindow = windows.first else { return }
-        lockScreenSeedCaptureGeneration = displayGeneration
         firstWindow.requestLockScreenSeedCapture()
     }
 
     private func lockScreenStateChanged(_ locked: Bool) {
+        guard lockScreenPlaybackEnabled, store.lockScreenPlaybackEnabled else { return }
         lockScreenIsLocked = locked
         framePublisher.setLockScreenActive(locked)
         for window in windows { window.setLockScreenCaptureEnabled(locked) }
         updateFullscreenPausePolicy()
+    }
+
+    private func syncLockScreenPlaybackPolicy(forceSeed: Bool = false) {
+        let enabled = store.lockScreenPlaybackEnabled
+        guard enabled != lockScreenPlaybackEnabled || (enabled && forceSeed) else { return }
+        let changed = enabled != lockScreenPlaybackEnabled
+        lockScreenPlaybackEnabled = enabled
+        if enabled {
+            if changed { MainActor.assumeIsolated { lockScreenPresentation?.start() } }
+            framePublisher.beginDesktopGeneration()
+            if outputPublication.canPublish(childRunning: session.childPID != nil) {
+                // A static command has already exited. Redraw its retained
+                // composition rather than waiting for new PTY bytes.
+                applyLatestSnapshot()
+                windows.first?.requestLockScreenSeedCapture(refresh: true)
+            }
+        } else {
+            MainActor.assumeIsolated { lockScreenPresentation?.stop() }
+            lockScreenIsLocked = false
+            framePublisher.revoke()
+            for window in windows { window.setLockScreenCaptureEnabled(false) }
+            updateFullscreenPausePolicy()
+        }
     }
 
     private func updateFullscreenPausePolicy() {
@@ -532,7 +589,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let health = TerminalWallpaperHealth(
             available: true,
             fresh: true,
-            running: childPID != nil,
+            running: childPID != nil || outputPublication.canPublish(childRunning: false),
             childRunning: childPID != nil,
             childPID: childPID,
             screens: windows.count,

@@ -82,6 +82,16 @@ public final class TerminalWallpaperRuntimeStore {
     public var sharedFrameDescriptorURL: URL { appSupportURL.appendingPathComponent("shared-frame.json") }
     public var launchAgentFileURL: URL { launchAgentURL }
 
+    // Both runtimes use the application's checkbox. Keep this outside the
+    // terminal command config so an old saved preset cannot re-enable Lock.
+    public var lockScreenPlaybackEnabled: Bool {
+        let url = appSupportURL.deletingLastPathComponent().appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: url),
+              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return true }
+        return config["show_on_lock_screen"] as? Bool ?? true
+    }
+
     public func ensureDirectories() throws {
         try FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: appSupportURL.path)

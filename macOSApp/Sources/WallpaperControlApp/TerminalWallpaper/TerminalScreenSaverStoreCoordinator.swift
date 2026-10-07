@@ -9,6 +9,11 @@ import Foundation
 protocol TerminalScreenSaverStoreCoordinating {
     func activate() throws
     func restoreIfOwned() throws
+    func restoreCurrentDesktopIfOwned() throws
+}
+
+extension TerminalScreenSaverStoreCoordinating {
+    func restoreCurrentDesktopIfOwned() throws { try restoreIfOwned() }
 }
 
 final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordinating {
@@ -94,14 +99,22 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
     }
 
     func restoreIfOwned() throws {
+        try restoreIfOwned(preferCurrentDesktop: false)
+    }
+
+    func restoreCurrentDesktopIfOwned() throws {
+        try restoreIfOwned(preferCurrentDesktop: true)
+    }
+
+    private func restoreIfOwned(preferCurrentDesktop: Bool) throws {
         guard let journal = try loadJournal() else { return }
-        guard try restorePlan(from: readStore(), journal: journal) != nil else {
+        guard try restorePlan(from: readStore(), journal: journal, preferCurrentDesktop: preferCurrentDesktop) != nil else {
             try FileManager.default.removeItem(at: journalURL)
             return
         }
         try withStoppedWallpaperAgent {
             let original = try readStore()
-            if let updated = try restorePlan(from: original, journal: journal) {
+            if let updated = try restorePlan(from: original, journal: journal, preferCurrentDesktop: preferCurrentDesktop) {
                 guard try readStore() == original else { throw StoreError.changedDuringUpdate }
                 try updated.write(to: storeURL, options: .atomic)
             }
@@ -142,12 +155,18 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
         return changed ? (try encodedPlist(root), Journal(routes: saved)) : nil
     }
 
-    private func restorePlan(from original: Data, journal: Journal) throws -> Data? {
+    private func restorePlan(from original: Data, journal: Journal, preferCurrentDesktop: Bool) throws -> Data? {
         var root = try dictionary(original)
         var changed = false
         root = mapContainers(in: root) { path, container in
             guard isSelected(container["Idle"]), container["Linked"] == nil else { return container }
             var result = container
+            if preferCurrentDesktop, let desktop = result["Desktop"] {
+                result["Idle"] = desktop
+                result["Type"] = "individual"
+                changed = true
+                return result
+            }
             if let saved = journal.routes.first(where: { $0.path == path }) {
                 if let linked = propertyList(saved.linked) as? NSDictionary,
                    let desktop = result["Desktop"] as? NSDictionary,

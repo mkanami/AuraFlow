@@ -211,6 +211,9 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 }
 
 - (BOOL)terminalAgentIsAlive {
+    NSURL *auraRoot = [[[self terminalRuntimeURLForFile:@"unused"] URLByDeletingLastPathComponent] URLByDeletingLastPathComponent];
+    NSDictionary *config = [self JSONDictionaryAtURL:[auraRoot URLByAppendingPathComponent:@"config.json"]];
+    if ([config[@"show_on_lock_screen"] isEqual:@NO]) return NO;
     NSDictionary *heartbeat = [self JSONDictionaryAtURL:
         [self terminalRuntimeURLForFile:@"lock-screen-heartbeat.json"]];
     NSNumber *pid = heartbeat[@"pid"];

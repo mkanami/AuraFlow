@@ -19,22 +19,34 @@ import Testing
         "-framework", "ImageIO", "-framework", "QuartzCore", "-framework", "Metal", "-framework", "IOSurface",
         fixture.path, saver.appendingPathComponent("AuraFlowLockScreen.m").path,
         rendering.appendingPathComponent("AuraFlowTerminalSurface.m").path, "-o", executable.path]
-    try compile.run()
-    await Task.detached { compile.waitUntilExit() }.value
+    try await runFirstFrameProbeProcess(compile)
     try #require(compile.terminationStatus == 0)
     let process = Process(), output = Pipe()
     process.executableURL = executable
     process.arguments = [root.path]
     process.standardOutput = output
-    try process.run()
+    let execution = Task { try await runFirstFrameProbeProcess(process) }
     let timeout = Task.detached {
         try await Task.sleep(nanoseconds: 10_000_000_000)
         if process.isRunning { process.terminate() }
     }
     defer { timeout.cancel() }
     let result = await Task.detached { output.fileHandleForReading.readDataToEndOfFile() }.value
-    await Task.detached { process.waitUntilExit() }.value
+    try await execution.value
     #expect(process.terminationStatus == 0)
     #expect(String(decoding: result, as: UTF8.self).hasPrefix("first-frame-before-start "))
     print(String(decoding: result, as: UTF8.self))
+}
+
+private func runFirstFrameProbeProcess(_ process: Process) async throws {
+    // Foundation's waitUntilExit can miss its run-loop notification after a
+    // short-lived AppKit probe exits. Register completion before launching.
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        process.terminationHandler = { _ in continuation.resume() }
+        do { try process.run() }
+        catch {
+            process.terminationHandler = nil
+            continuation.resume(throwing: error)
+        }
+    }
 }

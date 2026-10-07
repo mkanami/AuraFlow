@@ -457,3 +457,17 @@ private func stopBridge(
     #expect(bridge.isReady)
     stopBridge(bridge, fixture: fixture)
 }
+
+@Test func nativeBridgeRepreparesAfterLockScreenIsDisabled() async throws {
+    let fixture = try NativeBridgeFixture(.responds)
+    defer { fixture.cleanup() }
+    let bridge = NativeLockScreenWallpaperBridge(executableURL: fixture.executableURL, requestTimeout: 2)
+    defer { stopBridge(bridge, fixture: fixture) }
+    #expect(await awaitBridgeResult { bridge.prepare(completion: $0) })
+    bridge.invalidatePreparation()
+    #expect(!bridge.isReady)
+    #expect(await awaitBridgeResult { bridge.prepare(completion: $0) })
+    #expect(await awaitBridgeResult { bridge.showForLockTransition(completion: $0) })
+    let actions = try String(contentsOf: fixture.actionsURL, encoding: .utf8)
+    #expect(actions.components(separatedBy: "prepare").count - 1 == 2)
+}

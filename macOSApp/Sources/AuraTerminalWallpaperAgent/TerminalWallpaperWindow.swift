@@ -55,7 +55,7 @@ final class TerminalWallpaperWindow: NSWindow {
         terminalView.setLockScreenCaptureEnabled(enabled)
     }
 
-    func requestLockScreenSeedCapture() {
-        terminalView.requestLockScreenSeedCapture()
+    func requestLockScreenSeedCapture(refresh: Bool = false) {
+        terminalView.requestLockScreenSeedCapture(refresh: refresh)
     }
 }

@@ -1299,6 +1299,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if let operationID = command.operationID {
             lastCommandOperationID = operationID
         }
+        let lockScreenWasEnabled = config.show_on_lock_screen == true
         if let newConfig = command.config {
             config = store.normalized(newConfig)
             publishRearmGuardState()
@@ -1344,6 +1345,20 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             }
         case .update:
             applyRuntimeSettings()
+            if !lockScreenWasEnabled, config.show_on_lock_screen == true {
+                // OFF discarded the native presentation and restored the
+                // user's Idle provider. Enabling must bind the new route,
+                // not just change the lock-session state machine.
+                lastRearmedToken = nil
+                pendingRearmToken = nil
+                if lockScreenOnlyMode {
+                    store.markLockScreenAgentReady(false)
+                    prepareLockScreenOnlyAgent()
+                } else {
+                    prepareNativeLockScreenBridgeForStart()
+                    rearmModernLockScreenForNextSession()
+                }
+            }
             if lockScreenOnlyMode {
                 restoreDesktopStoreAfterSession()
             }
@@ -2193,7 +2208,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if config.show_on_lock_screen == false {
             lockScreenPlaybackMutationTask?.cancel()
             pendingRearmToken = nil
-            nativeLockScreenBridge.hideAfterUnlock()
+            nativeLockScreenBridge.invalidatePreparation()
         }
         syncLockScreenSetting(reason: "lock-setting")
         player?.volume = Float(max(0, min(config.volume ?? 0, 1)))

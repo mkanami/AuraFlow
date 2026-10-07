@@ -333,9 +333,13 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         }
     }
 
-    func restoreAfterTerminal() throws {
+    func restoreAfterTerminal(preferCurrentDesktop: Bool = false) throws {
         try withOperationLock {
-            try terminalWallpaperStore.restoreIfOwned()
+            if preferCurrentDesktop {
+                try terminalWallpaperStore.restoreCurrentDesktopIfOwned()
+            } else {
+                try terminalWallpaperStore.restoreIfOwned()
+            }
             try terminalSelectionCoordinator.restoreIfOwned()
         }
     }

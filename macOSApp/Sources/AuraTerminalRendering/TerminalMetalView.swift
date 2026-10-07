@@ -77,6 +77,7 @@ public final class TerminalMetalView: MTKView {
     private var requestedSize: TerminalPixelSize?
     private var rendererPaused = false
     private var gpuFrameInFlight = false
+    private var presentationPending = false
     private var pendingInstallation: (frame: TerminalPreparedFrame, epoch: UInt64)?
     private var lockScreenCaptureEnabled = false
     private var lockCaptureSeedPending = false
@@ -172,20 +173,34 @@ public final class TerminalMetalView: MTKView {
         }
     }
 
-    public func requestLockScreenSeedCapture() {
-        guard !lockScreenCaptureEnabled, !lockCaptureSeedPending else { return }
+    public func requestLockScreenSeedCapture(refresh: Bool = false) {
+        guard !lockScreenCaptureEnabled, refresh || !lockCaptureSeedPending else { return }
+        if refresh { lockCaptureGeneration &+= 1 }
         lockCaptureSeedPending = true
-        captureCurrentTexture()
+        // Preparation can be finished while the texture still contains the
+        // preceding (or uninitialized) frame. Read back only inside draw(),
+        // after the current cells have actually been rendered into the texture.
+        schedulePreparation()
+        needsDisplay = true
     }
 
     public override func draw(_ rect: NSRect) {
         schedulePreparation()
+        if gpuFrameInFlight {
+            // AppKit consumes needsDisplay even when this pass cannot draw.
+            // Remember it so a static final frame is not stranded indefinitely.
+            presentationPending = true
+            return
+        }
         guard (!rendererPaused || lockCaptureSeedPending),
-              !gpuFrameInFlight,
-              let drawable = currentDrawable,
               let frameTexture,
               let commandBuffer = commandQueue.makeCommandBuffer()
         else { return }
+        // The desktop window is occluded behind the secure Lock Screen. Its
+        // drawable is not the clock for the shared surface: render offscreen
+        // while locked, so neither AppKit occlusion nor nextDrawable stalls it.
+        let drawable = lockScreenCaptureEnabled ? nil : currentDrawable
+        guard lockScreenCaptureEnabled || drawable != nil else { return }
 
         let cellPass = MTLRenderPassDescriptor()
         cellPass.colorAttachments[0].texture = frameTexture
@@ -212,18 +227,20 @@ public final class TerminalMetalView: MTKView {
             appendLockScreenReadback(to: commandBuffer, from: frameTexture)
         }
 
-        let presentPass = MTLRenderPassDescriptor()
-        presentPass.colorAttachments[0].texture = drawable.texture
-        presentPass.colorAttachments[0].loadAction = .clear
-        presentPass.colorAttachments[0].storeAction = .store
-        presentPass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        guard let presentEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: presentPass) else { return }
-        presentEncoder.setRenderPipelineState(presentPipeline)
-        presentEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-        presentEncoder.setFragmentTexture(frameTexture, index: 0)
-        presentEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-        presentEncoder.endEncoding()
-        commandBuffer.present(drawable)
+        if let drawable {
+            let presentPass = MTLRenderPassDescriptor()
+            presentPass.colorAttachments[0].texture = drawable.texture
+            presentPass.colorAttachments[0].loadAction = .clear
+            presentPass.colorAttachments[0].storeAction = .store
+            presentPass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+            guard let presentEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: presentPass) else { return }
+            presentEncoder.setRenderPipelineState(presentPipeline)
+            presentEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+            presentEncoder.setFragmentTexture(frameTexture, index: 0)
+            presentEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            presentEncoder.endEncoding()
+            commandBuffer.present(drawable)
+        }
         let publishedDescriptor = frameSurfaceDescriptor
         if publishedDescriptor != nil {
             sharedFrameSequence &+= 1
@@ -248,6 +265,11 @@ public final class TerminalMetalView: MTKView {
                     self.accept(pending.frame, epoch: pending.epoch)
                 } else {
                     self.schedulePreparation()
+                }
+                if self.presentationPending {
+                    self.presentationPending = false
+                    if self.lockScreenCaptureEnabled { self.draw(self.bounds) }
+                    else { self.needsDisplay = true }
                 }
             }
         }
@@ -318,7 +340,10 @@ public final class TerminalMetalView: MTKView {
         // Only snapshots that have not entered preparation may be coalesced.
         install(prepared)
         rasterizedRevision = prepared.revision
-        if prepared.requiresPresentation || lockCaptureSeedPending { needsDisplay = true }
+        if prepared.requiresPresentation || lockCaptureSeedPending {
+            if lockScreenCaptureEnabled { draw(bounds) }
+            else { needsDisplay = true }
+        }
         if snapshot?.revision != prepared.revision { schedulePreparation() }
     }
 
@@ -504,7 +529,11 @@ public final class TerminalMetalView: MTKView {
                 guard self.lockCaptureGeneration == captureGeneration,
                       self.lockScreenCaptureEnabled || self.lockCaptureSeedPending,
                       let pixels else {
-                    if retryCapture && (self.lockScreenCaptureEnabled || self.lockCaptureSeedPending) {
+                    if self.lockCaptureSeedPending {
+                        // A refreshed static seed belongs to the final raster,
+                        // not a texture captured before the child completed.
+                        self.needsDisplay = true
+                    } else if retryCapture && self.lockScreenCaptureEnabled {
                         self.captureCurrentTexture()
                     }
                     return

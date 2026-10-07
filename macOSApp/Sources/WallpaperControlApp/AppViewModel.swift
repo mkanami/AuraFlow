@@ -342,6 +342,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
     }
 
     private let store: WallpaperRuntimeStore
+    private let terminalRuntimeIsRunning: () -> Bool
+    private let terminalLockScreenToggle: (Bool) throws -> Void
     private let helperURL: URL
     private let nativeBridgeURL: URL?
     private let nativeBridgeCapabilities: NativeLockScreenBridgeCapabilities
@@ -416,9 +418,18 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         helperURL: URL? = nil,
         lockScreenSaverInstaller: LockScreenPlatformOperating? = nil,
         nativeBridgeURL: URL? = nil,
-        nativeBridgeCapabilitiesOverride: NativeLockScreenBridgeCapabilities? = nil
+        nativeBridgeCapabilitiesOverride: NativeLockScreenBridgeCapabilities? = nil,
+        terminalRuntimeIsRunning: (() -> Bool)? = nil,
+        terminalLockScreenToggle: ((Bool) throws -> Void)? = nil
     ) throws {
         self.store = store
+        let terminalStore = TerminalWallpaperRuntimeStore(
+            appSupportURL: store.appSupportURL.appendingPathComponent("terminal-wallpaper", isDirectory: true)
+        )
+        self.terminalRuntimeIsRunning = terminalRuntimeIsRunning ?? { terminalStore.status().running }
+        self.terminalLockScreenToggle = terminalLockScreenToggle ?? { enabled in
+            try NativeTerminalWallpaperController(store: terminalStore).setShowOnLockScreen(enabled)
+        }
         let helperResolution: RuntimeHelperResolution
         if let helperURL {
             helperResolution = RuntimeHelperResolution(
@@ -1407,7 +1418,19 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             Task { await asyncLifecycleGate.release() }
         }
         let currentConfig = store.loadConfig()
+        if terminalRuntimeIsRunning() {
+            do {
+                _ = try updateConfig { $0.show_on_lock_screen = enabled }
+                try terminalLockScreenToggle(enabled)
+            } catch {
+                try? store.saveConfig(currentConfig)
+                try? terminalLockScreenToggle(currentConfig.show_on_lock_screen != false)
+                throw error
+            }
+            return store.status()
+        }
         var migratedLockScreenOnlySource: URL?
+        var newDedicatedSource: URL?
         if enabled {
             if let sourceURL = store.effectiveLockScreenSourceURL(for: currentConfig) {
                 guard FileManager.default.fileExists(atPath: sourceURL.path) else {
@@ -1431,18 +1454,27 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                     }
                 }
                 let lockScreenOnlySource = store.loadLockScreenOnlySource()
-                let useLockScreenOnly = lockScreenOnlySource != nil
+                let useLockScreenOnly = (lockScreenOnlySource != nil || !daemonProcessManager.isRunning)
                     && lockScreenCapabilities.supportsLockScreenOnly
+                if useLockScreenOnly, lockScreenOnlySource == nil {
+                    newDedicatedSource = sourceURL
+                    try store.saveLockScreenOnlySource(sourceURL)
+                }
                 if let lockScreenOnlySource,
                    !useLockScreenOnly,
                    lockScreenOnlySource.standardizedFileURL == sourceURL {
                     migratedLockScreenOnlySource = lockScreenOnlySource
                 }
-                try await installLockScreenSaver(
-                    videoURL: sourceURL,
-                    ensureStillFrame: true,
-                    lockScreenOnly: useLockScreenOnly
-                )
+                do {
+                    try await installLockScreenSaver(
+                        videoURL: sourceURL,
+                        ensureStillFrame: true,
+                        lockScreenOnly: useLockScreenOnly
+                    )
+                } catch {
+                    if newDedicatedSource != nil { store.clearLockScreenOnlySource() }
+                    throw error
+                }
             }
         } else {
             let wasLockOnlyAgent = store.isLockScreenOnlyAgent()
@@ -1490,15 +1522,33 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         if migratedLockScreenOnlySource != nil {
             store.clearLockScreenOnlySource()
         }
-        if enabled, store.loadLockScreenOnlySource() != nil,
-           lockScreenCapabilities.supportsSecureLockScreen,
-           !daemonProcessManager.isRunning {
-            try launchAgentIfNeeded(lockScreenOnly: true)
-        }
-        if daemonProcessManager.isRunning {
-            try send(.update, config: config)
-        } else {
-            postRuntimeCommandDidChange()
+        do {
+            if enabled, store.loadLockScreenOnlySource() != nil,
+               lockScreenCapabilities.supportsSecureLockScreen,
+               !daemonProcessManager.isRunning {
+                try launchAgentIfNeeded(lockScreenOnly: true)
+            }
+            if daemonProcessManager.isRunning {
+                try send(.update, config: config)
+            } else {
+                postRuntimeCommandDidChange()
+            }
+            if enabled, store.isLockScreenOnlyAgent(), let source = store.loadLockScreenOnlySource() {
+                try await waitForLockScreenGenerationReady(videoURL: source)
+            }
+        } catch {
+            try? store.saveConfig(currentConfig)
+            if newDedicatedSource != nil { store.clearLockScreenOnlySource() }
+            if currentConfig.show_on_lock_screen == false {
+                if store.isLockScreenOnlyAgent() {
+                    _ = daemonProcessManager.terminate(timeout: 0.5)
+                    store.markLockScreenOnlyAgent(false)
+                } else if daemonProcessManager.isRunning {
+                    try? send(.update, config: currentConfig)
+                }
+                try? await lockScreenPlatform.uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
+            }
+            throw error
         }
         return store.status()
     }
@@ -1508,6 +1558,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         defer {
             Task { await asyncLifecycleGate.release() }
         }
+        // A remembered video selection must not replace the terminal saver.
+        if terminalRuntimeIsRunning() { return }
         let config = store.loadConfig()
         var lockScreenOnlySource = store.loadLockScreenOnlySource()
         let supportsLockScreenOnly =
