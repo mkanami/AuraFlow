@@ -339,7 +339,10 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
             else {
                 continue
             }
-            if !response.succeeded {
+            let presentationCancelled = request.action == .show
+                && (response.cancelled == true
+                    || NativeLockScreenBridgeResponse.isExpectedPresentationCancellation(response.errorDescription))
+            if !response.succeeded, !presentationCancelled {
                 Self.logger.error(
                     "Native bridge request failed action=\(request.action.rawValue, privacy: .public) reason=\(response.errorDescription ?? "unknown", privacy: .public)"
                 )
@@ -382,7 +385,7 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
                     succeeded: response.succeeded
                 )
             }
-            if !response.succeeded {
+            if !response.succeeded, !presentationCancelled {
                 failTransport(
                     reason: response.errorDescription
                         ?? "Native Lock Screen bridge rejected the request."

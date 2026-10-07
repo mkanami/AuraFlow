@@ -493,6 +493,29 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadConfig().video_path == fixture.videoURL.path)
 }
 
+@Test(arguments: ["Lock Screen is disabled.",
+                  "Lock Screen presentation was cancelled by unlock.",
+                  "Native Lock Screen bridge is shutting down."])
+func runtimeNativeBridgeCancellationKeepsSecureRoute(reason: String) throws {
+    let fixture = try NativeRuntimeFixture("native-cancellation")
+    defer { fixture.cleanup() }
+    let adapter = WallpaperPlatformAdapter(
+        modern: ModernMacOS26Adapter(
+            installer: RuntimeModernInstaller(isInstalled: true),
+            operatingSystemVersion: OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 0)
+        ),
+        legacy: LegacyMacOSAdapter(installer: RecordingLockScreenSaverInstaller())
+    )
+    let controller = try NativeWallpaperController(
+        store: fixture.store, helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: adapter,
+        nativeBridgeURL: fixture.root.appendingPathComponent("bridge")
+    )
+    controller.markNativeLockScreenBridgeUnavailable(reason: "native-lock-bridge-unavailable: " + reason)
+    #expect(controller.lockScreenCapabilities.usesPrivateWallpaperFramework)
+    #expect(adapter.isInstalled)
+}
+
 @Test func terminateDaemonDoesNotSignalProcessWithMismatchedIdentity() async throws {
     let fixture = try NativeRuntimeFixture("pid-identity")
     defer { fixture.cleanup() }
@@ -2171,7 +2194,7 @@ private final class RecordingLockScreenSaverInstaller: LockScreenSaverInstalling
     #expect(fixture.store.loadConfig().scale_mode == WallpaperScaleMode.fit.rawValue)
     #expect(installer.scaleModeUpdates.last?.0 == fixture.videoURL)
     #expect(installer.scaleModeUpdates.last?.1 == .fit)
-    #expect(fixture.store.loadCommand()?.action == .update)
+    #expect(fixture.store.loadCommand()?.action == .rearmLockScreen)
     #expect(
         DaemonProcessManager(
             store: fixture.store,
@@ -2448,6 +2471,37 @@ func reenablingLockScreenAfterDisableReusesSelection(secure: Bool) async throws 
     #expect(enabled.lock_screen_only == true)
     #expect(installer.installedLockScreenOnlyVideoURL == fixture.videoURL)
     #expect(fixture.store.loadLockScreenOnlySource() == fixture.videoURL.standardizedFileURL)
+}
+
+@Test func reenablingRunningWallpaperExplicitlyRearmsLockScreen() async throws {
+    let fixture = try NativeRuntimeFixture("reenable-running-wallpaper")
+    defer { fixture.cleanup() }
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(
+        store: fixture.store, helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer
+    )
+    _ = try await controller.start(videoURL: fixture.videoURL, speed: 1.25)
+    let pid = try #require(fixture.store.loadPID())
+    for _ in 0..<2 {
+        _ = try await controller.setShowOnLockScreen(false)
+        #expect(fixture.store.loadCommand()?.action == .update)
+        #expect(!installer.isInstalled)
+        fixture.store.markLockScreenAgentReady(true)
+        _ = try await controller.setShowOnLockScreen(true)
+        #expect(fixture.store.loadCommand()?.action == .rearmLockScreen)
+        #expect(!fixture.store.isLockScreenAgentReady())
+        #expect(installer.installedVideoURL == fixture.videoURL)
+        #expect(fixture.store.loadPID() == pid)
+        #expect(fixture.store.loadConfig().video_path == fixture.videoURL.path)
+        #expect(fixture.store.loadConfig().playback_speed == 1.25)
+        #expect(fixture.store.isPaused() == false)
+    }
+    // An unrelated config update may have already persisted ON. The user's
+    // explicit enable must still repair the source without reloading Desktop.
+    _ = try await controller.setShowOnLockScreen(true)
+    #expect(fixture.store.loadCommand()?.action == .rearmLockScreen)
+    #expect(fixture.store.loadPID() == pid)
 }
 
 @Test func enablingLockScreenWithoutDesktopStartsDedicatedRuntime() async throws {

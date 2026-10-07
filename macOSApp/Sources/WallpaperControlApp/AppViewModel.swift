@@ -387,6 +387,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
     }
 
     func markNativeLockScreenBridgeUnavailable(reason: String) {
+        guard !NativeLockScreenBridgeResponse.isExpectedPresentationCancellation(reason) else { return }
         lifecycleLock.lock()
         nativeBridgeRuntimeFailureReason = reason
         lifecycleLock.unlock()
@@ -837,6 +838,26 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
 
         throw NativeWallpaperControllerError.unavailable(
             "The Lock Screen provider did not confirm the selected wallpaper."
+        )
+    }
+
+    private func waitForSharedLockScreenReady() async throws {
+        guard nativeBridgeRequired,
+              store.appSupportURL.standardizedFileURL
+                == WallpaperRuntimeStore.defaultAppSupportURL().standardizedFileURL
+        else { return }
+        let deadline = Date().addingTimeInterval(8.0)
+        while Date() < deadline {
+            guard daemonProcessManager.isRunning else {
+                throw NativeWallpaperControllerError.unavailable(
+                    "The wallpaper agent stopped before Lock Screen was ready."
+                )
+            }
+            if store.isLockScreenAgentReady() { return }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        throw NativeWallpaperControllerError.unavailable(
+            "The running wallpaper did not finish preparing for Lock Screen."
         )
     }
 
@@ -1528,13 +1549,20 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                !daemonProcessManager.isRunning {
                 try launchAgentIfNeeded(lockScreenOnly: true)
             }
+            let rearmSharedLockScreen = enabled
+                && daemonProcessManager.isRunning
+                && !store.isLockScreenOnlyAgent()
+                && lockScreenCapabilities.supportsSecureLockScreen
             if daemonProcessManager.isRunning {
-                try send(.update, config: config)
+                if rearmSharedLockScreen { store.markLockScreenAgentReady(false) }
+                try send(rearmSharedLockScreen ? .rearmLockScreen : .update, config: config)
             } else {
                 postRuntimeCommandDidChange()
             }
             if enabled, store.isLockScreenOnlyAgent(), let source = store.loadLockScreenOnlySource() {
                 try await waitForLockScreenGenerationReady(videoURL: source)
+            } else if rearmSharedLockScreen {
+                try await waitForSharedLockScreenReady()
             }
         } catch {
             try? store.saveConfig(currentConfig)
@@ -2826,6 +2854,7 @@ final class AppViewModel: ObservableObject {
     private func handleLockScreenProviderBecameUnavailable(
         reason: String? = nil
     ) async {
+        guard !NativeLockScreenBridgeResponse.isExpectedPresentationCancellation(reason) else { return }
         if let reason, !reason.isEmpty {
             pendingLockScreenProviderFallbackReason = reason
             controller?.markNativeLockScreenBridgeUnavailable(reason: reason)

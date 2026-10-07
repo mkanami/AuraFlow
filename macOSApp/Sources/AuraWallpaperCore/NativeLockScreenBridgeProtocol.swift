@@ -250,18 +250,31 @@ public struct NativeLockScreenBridgeResponse: Codable, Sendable {
     public let succeeded: Bool
     public let errorDescription: String?
     public let capabilities: NativeLockScreenBridgeRuntimeCapabilities?
+    public let cancelled: Bool?
 
     public init(
         id: String,
         action: NativeLockScreenBridgeAction,
         succeeded: Bool,
         errorDescription: String? = nil,
-        capabilities: NativeLockScreenBridgeRuntimeCapabilities? = nil
+        capabilities: NativeLockScreenBridgeRuntimeCapabilities? = nil,
+        cancelled: Bool? = nil
     ) {
         self.id = id
         self.action = action
         self.succeeded = succeeded
         self.errorDescription = errorDescription
         self.capabilities = capabilities
+        self.cancelled = cancelled
+    }
+
+    // Also recognize cancellation replies/notifications from older helpers
+    // during an app update. These describe user intent, not bridge failure.
+    public static func isExpectedPresentationCancellation(_ reason: String?) -> Bool {
+        guard let reason else { return false }
+        return ["Lock Screen is disabled.",
+                "Lock Screen presentation was cancelled by unlock.",
+                "Native Lock Screen bridge is shutting down."]
+            .contains { reason == $0 || reason == "native-lock-bridge-unavailable: " + $0 }
     }
 }

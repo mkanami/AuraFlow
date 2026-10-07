@@ -80,6 +80,7 @@ public typealias LaunchctlRunner = ([String]) -> LaunchctlResult
 public enum WallpaperRuntimeCommandAction: String, Codable, Equatable {
     case reload
     case update
+    case rearmLockScreen
     case pause
     case resume
     case previewLock

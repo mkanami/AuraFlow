@@ -355,6 +355,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var wallpaperRevision: UInt64 = 0
     private var pendingRearmToken: LockScreenRearmToken?
     private var lastRearmedToken: LockScreenRearmToken?
+    private var lockScreenBridgeNeedsPreparation = false
     private var lastSessionTransitionUptime = -Double.infinity
     private var lockTransitionCount = 0
     private var lastLockTransitionMilliseconds: Double?
@@ -1343,9 +1344,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 repairModernLockScreenIfNeeded(force: true)
                 rearmModernLockScreenForNextSession()
             }
-        case .update:
+        case .update, .rearmLockScreen:
             applyRuntimeSettings()
-            if !lockScreenWasEnabled, config.show_on_lock_screen == true {
+            if (!lockScreenWasEnabled || command.action == .rearmLockScreen),
+               config.show_on_lock_screen == true {
                 // OFF discarded the native presentation and restored the
                 // user's Idle provider. Enabling must bind the new route,
                 // not just change the lock-session state machine.
@@ -1355,8 +1357,20 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     store.markLockScreenAgentReady(false)
                     prepareLockScreenOnlyAgent()
                 } else {
-                    prepareNativeLockScreenBridgeForStart()
-                    rearmModernLockScreenForNextSession()
+                    wallpaperRevision &+= 1
+                    publishRearmGuardState()
+                    nativeLockScreenBridge.invalidatePreparation()
+                    store.markLockScreenAgentReady(false)
+                    lockScreenBridgeNeedsPreparation = true
+                    if manualPaused || store.isPaused() {
+                        lockScreenBridgeNeedsPreparation = false
+                        prepareNativeLockScreenBridgeForStart()
+                    } else {
+                        // Bind the presentation only after the selected Idle
+                        // provider is restored. A prepared old assertion does
+                        // not prove that the new Lock Screen source is ready.
+                        rearmModernLockScreenForNextSession()
+                    }
                 }
             }
             if lockScreenOnlyMode {
@@ -1501,9 +1515,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !lockScreenOnlyMode,
               lockScreenPlatform.capabilities.supportsSecureLockScreen
         else { return }
+        let token = currentRearmToken()
         nativeLockScreenBridge.prepare { [weak self] succeeded in
             Task { @MainActor [weak self] in
-                guard let self, !self.isTerminating else { return }
+                guard let self, !self.isTerminating,
+                      self.currentRearmToken() == token,
+                      self.config.show_on_lock_screen == true,
+                      self.store.loadConfig().show_on_lock_screen == true
+                else { return }
+                self.store.markLockScreenAgentReady(succeeded)
                 self.writeHealth(
                     reason: succeeded
                         ? "native-lock-bridge-ready"
@@ -2208,6 +2228,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if config.show_on_lock_screen == false {
             lockScreenPlaybackMutationTask?.cancel()
             pendingRearmToken = nil
+            lockScreenBridgeNeedsPreparation = false
+            store.markLockScreenAgentReady(false)
             nativeLockScreenBridge.invalidatePreparation()
         }
         syncLockScreenSetting(reason: "lock-setting")
@@ -2647,6 +2669,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                         "lock-screen-rearm-failed: "
                         + rearmError.localizedDescription
                 )
+            }
+            if didRearm,
+               self.currentRearmToken() == token,
+               self.config.show_on_lock_screen == true,
+               self.store.loadConfig().show_on_lock_screen == true,
+               self.lockScreenBridgeNeedsPreparation {
+                self.lockScreenBridgeNeedsPreparation = false
+                self.prepareNativeLockScreenBridgeForStart()
             }
             if let pendingToken = self.pendingRearmToken,
                pendingToken == self.currentRearmToken() {

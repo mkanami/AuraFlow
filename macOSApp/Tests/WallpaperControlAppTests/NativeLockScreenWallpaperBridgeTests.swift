@@ -9,6 +9,7 @@ private enum NativeBridgeFixtureMode {
     case doesNotRespond
     case sendsMalformedJSON
     case rejectsPrepare
+    case cancelsShow(String, Bool)
     case delayedPrepare
     case crashesOnce
     case sendsUnknownResponseBeforeValidResponse
@@ -82,6 +83,13 @@ private final class NativeBridgeFixture {
                 prepareError: "fixture prepare failed",
                 exitOnShutdown: true
             )
+        case .cancelsShow(let reason, let structured):
+            return responseLoop(
+                actionLogURL: actionsURL,
+                showCancellation: reason,
+                structuredCancellation: structured,
+                exitOnShutdown: true
+            )
         case .delayedPrepare:
             return responseLoop(
                 preparePrefix:
@@ -135,6 +143,8 @@ private final class NativeBridgeFixture {
         actionLogURL: URL? = nil,
         prepareSucceeded: Bool = true,
         prepareError: String? = nil,
+        showCancellation: String? = nil,
+        structuredCancellation: Bool = false,
         capabilityProtocolVersion: Int = 1,
         capabilityArchitecture: String = NativeLockScreenBridgeRuntimeCapabilities
             .currentArchitecture,
@@ -168,6 +178,20 @@ private final class NativeBridgeFixture {
         let shutdown = exitOnShutdown
             ? "if [ \"$action\" = \"shutdown\" ]; then exit 0; fi\n"
             : ""
+        let showResponse: String
+        if let showCancellation {
+            let field = structuredCancellation ? ",\"cancelled\":true" : ""
+            showResponse = """
+            if [ "$show_cancelled" != "true" ]; then
+              show_cancelled=true
+              printf '{"id":"%s","action":"show","succeeded":false,"errorDescription":"%s"\(field)}\\n' "$id" \(shellQuote(showCancellation))
+            else
+              printf '{"id":"%s","action":"show","succeeded":true}\\n' "$id"
+            fi
+            """
+        } else {
+            showResponse = "printf '{\"id\":\"%s\",\"action\":\"show\",\"succeeded\":true}\\n' \"$id\""
+        }
         return """
         #!/bin/sh
         while IFS= read -r line; do
@@ -178,6 +202,8 @@ private final class NativeBridgeFixture {
             \(capabilitiesResponse)
           elif [ "$action" = "prepare" ]; then
             \(prepareResponse)
+          elif [ "$action" = "show" ]; then
+            \(showResponse)
           else
             printf '{"id":"%s","action":"%s","succeeded":true}\\n' "$id" "$action"
           fi
@@ -223,6 +249,30 @@ private func stopBridge(
     #expect(await awaitBridgeResult { bridge.prepare(completion: $0) })
     #expect(await awaitBridgeResult { bridge.showForLockTransition(completion: $0) })
     #expect(bridge.isReady)
+    stopBridge(bridge, fixture: fixture)
+}
+
+@Test(arguments: ["Lock Screen is disabled.",
+                  "Lock Screen presentation was cancelled by unlock.",
+                  "Native Lock Screen bridge is shutting down."], [false, true])
+func nativeBridgeCancellationKeepsTransportReady(reason: String, structured: Bool) async throws {
+    let fixture = try NativeBridgeFixture(.cancelsShow(reason, structured))
+    defer { fixture.cleanup() }
+    let failureURL = fixture.root.appendingPathComponent("unexpected-failure")
+    let bridge = NativeLockScreenWallpaperBridge(
+        executableURL: fixture.executableURL,
+        requestTimeout: 2.0
+    )
+    bridge.onFailure = { reason in
+        try? Data(reason.utf8).write(to: failureURL, options: .atomic)
+    }
+    #expect(await awaitBridgeResult { bridge.prepare(completion: $0) })
+    #expect(await awaitBridgeResult { bridge.showForLockTransition(completion: $0) } == false)
+    #expect(bridge.isReady)
+    #expect(await awaitBridgeResult { bridge.showForLockTransition(completion: $0) })
+    let actions = try String(contentsOf: fixture.actionsURL)
+    #expect(actions.components(separatedBy: "capabilities\n").count == 2)
+    #expect(!FileManager.default.fileExists(atPath: failureURL.path))
     stopBridge(bridge, fixture: fixture)
 }
 
