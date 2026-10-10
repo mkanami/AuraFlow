@@ -148,6 +148,10 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     func stop() throws -> TerminalWallpaperStatus {
         lockScreenOperationLock.lock()
         defer { lockScreenOperationLock.unlock() }
+        // Keep the Desktop window and published frame alive while macOS
+        // restores its provider. Closing them first exposes WallpaperAgent's
+        // empty grey surface during its stop/start transaction.
+        try lockScreenCoordinator.restore()
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.stop, config: store.loadConfig())
             guard store.terminateAgent(timeout: 2) else {
@@ -160,13 +164,13 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         store.removeHealth()
         store.removeSharedFrameDescriptor()
         store.removeLockScreenPublication()
-        try lockScreenCoordinator.restore()
         return store.status()
     }
 
     func terminate() throws -> TerminalWallpaperStatus {
         lockScreenOperationLock.lock()
         defer { lockScreenOperationLock.unlock() }
+        try lockScreenCoordinator.restore()
         if store.processIsAlive(pid: store.loadPID()) {
             try send(.terminate, config: store.loadConfig())
             guard store.terminateAgent(timeout: 2) else {
@@ -179,7 +183,6 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         store.removeHealth()
         store.removeSharedFrameDescriptor()
         store.removeLockScreenPublication()
-        try lockScreenCoordinator.restore()
         return store.status()
     }
 

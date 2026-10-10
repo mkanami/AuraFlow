@@ -6,8 +6,9 @@ import Testing
 private final class MockTerminalLockScreenCoordinator: TerminalLockScreenCoordinating, @unchecked Sendable {
     private(set) var activations = 0
     private(set) var restorations = 0
+    var onRestore: (() throws -> Void)?
     func activate() throws { activations += 1 }
-    func restore() throws { restorations += 1 }
+    func restore() throws { restorations += 1; try onRestore?() }
 }
 
 private struct TerminalControllerFixture {
@@ -100,6 +101,53 @@ private struct TerminalControllerFixture {
     _ = try controller.terminate()
     #expect(fixture.store.processIsAlive(pid: fixture.store.loadPID()) == false)
     #expect(fixture.store.loadCommand() == nil)
+}
+
+@Test(arguments: [false, true])
+func terminalRemovalKeepsRendererUntilSystemWallpaperIsRestored(terminate: Bool) throws {
+    let fixture = try TerminalControllerFixture("covered-removal")
+    defer { fixture.cleanup() }
+    let lockScreen = MockTerminalLockScreenCoordinator()
+    let controller = try NativeTerminalWallpaperController(
+        store: fixture.store, helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }, lockScreenVideoIsActive: { false },
+        lockScreenCoordinator: lockScreen, lockScreenFrameReadinessWaiter: { _, _ in true }
+    )
+    _ = try controller.start(config: .init(command: .init(executable: "/bin/echo")))
+    let pid = try #require(fixture.store.loadPID())
+    try fixture.store.saveLockScreenHeartbeat(.init(pid: Int(getpid())))
+    lockScreen.onRestore = {
+        #expect(fixture.store.processIsAlive(pid: pid))
+        #expect(fixture.store.loadCommand()?.action == .start)
+        #expect(fixture.store.loadLockScreenHeartbeat() != nil)
+    }
+    _ = try terminate ? controller.terminate() : controller.stop()
+    #expect(lockScreen.restorations == 1)
+    #expect(!fixture.store.processIsAlive(pid: pid))
+    #expect(fixture.store.loadLockScreenHeartbeat() == nil)
+    #expect(fixture.store.loadCommand() == nil)
+}
+
+@Test(arguments: [false, true])
+func terminalRemovalFailureKeepsExistingRendererAndFrame(terminate: Bool) throws {
+    let fixture = try TerminalControllerFixture("removal-restore-failure")
+    defer { fixture.cleanup() }
+    let lockScreen = MockTerminalLockScreenCoordinator()
+    let controller = try NativeTerminalWallpaperController(
+        store: fixture.store, helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }, lockScreenVideoIsActive: { false },
+        lockScreenCoordinator: lockScreen, lockScreenFrameReadinessWaiter: { _, _ in true }
+    )
+    _ = try controller.start(config: .init(command: .init(executable: "/bin/echo")))
+    let pid = try #require(fixture.store.loadPID())
+    try fixture.store.saveLockScreenHeartbeat(.init(pid: Int(getpid())))
+    lockScreen.onRestore = { throw TerminalScreenSaverStoreCoordinator.StoreError.wallpaperAgentUnavailable }
+    #expect(throws: TerminalScreenSaverStoreCoordinator.StoreError.self) {
+        _ = try terminate ? controller.terminate() : controller.stop()
+    }
+    #expect(fixture.store.processIsAlive(pid: pid))
+    #expect(fixture.store.loadLockScreenHeartbeat() != nil)
+    #expect(fixture.store.loadCommand()?.action == .start)
 }
 
 @Test func terminalControllerAppliesLaunchAtLoginFromStartConfig() throws {
