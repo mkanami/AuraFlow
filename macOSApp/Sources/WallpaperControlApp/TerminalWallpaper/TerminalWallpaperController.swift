@@ -12,6 +12,7 @@ protocol TerminalWallpaperControlling: Sendable {
     func terminate() throws -> TerminalWallpaperStatus
     func restart(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
     func update(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
+    func updateScaleMode(_ mode: TerminalScaleMode) throws -> TerminalWallpaperStatus
     func resize(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
     func setLaunchAtLogin(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
 }
@@ -43,6 +44,9 @@ private final class SystemTerminalLockScreenCoordinator: TerminalLockScreenCoord
 extension TerminalWallpaperControlling {
     func ensureCanStart() throws {}
     func reconcileLockScreenIfRunning() throws {}
+    func updateScaleMode(_ mode: TerminalScaleMode) throws -> TerminalWallpaperStatus {
+        throw TerminalWallpaperControllerError.unavailable("Scale updates are unavailable.")
+    }
 }
 
 enum TerminalWallpaperControllerError: LocalizedError, Equatable {
@@ -201,6 +205,27 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
                 ? .update
                 : .restart
             try send(action, config: normalized)
+        }
+        return store.status()
+    }
+
+    func updateScaleMode(_ mode: TerminalScaleMode) throws -> TerminalWallpaperStatus {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
+        // Read the applied configuration under the same lock as Start/Remove.
+        // A late scale event must neither apply preview drafts nor revive an agent.
+        let previous = store.loadConfig()
+        guard store.processIsAlive(pid: store.loadPID()), previous.render.scaleMode != mode else {
+            return store.status()
+        }
+        var current = previous
+        current.render.scaleMode = mode
+        try store.saveConfig(current)
+        do {
+            try send(.update, config: current)
+        } catch {
+            try? store.saveConfig(previous)
+            throw error
         }
         return store.status()
     }

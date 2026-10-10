@@ -532,7 +532,10 @@ struct TerminalWallpaperSettingsView: View {
 
             HStack(spacing: 8) {
                 Text("Scale")
-                TerminalWallpaperSegmentedControl(options: TerminalScaleMode.allCases, selection: $viewModel.scaleMode) {
+                TerminalWallpaperSegmentedControl(options: TerminalScaleMode.allCases, selection: Binding(
+                    get: { viewModel.scaleMode },
+                    set: { viewModel.setScaleMode($0) }
+                )) {
                     $0.title
                 }
                 .accessibilityLabel("Scale")
@@ -575,7 +578,7 @@ struct TerminalWallpaperSettingsView: View {
         Button("Apply settings") { viewModel.apply() }
             .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             .disabled(viewModel.isBusy)
-            .help("Preview updates automatically. Apply settings also updates the active terminal wallpaper.")
+            .help("Scale updates preview and active terminal wallpaper automatically. Apply settings updates the remaining settings.")
     }
 
     private var runtimeActions: some View {

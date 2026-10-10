@@ -111,6 +111,10 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private var statusRefreshGeneration = 0
     private var agentStartObserver: NSObjectProtocol?
     private var previewConfigPersistence: AnyCancellable?
+    private var scaleUpdateTask: Task<Void, Never>?
+    private var pendingScaleMode: TerminalScaleMode?
+    private var scaleUpdateGeneration: UInt = 0
+    private var confirmedScaleMode: TerminalScaleMode
 
     init(
         controller: TerminalWallpaperControlling? = nil,
@@ -168,6 +172,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         maxFPS = config.render.maxFPS
         textScale = config.render.textScale
         scaleMode = config.render.scaleMode
+        confirmedScaleMode = config.render.scaleMode
         backgroundHex = Self.hexString(for: config.render.background)
         backgroundOpacity = config.render.backgroundOpacity
         allDisplays = config.behavior.allDisplays
@@ -371,7 +376,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     func refresh() {
-        guard !isBusy, !statusRefreshInFlight else { return }
+        guard !isBusy, scaleUpdateTask == nil, !statusRefreshInFlight else { return }
         statusRefreshInFlight = true
         let generation = statusRefreshGeneration
         let controller = controller
@@ -599,6 +604,53 @@ final class TerminalWallpaperViewModel: ObservableObject {
         statusMessage = nil
     }
 
+    func setScaleMode(_ mode: TerminalScaleMode) {
+        guard !isBusy, mode != scaleMode else { return }
+        scaleMode = mode
+        updatePreviewScale(mode)
+        errorMessage = nil
+        scaleUpdateGeneration &+= 1
+        statusRefreshGeneration &+= 1
+        pendingScaleMode = mode
+        guard scaleUpdateTask == nil else { return }
+        // Keep one worker: cancellation alone cannot stop a synchronous write.
+        // Coalesce waiting choices and serialize writes so the last choice wins.
+        scaleUpdateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { scaleUpdateTask = nil }
+            while let requested = pendingScaleMode {
+                pendingScaleMode = nil
+                let generation = scaleUpdateGeneration
+                let controller = controller
+                do {
+                    let latest: TerminalWallpaperStatus = try await withCheckedThrowingContinuation { continuation in
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            do { continuation.resume(returning: try controller.updateScaleMode(requested)) }
+                            catch { continuation.resume(throwing: error) }
+                        }
+                    }
+                    if generation == scaleUpdateGeneration || pendingScaleMode != nil {
+                        confirmedScaleMode = requested
+                    }
+                    guard generation == scaleUpdateGeneration else { continue }
+                    apply(latest)
+                } catch {
+                    guard generation == scaleUpdateGeneration else { continue }
+                    scaleMode = confirmedScaleMode
+                    updatePreviewScale(confirmedScaleMode)
+                    errorMessage = "Failed to update scale mode: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func updatePreviewScale(_ mode: TerminalScaleMode) {
+        guard let store = previewSelectionStore, store.kind == .terminal,
+              store.pendingOperationID == nil, var config = store.terminalConfiguration else { return }
+        config.render.scaleMode = mode
+        store.selectTerminal(config)
+    }
+
     func apply() {
         let controller = controller
         let config = makeConfig()
@@ -638,6 +690,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
     ) {
         guard !isBusy else { return }
         isBusy = true
+        pendingScaleMode = nil
+        scaleUpdateGeneration &+= 1
         statusRefreshGeneration &+= 1
         errorMessage = nil
         Task { @MainActor in
@@ -653,6 +707,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
                     }
                 }
                 apply(status)
+                confirmedScaleMode = status.config.render.scaleMode
                 statusMessage = successMessage
             } catch {
                 errorMessage = error.localizedDescription

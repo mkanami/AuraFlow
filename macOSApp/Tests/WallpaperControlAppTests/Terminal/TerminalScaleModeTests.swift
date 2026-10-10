@@ -9,6 +9,11 @@ import Testing
 @testable import AuraTerminalWallpaperAgent
 @testable import WallpaperControlApp
 
+private struct ScaleLockScreenCoordinator: TerminalLockScreenCoordinating {
+    func activate() throws {}
+    func restore() throws {}
+}
+
 // Five asymmetric color bands make a centered crop distinguishable from
 // letterboxing, stretching, a vertical flip, or cropping the source twice.
 private func scaleColor(x: Int, y: Int) -> [UInt8] {
@@ -115,7 +120,7 @@ func terminalScaleApplyRetainsLivePIDAndCompletedStaticSource(animated: Bool) as
         : "printf '\\033[44m\\033[2Jstatic frame'"
     var config = TerminalWallpaperConfig(command: .init(executable: "/bin/sh",
         arguments: ["-c", "printf x >> launches; " + output], workingDirectory: root.path),
-        render: .init(pixelMode: .fixed, fixedWidth: 320, fixedHeight: 240, columns: 20, rows: 4),
+        render: .init(pixelMode: .fixed, fixedWidth: 320, fixedHeight: 240, columns: 20, rows: 4, scaleMode: .fill),
         behavior: .init(allDisplays: false, pauseOnFullscreen: false))
     try store.saveConfig(config)
     let delegate = TerminalWallpaperAgentDelegate(configurationURL: store.configURL, managesLockScreenPresentation: false)
@@ -139,19 +144,24 @@ func terminalScaleApplyRetainsLivePIDAndCompletedStaticSource(animated: Bool) as
     let png = try Data(contentsOf: store.lockScreenFrameURL)
     let selection = WallpaperPreviewSelectionStore(selectionURL: root.appendingPathComponent("selection.json"))
     let preview = TerminalWallpaperPreviewModel(selectionStore: selection, runtimeStore: store, windowIsVisible: { true })
+    let controller = try NativeTerminalWallpaperController(store: store,
+        helperURL: URL(fileURLWithPath: "/usr/bin/true"), videoRuntimeIsRunning: { false },
+        lockScreenVideoIsActive: { false }, lockScreenCoordinator: ScaleLockScreenCoordinator(),
+        lockScreenFrameReadinessWaiter: { _, _ in true })
+    let settings = TerminalWallpaperViewModel(controller: controller, previewSelectionStore: selection)
     defer { selection.selectVideo() }
-    for mode in TerminalScaleMode.allCases + [.stretch, .fill, .fit] {
+    for mode in TerminalScaleMode.allCases + [.fill, .stretch, .fit] {
         config.render.scaleMode = mode
-        // Preview changes immediately while the agent still has the old mode.
+        // The settings control updates preview and active wallpaper without Apply.
         selection.selectTerminal(config)
+        settings.setScaleMode(mode)
         preview.updateViewportSize(mode == .fill ? CGSize(width: 900, height: 300) : CGSize(width: 300, height: 900))
-        await pumpUntil { preview.sharedFrame == initial }
+        await pumpUntil { preview.sharedFrame == initial && preview.configuration?.render.scaleMode == mode }
         #expect(preview.sharedFrame == initial)
         #expect(preview.snapshot == nil)
         #expect(preview.configuration?.render.scaleMode == mode)
         let requestedAt = Date().timeIntervalSince1970
-        try store.saveCommand(TerminalWallpaperRuntimeCommand(action: .update, config: config))
-        await pumpUntil { (store.loadHealth()?.updatedAt ?? 0) > requestedAt }
+        await pumpUntil { store.loadConfig().render.scaleMode == mode && (store.loadHealth()?.updatedAt ?? 0) > requestedAt }
         #expect((store.loadHealth()?.updatedAt ?? 0) > requestedAt)
         #expect(store.loadConfig().render.scaleMode == mode)
         #expect(store.loadSharedFrameDescriptor() == initial)
