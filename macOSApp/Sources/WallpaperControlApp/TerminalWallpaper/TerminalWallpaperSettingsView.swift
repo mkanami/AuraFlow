@@ -530,17 +530,6 @@ struct TerminalWallpaperSettingsView: View {
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             }
 
-            HStack(spacing: 8) {
-                Text("Scale")
-                TerminalWallpaperSegmentedControl(options: TerminalScaleMode.allCases, selection: Binding(
-                    get: { viewModel.scaleMode },
-                    set: { viewModel.setScaleMode($0) }
-                )) {
-                    $0.title
-                }
-                .accessibilityLabel("Scale")
-            }
-
             HStack {
                 AuraTerminalTextField(
                     text: $viewModel.backgroundHex,
@@ -578,7 +567,7 @@ struct TerminalWallpaperSettingsView: View {
         Button("Apply settings") { viewModel.apply() }
             .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             .disabled(viewModel.isBusy)
-            .help("Scale updates preview and active terminal wallpaper automatically. Apply settings updates the remaining settings.")
+            .help("Scale is in Playback Settings and updates automatically. Apply settings updates the remaining settings.")
     }
 
     private var runtimeActions: some View {

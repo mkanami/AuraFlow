@@ -35,6 +35,7 @@ final class AuraFlowApplication {
             }
         )
         viewModel = AppViewModel(previewSelectionStore: previewStore)
+        viewModel.connectTerminalScaleControls(terminalWallpaperViewModel)
         viewModel.terminalStartAction = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.start() }
         viewModel.terminalRemoveAction = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.stop() }
         viewModel.terminalCanStart = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.canStart == true }

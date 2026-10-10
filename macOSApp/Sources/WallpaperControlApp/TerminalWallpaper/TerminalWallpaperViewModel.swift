@@ -604,8 +604,16 @@ final class TerminalWallpaperViewModel: ObservableObject {
         statusMessage = nil
     }
 
+    var controlsScaleMode: TerminalScaleMode {
+        if scaleUpdateTask != nil { return scaleMode }
+        return status.running ? status.config.render.scaleMode : scaleMode
+    }
+
     func setScaleMode(_ mode: TerminalScaleMode) {
-        guard !isBusy, mode != scaleMode else { return }
+        guard !isBusy, mode != scaleMode || (status.running && mode != status.config.render.scaleMode) else { return }
+        if scaleUpdateTask == nil {
+            confirmedScaleMode = controlsScaleMode
+        }
         scaleMode = mode
         updatePreviewScale(mode)
         errorMessage = nil

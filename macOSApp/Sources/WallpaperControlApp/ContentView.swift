@@ -797,7 +797,7 @@ struct SettingsPopupCard: View {
             HStack(spacing: 8) {
                 Text("Scale Algorithm")
 
-                ScaleAlgorithmSegmentedControl(selection: viewModel.scaleMode) { mode in
+                ScaleAlgorithmSegmentedControl(selection: viewModel.settingsScaleMode) { mode in
                     viewModel.setScaleMode(mode)
                 }
                 .disabled(!viewModel.canToggleScaleMode)

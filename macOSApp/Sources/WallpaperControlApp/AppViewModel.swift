@@ -2094,6 +2094,16 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
 
 @MainActor
 final class AppViewModel: ObservableObject {
+    enum ScaleControlTarget: Equatable {
+        case terminal(installed: Bool)
+        case video(installed: Bool)
+        case unsupported
+    }
+
+    private weak var terminalScaleModel: TerminalWallpaperViewModel?
+    private var terminalScaleSubscriptions = Set<AnyCancellable>()
+    @Published private var appliedVideoScaleMode: WallpaperScaleMode = .fill
+    @Published private var requestedVideoScaleMode: WallpaperScaleMode?
     let wallpaperEngine: WallpaperEngineViewModel
     var terminalStartAction: (() -> Void)?
     var terminalRemoveAction: (() -> Void)?
@@ -2500,7 +2510,47 @@ final class AppViewModel: ObservableObject {
     }
 
     var canToggleScaleMode: Bool {
-        isControllerAvailable && !isBusy
+        guard !isBusy, !isLifecycleBusy else { return false }
+        switch scaleControlTarget {
+        case .terminal: return terminalScaleModel?.isBusy == false
+        case .video: return isControllerAvailable
+        case .unsupported: return false
+        }
+    }
+
+    var scaleControlTarget: ScaleControlTarget {
+        if terminalScaleModel?.status.running == true { return .terminal(installed: true) }
+        if hasInstalledWallpaperSessionForControls { return .video(installed: true) }
+        if wallpaperEngine.runtimeActive { return .unsupported }
+        switch previewSelectionStore?.kind {
+        case .terminal: return terminalScaleModel == nil ? .unsupported : .terminal(installed: false)
+        case .web: return .unsupported
+        default: return .video(installed: false)
+        }
+    }
+
+    var settingsScaleMode: WallpaperScaleMode {
+        switch scaleControlTarget {
+        case .terminal:
+            return WallpaperScaleMode(rawValue: terminalScaleModel?.controlsScaleMode.rawValue ?? "fill") ?? .fill
+        case .video(installed: true): return requestedVideoScaleMode ?? appliedVideoScaleMode
+        case .video(installed: false): return requestedVideoScaleMode ?? scaleMode
+        case .unsupported: return .fill
+        }
+    }
+
+    func connectTerminalScaleControls(_ model: TerminalWallpaperViewModel) {
+        terminalScaleSubscriptions.removeAll()
+        terminalScaleModel = model
+        model.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }.store(in: &terminalScaleSubscriptions)
+        model.$errorMessage.dropFirst().sink { [weak self] message in
+            guard let self, case .terminal = scaleControlTarget,
+                  let message, message.hasPrefix("Failed to update scale mode:") else { return }
+            alertMessage = message
+        }.store(in: &terminalScaleSubscriptions)
+        objectWillChange.send()
     }
 
     var canOpenMonitoring: Bool {
@@ -3587,6 +3637,7 @@ final class AppViewModel: ObservableObject {
         scaleModeUpdateGeneration &+= 1
         scaleModeUpdateTask?.cancel()
         scaleModeUpdateTask = nil
+        requestedVideoScaleMode = nil
         lifecycleViewModel.clearWallpaper()
     }
 
@@ -3903,27 +3954,44 @@ final class AppViewModel: ObservableObject {
     }
 
     func setScaleMode(_ mode: WallpaperScaleMode) {
-        guard !isBusy else { return }
-        let previous = scaleMode
-        scaleMode = mode
-        guard let controller else { return }
+        guard canToggleScaleMode else { return }
+        let target = scaleControlTarget
         scaleModeUpdateGeneration &+= 1
         let generation = scaleModeUpdateGeneration
         scaleModeUpdateTask?.cancel()
+        scaleModeUpdateTask = nil
+        requestedVideoScaleMode = nil
+        if case .terminal = target {
+            alertMessage = nil
+            terminalScaleModel?.setScaleMode(TerminalScaleMode(rawValue: mode.rawValue) ?? .fill)
+            return
+        }
+        guard case .video = target, let controller else { return }
+        let previous = scaleMode
+        requestedVideoScaleMode = mode
+        scaleMode = mode
         scaleModeUpdateTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if generation == scaleModeUpdateGeneration {
+                    requestedVideoScaleMode = nil
+                    scaleModeUpdateTask = nil
+                }
+            }
             do {
                 let status = try await controller.setScaleMode(mode)
                 try Task.checkCancellation()
-                guard generation == scaleModeUpdateGeneration else { return }
-                apply(status: status)
+                guard generation == scaleModeUpdateGeneration, scaleControlTarget == target else { return }
+                // A scale update must retain the selected preview source, even
+                // when it differs from the installed wallpaper.
+                apply(status: status, refreshPreview: false)
                 recordBridgeSuccess()
                 statusMessage = "Scale mode: \(mode.title)."
                 alertMessage = nil
             } catch is CancellationError {
                 return
             } catch {
-                guard generation == scaleModeUpdateGeneration else { return }
+                guard generation == scaleModeUpdateGeneration, scaleControlTarget == target else { return }
                 scaleMode = previous
                 recordBridgeFailure(error, context: "set-scale")
                 if bridgeFailureCount < bridgeFailureThreshold {
@@ -4308,6 +4376,7 @@ final class AppViewModel: ObservableObject {
         }
         let previousScaleMode = scaleMode
         let resolvedScaleMode = WallpaperScaleMode(rawValue: status.config.scale_mode ?? "fill") ?? .fill
+        Self.setIfChanged(&appliedVideoScaleMode, to: resolvedScaleMode)
         Self.setIfChanged(&scaleMode, to: resolvedScaleMode)
         if hasConfiguredVideo {
             let currentURL = URL(fileURLWithPath: status.config.video_path)
