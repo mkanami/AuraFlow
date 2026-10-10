@@ -23,6 +23,10 @@ extension EnvironmentValues {
 }
 
 extension AdaptiveTextTone {
+    var glassColorScheme: ColorScheme {
+        self == .dark ? .light : .dark
+    }
+
     /// A low-opacity tint that improves contrast without turning Liquid Glass
     /// into an opaque panel. Dark text gets a light lift; light text gets a
     /// dark lift. Every button and inset surface uses the same tone.
@@ -733,7 +737,7 @@ struct SettingsPopupCard: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, adaptiveGlassAppearance.centerTextTone.glassColorScheme)
     }
 
     private var settingsContents: some View {
@@ -1161,7 +1165,7 @@ struct MonitoringPopupCard: View {
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, adaptiveGlassAppearance.centerTextTone.glassColorScheme)
     }
 }
 
@@ -1315,7 +1319,7 @@ struct DownloadedWallpapersCard: View {
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, adaptiveGlassAppearance.centerTextTone.glassColorScheme)
     }
 }
 
@@ -1404,7 +1408,7 @@ struct WallpaperCatalogView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: Color.black.opacity(0.26), radius: 12, x: 0, y: 7)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, adaptiveGlassAppearance.bottomTextTone.glassColorScheme)
     }
 
     private var catalogBrowser: some View {
@@ -1524,18 +1528,8 @@ struct WallpaperCatalogGridView: View {
     var body: some View {
         ScrollViewReader { scrollViewProxy in
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(catalogViewModel.filteredWallpapers) { wallpaper in
-                        CatalogWallpaperCard(wallpaper: wallpaper) {
-                            viewModel.openCatalogWallpaper(wallpaper)
-                        }
-                        .id(wallpaper.id)
-                        .onAppear {
-                            viewModel.catalogTrailingWallpaperBecameVisible(wallpaper.id)
-                        }
-                    }
-                }
-                .padding(.vertical, 2)
+                groupedWallpaperCards
+                    .padding(.vertical, 2)
 
                 if catalogViewModel.isLoadingMore {
                     ProgressView()
@@ -1547,6 +1541,35 @@ struct WallpaperCatalogGridView: View {
                 guard let targetID = catalogViewModel.scrollTargetID else { return }
                 withAnimation(.easeOut(duration: 0.2)) {
                     scrollViewProxy.scrollTo(targetID, anchor: .top)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var groupedWallpaperCards: some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: 12) {
+                wallpaperCards
+            }
+        } else {
+            wallpaperCards
+        }
+        #else
+        wallpaperCards
+        #endif
+    }
+
+    private var wallpaperCards: some View {
+        LazyVGrid(columns: columns, spacing: 12) {
+            ForEach(catalogViewModel.filteredWallpapers) { wallpaper in
+                CatalogWallpaperCard(wallpaper: wallpaper) {
+                    viewModel.openCatalogWallpaper(wallpaper)
+                }
+                .id(wallpaper.id)
+                .onAppear {
+                    viewModel.catalogTrailingWallpaperBecameVisible(wallpaper.id)
                 }
             }
         }
@@ -1579,18 +1602,46 @@ struct CatalogWallpaperCard: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(10)
-            .background {
-                let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-                shape
-                    .fill(Color.black.opacity(0.24))
-                    .overlay {
-                        shape.stroke(Color.white.opacity(0.10), lineWidth: 0.8)
-                    }
-            }
+            .modifier(CatalogWallpaperCardGlass())
             .contentShape(Rectangle())
         }
         .buttonStyle(AuraPlainPressButtonStyle())
         .accessibilityIdentifier("catalog-card-\(wallpaper.id)")
+    }
+}
+
+private struct CatalogWallpaperCardGlass: ViewModifier {
+    @Environment(\.adaptiveGlassAppearance) private var appearance
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        Group {
+            #if compiler(>=6.2)
+            if #available(macOS 26.0, *) {
+                // Apply glass to the whole label so its image and text remain
+                // foreground content rather than entering the backdrop sample.
+                content.glassEffect(.clear.interactive(), in: shape)
+            } else {
+                content.background(AuraGlassRoundedSurface(
+                    cornerRadius: 10,
+                    alphaMultiplier: appearance.bottomGlassAlpha,
+                    protectionOverlayOpacity: appearance.bottomProtectionOverlayOpacity * 0.35,
+                    protectionOverlayColor: appearance.bottomTextTone.contrastSurfaceColor
+                ))
+            }
+            #else
+            content.background(AuraGlassRoundedSurface(
+                cornerRadius: 10,
+                alphaMultiplier: appearance.bottomGlassAlpha,
+                protectionOverlayOpacity: appearance.bottomProtectionOverlayOpacity * 0.35,
+                protectionOverlayColor: appearance.bottomTextTone.contrastSurfaceColor
+            ))
+            #endif
+        }
+        .overlay {
+            shape.stroke(appearance.bottomTextTone.primaryTextColor.opacity(0.14), lineWidth: 0.8)
+        }
+        .environment(\.colorScheme, appearance.bottomTextTone.glassColorScheme)
     }
 }
 
@@ -2955,7 +3006,7 @@ private struct AuraNotificationBanner: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: Color.black.opacity(0.18), radius: 4, x: 0, y: 2)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, adaptiveGlassAppearance.bottomTextTone.glassColorScheme)
     }
 }
 
