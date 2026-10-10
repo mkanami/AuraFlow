@@ -43,6 +43,43 @@ public struct TerminalRenderLayout: Equatable, Sendable {
 }
 
 public enum TerminalRenderGeometry {
+    /// Resolve the source grid independently of its presentation policy.
+    /// Explicit dimensions are never changed by Fit, Fill or Stretch.
+    public static func viewportGrid(
+        configuration: TerminalRenderConfiguration,
+        logicalWidth: Double,
+        logicalHeight: Double,
+        cellWidth: Double,
+        lineHeight: Double
+    ) -> (columns: Int, rows: Int) {
+        let automatic = automaticGrid(logicalWidth: logicalWidth, logicalHeight: logicalHeight,
+                                      cellWidth: cellWidth, lineHeight: lineHeight)
+        return (configuration.columns ?? automatic.columns, configuration.rows ?? automatic.rows)
+    }
+
+    public static func contentScaleMode(_ mode: TerminalScaleMode) -> TerminalScaleMode {
+        mode
+    }
+
+    /// The shared frame contains the entire source canvas, independently of
+    /// the Desktop/preview viewport. Consumers apply Scale exactly once.
+    public static func sourcePixelSize(
+        configuration: TerminalRenderConfiguration,
+        columns: Int, rows: Int,
+        cellWidth: Double, lineHeight: Double,
+        pixelDensity: Double
+    ) -> TerminalPixelSize {
+        if configuration.pixelMode == .fixed {
+            return TerminalPixelSize(width: configuration.fixedWidth ?? 1920,
+                                     height: configuration.fixedHeight ?? 1080)
+        }
+        let density = min(max(pixelDensity.isFinite ? pixelDensity : 1, 0.01), 4)
+        let width = Double(max(columns, 1)) * max(cellWidth, 1) * density
+        let height = Double(max(rows, 1)) * max(lineHeight, 1) * density
+        let reduction = min(1, 16_384 / max(width, height))
+        return TerminalPixelSize(width: Int(ceil(width * reduction)), height: Int(ceil(height * reduction)))
+    }
+
     public static func pixelSize(
         configuration: TerminalRenderConfiguration,
         drawableWidth: Int,
@@ -68,8 +105,8 @@ public enum TerminalRenderGeometry {
         let safeLogicalWidth = max(logicalWidth.isFinite ? logicalWidth : 1, 1)
         let safeLogicalHeight = max(logicalHeight.isFinite ? logicalHeight : 1, 1)
         return (
-            min(max(Int(safeLogicalWidth / safeCellWidth), 40), 1000),
-            min(max(Int(safeLogicalHeight / safeLineHeight), 20), 500)
+            Int(min(max(safeLogicalWidth / safeCellWidth, 40), 1000)),
+            Int(min(max(safeLogicalHeight / safeLineHeight, 20), 500))
         )
     }
 
@@ -141,5 +178,25 @@ public enum TerminalRenderGeometry {
         case .stretch:
             return TerminalScaleFactors(x: x, y: y)
         }
+    }
+
+    /// Present the complete source canvas with one final centered scaling
+    /// operation, shared by local rendering and IOSurface consumers.
+    public static func presentationScale(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        targetWidth: Int,
+        targetHeight: Int,
+        mode: TerminalScaleMode
+    ) -> TerminalScaleFactors {
+        let width = Double(max(sourceWidth, 1))
+        let height = Double(max(sourceHeight, 1))
+        let targetWidth = Double(max(targetWidth, 1))
+        let targetHeight = Double(max(targetHeight, 1))
+        let scale = scaleFactors(contentWidth: width, contentHeight: height,
+                                 targetWidth: targetWidth, targetHeight: targetHeight,
+                                 mode: mode)
+        return TerminalScaleFactors(x: width * scale.x / targetWidth,
+                                    y: height * scale.y / targetHeight)
     }
 }

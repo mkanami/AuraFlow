@@ -43,8 +43,10 @@ final class TerminalWallpaperWindow: NSWindow {
         contentView = terminalView
     }
 
-    func update(snapshot: TerminalGridSnapshot, configuration: TerminalRenderConfiguration) {
-        terminalView.update(snapshot: snapshot, configuration: configuration)
+    func update(snapshot: TerminalGridSnapshot, configuration: TerminalRenderConfiguration,
+                presentationBackground: TerminalRGBA? = nil) {
+        terminalView.update(snapshot: snapshot, configuration: configuration,
+                            presentationBackground: presentationBackground)
     }
 
     func setRendererPaused(_ paused: Bool) {

@@ -17,6 +17,7 @@
     self = [super init];
     if (!self) return nil;
     _device = MTLCreateSystemDefaultDevice();
+    _clearColor = MTLClearColorMake(0, 0, 0, 1);
     NSString *shader = @"#include <metal_stdlib>\n"
         "using namespace metal;\n"
         "struct V { float4 position [[position]]; float2 uv; };\n"
@@ -84,13 +85,12 @@
     pass.colorAttachments[0].texture = target;
     pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+    pass.colorAttachments[0].clearColor = self.clearColor;
     id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
     if (!encoder) return NO;
     double x = (double)target.width / self.sourceTexture.width;
     double y = (double)target.height / self.sourceTexture.height;
-    // Terminal Fill reflows the producer's grid; a consumer must never crop it.
-    double uniform = fmin(x,y);
+    double uniform = [mode isEqualToString:@"fill"] ? fmax(x,y) : fmin(x,y);
     simd_float2 scale = [mode isEqualToString:@"stretch"] ? (simd_float2){1,1}
         : (simd_float2){(float)(uniform/x),(float)(uniform/y)};
     [encoder setRenderPipelineState:self.pipeline];
@@ -133,6 +133,9 @@
     self.drawableSize = CGSizeMake(self.bounds.size.width * self.contentsScale, self.bounds.size.height * self.contentsScale);
     id<CAMetalDrawable> drawable = [self nextDrawable];
     id<MTLCommandBuffer> command = [self.commandQueue commandBuffer];
+    NSColor *background = [NSColor colorWithCGColor:self.backgroundColor ?: NSColor.blackColor.CGColor];
+    background = [background colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    self.renderer.clearColor = MTLClearColorMake(background.redComponent, background.greenComponent, background.blueComponent, 1);
     if (!drawable || !command || ![self.renderer encodeToTexture:drawable.texture commandBuffer:command scaleMode:mode]) return NO;
     self.frameInFlight = YES;
     NSUInteger generation = self.sourceGeneration;

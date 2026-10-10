@@ -320,6 +320,14 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         [self.layer insertSublayer:self.terminalSurfaceLayer below:self.webLayer];
         [self layoutVideoLayers];
     }
+    NSDictionary *background = [render isKindOfClass:NSDictionary.class] && [render[@"background"] isKindOfClass:NSDictionary.class]
+        ? render[@"background"] : @{};
+    id configuredOpacity = [render isKindOfClass:NSDictionary.class] ? render[@"backgroundOpacity"] : nil;
+    double opacity = [configuredOpacity respondsToSelector:@selector(doubleValue)] ? [configuredOpacity doubleValue] : 1;
+    NSColor *canvasColor = [NSColor colorWithRed:[background[@"red"] doubleValue] * opacity
+        green:[background[@"green"] doubleValue] * opacity blue:[background[@"blue"] doubleValue] * opacity alpha:1];
+    self.terminalLayer.backgroundColor = canvasColor.CGColor;
+    self.terminalSurfaceLayer.backgroundColor = canvasColor.CGColor;
     if ([self.terminalSurfaceLayer presentDescriptor:surface ?: @{}
         expectedAgentPID:[heartbeat[@"pid"] intValue] scaleMode:mode]) {
         self.terminalModeActive = YES;
@@ -329,6 +337,8 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         return;
     }
     self.terminalSurfaceLayer.hidden = YES;
+    self.terminalLayer.contentsGravity = [mode isEqualToString:@"stretch"]
+        ? kCAGravityResize : ([mode isEqualToString:@"fill"] ? kCAGravityResizeAspectFill : kCAGravityResizeAspect);
     if (!readable) return;
 
     // PNGs are replaced atomically several times per second. The generic
@@ -345,11 +355,6 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         if (source != NULL) {
             CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
             if (image != NULL) {
-                // Use the terminal route's own scaling policy, never the video
-                // configuration. Fill reflows the producer's terminal grid;
-                // presenting its complete image must not crop it a second time.
-                self.terminalLayer.contentsGravity = [mode isEqualToString:@"stretch"]
-                    ? kCAGravityResize : kCAGravityResizeAspect;
                 self.terminalLayer.contents = (__bridge id)image;
                 self.terminalFrameRevision = revision;
                 CGImageRelease(image);

@@ -7,6 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// filesystem frame copies, or a second animation clock.
 @interface AuraFlowTerminalSurfaceRenderer : NSObject
 @property(nonatomic, readonly, nullable) id<MTLDevice> device;
+@property(nonatomic) MTLClearColor clearColor;
 - (BOOL)updateDescriptor:(NSDictionary *)descriptor expectedAgentPID:(int)pid;
 - (BOOL)encodeToTexture:(id<MTLTexture>)target
          commandBuffer:(id<MTLCommandBuffer>)commandBuffer

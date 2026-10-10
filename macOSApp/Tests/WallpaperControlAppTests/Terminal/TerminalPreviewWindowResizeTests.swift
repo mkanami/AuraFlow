@@ -56,7 +56,7 @@ struct TerminalPreviewWindowResizeTests {
         }
     }
 
-    @Test(arguments: [TerminalScaleMode.fill, .fit])
+    @Test(arguments: TerminalScaleMode.allCases)
     func resizingScalesExistingCanvasWithoutExpandingTerminal(mode: TerminalScaleMode) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraPreviewWindowResize-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -81,8 +81,6 @@ struct TerminalPreviewWindowResizeTests {
         while model.snapshot == nil && Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
         let initial = try #require(model.snapshot)
         let generation = model.previewGeneration
-        let metrics = TerminalFontMetrics.cellMetrics(for: config.render)
-        let sourceAspect = Double(initial.columns) * metrics.width / (Double(initial.rows) * metrics.height)
         var firstRenderer: TerminalMetalView?
         for size in [CGSize(width: 760, height: 480), CGSize(width: 1480, height: 540), CGSize(width: 540, height: 960), CGSize(width: 760, height: 480)] {
             window.setContentSize(size)
@@ -94,14 +92,10 @@ struct TerminalPreviewWindowResizeTests {
             else { firstRenderer = renderer }
             let frame = renderer.convert(renderer.bounds, to: hosting)
             let viewport = hosting.bounds
-            #expect(abs(frame.width / frame.height - sourceAspect) < 0.01)
+            // Every mode uses the full viewport. The GPU scales the source
+            // inside it; the view hierarchy must not apply another Fit/Fill.
+            #expect(abs(frame.width - viewport.width) < 1 && abs(frame.height - viewport.height) < 1)
             #expect(abs(frame.midX - viewport.midX) < 1 && abs(frame.midY - viewport.midY) < 1)
-            if mode == .fill {
-                #expect(frame.width >= viewport.width - 1 && frame.height >= viewport.height - 1,
-                        "Fill must cover the entire window without an inset after wide and tall resizes")
-            } else {
-                #expect(frame.width <= viewport.width + 1 && frame.height <= viewport.height + 1)
-            }
             #expect(model.snapshot?.columns == initial.columns && model.snapshot?.rows == initial.rows)
             #expect(model.previewGeneration == generation)
             #expect(selection.terminalConfiguration == config.normalized())

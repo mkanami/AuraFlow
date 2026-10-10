@@ -51,7 +51,7 @@ public final class TerminalMetalView: MTKView {
     private let cellPipeline: MTLRenderPipelineState
     private let presentPipeline: MTLRenderPipelineState
     private let vertexBuffer: MTLBuffer
-    private let logicalSize: CGSize
+    private var presentationBackground = TerminalRGBA.black
     private let preparationQueue = DispatchQueue(
         label: "com.andrijvergeles.auraflow.terminal-frame-prepare",
         qos: .userInitiated
@@ -92,7 +92,6 @@ public final class TerminalMetalView: MTKView {
     var displayedRevision: UInt64? { rasterizedRevision }
 
     public init(frame: CGRect, logicalSize: CGSize, device: MTLDevice) {
-        self.logicalSize = logicalSize
         commandQueue = device.makeCommandQueue()!
         let library = try! device.makeLibrary(source: Self.shaderSource, options: nil)
         cellPipeline = Self.makePipeline(
@@ -128,14 +127,31 @@ public final class TerminalMetalView: MTKView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    public func update(snapshot: TerminalGridSnapshot, configuration: TerminalRenderConfiguration) {
+    public override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsDisplay = true
+    }
+
+    public func update(snapshot: TerminalGridSnapshot, configuration: TerminalRenderConfiguration,
+                       presentationBackground: TerminalRGBA? = nil) {
         let normalized = configuration.normalized()
+        let background = presentationBackground ?? TerminalRGBA(
+            red: normalized.background.red * normalized.backgroundOpacity,
+            green: normalized.background.green * normalized.backgroundOpacity,
+            blue: normalized.background.blue * normalized.backgroundOpacity)
+        if self.presentationBackground != background {
+            self.presentationBackground = background
+            needsDisplay = true
+        }
         if normalized == renderConfiguration,
            let currentSnapshot = self.snapshot,
            snapshot.revision < currentSnapshot.revision {
             return
         }
-        if normalized != renderConfiguration {
+        var previousRasterConfiguration = renderConfiguration
+        previousRasterConfiguration.scaleMode = normalized.scaleMode
+        let modeChanged = normalized.scaleMode != renderConfiguration.scaleMode
+        if normalized != previousRasterConfiguration {
             rasterEpoch &+= 1
             rasterizedRevision = nil
             preparedFrame = nil
@@ -147,6 +163,10 @@ public final class TerminalMetalView: MTKView {
         renderConfiguration = normalized
         preferredFramesPerSecond = normalized.maxFPS
         if !rendererPaused || lockCaptureSeedPending { schedulePreparation() }
+        if modeChanged {
+            needsDisplay = true
+            if gpuFrameInFlight { presentationPending = true }
+        }
     }
 
     public func setRendererPaused(_ paused: Bool) {
@@ -232,10 +252,18 @@ public final class TerminalMetalView: MTKView {
             presentPass.colorAttachments[0].texture = drawable.texture
             presentPass.colorAttachments[0].loadAction = .clear
             presentPass.colorAttachments[0].storeAction = .store
-            presentPass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+            presentPass.colorAttachments[0].clearColor = MTLClearColor(
+                red: presentationBackground.red, green: presentationBackground.green,
+                blue: presentationBackground.blue, alpha: 1)
             guard let presentEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: presentPass) else { return }
             presentEncoder.setRenderPipelineState(presentPipeline)
             presentEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+            let presentation = TerminalRenderGeometry.presentationScale(
+                sourceWidth: frameTexture.width, sourceHeight: frameTexture.height,
+                targetWidth: drawable.texture.width, targetHeight: drawable.texture.height,
+                mode: renderConfiguration.scaleMode)
+            var presentationScale = SIMD2<Float>(Float(presentation.x), Float(presentation.y))
+            presentEncoder.setVertexBytes(&presentationScale, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
             presentEncoder.setFragmentTexture(frameTexture, index: 0)
             presentEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             presentEncoder.endEncoding()
@@ -278,10 +306,15 @@ public final class TerminalMetalView: MTKView {
 
     private func schedulePreparation() {
         guard (!rendererPaused || lockCaptureSeedPending), let snapshot else { return }
-        let pixelSize = TerminalRenderGeometry.pixelSize(
+        let metrics = TerminalFontMetrics.cellMetrics(for: renderConfiguration)
+        let sourceWidth = Double(snapshot.columns) * metrics.width
+        let sourceHeight = Double(snapshot.rows) * metrics.height
+        let density = NSScreen.main?.backingScaleFactor ?? 1
+        let pixelSize = TerminalRenderGeometry.sourcePixelSize(
             configuration: renderConfiguration,
-            drawableWidth: max(Int(drawableSize.width), 1),
-            drawableHeight: max(Int(drawableSize.height), 1)
+            columns: snapshot.columns, rows: snapshot.rows,
+            cellWidth: metrics.width, lineHeight: metrics.height,
+            pixelDensity: density
         )
         if requestedSize != pixelSize {
             requestedSize = pixelSize
@@ -302,8 +335,8 @@ public final class TerminalMetalView: MTKView {
         let fontPixelScale = TerminalRenderGeometry.pixelScaleFactor(
             pixelWidth: width,
             pixelHeight: height,
-            logicalWidth: logicalSize.width,
-            logicalHeight: logicalSize.height
+            logicalWidth: sourceWidth,
+            logicalHeight: sourceHeight
         )
         preparationQueue.async { [weak self] in
             guard let self else { return }
@@ -645,9 +678,10 @@ public final class TerminalMetalView: MTKView {
 
     vertex TerminalPresentOutput terminal_present_vertex(
         const device TerminalVertex *vertices [[buffer(0)]],
+        const device float2 *scale [[buffer(1)]],
         uint vertexID [[vertex_id]]) {
         TerminalPresentOutput output;
-        output.position = float4(vertices[vertexID].position, 0.0, 1.0);
+        output.position = float4(vertices[vertexID].position * scale[0], 0.0, 1.0);
         output.uv = vertices[vertexID].uv;
         return output;
     }
@@ -758,7 +792,9 @@ final class CoreTextGlyphAtlas {
             lineHeight: Double(lineHeight),
             targetWidth: Double(width),
             targetHeight: Double(height),
-            mode: configuration.scaleMode
+            // Rasterize the complete grid into the source canvas. The final
+            // viewport, not this reusable texture, owns Fit/Fill/Stretch.
+            mode: .fit
         )
         let fontScaleX = CGFloat(layout.scale.x)
         let fontScaleY = CGFloat(layout.scale.y)

@@ -99,11 +99,12 @@ private final class TerminalOutputCapture: @unchecked Sendable {
 }
 
 @MainActor
-private func terminalGPUFrame(
+func terminalGPUFrame(
     _ snapshot: TerminalGridSnapshot,
     width: Int,
     height: Int,
-    precedingSnapshots: [TerminalGridSnapshot] = []
+    precedingSnapshots: [TerminalGridSnapshot] = [],
+    render: TerminalRenderConfiguration = .init(fontSize: 18, textScale: 1)
 ) async throws -> (Data, Int, Int) {
     let device = try #require(MTLCreateSystemDefaultDevice())
     let view = TerminalMetalView(frame: CGRect(x: 0, y: 0, width: width, height: height),
@@ -121,9 +122,9 @@ private func terminalGPUFrame(
     }
     view.setLockScreenCaptureEnabled(true)
     for preceding in precedingSnapshots {
-        view.update(snapshot: preceding, configuration: TerminalRenderConfiguration(fontSize: 18, textScale: 1))
+        view.update(snapshot: preceding, configuration: render)
     }
-    view.update(snapshot: snapshot, configuration: TerminalRenderConfiguration(fontSize: 18, textScale: 1))
+    view.update(snapshot: snapshot, configuration: render)
     let deadline = Date().addingTimeInterval(4)
     while result == nil, Date() < deadline {
         view.draw(view.bounds)
@@ -132,7 +133,7 @@ private func terminalGPUFrame(
     return try #require(result)
 }
 
-private func saveTerminalFrame(_ frame: (Data, Int, Int), name: String, directory: String) throws {
+func saveTerminalFrame(_ frame: (Data, Int, Int), name: String, directory: String) throws {
     let (data, width, height) = frame
     let provider = try #require(CGDataProvider(data: data as CFData))
     let image = try #require(CGImage(width: width, height: height, bitsPerComponent: 8,
@@ -163,6 +164,26 @@ private func saveTerminalFrame(_ frame: (Data, Int, Int), name: String, director
     #expect(darkest > 180)
 }
 
+@Test(arguments: [(437, 271), (640, 360), (360, 640)]) @MainActor
+func terminalGPUSourceCanvasHasNoUnpaintedRemainder(width: Int, height: Int) async throws {
+    var grid = TerminalGrid(columns: 153, rows: 48)
+    grid.setStyle(.init(background: .rgb(255, 0, 255)))
+    for _ in 0..<(153 * 48) { grid.put(" ") }
+    grid.setCursorVisible(false)
+    // The entire canvas uses the configured terminal background, including
+    // sub-cell remainder. It is not a black letterbox around a cropped grid.
+    let render = TerminalRenderConfiguration(fontSize: 18, background: .init(red: 1, green: 0, blue: 1), textScale: 1)
+    let (pixels, actualWidth, actualHeight) = try await terminalGPUFrame(grid.snapshot(), width: width, height: height, render: render)
+    #expect(actualWidth > 0 && actualHeight > 0)
+    // Every edge pixel must come from the rendered grid, not black letterbox.
+    for y in 0..<actualHeight {
+        for x in 0..<actualWidth where y == 0 || y == actualHeight - 1 || x == 0 || x == actualWidth - 1 {
+            let index = (y * actualWidth + x) * 4
+            #expect(pixels[index] > 240 && pixels[index + 2] > 240)
+        }
+    }
+}
+
 @Test @MainActor func terminalGPUCoalescedUpdatesMatchAFreshCompleteFrame() async throws {
     var parser = VTParser(columns: 20, rows: 8)
     var history: [TerminalGridSnapshot] = []
@@ -176,4 +197,31 @@ private func saveTerminalFrame(_ frame: (Data, Int, Int), name: String, director
     let fresh = try await terminalGPUFrame(final, width: 640, height: 320)
     let coalesced = try await terminalGPUFrame(final, width: 640, height: 320, precedingSnapshots: history)
     #expect(fresh.0 == coalesced.0)
+}
+
+@Test(arguments: [(640, 360), (360, 640), (760, 480)]) @MainActor
+func terminalGPUSourceCanvasRetainsEveryCorner(width: Int, height: Int) async throws {
+    let render = TerminalRenderConfiguration(columns: 153, rows: 48, fontSize: 18, textScale: 1)
+    let metrics = TerminalFontMetrics.cellMetrics(for: render)
+    let size = TerminalRenderGeometry.viewportGrid(configuration: render,
+        logicalWidth: Double(width), logicalHeight: Double(height), cellWidth: metrics.width, lineHeight: metrics.height)
+    var grid = TerminalGrid(columns: size.columns, rows: size.rows)
+    let corners = [(0, 0), (size.columns - 1, 0), (0, size.rows - 1), (size.columns - 1, size.rows - 1)]
+    grid.setStyle(.init(background: .rgb(255, 0, 255)))
+    for (column, row) in corners {
+        grid.moveCursor(column: column, row: row)
+        grid.put(" ")
+    }
+    grid.setCursorVisible(false)
+    let frame = try await terminalGPUFrame(grid.snapshot(), width: width, height: height, render: render)
+    let layout = TerminalRenderGeometry.layout(columns: size.columns, rows: size.rows,
+        cellWidth: metrics.width, lineHeight: metrics.height,
+        targetWidth: Double(frame.1), targetHeight: Double(frame.2), mode: .fit)
+    for (column, row) in corners {
+        let x = Int(layout.offsetX + (Double(column) + 0.5) * metrics.width * layout.scale.x)
+        let y = Int(layout.offsetY + (Double(row) + 0.5) * metrics.height * layout.scale.y)
+        #expect((0..<frame.1).contains(x) && (0..<frame.2).contains(y))
+        let index = (y * frame.1 + x) * 4
+        #expect(frame.0[index] > 240 && frame.0[index + 2] > 240)
+    }
 }

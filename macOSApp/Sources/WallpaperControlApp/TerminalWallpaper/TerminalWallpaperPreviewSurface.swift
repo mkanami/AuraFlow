@@ -18,16 +18,13 @@ struct TerminalWallpaperPreviewSurface: View {
                   blue: render.background.blue * render.backgroundOpacity)
             if let sharedFrame = model.sharedFrame {
                 TerminalIOSurfacePreview(descriptor: sharedFrame, sequence: model.frameSequence,
-                    scaleMode: model.configuration?.render.scaleMode ?? .fill)
+                    scaleMode: render.scaleMode,
+                    background: TerminalRGBA(red: render.background.red * render.backgroundOpacity,
+                        green: render.background.green * render.backgroundOpacity,
+                        blue: render.background.blue * render.backgroundOpacity))
             } else if let snapshot = model.snapshot, let configuration = model.configuration {
-                GeometryReader { viewport in
-                    TerminalSnapshotPreview(snapshot: snapshot, configuration: configuration)
-                        .id(model.previewGeneration)
-                        .aspectRatio(TerminalSnapshotPreview.sourceSize(snapshot: snapshot, render: configuration.render),
-                                     contentMode: configuration.render.scaleMode == .fill ? .fill : .fit)
-                        .frame(width: viewport.size.width, height: viewport.size.height)
-                        .clipped()
-                }
+                TerminalSnapshotPreview(snapshot: snapshot, configuration: configuration)
+                    .id(model.previewGeneration)
             } else if let previewError = model.previewError {
                 VStack(spacing: 8) {
                     Image(systemName: "terminal")
@@ -51,12 +48,14 @@ private struct TerminalIOSurfacePreview: NSViewRepresentable {
     let descriptor: TerminalSharedFrameDescriptor
     let sequence: UInt64
     let scaleMode: TerminalScaleMode
+    let background: TerminalRGBA
 
     func makeNSView(context: Context) -> TerminalIOSurfacePreviewView {
         TerminalIOSurfacePreviewView(frame: .zero, device: MTLCreateSystemDefaultDevice())
     }
 
     func updateNSView(_ view: TerminalIOSurfacePreviewView, context: Context) {
+        view.clearColor = MTLClearColor(red: background.red, green: background.green, blue: background.blue, alpha: 1)
         view.display(descriptor: descriptor, sequence: sequence, scaleMode: scaleMode)
     }
 }
@@ -100,10 +99,8 @@ private final class TerminalIOSurfacePreviewView: MTKView {
     func display(descriptor newDescriptor: TerminalSharedFrameDescriptor, sequence: UInt64,
                  scaleMode newMode: TerminalScaleMode) {
         let descriptorChanged = descriptor != newDescriptor
-        // Preview never distorts cells, including a user-selected Stretch.
-        let previewMode: TerminalScaleMode = newMode == .stretch ? .fit : newMode
-        let modeChanged = scaleMode != previewMode
-        scaleMode = previewMode
+        let modeChanged = scaleMode != newMode
+        scaleMode = newMode
         if descriptor != newDescriptor {
             descriptor = newDescriptor
             surface = IOSurfaceLookup(newDescriptor.surfaceID)
@@ -144,12 +141,10 @@ private final class TerminalIOSurfacePreviewView: MTKView {
         else { return }
         encoder.setRenderPipelineState(renderPipeline)
         encoder.setFragmentTexture(sourceTexture, index: 0)
-        let presentation = TerminalRenderGeometry.scaleFactors(
-            contentWidth: Double(sourceTexture.width), contentHeight: Double(sourceTexture.height),
-            targetWidth: Double(drawable.texture.width), targetHeight: Double(drawable.texture.height), mode: scaleMode)
-        var scale = SIMD2<Float>(
-            Float(Double(sourceTexture.width) * presentation.x / Double(drawable.texture.width)),
-            Float(Double(sourceTexture.height) * presentation.y / Double(drawable.texture.height)))
+        let presentation = TerminalRenderGeometry.presentationScale(
+            sourceWidth: sourceTexture.width, sourceHeight: sourceTexture.height,
+            targetWidth: drawable.texture.width, targetHeight: drawable.texture.height, mode: scaleMode)
+        var scale = SIMD2<Float>(Float(presentation.x), Float(presentation.y))
         encoder.setVertexBytes(&scale, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
@@ -199,12 +194,13 @@ private struct TerminalSnapshotPreview: NSViewRepresentable {
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        // Rasterize the complete source canvas; the outer viewport handles
-        // uniform Fill cropping, just as it does for ordinary wallpaper previews.
-        var render = TerminalWallpaperCanvas.renderConfiguration(
+        // The renderer presents the full source canvas using the selected mode.
+        let render = TerminalWallpaperCanvas.renderConfiguration(
             command: configuration.command, render: configuration.render, snapshot: snapshot)
-        render.scaleMode = .fit
-        (view as? TerminalMetalView)?.update(snapshot: snapshot, configuration: render)
+        let background = TerminalRGBA(red: configuration.render.background.red * configuration.render.backgroundOpacity,
+            green: configuration.render.background.green * configuration.render.backgroundOpacity,
+            blue: configuration.render.background.blue * configuration.render.backgroundOpacity)
+        (view as? TerminalMetalView)?.update(snapshot: snapshot, configuration: render, presentationBackground: background)
     }
 
     static func sourceSize(snapshot: TerminalGridSnapshot, render: TerminalRenderConfiguration) -> CGSize {

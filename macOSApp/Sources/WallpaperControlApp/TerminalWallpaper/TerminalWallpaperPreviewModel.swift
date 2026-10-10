@@ -1,5 +1,6 @@
 import AppKit
 import AuraTerminalWallpaperCore
+import AuraTerminalRendering
 import Combine
 import Foundation
 import IOSurface
@@ -58,7 +59,10 @@ enum TerminalWallpaperPreviewRuntimePolicy {
               let descriptor,
               surfaceAvailable,
               runtimeStatus.pid == descriptor.agentPID else { return false }
+        var sourceRender = runtimeStatus.config.render
+        sourceRender.scaleMode = selectedConfiguration.render.scaleMode
         return runtimeStatus.config.command == selectedConfiguration.command
+            && sourceRender == selectedConfiguration.render
     }
 }
 
@@ -198,6 +202,22 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
     private var previewSession: TerminalWallpaperPreviewPTY?
     private var selectedCommand: TerminalCommandConfiguration?
     private var selectedGrid: (columns: Int, rows: Int)?
+    private var viewportSize: CGSize?
+
+    func updateViewportSize(_ size: CGSize) {
+        guard size.width.isFinite, size.height.isFinite, size.width > 1, size.height > 1,
+              viewportSize != size else { return }
+        viewportSize = size
+        reconcile()
+    }
+
+    private func resolvedGrid(_ render: TerminalRenderConfiguration) -> (columns: Int, rows: Int) {
+        let screen = NSScreen.main ?? NSScreen.screens.first
+        let metrics = TerminalFontMetrics.cellMetrics(for: render)
+        return TerminalRenderGeometry.viewportGrid(configuration: render,
+            logicalWidth: Double(screen?.frame.width ?? 1920), logicalHeight: Double(screen?.frame.height ?? 1080),
+            cellWidth: metrics.width, lineHeight: metrics.height)
+    }
     private var selectionObservation: AnyCancellable?
     private var frameObserver: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
@@ -289,16 +309,14 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         }
 
         if sharedFrame != nil { sharedFrame = nil }
-        let requestedGrid = (
-            columns: selected.render.columns ?? 153,
-            rows: selected.render.rows ?? 48
-        )
-        if selectedCommand != selected.command
-            || selectedGrid?.columns != requestedGrid.columns
-            || selectedGrid?.rows != requestedGrid.rows {
+        let requestedGrid = resolvedGrid(selected.render)
+        if selectedCommand != selected.command {
             stopPreviewSession()
             if snapshot != nil { snapshot = nil }
             selectedCommand = selected.command
+        }
+        if selectedGrid?.columns != requestedGrid.columns || selectedGrid?.rows != requestedGrid.rows {
+            previewSession?.resize(columns: requestedGrid.columns, rows: requestedGrid.rows)
             selectedGrid = requestedGrid
         }
 
@@ -422,13 +440,18 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         previewSession = session
         previewError = nil
         do {
-            try session.start(configuration: config, initialRevision: (snapshot?.revision ?? 0) &+ 1) { [weak self] newSnapshot in
+            let grid = resolvedGrid(config.render)
+            var launchConfiguration = config
+            launchConfiguration.render.columns = grid.columns
+            launchConfiguration.render.rows = grid.rows
+            try session.start(configuration: launchConfiguration, initialRevision: (snapshot?.revision ?? 0) &+ 1) { [weak self] newSnapshot in
                 DispatchQueue.main.async { [weak self] in
                     guard let self,
                           self.previewGeneration == generation,
                           self.previewSession === session,
                           self.selectionStore.kind == .terminal,
                           self.selectedCommand == config.command else { return }
+                    guard self.snapshot.map({ newSnapshot.revision >= $0.revision }) ?? true else { return }
                     self.snapshot = newSnapshot
                 }
             }
@@ -556,6 +579,20 @@ private final class TerminalWallpaperPreviewPTY {
     }
 
     func writeInput(_ input: Data) throws { try session.writeInput(input) }
+
+    func resize(columns: Int, rows: Int) {
+        // SIGWINCH reflows the existing program; resizing never relaunches it
+        // or reruns a static command with potential side effects.
+        parserQueue.async { [weak self] in
+            guard let self, self.session.childPID != nil, var parser = self.parser else { return }
+            parser.resize(columns: columns, rows: rows)
+            self.parser = parser
+            self.snapshotLock.lock()
+            self.latestSnapshot = parser.grid.snapshot()
+            self.snapshotLock.unlock()
+            try? self.session.resize(columns: columns, rows: rows)
+        }
+    }
 
     func afterStopped(_ completion: @escaping () -> Void) {
         shutdownQueue.async(execute: completion)

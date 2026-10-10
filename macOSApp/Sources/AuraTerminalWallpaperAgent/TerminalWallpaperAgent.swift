@@ -109,7 +109,13 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func screensChanged() {
         if config.render.columns == nil || config.render.rows == nil {
-            restartSessionForCurrentGeometry()
+            if session.childPID != nil {
+                rebuildRuntime(restartChild: false)
+            } else {
+                // A finished static command cannot redraw on SIGWINCH. Keep
+                // its complete snapshot instead of truncating or rerunning it.
+                rebuildWindows()
+            }
         } else {
             rebuildWindows()
         }
@@ -165,8 +171,13 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             var previousWithoutRate = previousConfiguration
             previousWithoutRate.playbackSpeed = config.playbackSpeed
             previousWithoutRate.nativeSpeed = config.nativeSpeed
+            previousWithoutRate.render.scaleMode = config.render.scaleMode
             if previousWithoutRate != config {
                 rebuildRuntime(restartChild: previousConfiguration.command != config.command)
+            } else if previousConfiguration.render.scaleMode != config.render.scaleMode {
+                // Scale belongs to presentation, not the PTY/parser or source
+                // canvas. This also redraws the retained frame after EOF.
+                applyLatestSnapshot()
             }
             if TerminalNativeSpeed.changed(from: previousConfiguration, to: config),
                let profile = TerminalNativeSpeed.profile(for: config.command) {
@@ -437,8 +448,11 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard let latestSnapshot else { return }
         let render = TerminalWallpaperCanvas.renderConfiguration(
             command: config.command, render: config.render, snapshot: latestSnapshot)
+        let background = TerminalRGBA(red: config.render.background.red * config.render.backgroundOpacity,
+            green: config.render.background.green * config.render.backgroundOpacity,
+            blue: config.render.background.blue * config.render.backgroundOpacity)
         for window in windows {
-            window.update(snapshot: latestSnapshot, configuration: render)
+            window.update(snapshot: latestSnapshot, configuration: render, presentationBackground: background)
             renderedFrames += 1
         }
         requestDesktopSeedIfNeeded()
@@ -560,12 +574,10 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func logicalGeometry() -> (columns: Int, rows: Int) {
-        if let columns = config.render.columns, let rows = config.render.rows {
-            return (columns, rows)
-        }
         let screen = NSScreen.main ?? NSScreen.screens.first
         let cellMetrics = TerminalFontMetrics.cellMetrics(for: config.render)
-        return TerminalRenderGeometry.automaticGrid(
+        return TerminalRenderGeometry.viewportGrid(
+            configuration: config.render,
             logicalWidth: Double(screen?.frame.width ?? 1920),
             logicalHeight: Double(screen?.frame.height ?? 1080),
             cellWidth: cellMetrics.width,
