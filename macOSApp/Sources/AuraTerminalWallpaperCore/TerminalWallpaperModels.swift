@@ -89,7 +89,7 @@ public struct TerminalRenderConfiguration: Codable, Equatable, Sendable {
         fontSize: Double = 14,
         cellSpacing: Double = 0,
         maxFPS: Int = 30,
-        scaleMode: TerminalScaleMode = .fit,
+        scaleMode: TerminalScaleMode = .fill,
         background: TerminalRGBA = .black,
         backgroundOpacity: Double = 1,
         textScale: Double = 1.5
@@ -136,7 +136,7 @@ public struct TerminalRenderConfiguration: Codable, Equatable, Sendable {
         self.fontSize = try container.decodeIfPresent(Double.self, forKey: .fontSize) ?? 14
         self.cellSpacing = try container.decodeIfPresent(Double.self, forKey: .cellSpacing) ?? 0
         self.maxFPS = try container.decodeIfPresent(Int.self, forKey: .maxFPS) ?? 30
-        self.scaleMode = try container.decodeIfPresent(TerminalScaleMode.self, forKey: .scaleMode) ?? .fit
+        self.scaleMode = try container.decodeIfPresent(TerminalScaleMode.self, forKey: .scaleMode) ?? .fill
         self.background = try container.decodeIfPresent(TerminalRGBA.self, forKey: .background) ?? .black
         self.backgroundOpacity = try container.decodeIfPresent(Double.self, forKey: .backgroundOpacity) ?? 1
         self.textScale = try container.decodeIfPresent(Double.self, forKey: .textScale) ?? 1.5
