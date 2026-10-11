@@ -2412,12 +2412,16 @@ final class AppViewModel: ObservableObject {
         appliedVideoURL != nil && isPlaybackPaused
     }
 
+    var isPlaybackPausedForControls: Bool {
+        terminalIsActive?() == true ? terminalScaleModel?.status.paused == true : isPlaybackPaused
+    }
+
     var playbackButtonTitle: String {
-        isPlaybackPaused ? "Play" : "Stop"
+        isPlaybackPausedForControls ? "Play" : "Stop"
     }
 
     var playbackButtonSystemImage: String {
-        isPlaybackPaused ? "play.fill" : "stop.circle"
+        isPlaybackPausedForControls ? "play.fill" : "stop.circle"
     }
 
     private var activeWallpaperURLForControls: URL? {
@@ -2434,6 +2438,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canStart: Bool {
+        guard terminalIsActive?() != true else { return false }
         if previewSelectionStore?.kind == .web { return wallpaperEngine.canStart && !isBusy && !isLifecycleBusy }
         if previewSelectionStore?.kind == .terminal {
             return terminalCanStart?() == true && !hasInstalledWallpaperSessionForControls && !wallpaperEngine.runtimeActive && !wallpaperEngine.isBusy
@@ -2467,7 +2472,11 @@ final class AppViewModel: ObservableObject {
     }
 
     var canTogglePlayback: Bool {
-        if wallpaperEngine.runtimeActive || terminalIsActive?() == true { return false }
+        if wallpaperEngine.runtimeActive { return false }
+        if terminalIsActive?() == true {
+            return terminalScaleModel?.status.running == true && terminalScaleModel?.isBusy == false
+                && !isBusy && !isLifecycleBusy
+        }
         guard isControllerAvailable,
               !isBusy,
               !lifecycleViewModel.hasActiveOrPendingLifecycleOperation,
@@ -2481,7 +2490,7 @@ final class AppViewModel: ObservableObject {
 
     var canClearWallpaper: Bool {
         if wallpaperEngine.runtimeActive { return !wallpaperEngine.isBusy && !isLifecycleBusy }
-        if terminalIsActive?() == true { return !isBusy && !isLifecycleBusy }
+        if terminalIsActive?() == true { return terminalScaleModel?.isBusy != true && !isBusy && !isLifecycleBusy }
         return isControllerAvailable
     }
 
@@ -2547,8 +2556,15 @@ final class AppViewModel: ObservableObject {
             self?.objectWillChange.send()
         }.store(in: &terminalScaleSubscriptions)
         model.$errorMessage.dropFirst().sink { [weak self] message in
-            guard let self, case .terminal = scaleControlTarget,
-                  let message, message.hasPrefix("Failed to update scale mode:") else { return }
+            guard let self, let message else { return }
+            let playbackError = terminalIsActive?() == true
+                && (message.hasPrefix("Failed to pause Terminal Wallpaper:")
+                    || message.hasPrefix("Failed to resume Terminal Wallpaper:"))
+            let scaleError: Bool
+            if case .terminal = scaleControlTarget {
+                scaleError = message.hasPrefix("Failed to update scale mode:")
+            } else { scaleError = false }
+            guard playbackError || scaleError else { return }
             alertMessage = message
         }.store(in: &terminalScaleSubscriptions)
         objectWillChange.send()
@@ -3603,6 +3619,7 @@ final class AppViewModel: ObservableObject {
 
     func togglePlayback() {
         guard canTogglePlayback else { return }
+        if terminalIsActive?() == true { terminalScaleModel?.togglePlayback(); return }
         if isPlaybackPaused {
             lifecycleViewModel.resume()
         } else {

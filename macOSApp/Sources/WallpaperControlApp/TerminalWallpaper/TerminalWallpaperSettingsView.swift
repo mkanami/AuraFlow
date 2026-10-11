@@ -576,7 +576,9 @@ struct TerminalWallpaperSettingsView: View {
                 .disabled(!viewModel.canStart || viewModel.status.running)
             Button("Restart") { viewModel.restart() }
                 .disabled(!viewModel.canStart)
-            Button("Stop") { viewModel.stop() }
+            Button(viewModel.status.paused ? "Resume" : "Stop") { viewModel.togglePlayback() }
+                .disabled(viewModel.isBusy || !viewModel.status.running)
+            Button("Remove") { viewModel.stop() }
                 .disabled(viewModel.isBusy || !viewModel.status.running)
             Spacer()
             Button("Refresh status") { viewModel.refresh() }

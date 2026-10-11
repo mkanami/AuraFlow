@@ -1,5 +1,7 @@
 struct TerminalFullscreenPausePolicy {
     private(set) var isPaused = false
+    var manuallyPaused = false
+    var playbackIsPaused: Bool { manuallyPaused || isPaused }
     private var fullscreenSamples = 0
     private var windowedSamples = 0
 

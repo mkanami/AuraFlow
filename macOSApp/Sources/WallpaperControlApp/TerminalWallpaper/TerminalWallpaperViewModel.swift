@@ -370,6 +370,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     var statusTitle: String {
+        if status.running && status.paused { return "Paused" }
         if status.running && status.health?.childRunning == true { return "Running" }
         if status.running { return "Agent running" }
         return "Stopped"
@@ -391,6 +392,20 @@ final class TerminalWallpaperViewModel: ObservableObject {
             let wasRunning = status.running
             apply(latest)
             if latest.running && !wasRunning { reconcileLockScreen() }
+        }
+    }
+
+    func togglePlayback() {
+        guard status.running, !isBusy else { return }
+        let paused = !status.paused
+        let controller = controller
+        perform(successMessage: paused ? "Terminal Wallpaper paused." : "Terminal Wallpaper resumed.") {
+            do { return try controller.setPlaybackPaused(paused) }
+            catch {
+                throw TerminalWallpaperControllerError.unavailable(
+                    "Failed to \(paused ? "pause" : "resume") Terminal Wallpaper: \(error.localizedDescription)"
+                )
+            }
         }
     }
 

@@ -9,6 +9,7 @@ protocol TerminalWallpaperControlling: Sendable {
     func status() throws -> TerminalWallpaperStatus
     func start(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
     func stop() throws -> TerminalWallpaperStatus
+    func setPlaybackPaused(_ paused: Bool) throws -> TerminalWallpaperStatus
     func terminate() throws -> TerminalWallpaperStatus
     func restart(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
     func update(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
@@ -44,6 +45,9 @@ private final class SystemTerminalLockScreenCoordinator: TerminalLockScreenCoord
 extension TerminalWallpaperControlling {
     func ensureCanStart() throws {}
     func reconcileLockScreenIfRunning() throws {}
+    func setPlaybackPaused(_ paused: Bool) throws -> TerminalWallpaperStatus {
+        throw TerminalWallpaperControllerError.unavailable("Playback controls are unavailable.")
+    }
     func updateScaleMode(_ mode: TerminalScaleMode) throws -> TerminalWallpaperStatus {
         throw TerminalWallpaperControllerError.unavailable("Scale updates are unavailable.")
     }
@@ -125,6 +129,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         let startedAt = Date().timeIntervalSince1970
         let previousFrameRevision = Self.lockScreenFrameRevision(in: store)
         do {
+            try store.setPlaybackPaused(false)
             try store.saveConfig(normalized)
             try applyLaunchAtLogin(normalized)
             if wasRunning {
@@ -149,6 +154,22 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         return store.status()
     }
 
+    func setPlaybackPaused(_ paused: Bool) throws -> TerminalWallpaperStatus {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
+        guard store.processIsAlive(pid: store.loadPID()) else { return store.status() }
+        let previous = store.isPlaybackPaused
+        guard previous != paused else { return store.status() }
+        try store.setPlaybackPaused(paused)
+        do {
+            try send(paused ? .pause : .resume, config: store.loadConfig())
+        } catch {
+            try? store.setPlaybackPaused(previous)
+            throw error
+        }
+        return store.status()
+    }
+
     func stop() throws -> TerminalWallpaperStatus {
         lockScreenOperationLock.lock()
         defer { lockScreenOperationLock.unlock() }
@@ -164,6 +185,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
                 )
             }
         }
+        try store.setPlaybackPaused(false)
         store.removeCommand()
         store.removeHealth()
         store.removeSharedFrameDescriptor()
@@ -183,6 +205,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
                 )
             }
         }
+        try store.setPlaybackPaused(false)
         store.removeCommand()
         store.removeHealth()
         store.removeSharedFrameDescriptor()

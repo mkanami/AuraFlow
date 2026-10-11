@@ -76,6 +76,7 @@ public final class TerminalWallpaperRuntimeStore {
     public var configURL: URL { appSupportURL.appendingPathComponent("config.json") }
     public var commandURL: URL { appSupportURL.appendingPathComponent("command.json") }
     public var healthURL: URL { appSupportURL.appendingPathComponent("health.json") }
+    public var pauseURL: URL { appSupportURL.appendingPathComponent("paused") }
     public var pidURL: URL { appSupportURL.appendingPathComponent("agent.pid") }
     public var lockScreenFrameURL: URL { appSupportURL.appendingPathComponent("lock-screen-frame.png") }
     public var lockScreenHeartbeatURL: URL { appSupportURL.appendingPathComponent("lock-screen-heartbeat.json") }
@@ -196,12 +197,24 @@ public final class TerminalWallpaperRuntimeStore {
         return kill(pid_t(pid), 0) == 0
     }
 
+    public var isPlaybackPaused: Bool { FileManager.default.fileExists(atPath: pauseURL.path) }
+
+    public func setPlaybackPaused(_ paused: Bool) throws {
+        if paused {
+            try ensureDirectories()
+            try Data().write(to: pauseURL, options: .atomic)
+        } else if FileManager.default.fileExists(atPath: pauseURL.path) {
+            try FileManager.default.removeItem(at: pauseURL)
+        }
+    }
+
     public func status() -> TerminalWallpaperStatus {
         let config = loadConfig()
         let pid = loadPID()
         let running = processIsAlive(pid: pid)
         return TerminalWallpaperStatus(
             running: running,
+            paused: running && isPlaybackPaused,
             pid: running ? pid : nil,
             config: config,
             health: loadHealth()

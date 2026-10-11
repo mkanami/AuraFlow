@@ -290,6 +290,8 @@ public struct TerminalWallpaperConfig: Codable, Equatable, Sendable {
 
 public enum TerminalWallpaperCommandAction: String, Codable, Sendable {
     case start
+    case pause
+    case resume
     case stop
     case restart
     case update

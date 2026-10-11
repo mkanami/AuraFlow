@@ -93,11 +93,11 @@ struct ControlPanel: View {
     }
 
     private var playbackButton: some View {
-        MainPanelActionButton(viewModel.isPlaybackPaused ? "Resume" : "Stop",
+        MainPanelActionButton(viewModel.isPlaybackPausedForControls ? "Resume" : "Stop",
                               icon: viewModel.playbackButtonSystemImage, id: "playback",
-                              help: viewModel.isPlaybackPaused ? "Resume wallpaper" : "Stop wallpaper",
+                              help: viewModel.isPlaybackPausedForControls ? "Resume wallpaper" : "Stop wallpaper",
                               enabled: viewModel.canTogglePlayback,
-                              role: viewModel.isPlaybackPaused ? nil : .destructive) {
+                              role: viewModel.isPlaybackPausedForControls ? nil : .destructive) {
             viewModel.togglePlayback()
         }
     }

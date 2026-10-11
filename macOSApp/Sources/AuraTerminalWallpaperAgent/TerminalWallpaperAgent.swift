@@ -53,6 +53,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         framePublisher = TerminalLockScreenFramePublisher(store: store)
         self.managesLockScreenPresentation = managesLockScreenPresentation
         config = store.loadConfig()
+        fullscreenPausePolicy.manuallyPaused = store.isPlaybackPaused
         super.init()
     }
 
@@ -164,6 +165,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             framePublisher.configure(maxFPS: config.render.maxFPS)
             if oldFPS != config.render.maxFPS { startFrameTimer() }
         }
+        fullscreenPausePolicy.manuallyPaused = store.isPlaybackPaused
         switch command.action {
         case .start, .restart:
             rebuildRuntime()
@@ -188,12 +190,17 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     rebuildRuntime(preserveWindows: true)
                 }
             }
+        case .pause, .resume:
+            // Read the latest persisted intent, including when a newer Update
+            // supersedes a Pause notification. Never recreate the PTY here.
+            break
         case .resize:
             restartSessionForCurrentGeometry()
         case .stop, .terminate:
             NSApp.terminate(nil)
         }
         updateFullscreenPausePolicy()
+        synchronizePlaybackPause()
         writeHealth()
     }
 
@@ -263,7 +270,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     }
                 )
                 lastError = nil
-                if fullscreenPausePolicy.isPaused {
+                if fullscreenPausePolicy.playbackIsPaused {
                     try? session.setPaused(true)
                 }
             } catch {
@@ -297,7 +304,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func startFrameTimer() {
         frameTimer?.invalidate()
         frameTimer = nil
-        guard !fullscreenPausePolicy.isPaused else { return }
+        guard !fullscreenPausePolicy.playbackIsPaused else { return }
         let interval = 1.0 / Double(max(config.render.maxFPS, 1))
         frameTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.publishLatestSnapshot()
@@ -437,7 +444,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             }
         }
         for window in windows {
-            window.setRendererPaused(fullscreenPausePolicy.isPaused)
+            window.setRendererPaused(fullscreenPausePolicy.playbackIsPaused)
             window.setLockScreenCaptureEnabled(lockScreenIsLocked)
             if !window.isVisible { window.orderBack(nil); window.orderFrontRegardless() }
         }
@@ -512,9 +519,10 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             foregroundIsFullscreen: foregroundIsFullscreen
         ) else { return }
 
+        let playbackPaused = fullscreenPausePolicy.playbackIsPaused
         if let childPID = session.childPID {
             do {
-                try session.setPaused(paused)
+                try session.setPaused(playbackPaused)
                 logger.notice("Terminal wallpaper fullscreen pause=\(paused), child=\(childPID)")
             } catch {
                 logger.error("Could not change terminal process pause state: \(error.localizedDescription, privacy: .public)")
@@ -522,11 +530,20 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 return
             }
         }
+        synchronizePlaybackPause()
+    }
+
+    private func synchronizePlaybackPause() {
+        let paused = fullscreenPausePolicy.playbackIsPaused
+        if session.childPID != nil {
+            do { try session.setPaused(paused) }
+            catch { lastError = error.localizedDescription; return }
+        }
         for window in windows { window.setRendererPaused(paused) }
         if paused {
             frameTimer?.invalidate()
             frameTimer = nil
-        } else {
+        } else if frameTimer == nil {
             startFrameTimer()
             applyLatestSnapshot()
         }
@@ -591,6 +608,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let childPID = session.childPID.map(Int.init)
         if let childStartedAt,
            childPID != nil,
+           !fullscreenPausePolicy.playbackIsPaused,
            frames == framesAtChildStart,
            !reportedNoOutput,
            Date().timeIntervalSince(childStartedAt) >= 3 {
