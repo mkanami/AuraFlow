@@ -1618,12 +1618,13 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             if !scope.includesDesktop {
                 guard let observedRoot = try wallpaperStoreTransaction
                     .propertyListDictionary(from: Data(contentsOf: wallpaperStoreURL)),
-                wallpaperStoreTransaction.normalizedDesktopRoutesForComparison(
-                    try wallpaperStoreTransaction.currentDesktopRouteData(
+                wallpaperStoreTransaction.desktopRoutesSemanticallyMatch(
+                    current: try wallpaperStoreTransaction.currentDesktopRouteData(
                         in: observedRoot,
                         managedAssetID: assetID
-                    )
-                ) == desktopRoutesBeforeAttempt
+                    ),
+                    expected: desktopRoutesBeforeAttempt
+                )
                 else {
                     throw AerialLockScreenInstallerError
                         .wallpaperStoreUpdateFailed

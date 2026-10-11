@@ -1678,6 +1678,102 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(fixture.installer.installationConfirmed)
 }
 
+// WallpaperAgent updates LastUse while consuming the freshly written Idle
+// route. That is bookkeeping, not a change of the user's Desktop wallpaper.
+@Test(arguments: [false, true])
+func repeatedNativeStartRemoveStartAcceptsDesktopUsageTimestampUpdates(lockOnly: Bool) async throws {
+    let fixture = try AerialLockScreenFixture(onRefresh: { storeURL in
+        func updateUsage(_ value: Any) -> Any {
+            guard var dictionary = value as? [String: Any] else { return value }
+            for (key, child) in dictionary {
+                if (key == "Desktop" || key == "Linked"),
+                   var mode = child as? [String: Any] {
+                    mode["LastUse"] = Date(timeIntervalSince1970: 2_000)
+                    mode["LastSet"] = Date(timeIntervalSince1970: 1_000)
+                    dictionary[key] = mode
+                } else {
+                    dictionary[key] = updateUsage(child)
+                }
+            }
+            return dictionary
+        }
+        if let root = try? readWallpaperStore(storeURL),
+           let updated = updateUsage(root) as? [String: Any] {
+            try? writeWallpaperStore(updated, to: storeURL)
+        }
+    })
+    defer { fixture.cleanup() }
+    for _ in 0..<4 {
+        if lockOnly {
+            try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+        } else {
+            try await fixture.installer.installForDesktopAgent(videoURL: fixture.videoURL)
+        }
+        #expect(fixture.installer.installationConfirmed)
+        #expect(fixture.installer.requiresLockScreenSessionPromotion)
+        try await fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
+        #expect(!fixture.installer.isInstalled)
+    }
+}
+
+@Test func desktopPreservationComparisonIgnoresOnlyUsageDatesAndExpectedRouteSplit() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    let transaction = WallpaperStoreTransaction(
+        wallpaperStoreURL: fixture.storeURL,
+        spacesPreferencesURL: fixture.spacesURL
+    )
+    func data(_ mode: [String: Any]) throws -> Data {
+        try PropertyListSerialization.data(fromPropertyList: mode, format: .binary, options: 0)
+    }
+    let original = AerialLockScreenFixture.makeMode(
+        provider: WallpaperPlatformConstants.imageProviderID,
+        configuration: ["url": ["relative": "file:///user-desktop.jpg"]]
+    )
+    let expected = ["display.Linked": try data(original)]
+    var used = original
+    used["LastUse"] = Date(timeIntervalSince1970: 2_000)
+    used["LastSet"] = Date(timeIntervalSince1970: 1_000)
+    #expect(transaction.desktopRoutesSemanticallyMatch(
+        current: ["display.Desktop": try data(used)], expected: expected
+    ))
+    #expect(!transaction.desktopRoutesSemanticallyMatch(current: [:], expected: expected))
+    #expect(!transaction.desktopRoutesSemanticallyMatch(
+        current: ["otherDisplay.Desktop": try data(used)], expected: expected
+    ))
+    #expect(!transaction.desktopRoutesSemanticallyMatch(
+        current: ["display.Desktop": Data("invalid".utf8)], expected: expected
+    ))
+    for changedProvider in [WallpaperPlatformConstants.aerialProviderID, "com.apple.wallpaper.choice.other"] {
+        let changed = AerialLockScreenFixture.makeMode(
+            provider: changedProvider, configuration: ["assetID": "different"]
+        )
+        #expect(!transaction.desktopRoutesSemanticallyMatch(
+            current: ["display.Desktop": try data(changed)], expected: expected
+        ))
+    }
+    for changedField in ["Configuration", "Files"] {
+        var changed = used
+        var content = try #require(changed["Content"] as? [String: Any])
+        var choices = try #require(content["Choices"] as? [[String: Any]])
+        choices[0][changedField] = changedField == "Files"
+            ? [["relative": "file:///different.jpg"]] as Any
+            : Data("different config".utf8) as Any
+        content["Choices"] = choices
+        changed["Content"] = content
+        #expect(!transaction.desktopRoutesSemanticallyMatch(
+            current: ["display.Desktop": try data(changed)], expected: expected
+        ))
+    }
+    var changedOptions = used
+    var content = try #require(changedOptions["Content"] as? [String: Any])
+    content["EncodedOptionValues"] = Data("different scaling".utf8)
+    changedOptions["Content"] = content
+    #expect(!transaction.desktopRoutesSemanticallyMatch(
+        current: ["display.Desktop": try data(changedOptions)], expected: expected
+    ))
+}
+
 @Test func desktopAgentNativeRemovePreservesEveryDesktopWithoutImageTransition() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
