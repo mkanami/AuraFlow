@@ -728,6 +728,12 @@ final class CoreTextGlyphAtlas {
     private var cachedGridSize: (columns: Int, rows: Int)?
     private var cachedCells: [TerminalCell] = []
     private var cachedInstances: [TerminalMetalCellInstance] = []
+    private struct MetricsKey: Equatable {
+        let family: String
+        let size: Double
+        let spacing: Double
+    }
+    private var rasterMetrics: (key: MetricsKey, value: TerminalCellMetrics)?
     private static let palette = TerminalPalette.kittyDefault16
     private static let blockQuadrants: [UInt32: UInt8] = [
         0x2596: 0b0100, 0x2597: 0b1000, 0x2598: 0b0001, 0x2599: 0b1101,
@@ -757,10 +763,15 @@ final class CoreTextGlyphAtlas {
             size: CGFloat(rasterFontSize)
         )
         let ascent = CTFontGetAscent(font)
-        let metrics = TerminalFontMetrics.cellMetrics(
-            font: font,
-            cellSpacing: CGFloat(configuration.cellSpacing * fontPixelScale)
-        )
+        let metricsKey = MetricsKey(family: configuration.fontFamily, size: rasterFontSize,
+                                    spacing: configuration.cellSpacing * fontPixelScale)
+        let metrics: TerminalCellMetrics
+        if let cached = rasterMetrics, cached.key == metricsKey {
+            metrics = cached.value
+        } else {
+            metrics = TerminalFontMetrics.cellMetrics(font: font, cellSpacing: CGFloat(metricsKey.spacing))
+            rasterMetrics = (metricsKey, metrics)
+        }
         let cellWidth = CGFloat(metrics.width)
         let lineHeight = CGFloat(metrics.height)
         let currentSignature = Signature(

@@ -221,13 +221,16 @@ private actor LockScreenPlatformExecutor {
 
     func repair(
         videoURL: URL,
+        allowCachedSignatures: Bool = false,
         shouldProceed: @escaping @Sendable () -> Bool
     ) async throws -> Bool {
-        try await withExclusivePlatformOperation {
-            try await platformBox.repair(
-                videoURL: videoURL,
-                shouldProceed: shouldProceed
-            )
+        try await AerialFileSignatureValidation.$allowsCachedRead.withValue(allowCachedSignatures) {
+            try await withExclusivePlatformOperation {
+                try await platformBox.repair(
+                    videoURL: videoURL,
+                    shouldProceed: shouldProceed
+                )
+            }
         }
     }
 
@@ -2548,6 +2551,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             do {
                 _ = try await platformExecutor.repair(
                     videoURL: videoURL,
+                    allowCachedSignatures: !force,
                     shouldProceed: {
                         rearmGuard.canProceed(
                             token: token,

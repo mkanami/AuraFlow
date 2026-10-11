@@ -238,7 +238,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         selectionStore: WallpaperPreviewSelectionStore,
         runtimeStore: TerminalWallpaperRuntimeStore = TerminalWallpaperRuntimeStore(),
         windowIsVisible: @escaping @MainActor () -> Bool = {
-            NSApp.windows.contains { $0.title == "AuraFlow" && $0.isVisible }
+            WallpaperPreviewVisibility.isVisible
         }
     ) {
         self.selectionStore = selectionStore
@@ -320,7 +320,9 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
             selectedGrid = requestedGrid
         }
 
-        guard windowIsVisible() else {
+        // An install may finish while the user minimizes the window. Allow its
+        // bounded readiness check to obtain a frame, then pause after commit.
+        guard windowIsVisible() || selectionStore.pendingOperationID != nil else {
             previewSession?.setPaused(true)
             return
         }
@@ -330,6 +332,13 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
             previewSession?.setPaused(false)
             synchronizePreviewSpeed(selected)
         }
+    }
+
+    func previewVisibilityDidChange() {
+        reconcile()
+        // The IOSurface continues updating while the preview is hidden. Ask
+        // its view to present the current frame immediately on return.
+        if windowIsVisible(), sharedFrame != nil { frameSequence &+= 1 }
     }
 
     private func synchronizePreviewSpeed(_ selected: TerminalWallpaperConfig) {
@@ -373,7 +382,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
     }
 
     private func receiveSharedFrame(_ notification: Notification) {
-        guard let userInfo = notification.userInfo,
+        guard windowIsVisible(), let userInfo = notification.userInfo,
               let surfaceID = userInfo["surface_id"] as? UInt32,
               let width = userInfo["width"] as? Int,
               let height = userInfo["height"] as? Int,
@@ -514,6 +523,8 @@ private final class TerminalWallpaperPreviewPTY {
     private var lastDeliveredRevision: UInt64?
     private var snapshotHandler: ((TerminalGridSnapshot) -> Void)?
     private var frameTimer: DispatchSourceTimer?
+    private var isPaused = false
+    private var hasFinishedOutput = false
     private let shutdownQueue = DispatchQueue(
         label: "com.andrijvergeles.auraflow.terminal-preview-shutdown",
         qos: .utility
@@ -542,7 +553,9 @@ private final class TerminalWallpaperPreviewPTY {
             guard let self else { return }
             self.snapshotLock.lock()
             let newest = self.latestSnapshot
+            let finished = self.hasFinishedOutput
             self.snapshotLock.unlock()
+            if finished { self.frameTimer?.schedule(deadline: .distantFuture, repeating: .never) }
             guard let newest, newest.revision != self.lastDeliveredRevision else { return }
             self.lastDeliveredRevision = newest.revision
             self.snapshotHandler?(newest)
@@ -567,13 +580,25 @@ private final class TerminalWallpaperPreviewPTY {
             },
             onExit: { [weak self] _ in
                 self?.parserQueue.async { [weak self] in
-                    self?.parser = nil
+                    guard let self else { return }
+                    self.snapshotLock.lock()
+                    self.hasFinishedOutput = true
+                    self.snapshotLock.unlock()
+                    self.parser = nil
                 }
             }
         )
     }
 
     func setPaused(_ paused: Bool) {
+        guard isPaused != paused else { return }
+        isPaused = paused
+        if paused {
+            frameTimer?.schedule(deadline: .distantFuture, repeating: .never)
+        } else if let config = configuration {
+            let interval = 1.0 / Double(min(max(config.render.maxFPS, 1), 60))
+            frameTimer?.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(2))
+        }
         guard session.childPID != nil else { return }
         try? session.setPaused(paused)
     }

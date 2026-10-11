@@ -11,6 +11,7 @@ final class AuraFlowApplication {
     let terminalPreviewModel: TerminalWallpaperPreviewModel
     let viewModel: AppViewModel
     private var mainWindow: NSWindow?
+    private var previewVisibilityMonitor: WallpaperPreviewVisibilityMonitor?
 
     private init() {
         let previewStore = WallpaperPreviewSelectionStore()
@@ -40,6 +41,10 @@ final class AuraFlowApplication {
         viewModel.terminalRemoveAction = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.stop() }
         viewModel.terminalCanStart = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.canStart == true }
         viewModel.terminalIsActive = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.status.running == true }
+        previewVisibilityMonitor = WallpaperPreviewVisibilityMonitor { [weak viewModel, weak previewModel] visible in
+            viewModel?.setPreviewWindowVisible(visible)
+            previewModel?.previewVisibilityDidChange()
+        }
     }
 
     func showMainWindow() {

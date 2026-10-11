@@ -4,9 +4,31 @@ import Foundation
 
 enum TerminalFontResolver {
     static let systemMonospaceFamily = "System Monospace"
+    private struct Key: Hashable {
+        let family: String
+        let size: CGFloat
+        let bold: Bool
+    }
+    private static let cacheLock = NSLock()
+    private static var cachedFonts: [Key: CTFont] = [:]
 
     static func font(family: String, size: CGFloat, bold: Bool = false) -> CTFont {
         let normalizedFamily = family.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = Key(family: normalizedFamily, size: size, bold: bold)
+        cacheLock.lock()
+        let cached = cachedFonts[key]
+        cacheLock.unlock()
+        if let cached { return cached }
+        let font = resolveFont(family: normalizedFamily, size: size, bold: bold)
+        cacheLock.lock()
+        // Font-size sliders must not retain an unbounded set of fonts.
+        if cachedFonts.count >= 64 { cachedFonts.removeAll(keepingCapacity: true) }
+        cachedFonts[key] = font
+        cacheLock.unlock()
+        return font
+    }
+
+    private static func resolveFont(family normalizedFamily: String, size: CGFloat, bold: Bool) -> CTFont {
         let usesSystemMonospace = [
             systemMonospaceFamily,
             "monospace",

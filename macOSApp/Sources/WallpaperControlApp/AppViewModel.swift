@@ -2336,6 +2336,7 @@ final class AppViewModel: ObservableObject {
     private var cacheClearTask: Task<Void, Never>?
     private var isControllerBootstrapInProgress = false
     private var previewRenderingSuspended = false
+    private var previewWindowVisible = true
     private var suspendedPreviewRate: Float?
     private var glassAnalysisTask: Task<Void, Never>?
     private var glassAnalysisGeneration = 0
@@ -2664,7 +2665,7 @@ final class AppViewModel: ObservableObject {
                 self?.objectWillChange.send()
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    if self.previewSelectionStore?.kind == .web { self.previewPlayer?.pause() }
+                    self.syncPreviewPlaybackRate()
                 }
             }
             .store(in: &featureViewModelCancellables)
@@ -5442,7 +5443,11 @@ final class AppViewModel: ObservableObject {
     }
 
     private func applyPreviewPlaybackRate(to player: AVPlayer) {
-        guard !previewRenderingSuspended, previewSelectionStore?.kind != .web else { return }
+        guard !previewRenderingSuspended, previewWindowVisible,
+              (previewSelectionStore?.kind ?? .video) == .video else {
+            player.pause()
+            return
+        }
         let rate = previewPlaybackRate()
         guard Self.previewPlaybackNeedsRestart(
             currentRate: player.rate,
@@ -5457,6 +5462,12 @@ final class AppViewModel: ObservableObject {
     private func syncPreviewPlaybackRate() {
         guard let previewPlayer else { return }
         applyPreviewPlaybackRate(to: previewPlayer)
+    }
+
+    func setPreviewWindowVisible(_ visible: Bool) {
+        guard previewWindowVisible != visible else { return }
+        previewWindowVisible = visible
+        syncPreviewPlaybackRate()
     }
 
     func suspendPreviewRenderingForWindowDrag() {

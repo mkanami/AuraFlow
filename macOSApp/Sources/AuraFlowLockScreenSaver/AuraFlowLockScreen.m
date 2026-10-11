@@ -10,10 +10,41 @@
 #import <errno.h>
 #import <pwd.h>
 #import <unistd.h>
+#import <sys/stat.h>
 
 static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
 static NSString * const AuraFlowRuntimeCommandNotification =
     @"com.andrijvergeles.auraflow.runtime-command-did-change";
+
+typedef struct {
+    dev_t device;
+    ino_t inode;
+    off_t size;
+    struct timespec modified;
+    struct timespec changed;
+} AuraFlowJSONMetadata;
+
+static BOOL AuraFlowJSONMetadataAtURL(NSURL *url, AuraFlowJSONMetadata *metadata) {
+    struct stat info;
+    if (stat(url.fileSystemRepresentation, &info) != 0) return NO;
+    *metadata = (AuraFlowJSONMetadata){info.st_dev, info.st_ino, info.st_size,
+        info.st_mtimespec, info.st_ctimespec};
+    return YES;
+}
+
+static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetadata b) {
+    return a.device == b.device && a.inode == b.inode && a.size == b.size
+        && a.modified.tv_sec == b.modified.tv_sec && a.modified.tv_nsec == b.modified.tv_nsec
+        && a.changed.tv_sec == b.changed.tv_sec && a.changed.tv_nsec == b.changed.tv_nsec;
+}
+
+@interface AuraFlowJSONCacheEntry : NSObject
+@property(nonatomic) AuraFlowJSONMetadata metadata;
+@property(nonatomic) CFTimeInterval createdAt;
+@property(nonatomic, copy) NSDictionary *dictionary;
+@end
+@implementation AuraFlowJSONCacheEntry
+@end
 
 @interface AuraFlowLockScreen ()
 @property(nonatomic, strong) CALayer *fallbackLayer;
@@ -35,6 +66,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 @property(nonatomic) BOOL observingReadyForDisplay;
 @property(nonatomic) BOOL runtimePaused;
 @property(nonatomic) BOOL playerLayerPaused;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, AuraFlowJSONCacheEntry *> *jsonCache;
 @end
 
 @implementation AuraFlowLockScreen
@@ -49,6 +81,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 - (instancetype)initWithFrame:(NSRect)frame isPreview:(BOOL)isPreview {
     self = [super initWithFrame:frame isPreview:isPreview];
     if (self) {
+        self.jsonCache = [NSMutableDictionary dictionary];
         self.animationTimeInterval = 1.0 / 30.0;
         self.scaleMode = @"fill";
         self.playbackRate = 1.0;
@@ -516,15 +549,44 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         return @{};
     }
 
+    NSString *path = URL.path;
+    AuraFlowJSONMetadata before, after;
+    if (!AuraFlowJSONMetadataAtURL(URL, &before)) {
+        [self.jsonCache removeObjectForKey:path];
+        return @{};
+    }
+    CFTimeInterval now = CACurrentMediaTime();
+    AuraFlowJSONCacheEntry *cached = self.jsonCache[path];
+    if (cached && now >= cached.createdAt && now - cached.createdAt < 60
+        && AuraFlowJSONMetadataEqual(before, cached.metadata)) {
+        return cached.dictionary;
+    }
     NSData *data = [NSData dataWithContentsOfURL:URL
                                          options:NSDataReadingMappedIfSafe
                                            error:nil];
     if (data == nil) {
+        [self.jsonCache removeObjectForKey:path];
         return @{};
     }
 
     id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    return [object isKindOfClass:NSDictionary.class] ? object : @{};
+    if (![object isKindOfClass:NSDictionary.class]) {
+        [self.jsonCache removeObjectForKey:path];
+        return @{};
+    }
+    // Atomic replacement, same-size edits and permission changes invalidate
+    // immediately. Never retain a read that raced a writer; no per-frame logs.
+    if (AuraFlowJSONMetadataAtURL(URL, &after) && AuraFlowJSONMetadataEqual(before, after)) {
+        if (self.jsonCache.count >= 16) [self.jsonCache removeAllObjects];
+        AuraFlowJSONCacheEntry *entry = [AuraFlowJSONCacheEntry new];
+        entry.metadata = before;
+        entry.createdAt = now;
+        entry.dictionary = object;
+        self.jsonCache[path] = entry;
+    } else {
+        [self.jsonCache removeObjectForKey:path];
+    }
+    return object;
 }
 
 - (nullable NSURL *)existingURLForConfiguredValue:(id)value

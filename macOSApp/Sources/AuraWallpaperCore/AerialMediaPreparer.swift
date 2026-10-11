@@ -150,6 +150,7 @@ private final class AerialExportSessionBox: @unchecked Sendable {
 /// wallpaper stores are used by the test and fallback routes and retain the
 /// source media unchanged.
 internal final class AerialMediaPreparer {
+    private let signatureCache = AerialFileSignatureCache()
     private let fileManager: FileManager
     private let usesCanonicalWallpaperStore: Bool
     private let preparedCacheDirectoryURL: URL
@@ -839,6 +840,12 @@ internal final class AerialMediaPreparer {
     /// Returns the stable size + prefix + suffix FNV-like signature used for
     /// prepared-media cache keys and installer state validation.
     internal func fileSignature(at url: URL) throws -> String {
+        try signatureCache.signature(at: url, allowCached: AerialFileSignatureValidation.allowsCachedRead) {
+            try uncachedFileSignature(at: url)
+        }
+    }
+
+    private func uncachedFileSignature(at url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
 
