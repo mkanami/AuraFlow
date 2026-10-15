@@ -173,7 +173,7 @@ struct TerminalWallpaperSettingsView: View {
                         applySettingsAction
                     }
                     settingsDisclosure(
-                        "Runtime & troubleshooting", subtitle: "Status, restart and diagnostics",
+                        "Runtime & troubleshooting", subtitle: "Status and diagnostics",
                         systemImage: "heart.text.square", isExpanded: $showRuntime
                     ) {
                         statusSection
@@ -565,16 +565,8 @@ struct TerminalWallpaperSettingsView: View {
 
     private var runtimeActions: some View {
         HStack(spacing: 10) {
-            Button("Start") { viewModel.start() }
-                .disabled(!viewModel.canStart || viewModel.status.running)
-            Button("Restart") { viewModel.restart() }
-                .disabled(!viewModel.canStart)
-            Button(viewModel.status.paused ? "Resume" : "Stop") { viewModel.togglePlayback() }
-                .disabled(viewModel.isBusy || !viewModel.status.running)
-            Button("Remove") { viewModel.stop() }
-                .disabled(viewModel.isBusy || !viewModel.status.running)
-            Spacer()
             Button("Refresh status") { viewModel.refresh() }
+            Spacer()
         }
         .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
     }
