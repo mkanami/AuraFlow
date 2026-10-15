@@ -17,8 +17,8 @@
 </p>
 
 <p align="center">
-  Use your own video, animation, or image — or download a wallpaper from the
-  built-in catalog.
+  Use your own video, animation, image, or terminal program — or download a
+  wallpaper from the built-in catalog.
 </p>
 
 <p align="center">
@@ -27,15 +27,19 @@
 
 ## Highlights
 
-| | |
-| --- | --- |
-| **Desktop playback** | Loop animated wallpapers behind desktop icons across connected displays. |
-| **Lock Screen** | Use the same wallpaper everywhere or run AuraFlow on the Lock Screen only. |
-| **Wallpaper Catalog** | Browse, preview, download, and reopen wallpapers without leaving the app. |
-| **Local media** | Open videos, GIFs, WebM files, and still images from your Mac. |
-| **Playback controls** | Change speed, pause, resume, and automatically pause for fullscreen apps. |
-| **Scaling** | Switch between Fill, Fit, and Stretch while the wallpaper is running. |
-| **Safe removal** | Stop AuraFlow and restore the previous macOS wallpaper with one action. |
+<table>
+  <tbody>
+    <tr><td><strong>Desktop playback</strong></td><td>Loop animated wallpapers behind desktop icons across connected displays.</td></tr>
+    <tr><td><strong>Lock Screen</strong></td><td>Show the active wallpaper on the Lock Screen, with a Lock Screen-only mode for local media.</td></tr>
+    <tr><td><strong>Wallpaper Catalog</strong></td><td>Browse, preview, download with progress and cancellation, and reopen wallpapers without leaving the app.</td></tr>
+    <tr><td><strong>Local media</strong></td><td>Open videos, GIFs, WebM files, and still images from your Mac.</td></tr>
+    <tr><td><strong>Terminal wallpapers</strong></td><td>Run CLI animations, static compositions, and terminal dashboards as wallpapers.</td></tr>
+    <tr><td><strong>Playback controls</strong></td><td>Change speed, pause, resume, and automatically pause for fullscreen apps.</td></tr>
+    <tr><td><strong>Scaling</strong></td><td>Use one Fill / Fit / Stretch control for the installed media or terminal wallpaper.</td></tr>
+    <tr><td><strong>Launch at login</strong></td><td>Restore your selected wallpaper automatically when you sign in.</td></tr>
+    <tr><td><strong>Safe removal</strong></td><td>Stop AuraFlow and restore the previous macOS wallpaper with one action.</td></tr>
+  </tbody>
+</table>
 
 ## Installation
 
@@ -43,26 +47,30 @@
 2. Open the disk image and drag **AuraFlow** into **Applications**.
 3. Launch AuraFlow from Applications.
 
-No account is required. An internet connection is only needed for the catalog.
+No account is required. The online catalog, CLI package metadata, and package
+installation need an internet connection. Local media and installed terminal
+programs can run offline.
 
 ## Getting Started
 
 1. Select **Change Wallpaper…** to open a local file, or choose a wallpaper in
-   **Wallpaper Catalog**.
+   **Wallpaper Catalog**. For CLI animations and dashboards, open **Terminal Wallpaper**.
 2. Check the wallpaper in the main preview.
-3. Select **Start** for Desktop and Lock Screen playback, or **Lock** for
-   Lock Screen-only mode.
+3. Select **Start** for Desktop playback. **Play AuraFlow on Lock Screen** in
+   Playback Settings also enables Lock Screen playback. For local media, **Lock**
+   starts Lock Screen-only mode.
 4. Use **Remove** to stop AuraFlow and restore the previous wallpaper.
 
 ### Main controls
 
 | Control | Action |
 | --- | --- |
-| **Start** | Apply the selected wallpaper to the Desktop and Lock Screen. |
-| **Lock** | Apply the selected wallpaper only to the Lock Screen. |
+| **Start** | Apply the selected wallpaper to the Desktop, and to the Lock Screen when enabled. |
+| **Lock** | Apply selected local media only to the Lock Screen. |
 | **Stop / Play** | Pause or resume an animated wallpaper. |
 | **Remove** | Stop AuraFlow and restore the previous macOS wallpaper. |
 | **Change Wallpaper…** | Select media stored on this Mac. |
+| **Terminal Wallpaper** | Find, install, and preview terminal programs or enter a custom command. |
 | **Wallpaper Catalog** | Browse online wallpapers. |
 | **Downloaded Wallpapers** | Reopen previously downloaded wallpapers. |
 | **Monitoring** | View playback state and resource usage. |
@@ -70,17 +78,45 @@ No account is required. An internet connection is only needed for the catalog.
 Still images do not show Stop or Play. Remove the active AuraFlow wallpaper
 before switching between Desktop and Lock Screen-only modes.
 
+**Playback Settings** contains the shared **Scale Algorithm** and **Launch AuraFlow
+at login** controls. Scale immediately updates the installed media or terminal
+wallpaper, even when a different source is selected in the preview. Without an
+installed wallpaper, it updates the selected preview. The default is **Fill**;
+Lock Screen playback is enabled by default. Scale is unavailable for web projects.
+
 ## Wallpaper Catalog
 
 The catalog uses lightweight media for previews and downloads the original file
 only after you select **Download**. Saved files appear under **Downloaded
-Wallpapers** and are reused on the next launch.
+Wallpapers** and are reused on the next launch. Downloads show progress and can
+be cancelled without changing the current wallpaper.
 
 Foreground downloads take priority over preview traffic. The active card pauses
 its preview while the original file is transferred, then resumes without
 affecting a wallpaper already running on the Desktop.
 
 ## Compatibility
+
+### Terminal wallpapers
+
+Open **Terminal Wallpaper** to search installed commands and Homebrew packages,
+or add a custom command. Presets include Asciiquarium, lavat, CMatrix, pipes,
+cbonsai, and Nyan Cat, with both animated and static bonsai modes. Programs are
+installed on demand; Homebrew is needed to install packages, not to run commands
+already available on your Mac.
+
+Previewing a command does not replace the installed wallpaper. Use **Start** to
+apply it and **Stop / Play** to pause or resume an animation. Static commands keep
+their completed frame. Changing Scale does not restart the CLI. Font, background,
+and frame rate remain under **Appearance & performance**; **Apply settings**
+applies those settings.
+
+Search is not limited to the presets, so compatibility depends on the selected
+program. Commands requiring files, stdin, authentication, or interactive setup
+may not work as wallpapers. If a command fails, AuraFlow keeps the previous
+preview and asks you to choose another program. Terminal wallpapers are visual
+only and do not play audio. Lock Screen playback follows the shared setting;
+terminal wallpapers do not have a separate Lock Screen-only mode.
 
 ### Local Wallpaper Engine projects
 
@@ -137,13 +173,20 @@ AuraFlow is a Swift Package split into small runtime components:
 | `AuraWallpaperAgent` | Long-running wallpaper playback and lifecycle coordination. |
 | `AuraWallpaperCore` | Shared models, persistence, recovery, and platform operations. |
 | `AuraWallpaperNativeBridge` | Isolated macOS 26 native wallpaper integration. |
+| `AuraTerminalWallpaperCore` | Terminal configurations, CLI discovery, installation, and runtime state. |
+| `AuraTerminalRendering` | Terminal parsing, composition, and CoreText / Metal rendering. |
+| `AuraTerminalWallpaperAgent` | Independent CLI playback and shared Desktop / Lock Screen frames. |
 | `AuraWallpaperEngineCore` | Validated local imports, project properties and isolated WebKit rendering. |
 | `AuraWebWallpaperAgent` | Independent desktop web playback and static Lock Screen snapshots. |
 | `AuraFlowLockScreenSaver` | Lock Screen fallback for earlier macOS versions. |
 
-Media playback uses AVFoundation. AppKit bridges are limited to macOS window and
-wallpaper behavior that SwiftUI does not expose directly. Release builds bundle
-the required media tools inside the application.
+Media playback uses AVFoundation; terminal programs run through a PTY and render
+with CoreText and Metal. AppKit bridges are limited to macOS window and wallpaper
+behavior that SwiftUI does not expose directly. Normal playback does not require
+FFmpeg. The v1.4.0 download uses locally installed FFmpeg tools for optional video
+preprocessing, including Blend Interpolation and conversions that require FFmpeg.
+Video Optimization settings apply to newly imported local videos, not terminal
+programs or an already installed wallpaper.
 
 ## Build and Test
 
@@ -152,6 +195,7 @@ Requirements:
 - Xcode with the macOS SDK
 - Swift 5.9 or newer
 - macOS 13 or newer
+- FFmpeg (`ffmpeg` and `ffprobe`) for video preprocessing tests
 
 Run the test suite:
 
@@ -172,19 +216,22 @@ AURAFLOW_WEBKIT_TESTS=1 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 Create a universal `arm64 + x86_64` release:
 
 ```sh
-BUILD_UNIVERSAL=1 REQUIRE_UNIVERSAL=1 scripts/build_release.sh
+FFMPEG_RUNTIME_BUNDLING=0 BUILD_UNIVERSAL=1 REQUIRE_UNIVERSAL=1 scripts/build_release.sh
 ```
 
 Artifacts are written to `dist/` by default. Set
-`AURAFLOW_OUTPUT_DIR` to choose a different destination.
+`AURAFLOW_OUTPUT_DIR` to choose a different destination. See
+[Releasing](docs/releasing.md) for signing, archive validation, and optional
+bundling of portable FFmpeg tools.
 
 ## Repository Layout
 
 ```text
 macOSApp/                   Swift package, app, agents, bridges, and tests
 scripts/build_release.sh   Universal release, signing, ZIP, and DMG pipeline
+scripts/test_macos_app.sh  Core and UI test suites in separate test hosts
 script/build_and_run.sh    Local debug build and launch helper
-docs/                      README media
+docs/                      README media and release documentation
 ```
 
 ## Troubleshooting
