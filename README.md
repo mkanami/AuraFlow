@@ -157,7 +157,7 @@ Run the test suite:
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  swift test --package-path macOSApp
+  ./scripts/test_macos_app.sh
 ```
 
 Real WebKit integration tests require an unlocked interactive macOS session.
