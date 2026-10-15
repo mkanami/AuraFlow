@@ -166,7 +166,7 @@ struct TerminalWallpaperSettingsView: View {
                         applySettingsAction
                     }
                     settingsDisclosure(
-                        "Behavior", subtitle: "Displays, fullscreen pause and launch at login",
+                        "Behavior", subtitle: "Displays and fullscreen pause",
                         systemImage: "gearshape.2", isExpanded: $showBehavior
                     ) {
                         behaviorSection
@@ -553,13 +553,6 @@ struct TerminalWallpaperSettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle("Render on all displays", isOn: $viewModel.allDisplays)
             Toggle("Pause when another app is fullscreen", isOn: $viewModel.pauseOnFullscreen)
-            Toggle(
-                "Launch Terminal Wallpaper at login",
-                isOn: Binding(
-                    get: { viewModel.launchAtLogin },
-                    set: { viewModel.setLaunchAtLogin($0) }
-                )
-            )
         }
     }
 

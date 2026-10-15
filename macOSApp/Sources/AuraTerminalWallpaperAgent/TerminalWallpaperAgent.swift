@@ -174,6 +174,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             previousWithoutRate.playbackSpeed = config.playbackSpeed
             previousWithoutRate.nativeSpeed = config.nativeSpeed
             previousWithoutRate.render.scaleMode = config.render.scaleMode
+            previousWithoutRate.behavior.launchAtLogin = config.behavior.launchAtLogin
             if previousWithoutRate != config {
                 rebuildRuntime(restartChild: previousConfiguration.command != config.command)
             } else if previousConfiguration.render.scaleMode != config.render.scaleMode {

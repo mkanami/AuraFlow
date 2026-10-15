@@ -284,18 +284,24 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     func setLaunchAtLogin(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
         lockScreenOperationLock.lock()
         defer { lockScreenOperationLock.unlock() }
-        var normalized = try validated(config)
+        let running = store.processIsAlive(pid: store.loadPID())
+        let previous = store.loadConfig()
+        let previousRegistration = store.launchAgentEnabled()
+        var normalized = (running ? previous : config).normalized()
+        if enabled { normalized = try validated(normalized) }
         normalized.behavior.launchAtLogin = enabled
-        try store.saveConfig(normalized)
-        if enabled {
-            try store.enableLaunchAgent(helperPath: helperURL.path)
-        } else {
-            store.disableLaunchAgent()
+        do {
+            try store.saveConfig(normalized)
+            if enabled { try store.enableLaunchAgent(helperPath: helperURL.path) }
+            else { try store.removeLoginLaunchAgent() }
+            if running { try send(.update, config: normalized) }
+            return store.status()
+        } catch {
+            try? store.saveConfig(previous)
+            if previousRegistration { try? store.enableLaunchAgent(helperPath: helperURL.path) }
+            else { try? store.removeLoginLaunchAgent() }
+            throw error
         }
-        if store.processIsAlive(pid: store.loadPID()) {
-            try send(.update, config: normalized)
-        }
-        return store.status()
     }
 
     private func applyLaunchAtLogin(_ config: TerminalWallpaperConfig) throws {

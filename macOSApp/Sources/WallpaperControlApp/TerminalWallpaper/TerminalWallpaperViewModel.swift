@@ -76,6 +76,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     @Published var allDisplays: Bool
     @Published var pauseOnFullscreen: Bool
     @Published var launchAtLogin: Bool
+    @Published private(set) var pendingLaunchAtLogin: Bool?
     @Published private(set) var selectedCatalogItemID: String?
     @Published private(set) var catalogItems: [TerminalWallpaperCatalogItem]
     @Published private(set) var catalogSearch = ""
@@ -177,7 +178,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         backgroundOpacity = config.render.backgroundOpacity
         allDisplays = config.behavior.allDisplays
         pauseOnFullscreen = config.behavior.pauseOnFullscreen
-        launchAtLogin = config.behavior.launchAtLogin
+        launchAtLogin = runtimeConfig.behavior.launchAtLogin
         status = (try? resolvedController.status()) ?? TerminalWallpaperStatus(
             running: false,
             config: config
@@ -682,11 +683,32 @@ final class TerminalWallpaperViewModel: ObservableObject {
         }
     }
 
+    var controlsLaunchAtLogin: Bool {
+        pendingLaunchAtLogin ?? status.config.behavior.launchAtLogin
+    }
+
     func setLaunchAtLogin(_ enabled: Bool) {
-        launchAtLogin = enabled
+        guard !isBusy else { return }
+        let previous = launchAtLogin
         let controller = controller
-        let config = makeConfig()
-        perform { try controller.setLaunchAtLogin(enabled, config: config) }
+        var config = status.running ? status.config : makeConfig()
+        config.behavior.launchAtLogin = enabled
+        pendingLaunchAtLogin = enabled
+        perform(successMessage: enabled ? "Launch at login enabled." : "Launch at login disabled.",
+                onCompletion: { [weak self] succeeded in
+                    guard let self else { return }
+                    if succeeded, let store = self.previewSelectionStore, store.kind == .terminal {
+                        var preview = store.terminalConfiguration ?? self.makeConfig()
+                        preview.behavior.launchAtLogin = enabled
+                        store.selectTerminal(preview)
+                    } else if !succeeded { self.launchAtLogin = previous }
+                    self.pendingLaunchAtLogin = nil
+                }) {
+            do { return try controller.setLaunchAtLogin(enabled, config: config) }
+            catch {
+                throw TerminalWallpaperControllerError.unavailable("Failed to update launch at login: \(error.localizedDescription)")
+            }
+        }
     }
 
     private enum RuntimeAction { case start, stop, restart }
@@ -709,6 +731,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
 
     private func perform(
         successMessage: String? = nil,
+        onCompletion: ((Bool) -> Void)? = nil,
         _ work: @escaping () throws -> TerminalWallpaperStatus
     ) {
         guard !isBusy else { return }
@@ -718,7 +741,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
         statusRefreshGeneration &+= 1
         errorMessage = nil
         Task { @MainActor in
-            defer { isBusy = false }
+            var succeeded = false
+            defer { isBusy = false; onCompletion?(succeeded) }
             do {
                 let status = try await withCheckedThrowingContinuation { continuation in
                     DispatchQueue.global(qos: .userInitiated).async {
@@ -732,6 +756,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 apply(status)
                 confirmedScaleMode = status.config.render.scaleMode
                 statusMessage = successMessage
+                succeeded = true
             } catch {
                 errorMessage = error.localizedDescription
             }

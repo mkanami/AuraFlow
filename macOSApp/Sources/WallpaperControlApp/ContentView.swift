@@ -758,6 +758,16 @@ struct SettingsPopupCard: View {
             Divider()
 
             Toggle(isOn: Binding(
+                get: { viewModel.settingsAutostartEnabled },
+                set: { viewModel.toggleAutostart($0) }
+            )) {
+                Label("Launch AuraFlow at login", systemImage: "power")
+            }
+            .toggleStyle(.switch)
+            .disabled(!viewModel.canToggleAutostart)
+            .help("Automatically starts the configured wallpaper when you sign in to your Mac.")
+
+            Toggle(isOn: Binding(
                 get: { viewModel.pauseOnFullscreenEnabled },
                 set: { newValue in viewModel.togglePauseOnFullscreen(newValue) }
             )) {

@@ -248,13 +248,19 @@ public final class TerminalWallpaperRuntimeStore {
         </dict>
         </plist>
         """
+        // launchd reads ~/Library/LaunchAgents on the next login. Registering
+        // it now would create a second helper alongside a manually started CLI.
         try plist.write(to: launchAgentURL, atomically: true, encoding: .utf8)
-        _ = runLaunchctl(["bootstrap", "gui/\(getuid())", launchAgentURL.path])
     }
 
     public func disableLaunchAgent() {
-        _ = runLaunchctl(["bootout", "gui/\(getuid())/com.andrijvergeles.auraflow.terminal-wallpaper"])
-        try? FileManager.default.removeItem(at: launchAgentURL)
+        try? removeLoginLaunchAgent()
+    }
+
+    public func removeLoginLaunchAgent() throws {
+        // Removing future startup must leave this session's CLI and frame alive.
+        guard FileManager.default.fileExists(atPath: launchAgentURL.path) else { return }
+        try FileManager.default.removeItem(at: launchAgentURL)
     }
 
     @discardableResult
@@ -275,19 +281,6 @@ public final class TerminalWallpaperRuntimeStore {
         kill(pid_t(pid), SIGKILL)
         removePID()
         return !processIsAlive(pid: pid)
-    }
-
-    private func runLaunchctl(_ arguments: [String]) -> Int32 {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        task.arguments = arguments
-        do {
-            try task.run()
-            task.waitUntilExit()
-            return task.terminationStatus
-        } catch {
-            return -1
-        }
     }
 }
 

@@ -1829,8 +1829,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         defer { lifecycleLock.unlock() }
         if enabled {
             let config = store.normalized(store.loadConfig())
-            guard !config.video_path.isEmpty,
-                  FileManager.default.fileExists(atPath: config.video_path)
+            guard let source = store.effectiveLockScreenSourceURL(for: config),
+                  FileManager.default.fileExists(atPath: source.path)
             else {
                 // Keep the controller's user-facing error contract while the
                 // persistence/LaunchAgent transaction lives in the manager.
@@ -2542,8 +2542,18 @@ final class AppViewModel: ObservableObject {
         return isControllerAvailable
     }
 
+    var settingsAutostartEnabled: Bool {
+        if case .terminal = scaleControlTarget { return terminalScaleModel?.controlsLaunchAtLogin ?? false }
+        return autostartEnabled
+    }
+
     var canToggleAutostart: Bool {
-        isControllerAvailable && !isBusy
+        guard !isBusy, !isLifecycleBusy else { return false }
+        switch scaleControlTarget {
+        case .terminal: return terminalScaleModel?.isBusy == false
+        case .video: return isControllerAvailable
+        case .unsupported: return false
+        }
     }
 
     var canToggleBlendInterpolation: Bool {
@@ -2621,7 +2631,11 @@ final class AppViewModel: ObservableObject {
             if case .terminal = scaleControlTarget {
                 scaleError = message.hasPrefix("Failed to update scale mode:")
             } else { scaleError = false }
-            guard playbackError || scaleError else { return }
+            let loginError: Bool
+            if case .terminal = scaleControlTarget {
+                loginError = message.hasPrefix("Failed to update launch at login:")
+            } else { loginError = false }
+            guard playbackError || scaleError || loginError else { return }
             alertMessage = message
         }.store(in: &terminalScaleSubscriptions)
         objectWillChange.send()
@@ -3813,11 +3827,12 @@ final class AppViewModel: ObservableObject {
     }
 
     func toggleAutostart(_ enabled: Bool) {
-        guard !isBusy else {
-            autostartEnabled = !enabled
+        guard canToggleAutostart else { return }
+        if case .terminal = scaleControlTarget {
+            terminalScaleModel?.setLaunchAtLogin(enabled)
             return
         }
-        if enabled && selectedVideoURL == nil {
+        if enabled && selectedVideoURL == nil && appliedVideoURL == nil && !isLockScreenOnlyActive {
             autostartEnabled = false
             alertMessage = "Choose a video before enabling launch at login."
             return
@@ -3826,8 +3841,8 @@ final class AppViewModel: ObservableObject {
         let previous = autostartEnabled
         autostartEnabled = enabled
         guard let controller else { return }
+        isBusy = true
         Task {
-            isBusy = true
             defer { isBusy = false }
             do {
                 let status = try await runAsync { try controller.setAutostart(enabled) }

@@ -62,8 +62,8 @@ public final class AutostartManager {
 
         if enabled {
             config = store.normalized(config)
-            guard !config.video_path.isEmpty,
-                  FileManager.default.fileExists(atPath: config.video_path)
+            guard let source = store.effectiveLockScreenSourceURL(for: config),
+                  FileManager.default.fileExists(atPath: source.path)
             else {
                 throw WallpaperRuntimeError.unavailable(
                     "Choose an existing video before enabling launch at login."
