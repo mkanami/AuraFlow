@@ -12,7 +12,7 @@ def verify(bundle: Path, universal: bool) -> None:
         if not tool.exists():
             continue
         if universal:
-            subprocess.run(["lipo", "-verify_arch", "arm64", "x86_64", str(tool)], check=True)
+            subprocess.run(["lipo", str(tool), "-verify_arch", "arm64", "x86_64"], check=True)
         # Standalone tools may use system libraries. Copying a Homebrew binary
         # alone leaves references to that builder's Cellar and cannot ship.
         output = subprocess.check_output(["otool", "-L", str(tool)], text=True)
