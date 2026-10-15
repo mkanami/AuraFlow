@@ -6,6 +6,54 @@ import Testing
 @Suite(.serialized)
 struct CatalogCardInteractionTests {
 @MainActor
+@Test func longCatalogKeepsBoundedViewportAndCanScrollBothWays() async throws {
+    let wallpapers = (0..<200).map { index in
+        CatalogWallpaper(id: "scroll-\(index)", title: "Wallpaper \(index)",
+            category: "Anime", attribution: "Test", previewImageURL: nil,
+            sourcePageURL: nil, sources: [])
+    }
+    let model = AppViewModel(controller: MockNativeWallpaperController(),
+        catalogProvider: MockCatalogProvider(wallpapers: wallpapers))
+    // Initial cache hydration intentionally displays only the first page.
+    // Wait for it before supplying the long, already-loaded catalog fixture.
+    for _ in 0..<100 where model.catalogWallpapers.isEmpty {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    try #require(!model.catalogWallpapers.isEmpty)
+    model.catalogWallpapers = wallpapers
+    model.catalogHasMoreWallpapers = false
+    let hosting = NSHostingView(rootView: WallpaperCatalogGridView(
+        viewModel: model, catalogViewModel: model.catalogViewModel).frame(width: 500, height: 320))
+    hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 320)
+    let window = makeInteractionWindow(contentView: hosting, size: hosting.frame.size)
+    defer { window.orderOut(nil); window.close() }
+    hosting.layoutSubtreeIfNeeded()
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    func findScrollView(_ view: NSView) -> NSScrollView? {
+        if let scroll = view as? NSScrollView { return scroll }
+        return view.subviews.lazy.compactMap(findScrollView).first
+    }
+    let scroll = try #require(findScrollView(hosting))
+    #expect(scroll.contentView.bounds.height <= 321)
+    #expect((scroll.documentView?.frame.height ?? 0) > 10_000)
+    for _ in 0..<3 {
+        let bottom = max(0, (scroll.documentView?.frame.height ?? 0) - scroll.contentView.bounds.height)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        hosting.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(scroll.contentView.bounds.origin.y > 1_000)
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
+        hosting.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(scroll.contentView.bounds.origin.y <= 2.5)
+        #expect(scroll.contentView.bounds.height <= 321)
+    }
+}
+
+@MainActor
 @Test func respondsToFirstPhysicalClickAcrossFullWidth() async throws {
     let wallpaper = CatalogWallpaper(
         id: "first-click",

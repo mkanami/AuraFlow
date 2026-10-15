@@ -135,7 +135,7 @@ struct TerminalWallpaperSettingsView: View {
                 .padding(.vertical, 14)
             Divider()
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 16) {
                     if let errorMessage = viewModel.errorMessage {
                         terminalMessage(
                             errorMessage,
@@ -277,7 +277,7 @@ struct TerminalWallpaperSettingsView: View {
 
     private var catalogSection: some View {
         TerminalWallpaperSection(title: "Terminal programs", systemImage: "rectangle.grid.2x2") {
-            LazyVStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 10) {
                     AuraCatalogSearchField(
                         text: $searchText,
