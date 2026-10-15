@@ -1,7 +1,7 @@
 import AuraTerminalWallpaperCore
 import SwiftUI
 
-struct TerminalWallpaperCardPresentation: Equatable {
+struct TerminalWallpaperCardPresentation: Equatable, Sendable {
     let installed: Bool
     let selectedForPreview: Bool
     let applied: Bool
@@ -74,12 +74,7 @@ struct TerminalWallpaperDisclosureStyle: DisclosureGroupStyle {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            if usesCard {
-                AuraGlassInsetCard(cornerRadius: 12)
-                    .allowsHitTesting(false)
-            }
-        }
+        .modifier(AuraGlassInsetCardModifier(cornerRadius: 12, enabled: usesCard))
     }
 }
 
@@ -272,7 +267,7 @@ struct TerminalWallpaperSettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(AuraGlassInsetCard(cornerRadius: 12, emphasized: false))
+        .modifier(AuraGlassInsetCardModifier(cornerRadius: 12))
     }
 
     private var catalogSection: some View {
@@ -373,6 +368,7 @@ struct TerminalWallpaperSettingsView: View {
 
     private func presetCard(_ preset: TerminalWallpaperPreset, compact: Bool = false) -> some View {
         let item = preset.item
+        let installing = viewModel.installingAnimationID == item.id
         let availability = viewModel.availability[item.id] ?? .checking
         let presentation = TerminalWallpaperCardPresentation(
             installed: viewModel.cachedExecutablePath(for: item) != nil,
@@ -380,70 +376,11 @@ struct TerminalWallpaperSettingsView: View {
             applied: viewModel.isActive(item),
             busy: viewModel.isBusy
         )
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                Image(systemName: item.systemImage)
-                    .font(.title2)
-                    .frame(width: 32, height: 32)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.title).font(.headline)
-                    if !preset.isReviewedAnimation {
-                        Text(item.subtitle)
-                            .font(.caption).lineLimit(2)
-                            .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                    }
-                    if !presentation.installed {
-                        Text(availability.message)
-                            .font(.caption)
-                            .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                    }
-                }
-                Spacer(minLength: 0)
-                VStack(alignment: .trailing, spacing: 4) {
-                    if presentation.applied {
-                        Label("Applied", systemImage: "desktopcomputer")
-                    }
-                }
-                .font(.caption.weight(.medium))
-            }
-            if !compact {
-                Text(preset.description)
-                    .font(.callout)
-                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .topLeading)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if viewModel.installingAnimationID == item.id {
-                ProgressView(viewModel.installStage ?? "Checking animation…").controlSize(.small)
-                Button("Cancel") { viewModel.cancelInstallation() }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-            } else {
-                Button {
-                    viewModel.use(item)
-                } label: {
-                    Label(presentation.actionTitle, systemImage: presentation.installed ? "play.rectangle" : "arrow.down.circle")
-                }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                .disabled(presentation.actionDisabled || (!presentation.installed && !availability.canInstall))
-                .accessibilityLabel("\(presentation.actionTitle): \(item.title)")
-                .accessibilityHint(presentation.installed
-                                   ? "Changes only the AuraFlow preview, not your applied wallpaper."
-                                   : "Installs this program with Homebrew, then opens it only in preview.")
-                if case .failed = availability {
-                    Button("Retry package check") { viewModel.checkAvailability(preset) }
-                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                        .disabled(viewModel.isBusy)
-                }
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(catalogRowBackground)
-    }
-
-    private var catalogRowBackground: some View {
-        AuraGlassInsetCard(cornerRadius: 14)
-            .allowsHitTesting(false)
+        return TerminalWallpaperPresetCard(preset: preset, compact: compact,
+            availability: availability, presentation: presentation,
+            installing: installing,
+            installStage: installing ? viewModel.installStage : nil, viewModel: viewModel)
+            .equatable()
     }
 
     private var advancedCommandFields: some View {
@@ -610,6 +547,87 @@ struct TerminalWallpaperSettingsView: View {
             Spacer()
             Text(value)
         }
+    }
+}
+
+struct TerminalWallpaperPresetCard: View, Equatable {
+    let preset: TerminalWallpaperPreset
+    let compact: Bool
+    let availability: TerminalAnimationAvailability
+    let presentation: TerminalWallpaperCardPresentation
+    let installing: Bool
+    let installStage: String?
+    let viewModel: TerminalWallpaperViewModel
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.preset == rhs.preset && lhs.compact == rhs.compact
+            && lhs.availability == rhs.availability && lhs.presentation == rhs.presentation
+            && lhs.installing == rhs.installing && lhs.installStage == rhs.installStage
+            && lhs.viewModel === rhs.viewModel
+    }
+
+    var body: some View {
+        let item = preset.item
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: item.systemImage)
+                    .font(.title2)
+                    .frame(width: 32, height: 32)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title).font(.headline)
+                    if !preset.isReviewedAnimation {
+                        Text(item.subtitle)
+                            .font(.caption).lineLimit(2)
+                            .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                    }
+                    if !presentation.installed {
+                        Text(availability.message)
+                            .font(.caption)
+                            .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                    }
+                }
+                Spacer(minLength: 0)
+                VStack(alignment: .trailing, spacing: 4) {
+                    if presentation.applied {
+                        Label("Applied", systemImage: "desktopcomputer")
+                    }
+                }
+                .font(.caption.weight(.medium))
+            }
+            if !compact {
+                Text(preset.description)
+                    .font(.callout)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .topLeading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if installing {
+                ProgressView(installStage ?? "Checking animation…").controlSize(.small)
+                Button("Cancel") { viewModel.cancelInstallation() }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+            } else {
+                Button {
+                    viewModel.use(item)
+                } label: {
+                    Label(presentation.actionTitle, systemImage: presentation.installed ? "play.rectangle" : "arrow.down.circle")
+                }
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                .disabled(presentation.actionDisabled || (!presentation.installed && !availability.canInstall))
+                .accessibilityLabel("\(presentation.actionTitle): \(item.title)")
+                .accessibilityHint(presentation.installed
+                                   ? "Changes only the AuraFlow preview, not your applied wallpaper."
+                                   : "Installs this program with Homebrew, then opens it only in preview.")
+                if case .failed = availability {
+                    Button("Retry package check") { viewModel.checkAvailability(preset) }
+                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+                        .disabled(presentation.busy)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(AuraGlassInsetCardModifier(cornerRadius: 14))
     }
 }
 

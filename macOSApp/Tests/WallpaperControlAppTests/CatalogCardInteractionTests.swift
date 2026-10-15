@@ -6,6 +6,80 @@ import Testing
 @Suite(.serialized)
 struct CatalogCardInteractionTests {
 @MainActor
+@Test func downloadedLibraryScrollsBothWaysWithoutChangingItsViewport() async throws {
+    let model = AppViewModel(controller: MockNativeWallpaperController(),
+        catalogProvider: MockCatalogProvider(wallpapers: []))
+    // Let the initial cache load finish before installing the test library.
+    for _ in 0..<10 { await Task.yield() }
+    try await Task.sleep(nanoseconds: 100_000_000)
+    model.catalogViewModel.downloadedWallpapers = (0..<120).map { index in
+        DownloadedCatalogWallpaper(id: "download-\(index)", wallpaperID: "download-\(index)",
+            title: "Downloaded wallpaper \(index)", category: "Anime", attribution: "Test",
+            previewImageURL: nil, localPreviewPath: nil, sourcePageURL: nil,
+            localPath: "/tmp/panel-test-\(index).png", downloadedAt: Date(timeIntervalSince1970: 0))
+    }
+    let hosting = NSHostingView(rootView: DownloadedWallpapersCard(viewModel: model).frame(width: 860))
+    hosting.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
+    let window = makeInteractionWindow(contentView: hosting, size: hosting.frame.size)
+    defer { window.orderOut(nil); window.close() }
+    hosting.layoutSubtreeIfNeeded()
+    try await Task.sleep(nanoseconds: 100_000_000)
+    func findScroll(_ view: NSView) -> NSScrollView? {
+        if let scroll = view as? NSScrollView { return scroll }
+        return view.subviews.lazy.compactMap(findScroll).first
+    }
+    let scroll = try #require(findScroll(hosting))
+    let height = scroll.contentView.bounds.height
+    #expect(height > 100 && height <= 361)
+    for _ in 0..<3 {
+        scroll.contentView.scroll(to: NSPoint(x: 0,
+            y: max(0, (scroll.documentView?.frame.height ?? 0) - height)))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        hosting.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 80_000_000)
+        #expect(scroll.contentView.bounds.origin.y > 1_000)
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
+        hosting.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 80_000_000)
+        #expect(scroll.contentView.bounds.origin.y < 1)
+        #expect(abs(scroll.contentView.bounds.height - height) < 1)
+    }
+}
+
+@MainActor
+@Test func downloadedRowPreviewRemainsClickableAfterUnrelatedStatusUpdates() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let file = root.appendingPathComponent("wallpaper.png")
+    let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil,
+        pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4,
+        hasAlpha: true, isPlanar: false, colorSpaceName: .calibratedRGB,
+        bytesPerRow: 8, bitsPerPixel: 32))
+    bitmap.bitmapData?.initialize(repeating: 255, count: 16)
+    try #require(bitmap.representation(using: .png, properties: [:])).write(to: file)
+    let model = AppViewModel(controller: MockNativeWallpaperController(),
+        catalogProvider: MockCatalogProvider(wallpapers: []), appSupportDirectoryURL: root)
+    let wallpaper = DownloadedCatalogWallpaper(id: "preview-click", wallpaperID: "preview-click",
+        title: "Downloaded test", category: "Anime", attribution: "Test", previewImageURL: nil,
+        localPreviewPath: nil, sourcePageURL: nil, localPath: file.path, downloadedAt: Date())
+    let hosting = NSHostingView(rootView: DownloadedWallpaperRow(wallpaper: wallpaper, viewModel: model)
+        .equatable().frame(width: 860, height: 110))
+    hosting.frame = NSRect(x: 0, y: 0, width: 860, height: 110)
+    let window = makeInteractionWindow(contentView: hosting, size: hosting.frame.size)
+    defer { window.orderOut(nil); window.close() }
+    hosting.layoutSubtreeIfNeeded()
+    try await Task.sleep(nanoseconds: 50_000_000)
+    for index in 0..<20 { model.statusMessage = "Runtime status \(index)" }
+    sendPhysicalClick(at: NSPoint(x: 780, y: 70), in: window, eventNumber: 1)
+    for _ in 0..<100 where model.currentVideoURL != file {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    #expect(model.currentVideoURL == file)
+}
+
+@MainActor
 @Test func longCatalogKeepsBoundedViewportAndCanScrollBothWays() async throws {
     let wallpapers = (0..<200).map { index in
         CatalogWallpaper(id: "scroll-\(index)", title: "Wallpaper \(index)",

@@ -1,5 +1,29 @@
 import SwiftUI
 
+/// Put this around the rows inside a ScrollView, as in the catalog. The rows
+/// share a glass compositor; the scroll view itself stays outside the group.
+struct AuraGlassContentGroup<Content: View>: View {
+    let spacing: CGFloat
+    private let content: Content
+
+    init(spacing: CGFloat = 12, @ViewBuilder content: () -> Content) {
+        self.spacing = spacing
+        self.content = content()
+    }
+
+    var body: some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) { content }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
 /// Shared search surface used by the wallpaper catalog and terminal catalog.
 /// Keeping one implementation prevents the two controls from drifting visually.
 struct AuraCatalogSearchField: View {

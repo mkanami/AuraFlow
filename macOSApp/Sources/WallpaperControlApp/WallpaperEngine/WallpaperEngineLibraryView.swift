@@ -146,7 +146,7 @@ private struct WallpaperEngineLibraryRow: View {
                 }
             }.frame(width: 142)
         }
-        .padding(8).background(AuraGlassInsetCard())
+        .padding(8).modifier(AuraGlassInsetCardModifier())
     }
 }
 

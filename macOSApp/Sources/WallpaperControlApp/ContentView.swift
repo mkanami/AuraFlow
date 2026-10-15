@@ -1276,50 +1276,8 @@ struct DownloadedWallpapersCard: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(viewModel.downloadedCatalogWallpapers) { wallpaper in
-                            HStack(spacing: 12) {
-                                CatalogPreviewImage(
-                                    url: wallpaper.effectivePreviewURL,
-                                    title: wallpaper.title,
-                                    referer: wallpaper.sourcePageURL
-                                )
-                                .frame(width: 140, height: 80)
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(wallpaper.title)
-                                        .font(.subheadline.weight(.semibold))
-                                        .lineLimit(1)
-                                    Text("\(wallpaper.category) • \(wallpaper.attribution)")
-                                        .font(.caption)
-                                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                                    Text(wallpaper.localURL.lastPathComponent)
-                                        .font(.caption2)
-                                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                }
-
-                                Spacer(minLength: 10)
-
-                                VStack(spacing: 6) {
-                                    Button {
-                                        viewModel.applyDownloadedCatalogWallpaper(wallpaper)
-                                    } label: {
-                                        Label("Preview", systemImage: "play.rectangle")
-                                    }
-                                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
-
-                                    Button {
-                                        viewModel.revealDownloadedCatalogWallpaperInFinder(wallpaper)
-                                    } label: {
-                                        Label("Open in Finder", systemImage: "folder")
-                                    }
-                                    .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
-                                }
-                                .frame(width: 142)
-                            }
-                            .padding(8)
-                            .background(AuraGlassInsetCard())
+                            DownloadedWallpaperRow(wallpaper: wallpaper, viewModel: viewModel)
+                                .equatable()
                         }
                     }
                 }
@@ -1344,6 +1302,64 @@ struct DownloadedWallpapersCard: View {
         )
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
         .environment(\.colorScheme, adaptiveGlassAppearance.centerTextTone.glassColorScheme)
+    }
+}
+
+/// Runtime status changes do not invalidate every downloaded row while scrolling.
+struct DownloadedWallpaperRow: View, Equatable {
+    let wallpaper: DownloadedCatalogWallpaper
+    let viewModel: AppViewModel
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.wallpaper == rhs.wallpaper && lhs.viewModel === rhs.viewModel
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            CatalogPreviewImage(
+                url: wallpaper.effectivePreviewURL,
+                title: wallpaper.title,
+                referer: wallpaper.sourcePageURL
+            )
+            .frame(width: 140, height: 80)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(wallpaper.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text("\(wallpaper.category) • \(wallpaper.attribution)")
+                    .font(.caption)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                Text(wallpaper.localURL.lastPathComponent)
+                    .font(.caption2)
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 10)
+
+            VStack(spacing: 6) {
+                Button {
+                    viewModel.applyDownloadedCatalogWallpaper(wallpaper)
+                } label: {
+                    Label("Preview", systemImage: "play.rectangle")
+                }
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
+
+                Button {
+                    viewModel.revealDownloadedCatalogWallpaperInFinder(wallpaper)
+                } label: {
+                    Label("Open in Finder", systemImage: "folder")
+                }
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: true))
+            }
+            .frame(width: 142)
+        }
+        .padding(8)
+        .modifier(AuraGlassInsetCardModifier())
     }
 }
 
@@ -3039,6 +3055,52 @@ struct AuraGlassInsetCard: View {
                 .stroke(textTone.primaryTextColor.opacity(emphasized ? 0.14 : 0.10), lineWidth: 0.9)
         )
         .clipShape(shape)
+    }
+}
+
+/// Attach glass to the complete row, keeping its text, images and controls in
+/// the foreground. Each row groups its own controls so glass textures stay
+/// bounded by that row instead of the height of the entire scrolling list.
+struct AuraGlassInsetCardModifier: ViewModifier {
+    var cornerRadius: CGFloat = 10
+    var enabled = true
+    @Environment(\.adaptiveGlassAppearance) private var appearance
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            AuraGlassContentGroup {
+                #if compiler(>=6.2)
+                if #available(macOS 26.0, *) {
+                    content
+                        .background {
+                            shape.fill(appearance.centerTextTone.contrastSurfaceColor.opacity(
+                                min(0.34, 0.06 + boundedAdaptiveSurfaceProtectionOpacity(
+                                    appearance.centerProtectionOverlayOpacity) * 0.75)
+                            ))
+                            LinearGradient(colors: [
+                                appearance.centerTextTone.contrastHighlightColor.opacity(0.065),
+                                appearance.centerTextTone.contrastHighlightColor.opacity(0.018),
+                                appearance.centerTextTone.contrastSurfaceColor.opacity(0.012),
+                            ], startPoint: .top, endPoint: .bottom)
+                            .clipShape(shape)
+                        }
+                        .glassEffect(.clear, in: shape)
+                        .overlay {
+                            shape.stroke(appearance.centerTextTone.primaryTextColor.opacity(0.10), lineWidth: 0.9)
+                                .allowsHitTesting(false)
+                        }
+                } else {
+                    content.background(AuraGlassInsetCard(cornerRadius: cornerRadius))
+                }
+                #else
+                content.background(AuraGlassInsetCard(cornerRadius: cornerRadius))
+                #endif
+            }
+        } else {
+            content
+        }
     }
 }
 
