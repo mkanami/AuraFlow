@@ -62,7 +62,7 @@ final class WallpaperEngineViewModel: ObservableObject {
             Task { @MainActor in self?.reloadValues() }
         }
         timer = ScheduledTimerLifetime(Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshRuntime() }
+            Task { @MainActor [weak self] in self?.refreshRuntime() }
         })
         reloadValues()
     }
@@ -404,7 +404,7 @@ struct WebWallpaperPreviewSurface: NSViewRepresentable {
             view.onError = { [weak model] text in model?.error = text }
             view.onWarning = { [weak model] text in model?.message = text }
             timer = ScheduledTimerLifetime(Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.refresh() }
+                Task { @MainActor [weak self] in self?.refresh() }
             })
         }
         func refresh() {

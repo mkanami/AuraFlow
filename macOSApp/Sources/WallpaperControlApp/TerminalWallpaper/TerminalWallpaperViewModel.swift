@@ -574,7 +574,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
                     guard metadata.name == preset.formula, metadata.executables?.contains(preset.executableName) == true else { throw TerminalAnimationPackageError.invalidResponse }
                     guard !metadata.disabled else { throw TerminalAnimationPackageError.notFound }
                     try await installer.install(preset: preset) { [weak self] stage in
-                        Task { @MainActor in
+                        Task { @MainActor [weak self] in
                             guard self?.activeInstallationID == installationID else { return }
                             self?.installStage = stage
                         }
@@ -675,7 +675,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
             defer { isBusy = false; installationTask = nil; installStage = nil; activeInstallationID = nil }
             do {
                 try await installer.prepareHomebrew { [weak self] stage in
-                    Task { @MainActor in
+                    Task { @MainActor [weak self] in
                         guard self?.activeInstallationID == operationID else { return }
                         self?.installStage = stage
                     }

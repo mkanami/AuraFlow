@@ -130,8 +130,11 @@ struct TerminalCavaVisualSignal {
 
     mutating func nextChunk() -> Data {
         let time = Double(frame) / 44_100
-        let amplitudes = (0..<32).map { index in
-            0.1 + 0.9 * pow(0.5 + 0.5 * sin(time * (0.65 + Double(index % 7) * 0.14) + Double(index) * 0.57), 2)
+        let amplitudes: [Double] = (0..<32).map { index in
+            let frequency = 0.65 + Double(index % 7) * 0.14
+            let phase = time * frequency + Double(index) * 0.57
+            let envelope = 0.5 + 0.5 * sin(phase)
+            return 0.1 + 0.9 * envelope * envelope
         }
         var samples = [Int16](repeating: 0, count: 1024)
         // This also runs in debug app builds: avoid generic Range iterators
