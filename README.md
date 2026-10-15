@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/aura-ui.png" width="900" alt="AuraFlow wallpaper preview and controls" />
+  <img src="docs/aura-ui-glass.png" width="900" alt="AuraFlow wallpaper preview and controls" />
 </p>
 
 ## Highlights
