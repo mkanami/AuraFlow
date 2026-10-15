@@ -162,10 +162,16 @@ private final class BlockingDesktopInstallGate: @unchecked Sendable {
 }
 
 private func terminateAndReapTestAgent(_ agent: Process) {
-    if agent.isRunning {
-        kill(agent.processIdentifier, SIGKILL)
+    let pid = agent.processIdentifier
+    var status: Int32 = 0
+    // The controller can already have reaped this fixture via waitpid.
+    // Foundation's cached isRunning/waitUntilExit state then never completes.
+    let result = waitpid(pid, &status, WNOHANG)
+    if result == pid || (result == -1 && errno == ECHILD) { return }
+    if result == 0 {
+        kill(pid, SIGKILL)
+        reapTestChild(Int(pid))
     }
-    agent.waitUntilExit()
 }
 
 private func reapTestChild(_ pid: Int) {
