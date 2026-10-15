@@ -809,6 +809,11 @@ main() {
   build_swift_app
   apply_plist_customizations
   bundle_runtime_tools
+  local tool_verification_args=("$APP_BUNDLE")
+  if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
+    tool_verification_args+=(--universal)
+  fi
+  python3 "$ROOT_DIR/scripts/verify_bundled_tools.py" "${tool_verification_args[@]}"
   bundle_lock_screen_saver
   verify_private_framework_isolation
   sign_app_bundle

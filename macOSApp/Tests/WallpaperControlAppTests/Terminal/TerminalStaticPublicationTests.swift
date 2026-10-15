@@ -1,4 +1,5 @@
 import AppKit
+import AuraTerminalRendering
 import AuraTerminalWallpaperCore
 import Foundation
 import ImageIO
@@ -140,6 +141,16 @@ import Testing
     requireBottomContent: Bool = false
 ) async throws {
     _ = NSApplication.shared
+    var render = render
+    if requireBottomContent, let width = render.fixedWidth,
+       let columns = render.columns, let rows = render.rows {
+        // Match the source canvas to this fixture's grid aspect ratio. A
+        // deliberately wider grid in a fixed 4:3 canvas has valid Fit padding;
+        // those black margins do not indicate missing final CLI output.
+        let metrics = TerminalFontMetrics.cellMetrics(for: render)
+        render.fixedHeight = Int((Double(width) * Double(rows) * metrics.height
+            / (Double(columns) * metrics.width)).rounded())
+    }
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("AuraStaticPublication-\(UUID().uuidString)", isDirectory: true)
     let store = TerminalWallpaperRuntimeStore(

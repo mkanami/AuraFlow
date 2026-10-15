@@ -24,3 +24,5 @@ Configure these under repository **Settings → Secrets and variables → Action
 An Apple Development certificate cannot replace Developer ID Application for this distribution path. Missing credentials block publication; CI and a draft release can still be prepared.
 
 For local packaging checks without public distribution, use `REQUIRE_CODESIGN=0 CODESIGN_IDENTITY='' ./build_app.sh`. Such artifacts are local validation builds and must not be described as notarized releases.
+
+Optional bundled `ffmpeg` and `ffprobe` must be standalone portable binaries and contain both architectures for universal releases. Copying a Homebrew executable without its Cellar libraries is rejected. Use `AURAFLOW_FFMPEG_BIN` and `AURAFLOW_FFPROBE_BIN` to provide portable tools, or `FFMPEG_RUNTIME_BUNDLING=0` to retain the existing system-tool dependency for video preprocessing. Normal wallpaper playback does not need FFmpeg.
