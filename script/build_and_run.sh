@@ -5,7 +5,7 @@ MODE="${1:-run}"
 PROCESS_NAME="WallpaperControlApp"
 APP_NAME="AuraFlow"
 BUNDLE_ID="com.andrijvergeles.auraflow"
-APP_VERSION="1.4.0"
+APP_VERSION="1.3.2"
 APP_BUILD="11"
 MIN_SYSTEM_VERSION="13.0"
 

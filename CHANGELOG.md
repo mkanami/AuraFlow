@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.4.0
+## 1.3.2
 
 - Terminal wallpapers with live previews, local and Homebrew CLI search, guided installation, and custom commands.
 - Pause and resume for terminal wallpapers, with shared playback, scaling, monitoring, and launch-at-login controls.

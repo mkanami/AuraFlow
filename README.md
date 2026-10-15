@@ -183,7 +183,7 @@ AuraFlow is a Swift Package split into small runtime components:
 Media playback uses AVFoundation; terminal programs run through a PTY and render
 with CoreText and Metal. AppKit bridges are limited to macOS window and wallpaper
 behavior that SwiftUI does not expose directly. Normal playback does not require
-FFmpeg. The v1.4.0 download uses locally installed FFmpeg tools for optional video
+FFmpeg. The v1.3.2 download uses locally installed FFmpeg tools for optional video
 preprocessing, including Blend Interpolation and conversions that require FFmpeg.
 Video Optimization settings apply to newly imported local videos, not terminal
 programs or an already installed wallpaper.
