@@ -451,6 +451,21 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
             [self existingURLForConfiguredValue:runtimeConfig[@"video_path"]
                                         relativeTo:applicationSupportURL];
     }
+    if (runtimeVideoURL != nil && [runtimeConfig[@"blend_interpolation"] boolValue]) {
+        NSDictionary *sources = [self JSONDictionaryAtURL:
+            [applicationSupportURL URLByAppendingPathComponent:@"FrameBlendCache/sources.json"]];
+        NSDictionary *entry = sources[runtimeVideoURL.path];
+        if ([entry isKindOfClass:NSDictionary.class]) {
+            NSDictionary *attributes = [[NSFileManager defaultManager]
+                attributesOfItemAtPath:runtimeVideoURL.path error:nil];
+            double modified = [attributes[NSFileModificationDate] timeIntervalSince1970];
+            BOOL matches = [entry[@"size"] isEqual:attributes[NSFileSize]]
+                && fabs([entry[@"modified"] doubleValue] - modified) < 0.000001;
+            NSURL *prepared = matches ? [self existingURLForConfiguredValue:entry[@"path"]
+                relativeTo:applicationSupportURL] : nil;
+            if (prepared != nil) { runtimeVideoURL = prepared; }
+        }
+    }
     if (runtimeVideoURL != nil) {
         videoURL = runtimeVideoURL;
     }

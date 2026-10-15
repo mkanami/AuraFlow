@@ -237,7 +237,7 @@ protocol WallpaperControlling: AnyObject, Sendable {
     func resume() throws -> ControlStatus
     func stop() throws -> ControlStatus
     func clearWallpaper() async throws -> ControlStatus
-    func setVideo(_ url: URL) throws -> ControlStatus
+    func setVideo(_ url: URL) async throws -> ControlStatus
     func installLockScreenOnly(videoURL: URL) async throws -> ControlStatus
     func prepareLockScreenMedia(videoURL: URL) async throws
     func prepareLockScreenMedia(
@@ -246,7 +246,7 @@ protocol WallpaperControlling: AnyObject, Sendable {
         scaleMode: WallpaperScaleMode
     ) async throws
     func setSpeed(_ speed: Double) async throws -> ControlStatus
-    func setInterpolation(_ enabled: Bool) throws -> ControlStatus
+    func setInterpolation(_ enabled: Bool) async throws -> ControlStatus
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus
     func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus
     func syncLockScreenSaver() async throws
@@ -903,6 +903,11 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             )
         }
 
+        if nextConfig.blend_interpolation == true {
+            _ = try await VideoFrameBlendCache(appSupportURL: store.appSupportURL)
+                .prepare(URL(fileURLWithPath: nextConfig.video_path))
+        }
+
         // The desktop backup is the last operation that can fail without
         // requiring a rollback. Keep the old lock-only route alive until this
         // succeeds, otherwise Start could destroy a working Lock Screen mode
@@ -1222,12 +1227,16 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         )
     }
 
-    func setVideo(_ url: URL) throws -> ControlStatus {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+    func setVideo(_ url: URL) async throws -> ControlStatus {
+        try await asyncLifecycleGate.acquire()
+        defer { Task { await asyncLifecycleGate.release() } }
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw NativeWallpaperControllerError.unavailable("Video file not found: \(url.path)")
         }
+        if store.loadConfig().blend_interpolation == true {
+            _ = try await VideoFrameBlendCache(appSupportURL: store.appSupportURL).prepare(url)
+        }
+        try Task.checkCancellation()
         let config = try updateConfig { config in
             config.video_path = url.path
         }
@@ -1266,6 +1275,10 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         // temporarily promotes its Aerial route only during the lock handoff
         // and restores the user's Desktop route after unlock.
 
+        let blendCache = VideoFrameBlendCache(appSupportURL: store.appSupportURL)
+        let blendEnabled = store.loadConfig().blend_interpolation == true
+        if blendEnabled { _ = try await blendCache.prepare(normalizedURL) }
+        let playbackURL = blendCache.playbackURL(for: normalizedURL, enabled: blendEnabled)
         let previousSource = store.loadLockScreenOnlySource()
         do {
             // The legacy screen-saver host can be relaunched while the
@@ -1275,7 +1288,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             // later manual refresh.
             try store.saveLockScreenOnlySource(normalizedURL)
             try await installLockScreenSaver(
-                videoURL: normalizedURL,
+                videoURL: playbackURL,
                 ensureStillFrame: true,
                 lockScreenOnly: true
             )
@@ -1409,16 +1422,47 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         return store.status()
     }
 
-    func setInterpolation(_ enabled: Bool) throws -> ControlStatus {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
-        let config = try updateConfig { config in
-            config.blend_interpolation = enabled
+    func setInterpolation(_ enabled: Bool) async throws -> ControlStatus {
+        try await asyncLifecycleGate.acquire()
+        defer { Task { await asyncLifecycleGate.release() } }
+        let previous = store.loadConfig()
+        let lockOnlySource = store.loadLockScreenOnlySource()
+        let source = lockOnlySource ?? (previous.video_path.isEmpty ? nil : URL(fileURLWithPath: previous.video_path))
+        let cache = VideoFrameBlendCache(appSupportURL: store.appSupportURL)
+        if enabled, let source, !WallpaperMediaKind.forURL(source).isStaticImage {
+            _ = try await cache.prepare(source)
         }
-        if daemonProcessManager.isRunning {
-            try send(.update, config: config)
+        // Remove/Start use this gate; synchronous source changes are checked too.
+        guard store.loadConfig() == previous, store.loadLockScreenOnlySource() == lockOnlySource else {
+            throw NativeWallpaperControllerError.unavailable("The wallpaper changed while frame blending was being prepared. Try again.")
         }
-        return store.status()
+        try Task.checkCancellation()
+        var config = previous
+        config.blend_interpolation = enabled
+        @Sendable func installPresentation(_ configuration: ControlConfig) async throws {
+            guard let source, lockScreenPlatform.isInstalled, configuration.show_on_lock_screen != false else { return }
+            let movie = cache.playbackURL(for: source, enabled: configuration.blend_interpolation == true)
+            let mode = WallpaperScaleMode(rawValue: configuration.scale_mode ?? "fill") ?? .fill
+            if lockOnlySource != nil {
+                try await lockScreenPlatform.installLockScreenOnly(videoURL: movie,
+                    playbackSpeed: configuration.playback_speed, scaleMode: mode)
+            } else {
+                try await lockScreenPlatform.installForDesktopAgent(videoURL: movie,
+                    playbackSpeed: configuration.playback_speed, scaleMode: mode)
+            }
+            if store.isPaused() { _ = try await lockScreenPlatform.pauseLockScreenOnlyPlayback(videoURL: movie) }
+        }
+        do {
+            try await installPresentation(config)
+            try store.saveConfig(config)
+            if daemonProcessManager.isRunning { try send(.update, config: config) }
+            else { postRuntimeCommandDidChange() }
+            return store.status()
+        } catch {
+            try? store.saveConfig(previous)
+            _ = try? await Task.detached { try await installPresentation(previous) }.value
+            throw error
+        }
     }
 
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus {
@@ -1803,7 +1847,9 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
     }
 
     private func installLockScreenSaver(using config: ControlConfig) async throws {
-        let videoURL = URL(fileURLWithPath: config.video_path)
+        let source = URL(fileURLWithPath: config.video_path)
+        let videoURL = VideoFrameBlendCache(appSupportURL: store.appSupportURL)
+            .playbackURL(for: source, enabled: config.blend_interpolation == true)
         try await installLockScreenSaver(
             videoURL: videoURL,
             ensureStillFrame: true,
@@ -2116,6 +2162,8 @@ final class AppViewModel: ObservableObject {
 
     @Published var autostartEnabled: Bool = false
     @Published var blendInterpolationEnabled: Bool = false
+    @Published private(set) var isPreparingBlendInterpolation = false
+    private var blendInterpolationTask: Task<Void, Never>?
     @Published var pauseOnFullscreenEnabled: Bool = true
     @Published var showOnLockScreenEnabled: Bool = true
     @Published private(set) var isUpdatingLockScreenPlayback = false
@@ -2298,7 +2346,7 @@ final class AppViewModel: ObservableObject {
     private let catalogDownloadService: CatalogDownloadService
     let catalogPreviewPipeline: CatalogPreviewPipeline
     private var featureViewModelCancellables = Set<AnyCancellable>()
-    private let optimizer = VideoOptimizer()
+    private let optimizer: VideoOptimizer
     private let optimizationStore: VideoOptimizationStore
     private var previewEndObserver: ObserverToken?
     private var previewStalledObserver: ObserverToken?
@@ -2499,7 +2547,16 @@ final class AppViewModel: ObservableObject {
     }
 
     var canToggleBlendInterpolation: Bool {
-        isControllerAvailable && !isBusy
+        guard isControllerAvailable, !isBusy, !isLifecycleBusy else { return false }
+        if case .video = scaleControlTarget { return !isStaticWallpaperForControls }
+        return false
+    }
+
+    var blendInterpolationHelp: String {
+        if case .video = scaleControlTarget, !isStaticWallpaperForControls {
+            return "Blends video below 60 fps into 60 fps. Native 60+ fps video stays unchanged. The first use prepares a cached movie; the original stays intact."
+        }
+        return "Frame blending applies to video wallpapers, not terminal animations, images or web wallpapers."
     }
 
     var canTogglePauseOnFullscreen: Bool {
@@ -2622,6 +2679,7 @@ final class AppViewModel: ObservableObject {
         self.previewSelectionStore = selection
         self.wallpaperEngine = WallpaperEngineViewModel(selection: selection, library: WallpaperEngineLibrary(rootURL: resolvedAppSupportURL.appendingPathComponent("wallpaper-engine")))
         self.optimizationStore = optimizationStore
+        self.optimizer = VideoOptimizer(cacheDirectory: resolvedAppSupportURL.appendingPathComponent("OptimizedVideos", isDirectory: true))
         let catalogDirectoryURL = resolvedAppSupportURL
             .appendingPathComponent("Catalog", isDirectory: true)
         self.catalogRepository = CatalogRepository(
@@ -2841,6 +2899,7 @@ final class AppViewModel: ObservableObject {
         previewPreparationTask?.cancel()
         lockScreenPreparationTask?.cancel()
         scaleModeUpdateTask?.cancel()
+        blendInterpolationTask?.cancel()
         lockScreenProviderFallbackRetryTask?.cancel()
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver.value)
@@ -3594,7 +3653,7 @@ final class AppViewModel: ObservableObject {
 
         do {
             let prepared = try await prepareVideoURLForPlayback(url)
-            let status = try await runAsync { try controller.setVideo(prepared.url) }
+            let status = try await controller.setVideo(prepared.url)
             apply(status: status)
             recordBridgeSuccess()
             statusMessage = prepared.summary ?? "Wallpaper source updated."
@@ -3794,34 +3853,39 @@ final class AppViewModel: ObservableObject {
     }
 
     func toggleBlendInterpolation(_ enabled: Bool) {
-        guard !isBusy else {
-            blendInterpolationEnabled = !enabled
-            return
-        }
-
+        guard canToggleBlendInterpolation else { return }
         let previous = blendInterpolationEnabled
         blendInterpolationEnabled = enabled
         guard let controller else { return }
-        Task {
-            isBusy = true
-            defer { isBusy = false }
+        isBusy = true
+        isPreparingBlendInterpolation = enabled
+        statusMessage = enabled ? "Preparing blended video frames…" : "Restoring original video frames…"
+        blendInterpolationTask = Task {
+            defer { isBusy = false; isPreparingBlendInterpolation = false; blendInterpolationTask = nil }
             do {
-                let status = try await runAsync { try controller.setInterpolation(enabled) }
+                if enabled, !hasInstalledWallpaperSessionForControls, let source = selectedVideoURL {
+                    _ = try await VideoFrameBlendCache(appSupportURL: appSupportDirectoryURL).prepare(source)
+                }
+                let status = try await controller.setInterpolation(enabled)
                 apply(status: status)
                 recordBridgeSuccess()
+                configurePreview(for: selectedVideoURL)
                 statusMessage = enabled
                     ? "Blend interpolation enabled."
                     : "Blend interpolation disabled."
                 alertMessage = nil
             } catch {
                 blendInterpolationEnabled = previous
-                recordBridgeFailure(error, context: "set-interpolation")
-                if bridgeFailureCount < bridgeFailureThreshold {
+                if error is CancellationError {
+                    statusMessage = "Frame blending cancelled."
+                } else {
                     alertMessage = "Failed to update interpolation: \(error.localizedDescription)"
                 }
             }
         }
     }
+
+    func cancelBlendInterpolation() { blendInterpolationTask?.cancel() }
 
     func togglePauseOnFullscreen(_ enabled: Bool) {
         guard !isBusy else {
@@ -4125,7 +4189,10 @@ final class AppViewModel: ObservableObject {
                 await searchTask?.value
                 await downloadTask?.value
 
-                let appliedVideoIsManaged = appliedVideoURL.map(isManagedCacheURL) ?? false
+                let runtime = WallpaperRuntimeStore(appSupportURL: appSupportDirectoryURL)
+                let installedSource = isLockScreenOnlyActive ? runtime.loadLockScreenOnlySource() : appliedVideoURL
+                let appliedVideoIsManaged = hasInstalledWallpaperSessionForControls
+                    && (installedSource.map(isManagedCacheURL) ?? false)
                 let pendingPreviewIsManaged = pendingPreviewVideoURL.map(isManagedCacheURL) ?? false
 
                 // A downloaded wallpaper can still be the active source. Stop
@@ -4156,6 +4223,7 @@ final class AppViewModel: ObservableObject {
                 try await catalogRepository.clearCache()
                 try clearOptimizedVideoCache()
                 try clearRuntimePreviewCache()
+                try clearFrameBlendCache()
                 AdaptiveContrastAnalyzer.clearCache()
                 URLCache.shared.removeAllCachedResponses()
                 CatalogPreviewImageLoader.clearCache()
@@ -4387,7 +4455,11 @@ final class AppViewModel: ObservableObject {
                 alertMessage = warning
             }
         }
-        Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
+        let blendChanged = blendInterpolationTask == nil
+            && blendInterpolationEnabled != (status.config.blend_interpolation ?? false)
+        if blendInterpolationTask == nil {
+            Self.setIfChanged(&blendInterpolationEnabled, to: status.config.blend_interpolation ?? false)
+        }
         Self.setIfChanged(&pauseOnFullscreenEnabled, to: status.config.pause_on_fullscreen ?? true)
         if !isUpdatingLockScreenPlayback {
             Self.setIfChanged(&showOnLockScreenEnabled, to: (status.config.show_on_lock_screen ?? true))
@@ -4401,7 +4473,7 @@ final class AppViewModel: ObservableObject {
             let hasVideoChanged = appliedVideoURL?.path != currentURL.path
             Self.setIfChanged(&appliedVideoURL, to: currentURL)
             if pendingPreviewVideoURL == nil,
-               refreshPreview && (hasVideoChanged || previewPlayer?.currentItem == nil || previousScaleMode != scaleMode) {
+               refreshPreview && (hasVideoChanged || blendChanged || previewPlayer?.currentItem == nil || previousScaleMode != scaleMode) {
                 configurePreview(for: currentURL)
             }
             if pendingPreviewVideoURL == nil {
@@ -5043,7 +5115,26 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func clearFrameBlendCache() throws {
+        let cache = VideoFrameBlendCache(appSupportURL: appSupportDirectoryURL)
+        guard FileManager.default.fileExists(atPath: cache.directory.path) else { return }
+        let runtime = WallpaperRuntimeStore(appSupportURL: appSupportDirectoryURL)
+        let pinned = hasInstalledWallpaperSessionForControls
+            ? runtime.effectiveLockScreenSourceURL(for: runtime.loadConfig()) : nil
+        let previewURL = (previewPlayer?.currentItem?.asset as? AVURLAsset)?.url
+        let pinnedPaths = Set([pinned, previewURL].compactMap { $0?.resolvingSymlinksInPath().standardizedFileURL.path })
+        for entry in try FileManager.default.contentsOfDirectory(at: cache.directory, includingPropertiesForKeys: nil) {
+            if entry.lastPathComponent == "sources.json", !pinnedPaths.isEmpty { continue }
+            if !pinnedPaths.contains(entry.resolvingSymlinksInPath().standardizedFileURL.path) {
+                try FileManager.default.removeItem(at: entry)
+            }
+        }
+    }
+
     private func clearRuntimePreviewCache() throws {
+        // Active and paused Lock Screen generations still reference these files.
+        // Removing them breaks the next lock/resume even when Desktop uses an external file.
+        guard !hasInstalledWallpaperSessionForControls else { return }
         let fileManager = FileManager.default
         let entries = try fileManager.contentsOfDirectory(
             at: appSupportDirectoryURL,
@@ -5277,7 +5368,9 @@ final class AppViewModel: ObservableObject {
         previewViewModel.isPlayerReadyForDisplay = false
         previewPlayer?.pause()
 
-        let item = AVPlayerItem(url: url)
+        let playbackURL = VideoFrameBlendCache(appSupportURL: appSupportDirectoryURL)
+            .playbackURL(for: url, enabled: blendInterpolationEnabled)
+        let item = AVPlayerItem(url: playbackURL)
         item.preferredForwardBufferDuration = 0.35
         // Publish a fresh player identity. PreviewLayer keeps it hidden behind
         // the poster until AVPlayerLayer confirms a decoded frame, so replacing
@@ -5613,6 +5706,7 @@ final class AppViewModel: ObservableObject {
     private func beginShutdown() {
         guard !isShuttingDown else { return }
         isShuttingDown = true
+        blendInterpolationTask?.cancel()
         healthMonitorTask?.cancel()
         monitoringTask?.cancel()
         scaleModeUpdateTask?.cancel()

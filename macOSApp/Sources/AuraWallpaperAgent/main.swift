@@ -1303,6 +1303,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if let operationID = command.operationID {
             lastCommandOperationID = operationID
         }
+        let blendWasEnabled = config.blend_interpolation == true
         let lockScreenWasEnabled = config.show_on_lock_screen == true
         if let newConfig = command.config {
             config = store.normalized(newConfig)
@@ -1348,8 +1349,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 rearmModernLockScreenForNextSession()
             }
         case .update, .rearmLockScreen:
+            if blendWasEnabled != (config.blend_interpolation == true) {
+                if !lockScreenOnlyMode { rebuildPlayback(from: config, keepPaused: manualPaused) }
+                nativeLockScreenBridge.invalidatePreparation()
+                if manualPaused { freezeLockScreenOnlyPlayback() }
+            }
             applyRuntimeSettings()
-            if (!lockScreenWasEnabled || command.action == .rearmLockScreen),
+            if (!lockScreenWasEnabled || blendWasEnabled != (config.blend_interpolation == true)
+                || command.action == .rearmLockScreen),
                config.show_on_lock_screen == true {
                 // OFF discarded the native presentation and restored the
                 // user's Idle provider. Enabling must bind the new route,
@@ -1952,7 +1959,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 writeHealth(reason: "missing-video")
                 return
             }
-            url = URL(fileURLWithPath: config.video_path)
+            url = VideoFrameBlendCache(appSupportURL: store.appSupportURL).playbackURL(
+                for: URL(fileURLWithPath: config.video_path), enabled: config.blend_interpolation == true)
         }
         guard FileManager.default.fileExists(atPath: url.path) else {
             writeHealth(reason: "missing-video")
@@ -2397,7 +2405,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             lock_transition_count: lockTransitionCount,
             last_lock_transition_ms: lastLockTransitionMilliseconds,
             blend_interpolation_enabled: config.blend_interpolation ?? false,
-            blend_interpolation_active: false,
+            blend_interpolation_active: config.blend_interpolation == true && (store.effectiveLockScreenSourceURL(for: config).map {
+                $0.deletingLastPathComponent() == VideoFrameBlendCache(appSupportURL: store.appSupportURL).directory
+            } ?? false),
             scale_mode: config.scale_mode,
             visible_desktop_windows: windows.filter(\.isVisible).count,
             native_lock_state: lockScreenOnlyMode

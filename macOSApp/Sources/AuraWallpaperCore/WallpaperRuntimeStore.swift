@@ -311,11 +311,13 @@ public final class WallpaperRuntimeStore {
     public func effectiveLockScreenSourceURL(for config: ControlConfig) -> URL? {
         if let lockScreenOnlySource = loadLockScreenOnlySource(),
            FileManager.default.fileExists(atPath: lockScreenOnlySource.path) {
-            return lockScreenOnlySource
+            return VideoFrameBlendCache(appSupportURL: appSupportURL)
+                .playbackURL(for: lockScreenOnlySource, enabled: config.blend_interpolation == true)
         }
         let path = config.video_path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: path).standardizedFileURL
+        return VideoFrameBlendCache(appSupportURL: appSupportURL).playbackURL(
+            for: URL(fileURLWithPath: path).standardizedFileURL, enabled: config.blend_interpolation == true)
     }
 
     public func loadHealth() -> DaemonHealth? {

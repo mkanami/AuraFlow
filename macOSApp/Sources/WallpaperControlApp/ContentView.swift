@@ -793,6 +793,15 @@ struct SettingsPopupCard: View {
             }
             .toggleStyle(.switch)
             .disabled(!viewModel.canToggleBlendInterpolation)
+            .help(viewModel.blendInterpolationHelp)
+
+            if viewModel.isPreparingBlendInterpolation {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Preparing blended video frames…").font(.caption)
+                    Button("Cancel") { viewModel.cancelBlendInterpolation() }
+                }
+            }
 
             HStack(spacing: 8) {
                 Text("Scale Algorithm")
@@ -808,6 +817,10 @@ struct SettingsPopupCard: View {
 
             Text("Video Optimization")
                 .font(.subheadline.weight(.semibold))
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+
+            Text("Applies to newly imported local videos. Does not change terminal wallpapers or re-encode the currently installed wallpaper.")
+                .font(.caption)
                 .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
 
             Toggle(isOn: Binding(
@@ -885,7 +898,7 @@ struct SettingsPopupCard: View {
             Button {
                 viewModel.clearCache()
             } label: {
-                Label("Clear Cache", systemImage: "trash")
+                Label("Clear Cache & Downloads", systemImage: "trash")
             }
             .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             .disabled(!viewModel.canClearCache)
