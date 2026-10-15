@@ -82,6 +82,7 @@ private final class WallpaperAgentRearmGuard: @unchecked Sendable {
               snapshot.wallpaperRevision == token.wallpaperRevision,
               !snapshot.sessionInactive,
               snapshot.showOnLockScreen,
+              WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false,
               videoURL.path == token.videoPath,
               agentSystemSessionIsLocked() == false
         else {
@@ -102,6 +103,7 @@ private final class WallpaperAgentRearmGuard: @unchecked Sendable {
             && snapshot.wallpaperRevision == token.wallpaperRevision
             && !snapshot.sessionInactive
             && snapshot.showOnLockScreen
+            && WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false
             && videoURL.path == token.videoPath
             && agentSystemSessionIsLocked() == false
     }
@@ -112,6 +114,7 @@ private final class WallpaperAgentRearmGuard: @unchecked Sendable {
             && snapshot.sessionGeneration == sessionGeneration
             && !snapshot.sessionInactive
             && snapshot.showOnLockScreen
+            && WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false
             && agentSystemSessionIsLocked() == false
     }
 }
@@ -218,13 +221,16 @@ private actor LockScreenPlatformExecutor {
 
     func repair(
         videoURL: URL,
+        allowCachedSignatures: Bool = false,
         shouldProceed: @escaping @Sendable () -> Bool
     ) async throws -> Bool {
-        try await withExclusivePlatformOperation {
-            try await platformBox.repair(
-                videoURL: videoURL,
-                shouldProceed: shouldProceed
-            )
+        try await AerialFileSignatureValidation.$allowsCachedRead.withValue(allowCachedSignatures) {
+            try await withExclusivePlatformOperation {
+                try await platformBox.repair(
+                    videoURL: videoURL,
+                    shouldProceed: shouldProceed
+                )
+            }
         }
     }
 
@@ -352,6 +358,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var wallpaperRevision: UInt64 = 0
     private var pendingRearmToken: LockScreenRearmToken?
     private var lastRearmedToken: LockScreenRearmToken?
+    private var lockScreenBridgeNeedsPreparation = false
     private var lastSessionTransitionUptime = -Double.infinity
     private var lockTransitionCount = 0
     private var lastLockTransitionMilliseconds: Double?
@@ -1296,6 +1303,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if let operationID = command.operationID {
             lastCommandOperationID = operationID
         }
+        let blendWasEnabled = config.blend_interpolation == true
+        let lockScreenWasEnabled = config.show_on_lock_screen == true
         if let newConfig = command.config {
             config = store.normalized(newConfig)
             publishRearmGuardState()
@@ -1339,8 +1348,41 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 repairModernLockScreenIfNeeded(force: true)
                 rearmModernLockScreenForNextSession()
             }
-        case .update:
+        case .update, .rearmLockScreen:
+            if blendWasEnabled != (config.blend_interpolation == true) {
+                if !lockScreenOnlyMode { rebuildPlayback(from: config, keepPaused: manualPaused) }
+                nativeLockScreenBridge.invalidatePreparation()
+                if manualPaused { freezeLockScreenOnlyPlayback() }
+            }
             applyRuntimeSettings()
+            if (!lockScreenWasEnabled || blendWasEnabled != (config.blend_interpolation == true)
+                || command.action == .rearmLockScreen),
+               config.show_on_lock_screen == true {
+                // OFF discarded the native presentation and restored the
+                // user's Idle provider. Enabling must bind the new route,
+                // not just change the lock-session state machine.
+                lastRearmedToken = nil
+                pendingRearmToken = nil
+                if lockScreenOnlyMode {
+                    store.markLockScreenAgentReady(false)
+                    prepareLockScreenOnlyAgent()
+                } else {
+                    wallpaperRevision &+= 1
+                    publishRearmGuardState()
+                    nativeLockScreenBridge.invalidatePreparation()
+                    store.markLockScreenAgentReady(false)
+                    lockScreenBridgeNeedsPreparation = true
+                    if manualPaused || store.isPaused() {
+                        lockScreenBridgeNeedsPreparation = false
+                        prepareNativeLockScreenBridgeForStart()
+                    } else {
+                        // Bind the presentation only after the selected Idle
+                        // provider is restored. A prepared old assertion does
+                        // not prove that the new Lock Screen source is ready.
+                        rearmModernLockScreenForNextSession()
+                    }
+                }
+            }
             if lockScreenOnlyMode {
                 restoreDesktopStoreAfterSession()
             }
@@ -1483,9 +1525,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !lockScreenOnlyMode,
               lockScreenPlatform.capabilities.supportsSecureLockScreen
         else { return }
+        let token = currentRearmToken()
         nativeLockScreenBridge.prepare { [weak self] succeeded in
             Task { @MainActor [weak self] in
-                guard let self, !self.isTerminating else { return }
+                guard let self, !self.isTerminating,
+                      self.currentRearmToken() == token,
+                      self.config.show_on_lock_screen == true,
+                      self.store.loadConfig().show_on_lock_screen == true
+                else { return }
+                self.store.markLockScreenAgentReady(succeeded)
                 self.writeHealth(
                     reason: succeeded
                         ? "native-lock-bridge-ready"
@@ -1526,6 +1574,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard lockScreenOnlyMode,
               !isTerminating,
               ownsRuntimeState(),
+              config.show_on_lock_screen == true,
               !manualPaused,
               !store.isPaused()
         else { return }
@@ -1635,6 +1684,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                         videoURL: videoURL,
                         shouldProceed: {
                             lifecycleGuard.isCurrent(operation.operationID)
+                                && WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false
                         }
                     )
             } catch {
@@ -1909,7 +1959,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 writeHealth(reason: "missing-video")
                 return
             }
-            url = URL(fileURLWithPath: config.video_path)
+            url = VideoFrameBlendCache(appSupportURL: store.appSupportURL).playbackURL(
+                for: URL(fileURLWithPath: config.video_path), enabled: config.blend_interpolation == true)
         }
         guard FileManager.default.fileExists(atPath: url.path) else {
             writeHealth(reason: "missing-video")
@@ -2185,6 +2236,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyRuntimeSettings() {
+        if config.show_on_lock_screen == false {
+            lockScreenPlaybackMutationTask?.cancel()
+            pendingRearmToken = nil
+            lockScreenBridgeNeedsPreparation = false
+            store.markLockScreenAgentReady(false)
+            nativeLockScreenBridge.invalidatePreparation()
+        }
         syncLockScreenSetting(reason: "lock-setting")
         player?.volume = Float(max(0, min(config.volume ?? 0, 1)))
         let gravity = videoGravity(for: config.scale_mode)
@@ -2347,7 +2405,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             lock_transition_count: lockTransitionCount,
             last_lock_transition_ms: lastLockTransitionMilliseconds,
             blend_interpolation_enabled: config.blend_interpolation ?? false,
-            blend_interpolation_active: false,
+            blend_interpolation_active: config.blend_interpolation == true && (store.effectiveLockScreenSourceURL(for: config).map {
+                $0.deletingLastPathComponent() == VideoFrameBlendCache(appSupportURL: store.appSupportURL).directory
+            } ?? false),
             scale_mode: config.scale_mode,
             visible_desktop_windows: windows.filter(\.isVisible).count,
             native_lock_state: lockScreenOnlyMode
@@ -2501,6 +2561,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             do {
                 _ = try await platformExecutor.repair(
                     videoURL: videoURL,
+                    allowCachedSignatures: !force,
                     shouldProceed: {
                         rearmGuard.canProceed(
                             token: token,
@@ -2622,6 +2683,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                         "lock-screen-rearm-failed: "
                         + rearmError.localizedDescription
                 )
+            }
+            if didRearm,
+               self.currentRearmToken() == token,
+               self.config.show_on_lock_screen == true,
+               self.store.loadConfig().show_on_lock_screen == true,
+               self.lockScreenBridgeNeedsPreparation {
+                self.lockScreenBridgeNeedsPreparation = false
+                self.prepareNativeLockScreenBridgeForStart()
             }
             if let pendingToken = self.pendingRearmToken,
                pendingToken == self.currentRearmToken() {

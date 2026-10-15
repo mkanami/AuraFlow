@@ -275,6 +275,25 @@ internal final class WallpaperStoreTransaction {
         })
     }
 
+    /// Linked -> Desktop is an expected split when Aura owns Idle. macOS may
+    /// also update usage dates while loading that route; neither changes the
+    /// user's selected wallpaper. Keep every other field and route significant.
+    func desktopRoutesSemanticallyMatch(
+        current: [String: Data],
+        expected: [String: Data]
+    ) -> Bool {
+        let current = normalizedDesktopRoutesForComparison(current)
+        let expected = normalizedDesktopRoutesForComparison(expected)
+        guard Set(current.keys) == Set(expected.keys) else { return false }
+        return expected.allSatisfy { key, expectedData in
+            guard let currentData = current[key] else { return false }
+            return wallpaperStoreSemanticallyMatches(
+                currentData: currentData,
+                expectedData: expectedData
+            )
+        }
+    }
+
     func lockOnlyRemovalStorePlan(
         from currentStoreData: Data,
         managedAssetID: String

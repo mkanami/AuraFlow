@@ -91,13 +91,11 @@ internal final class AerialProviderController {
                 WallpaperPlatformConstants.wallpaperAgentApplicationPath,
             ]
         )
-        guard waitForFreshWallpaperRuntime(
-            excludingProviders: previousProviderPIDs,
-            excludingOwners: previousOwnerPIDs
-        ) else {
-            throw AerialLockScreenInstallerError
-                .aerialProviderRestartFailed
-        }
+        // `open` is the handoff point. WallpaperAgent and its ExtensionKit
+        // provider continue registering asynchronously; waiting here for a
+        // fresh PID recreated the old 5-second foreground stall. The agent's
+        // two-second health timer validates the new generation and performs a
+        // bounded repair if macOS is still draining the old process.
     }
 
     private static func waitForProcessesToExit(
@@ -142,24 +140,26 @@ internal final class AerialProviderController {
             "/usr/bin/killall",
             [WallpaperPlatformConstants.wallpaperAgentProcessName]
         )
-        // Once the owner has been stopped, waiting is passive and must finish
-        // even if a new lock begins. Cancelling here could strand that lock
-        // without any provider.
-        if waitForFreshWallpaperRuntime(
-            excludingProviders: previousProviderPIDs,
-            excludingOwners: previousOwnerPIDs
-        ) {
-            return
+        // Stop the owner first, then drain the old process before touching the
+        // provider. Waiting for a *new* owner here was the slow path: it could
+        // consume five seconds while the stale provider was still alive.
+        guard waitForProcessesToExit(
+            previousOwnerPIDs,
+            timeout: 2.0
+        ) else {
+            throw AerialLockScreenInstallerError
+                .aerialProviderRestartFailed
         }
 
-        // A new lock forbids another destructive kill, but explicitly opening
-        // the missing owner is safe and gives the current lock a provider.
-        if shouldProceed() {
-            runProcess(
-                "/usr/bin/pkill",
-                ["-x", WallpaperPlatformConstants.aerialExtensionProcessName]
-            )
+        guard shouldProceed() else {
+            throw AerialLockScreenOperationAbort.sessionChanged
         }
+        runProcess(
+            "/usr/bin/pkill",
+            ["-x", WallpaperPlatformConstants.aerialExtensionProcessName]
+        )
+        _ = waitForProcessesToExit(previousProviderPIDs, timeout: 1.0)
+
         runProcess(
             "/usr/bin/open",
             [

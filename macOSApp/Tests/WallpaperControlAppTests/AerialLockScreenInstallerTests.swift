@@ -1392,6 +1392,15 @@ private func writeAerialTestVideo(to url: URL) async throws {
             mode: .fit
         )
     )
+    // Reapplying the already validated mode is a successful no-op. Returning
+    // false here made the controller treat a healthy native route as a failed
+    // Fit update.
+    #expect(
+        try await fixture.installer.updateScaleMode(
+            videoURL: fixture.videoURL,
+            mode: .fit
+        )
+    )
     #expect(try Data(contentsOf: fixture.storeURL) == installedStore)
     #expect(try Data(contentsOf: recoveryStoreURL) == recoveryStore)
     #expect(try Data(contentsOf: recoveryAssetURL) == recoveryAsset)
@@ -1414,9 +1423,37 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(
         try await fixture.installer.updateScaleMode(
             videoURL: fixture.videoURL,
-            mode: .fit
-        ) == false
+            mode: .stretch
+        )
     )
+    #expect(
+        LockScreenJournal(
+            stateDirectoryURL: fixture.stateURL,
+            fileManager: .default
+        ).loadMarker()?.scaleMode == WallpaperScaleMode.stretch.rawValue
+    )
+
+    // A stale marker must not make the installer accept an old asset as the
+    // requested Stretch generation.
+    let staleAsset = Data("stale-fill-asset".utf8)
+    try staleAsset.write(to: fixture.assetURL, options: .atomic)
+    if var staleMarker = LockScreenJournal(
+        stateDirectoryURL: fixture.stateURL,
+        fileManager: .default
+    ).loadMarker() {
+        staleMarker.scaleMode = WallpaperScaleMode.stretch.rawValue
+        try LockScreenJournal(
+            stateDirectoryURL: fixture.stateURL,
+            fileManager: .default
+        ).saveMarker(staleMarker)
+    }
+    #expect(
+        try await fixture.installer.updateScaleMode(
+            videoURL: fixture.videoURL,
+            mode: .stretch
+        )
+    )
+    #expect(try Data(contentsOf: fixture.assetURL) != staleAsset)
 
     try await fixture.installer.uninstallAsync()
     let restoredStore = try readWallpaperStore(fixture.storeURL)
@@ -1430,6 +1467,27 @@ private func writeAerialTestVideo(to url: URL) async throws {
         provider: "com.apple.wallpaper.choice.image",
         assetID: nil
     ))
+}
+
+@Test func modeAwareDesktopAgentInstallBuildsSelectedMediaInOneTransaction() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+
+    try await fixture.installer.installForDesktopAgent(
+        videoURL: fixture.videoURL,
+        playbackSpeed: 1.5,
+        scaleMode: .fit
+    )
+
+    let marker = LockScreenJournal(
+        stateDirectoryURL: fixture.stateURL,
+        fileManager: .default
+    ).loadMarker()
+    #expect(marker?.playbackSpeed == 1.5)
+    #expect(marker?.scaleMode == WallpaperScaleMode.fit.rawValue)
+    #expect(marker?.state == "healthy")
+    #expect(fixture.refreshCounter.count == 1)
+    #expect(fixture.installer.installationConfirmed)
 }
 
 @Test func modernLockScreenOnlyPlaybackSpeedUsesLockOnlyGeneration() async throws {
@@ -1618,6 +1676,102 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(!fixture.installer.isLockScreenOnlyInstallation)
     #expect(fixture.installer.requiresLockScreenSessionPromotion)
     #expect(fixture.installer.installationConfirmed)
+}
+
+// WallpaperAgent updates LastUse while consuming the freshly written Idle
+// route. That is bookkeeping, not a change of the user's Desktop wallpaper.
+@Test(arguments: [false, true])
+func repeatedNativeStartRemoveStartAcceptsDesktopUsageTimestampUpdates(lockOnly: Bool) async throws {
+    let fixture = try AerialLockScreenFixture(onRefresh: { storeURL in
+        func updateUsage(_ value: Any) -> Any {
+            guard var dictionary = value as? [String: Any] else { return value }
+            for (key, child) in dictionary {
+                if (key == "Desktop" || key == "Linked"),
+                   var mode = child as? [String: Any] {
+                    mode["LastUse"] = Date(timeIntervalSince1970: 2_000)
+                    mode["LastSet"] = Date(timeIntervalSince1970: 1_000)
+                    dictionary[key] = mode
+                } else {
+                    dictionary[key] = updateUsage(child)
+                }
+            }
+            return dictionary
+        }
+        if let root = try? readWallpaperStore(storeURL),
+           let updated = updateUsage(root) as? [String: Any] {
+            try? writeWallpaperStore(updated, to: storeURL)
+        }
+    })
+    defer { fixture.cleanup() }
+    for _ in 0..<4 {
+        if lockOnly {
+            try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+        } else {
+            try await fixture.installer.installForDesktopAgent(videoURL: fixture.videoURL)
+        }
+        #expect(fixture.installer.installationConfirmed)
+        #expect(fixture.installer.requiresLockScreenSessionPromotion)
+        try await fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
+        #expect(!fixture.installer.isInstalled)
+    }
+}
+
+@Test func desktopPreservationComparisonIgnoresOnlyUsageDatesAndExpectedRouteSplit() throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    let transaction = WallpaperStoreTransaction(
+        wallpaperStoreURL: fixture.storeURL,
+        spacesPreferencesURL: fixture.spacesURL
+    )
+    func data(_ mode: [String: Any]) throws -> Data {
+        try PropertyListSerialization.data(fromPropertyList: mode, format: .binary, options: 0)
+    }
+    let original = AerialLockScreenFixture.makeMode(
+        provider: WallpaperPlatformConstants.imageProviderID,
+        configuration: ["url": ["relative": "file:///user-desktop.jpg"]]
+    )
+    let expected = ["display.Linked": try data(original)]
+    var used = original
+    used["LastUse"] = Date(timeIntervalSince1970: 2_000)
+    used["LastSet"] = Date(timeIntervalSince1970: 1_000)
+    #expect(transaction.desktopRoutesSemanticallyMatch(
+        current: ["display.Desktop": try data(used)], expected: expected
+    ))
+    #expect(!transaction.desktopRoutesSemanticallyMatch(current: [:], expected: expected))
+    #expect(!transaction.desktopRoutesSemanticallyMatch(
+        current: ["otherDisplay.Desktop": try data(used)], expected: expected
+    ))
+    #expect(!transaction.desktopRoutesSemanticallyMatch(
+        current: ["display.Desktop": Data("invalid".utf8)], expected: expected
+    ))
+    for changedProvider in [WallpaperPlatformConstants.aerialProviderID, "com.apple.wallpaper.choice.other"] {
+        let changed = AerialLockScreenFixture.makeMode(
+            provider: changedProvider, configuration: ["assetID": "different"]
+        )
+        #expect(!transaction.desktopRoutesSemanticallyMatch(
+            current: ["display.Desktop": try data(changed)], expected: expected
+        ))
+    }
+    for changedField in ["Configuration", "Files"] {
+        var changed = used
+        var content = try #require(changed["Content"] as? [String: Any])
+        var choices = try #require(content["Choices"] as? [[String: Any]])
+        choices[0][changedField] = changedField == "Files"
+            ? [["relative": "file:///different.jpg"]] as Any
+            : Data("different config".utf8) as Any
+        content["Choices"] = choices
+        changed["Content"] = content
+        #expect(!transaction.desktopRoutesSemanticallyMatch(
+            current: ["display.Desktop": try data(changed)], expected: expected
+        ))
+    }
+    var changedOptions = used
+    var content = try #require(changedOptions["Content"] as? [String: Any])
+    content["EncodedOptionValues"] = Data("different scaling".utf8)
+    changedOptions["Content"] = content
+    #expect(!transaction.desktopRoutesSemanticallyMatch(
+        current: ["display.Desktop": try data(changedOptions)], expected: expected
+    ))
 }
 
 @Test func desktopAgentNativeRemovePreservesEveryDesktopWithoutImageTransition() async throws {
@@ -3975,4 +4129,32 @@ private func wallpaperStoreText(_ value: Any) -> String {
         return array.map(wallpaperStoreText).joined(separator: " ")
     }
     return String(describing: value)
+}
+
+@Test func lockScreenDisableRestoresLatestUserWallpaperAfterFrozenAuraGeneration() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    let video = fixture.root.appendingPathComponent("frozen-aura.mp4")
+    try await writeAerialTestVideo(to: video)
+    try await fixture.installer.installLockScreenOnly(videoURL: video)
+    #expect(try await fixture.installer.pauseLockScreenOnlyPlayback(videoURL: video))
+    let userProvider = "com.apple.wallpaper.choice.latest-user-wallpaper"
+    let current = replaceTestDesktopModes(in: try readWallpaperStore(fixture.storeURL), provider: userProvider)
+    try writeWallpaperStore(current, to: fixture.storeURL)
+    try await fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
+    let restored = try readWallpaperStore(fixture.storeURL)
+    for container in testWallpaperContainers(in: restored) {
+        if (container["Type"] as? String) == "linked" {
+            let linked = try #require(container["Linked"] as? [String: Any])
+            #expect(wallpaperStoreContains(linked, provider: userProvider, assetID: nil))
+        } else {
+            let desktop = try #require(container["Desktop"] as? [String: Any])
+            let idle = try #require(container["Idle"] as? [String: Any])
+            #expect(wallpaperModeData(idle) == wallpaperModeData(desktop))
+            #expect(wallpaperStoreContains(idle, provider: userProvider, assetID: nil))
+        }
+    }
+    #expect(!wallpaperStoreContains(restored, provider: "com.apple.wallpaper.choice.aerials",
+                                   assetID: AerialLockScreenFixture.assetID))
+    #expect(!fixture.installer.isInstalled)
 }

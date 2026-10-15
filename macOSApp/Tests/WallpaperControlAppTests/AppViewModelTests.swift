@@ -168,6 +168,59 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func av1InsideMP4IsConvertedWhenHardwareDecodeIsUnavailable() async throws {
+    let optimizer = VideoOptimizer()
+    guard !optimizer.supportsHardwareAV1Decode() else { return }
+
+    let ffmpegCandidates = [
+        "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+    ]
+    guard let ffmpeg = ffmpegCandidates.first(where: {
+        FileManager.default.isExecutableFile(atPath: $0)
+    }) else { return }
+
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("auraflow-av1-regression-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let sourceURL = root.appendingPathComponent("av1-inside-mp4.mp4")
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: ffmpeg)
+    process.arguments = [
+        "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "color=c=blue:s=320x180:r=6",
+        "-t", "0.5", "-an", "-c:v", "libaom-av1",
+        "-cpu-used", "8", "-crf", "45", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", sourceURL.path,
+    ]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else { return }
+
+    #expect(await optimizer.requiresMandatoryCompatibility(inputURL: sourceURL))
+
+    let result = try await optimizer.optimizeIfNeeded(
+        inputURL: sourceURL,
+        settings: VideoOptimizationSettings(
+            enabled: true,
+            allowAV1PassthroughOnHardwareDecode: true,
+            transcodeH264ToHEVC: false,
+            forceSoftwareAV1Encode: false,
+            profile: .balanced
+        ),
+        progress: { _ in }
+    )
+    defer { try? FileManager.default.removeItem(at: result.outputURL) }
+
+    #expect(result.outputURL.standardizedFileURL != sourceURL.standardizedFileURL)
+    #expect(!(await optimizer.requiresMandatoryCompatibility(inputURL: result.outputURL)))
+}
+
+@MainActor
 @Test func previewSetsPlayerWhenVideoSelected() throws {
     let controller = MockNativeWallpaperController()
     let viewModel = AppViewModel(controller: controller)
@@ -222,7 +275,7 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
-@Test func startCancelsBackgroundLockScreenMediaWarmUp() async throws {
+@Test func startKeepsBackgroundLockScreenMediaWarmUp() async throws {
     let controller = MockNativeWallpaperController()
     controller.prepareLockScreenMediaDelay = 30_000_000_000
     let viewModel = AppViewModel(controller: controller)
@@ -252,7 +305,7 @@ private func pngData(for image: CGImage) -> Data {
     }
 
     #expect(controller.startCallCount == 1)
-    #expect(controller.prepareLockScreenMediaCancellationCount == 1)
+    #expect(controller.prepareLockScreenMediaCancellationCount == 0)
     #expect(Date().timeIntervalSince(startBeganAt) < 2.0)
 }
 
@@ -887,7 +940,7 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
-@Test func switchingPreviewReusesPlayerAndReplacesItemWithoutDetachingLayer() throws {
+@Test func switchingPreviewStagesANewPlayerBehindThePoster() throws {
     let controller = MockNativeWallpaperController()
     let viewModel = AppViewModel(controller: controller)
 
@@ -907,8 +960,10 @@ private func pngData(for image: CGImage) -> Data {
 
     viewModel.selectLocalVideoForPreview(secondURL)
 
-    #expect(viewModel.previewPlayer === originalPlayer)
-    let currentAsset = try #require(originalPlayer.currentItem?.asset as? AVURLAsset)
+    let replacementPlayer = try #require(viewModel.previewPlayer)
+    #expect(replacementPlayer !== originalPlayer)
+    #expect(viewModel.isPreviewReadyForDisplay == false)
+    let currentAsset = try #require(replacementPlayer.currentItem?.asset as? AVURLAsset)
     #expect(currentAsset.url.standardizedFileURL == secondURL.standardizedFileURL)
 }
 
@@ -2468,6 +2523,9 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
     var statusPaused: Bool?
     var statusHealth: DaemonHealth?
     var statusShowOnLockScreen = false
+    var lockScreenPlaybackDelay: UInt64 = 0
+    var lockScreenPlaybackError: Error?
+    var lockScreenPlaybackRequests: [Bool] = []
     var statusLockScreenOnly = false
     var statusConfigAutostart: Bool? = false
     var statusAutostart: Bool? = false
@@ -2589,6 +2647,11 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
     }
 
     func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus {
+        lockScreenPlaybackRequests.append(enabled)
+        if lockScreenPlaybackDelay > 0 {
+            try await Task.sleep(nanoseconds: lockScreenPlaybackDelay)
+        }
+        if let lockScreenPlaybackError { throw lockScreenPlaybackError }
         statusShowOnLockScreen = enabled
         return try status()
     }
@@ -2773,4 +2836,98 @@ actor FailingCatalogProvider: WallpaperCatalogProviding {
     func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
         throw URLError(.badURL)
     }
+}
+
+@Test func nativeLiquidGlassButtonProtectionDarkensBrightSurfacesForLightLabels() {
+    let opacity = AuraControlSurfaceMetrics.nativeProtectionOpacity(
+        tone: .light,
+        adaptiveProtection: 0.68,
+        isPressed: false,
+        isSelected: false,
+        isEmphasized: false
+    )
+
+    #expect(opacity >= 0.38)
+    #expect(opacity <= 0.42)
+}
+
+@Test func freshInstallEnablesLockScreenPlaybackByDefault() {
+    #expect(ControlConfig.defaultConfig.show_on_lock_screen == true)
+}
+
+@Test func nativeLiquidGlassButtonProtectionDoesNotBlowOutDarkLabels() {
+    let opacity = AuraControlSurfaceMetrics.nativeProtectionOpacity(
+        tone: .dark,
+        adaptiveProtection: 0.68,
+        isPressed: true,
+        isSelected: true,
+        isEmphasized: true
+    )
+
+    #expect(opacity <= 0.20)
+}
+
+@Test func nativeLiquidGlassButtonSelectionKeepsSurfaceWithinContrastLimit() {
+    let normal = AuraControlSurfaceMetrics.nativeProtectionOpacity(
+        tone: .light,
+        adaptiveProtection: 0.10,
+        isPressed: false,
+        isSelected: false,
+        isEmphasized: false
+    )
+    let selected = AuraControlSurfaceMetrics.nativeProtectionOpacity(
+        tone: .light,
+        adaptiveProtection: 0.10,
+        isPressed: false,
+        isSelected: true,
+        isEmphasized: true
+    )
+
+    #expect(selected > normal)
+    #expect(selected <= 0.42)
+}
+
+@MainActor
+@Test func lockScreenPlaybackToggleStaysResponsiveAndLatestChoiceWins() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.statusShowOnLockScreen = true
+    controller.lockScreenPlaybackDelay = 150_000_000
+    let viewModel = AppViewModel(controller: controller)
+    await viewModel.loadStatus()
+    viewModel.toggleShowOnLockScreen(false)
+    #expect(!viewModel.showOnLockScreenEnabled)
+    #expect(viewModel.isUpdatingLockScreenPlayback)
+    #expect(viewModel.canToggleShowOnLockScreen)
+    // Permit the first operation to start, then change the desired state while
+    // its provider is still working. Polling must not undo that UI choice.
+    try await Task.sleep(nanoseconds: 40_000_000)
+    await viewModel.loadStatus()
+    #expect(!viewModel.showOnLockScreenEnabled)
+    viewModel.toggleShowOnLockScreen(true)
+    #expect(viewModel.showOnLockScreenEnabled)
+    for _ in 0..<60 {
+        if !viewModel.isUpdatingLockScreenPlayback { break }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    #expect(!viewModel.isUpdatingLockScreenPlayback)
+    #expect(!viewModel.isBusy)
+    #expect(viewModel.showOnLockScreenEnabled)
+    #expect(controller.lockScreenPlaybackRequests == [false, true])
+}
+
+@MainActor
+@Test func failedLockScreenPlaybackToggleRestoresConfirmedState() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.statusShowOnLockScreen = true
+    controller.lockScreenPlaybackError = CocoaError(.fileWriteNoPermission)
+    let viewModel = AppViewModel(controller: controller)
+    await viewModel.loadStatus()
+    viewModel.toggleShowOnLockScreen(false)
+    for _ in 0..<60 {
+        if !viewModel.isUpdatingLockScreenPlayback { break }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    #expect(viewModel.showOnLockScreenEnabled)
+    #expect(!viewModel.isBusy)
+    #expect(viewModel.alertMessage?.contains("Failed to update Lock Screen") == true)
 }

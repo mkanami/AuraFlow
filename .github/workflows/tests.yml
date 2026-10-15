@@ -3,6 +3,7 @@ name: Tests
 on:
   push:
   pull_request:
+  workflow_call:
   workflow_dispatch:
     inputs:
       run_live_catalog_smoke:
@@ -45,9 +46,18 @@ jobs:
           DEVELOPER_DIR="$developer_dir" xcodebuild -version
           DEVELOPER_DIR="$developer_dir" xcrun swift --version
 
+      - name: Install video test dependencies
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install ffmpeg
+          fi
+          ffmpeg -version
+          ffprobe -version
+
       - name: Run Swift tests
-        working-directory: macOSApp
-        run: swift test
+        shell: bash
+        run: ./scripts/test_macos_app.sh
 
       - name: Build portable release targets
         working-directory: macOSApp

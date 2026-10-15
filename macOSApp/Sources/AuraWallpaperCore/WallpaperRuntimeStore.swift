@@ -80,6 +80,7 @@ public typealias LaunchctlRunner = ([String]) -> LaunchctlResult
 public enum WallpaperRuntimeCommandAction: String, Codable, Equatable {
     case reload
     case update
+    case rearmLockScreen
     case pause
     case resume
     case previewLock
@@ -310,11 +311,13 @@ public final class WallpaperRuntimeStore {
     public func effectiveLockScreenSourceURL(for config: ControlConfig) -> URL? {
         if let lockScreenOnlySource = loadLockScreenOnlySource(),
            FileManager.default.fileExists(atPath: lockScreenOnlySource.path) {
-            return lockScreenOnlySource
+            return VideoFrameBlendCache(appSupportURL: appSupportURL)
+                .playbackURL(for: lockScreenOnlySource, enabled: config.blend_interpolation == true)
         }
         let path = config.video_path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: path).standardizedFileURL
+        return VideoFrameBlendCache(appSupportURL: appSupportURL).playbackURL(
+            for: URL(fileURLWithPath: path).standardizedFileURL, enabled: config.blend_interpolation == true)
     }
 
     public func loadHealth() -> DaemonHealth? {
@@ -393,7 +396,7 @@ public final class WallpaperRuntimeStore {
         normalized.autostart = config.autostart ?? false
         normalized.blend_interpolation = config.blend_interpolation ?? false
         normalized.pause_on_fullscreen = config.pause_on_fullscreen ?? true
-        normalized.show_on_lock_screen = config.show_on_lock_screen ?? false
+        normalized.show_on_lock_screen = config.show_on_lock_screen ?? true
         if WallpaperScaleMode(rawValue: config.scale_mode ?? "") == nil {
             normalized.scale_mode = WallpaperScaleMode.fill.rawValue
         }
@@ -461,7 +464,8 @@ public final class WallpaperRuntimeStore {
     /// Legacy screen-saver installs do not need a separate agent, so the
     /// source marker is also part of the persisted mode state.
     public func isLockScreenOnlyMode() -> Bool {
-        isLockScreenOnlyAgent() || loadLockScreenOnlySource() != nil
+        isLockScreenOnlyAgent()
+            || (loadConfig().show_on_lock_screen != false && loadLockScreenOnlySource() != nil)
     }
 
     public func healthForStatus(alive: Bool, paused: Bool) -> DaemonHealth {
@@ -515,7 +519,7 @@ public final class WallpaperRuntimeStore {
             pause_on_fullscreen: saved?.pause_on_fullscreen,
             fullscreen_app_detected: saved?.fullscreen_app_detected ?? false,
             auto_paused_for_fullscreen: saved?.auto_paused_for_fullscreen ?? false,
-            lock_screen_enabled: saved?.lock_screen_enabled ?? config.show_on_lock_screen ?? false,
+            lock_screen_enabled: saved?.lock_screen_enabled ?? config.show_on_lock_screen ?? true,
             session_inactive: saved?.session_inactive ?? false,
             lock_screen_preview_active: saved?.lock_screen_preview_active ?? false,
             presentation_mode: saved?.presentation_mode ?? WallpaperPresentationMode.desktop.rawValue,

@@ -1,8 +1,15 @@
 import SwiftUI
+import AuraWallpaperEngineCore
 import AVKit
 import AppKit
 import ImageIO
 import QuartzCore
+
+private let catalogPreviewImageLoadLimiter = DispatchSemaphore(value: 3)
+
+private func acquireCatalogPreviewImagePermit() {
+    catalogPreviewImageLoadLimiter.wait()
+}
 
 private struct AdaptiveGlassAppearanceEnvironmentKey: EnvironmentKey {
     static let defaultValue = AdaptiveGlassAppearance.default
@@ -15,7 +22,11 @@ extension EnvironmentValues {
     }
 }
 
-private extension AdaptiveTextTone {
+extension AdaptiveTextTone {
+    var glassColorScheme: ColorScheme {
+        self == .dark ? .light : .dark
+    }
+
     /// A low-opacity tint that improves contrast without turning Liquid Glass
     /// into an opaque panel. Dark text gets a light lift; light text gets a
     /// dark lift. Every button and inset surface uses the same tone.
@@ -95,16 +106,127 @@ private func boundedAdaptiveSurfaceProtectionOpacity(_ value: CGFloat) -> CGFloa
     min(max(value, 0.0), maximumAdaptiveSurfaceProtectionOpacity)
 }
 
+/// A button already sits on top of a protected glass panel, so repeating the
+/// panel's full protection value on every control makes native Liquid Glass
+/// bloom into an opaque white highlight. Keep the local layer directional:
+/// light labels receive a dark clamp, while dark labels receive only a small
+/// light lift.
+struct AuraControlSurfaceMetrics {
+    static func nativeProtectionOpacity(
+        tone: AdaptiveTextTone,
+        adaptiveProtection: CGFloat,
+        isPressed: Bool,
+        isSelected: Bool,
+        isEmphasized: Bool
+    ) -> CGFloat {
+        let adaptive = boundedAdaptiveSurfaceProtectionOpacity(adaptiveProtection)
+        let interactionBoost: CGFloat = isPressed ? 0.025 : 0.0
+        let selectionBoost: CGFloat = isSelected ? 0.018 : (isEmphasized ? 0.010 : 0.0)
+
+        switch tone {
+        case .light:
+            // Native clear glass can produce a strong white specular highlight
+            // over bright video. A dark local clamp keeps white labels legible
+            // without replacing the system glass material.
+            return min(0.42, 0.20 + (adaptive * 0.68) + interactionBoost + selectionBoost)
+        case .dark:
+            // A white lift is useful behind dark labels, but it must stay well
+            // below the level where the whole control reads as overexposed.
+            return min(0.20, 0.045 + (adaptive * 0.42) + interactionBoost + selectionBoost)
+        }
+    }
+}
+
 private func speedOverlayPillWidth(for availableWidth: CGFloat) -> CGFloat {
     min(max(availableWidth * 0.46, 420), 720)
 }
 
+struct WallpaperSourceButtonAnchorKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
+enum WallpaperSourceMenuLayout {
+    static func frame(button: CGRect, container: CGSize) -> CGRect {
+        let inset: CGFloat = 12
+        // Keep the source picker centered over its button, including near a
+        // window edge. Reduce its width symmetrically instead of shifting it.
+        let availableHalfWidth = max(0, min(button.midX - inset, container.width - inset - button.midX))
+        let width = min(300, availableHalfWidth * 2)
+        let height: CGFloat = 116
+        let x = button.midX - width / 2
+        let y = min(max(inset, button.minY - height - 10), max(inset, container.height - height - inset))
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+private struct WallpaperSourceMenu: View {
+    @ObservedObject var viewModel: AppViewModel
+    @Binding var isPresented: Bool
+    @Environment(\.adaptiveGlassAppearance) private var appearance
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Button {
+                isPresented = false
+                viewModel.chooseVideo()
+            } label: { Label("Choose video or image…", systemImage: "photo.on.rectangle") }
+            .buttonStyle(AuraGlassButtonStyle())
+            Button {
+                isPresented = false
+                viewModel.wallpaperEngine.chooseImport()
+            } label: { Label("Import Wallpaper Engine…", systemImage: "square.and.arrow.down") }
+            .buttonStyle(AuraGlassButtonStyle())
+            .disabled(viewModel.wallpaperEngine.isImporting)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(AuraGlassRoundedSurface(
+            cornerRadius: 16,
+            material: .clear,
+            alphaMultiplier: appearance.bottomGlassAlpha,
+            protectionOverlayOpacity: appearance.bottomProtectionOverlayOpacity,
+            protectionOverlayColor: appearance.bottomTextTone.contrastSurfaceColor
+        ))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.14)))
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Change Wallpaper")
+        .background {
+            Button("Close wallpaper source menu") { isPresented = false }
+                .keyboardShortcut(.cancelAction)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
+        .onExitCommand { isPresented = false }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
+    @ObservedObject var terminalWallpaperViewModel: TerminalWallpaperViewModel
+    let terminalPreviewModel: TerminalWallpaperPreviewModel
+    @ObservedObject var previewSelectionStore: WallpaperPreviewSelectionStore
     @State private var isAdjustingSpeed: Bool = false
     @State private var window: NSWindow?
+    @State private var showsWallpaperSourcePicker = false
 
-    private var aspectRatio: CGFloat { mainScreenAspectRatio() }
+    private var effectiveGlassAppearance: AdaptiveGlassAppearance {
+        if previewSelectionStore.kind == .web { return TerminalPreviewAppearanceModel.fallback(for: nil) }
+        return TerminalPreviewAppearanceModel.resolved(
+            kind: previewSelectionStore.kind,
+            video: viewModel.adaptiveGlassAppearance,
+            terminal: TerminalPreviewAppearanceModel.fixedAppearance
+        )
+    }
+
+    private var sourceMenuIsAvailable: Bool {
+        !viewModel.isCatalogOpen && !viewModel.isSettingsOpen && !viewModel.isMonitoringOpen
+            && !viewModel.isDownloadedWallpapersOpen && !viewModel.isTerminalWallpaperOpen
+    }
     private let topOverlayTopPadding: CGFloat = 18
     private let zoomedTopOverlayPadding: CGFloat = 38
     private let fullScreenTopOverlayPadding: CGFloat = 38
@@ -119,13 +241,13 @@ struct ContentView: View {
             let availableWidth = max(proxy.size.width - (horizontalPadding * 2), 0)
             let availableHeight = max(proxy.size.height - 48, 0)
             let controlPanelMaxWidth: CGFloat = 1440
-            let controlPanelWidth = min(availableWidth, controlPanelMaxWidth)
-            let isCompactBySize = controlPanelWidth < 1080 || availableHeight < 620
+            let controlPanelWidth = MainControlPanelMetrics.width(availableWidth: availableWidth)
+            let isCompactBySize = min(availableWidth, controlPanelMaxWidth) < 1080 || availableHeight < 620
             let isVeryCompactByHeight = availableHeight < 560
             let catalogMaxWidth: CGFloat = 1040
             let overlayWidth = viewModel.isCatalogOpen
                 ? min(availableWidth, catalogMaxWidth)
-                : controlPanelWidth
+                : min(availableWidth, controlPanelMaxWidth)
             let topOverlayPadding = resolvedTopOverlayPadding()
             let bottomOverlayPadding = resolvedBottomOverlayPadding()
 
@@ -159,10 +281,62 @@ struct ContentView: View {
                     DownloadedWallpapersOverlay(viewModel: viewModel)
                 }
             }
+            .overlay {
+                if viewModel.isTerminalWallpaperOpen {
+                    TerminalWallpaperOverlay(
+                        viewModel: viewModel,
+                        terminalWallpaperViewModel: terminalWallpaperViewModel
+                    )
+                }
+            }
+            .overlayPreferenceValue(WallpaperSourceButtonAnchorKey.self) { anchor in
+                GeometryReader { menuProxy in
+                    if showsWallpaperSourcePicker, sourceMenuIsAvailable, let anchor {
+                        let frame = WallpaperSourceMenuLayout.frame(button: menuProxy[anchor], container: menuProxy.size)
+                        ZStack(alignment: .topLeading) {
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onTapGesture { showsWallpaperSourcePicker = false }
+                                .accessibilityHidden(true)
+                            WallpaperSourceMenu(viewModel: viewModel, isPresented: $showsWallpaperSourcePicker)
+                                .frame(width: frame.width, height: frame.height)
+                                .position(x: frame.midX, y: frame.midY)
+                        }
+                    }
+                }
+            }
         }
         .ignoresSafeArea()
         .frame(minWidth: 760, minHeight: 480)
         .background(Color.clear)
+        .onExitCommand { showsWallpaperSourcePicker = false }
+        .onChange(of: sourceMenuIsAvailable) { available in
+            if !available { showsWallpaperSourcePicker = false }
+        }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in viewModel.wallpaperEngine.discover(url) }
+            }
+            return true
+        }
+        .sheet(isPresented: Binding(get: { viewModel.wallpaperEngine.showsProjectPicker }, set: { viewModel.wallpaperEngine.showsProjectPicker = $0 })) {
+            WallpaperEngineProjectPicker(model: viewModel.wallpaperEngine)
+        }
+        .sheet(isPresented: Binding(get: { viewModel.wallpaperEngine.showsProperties }, set: { viewModel.wallpaperEngine.showsProperties = $0 })) {
+            WallpaperEnginePropertiesEditor(model: viewModel.wallpaperEngine)
+        }
+        .overlay(alignment: .top) {
+            if let error = viewModel.wallpaperEngine.error {
+                HStack {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                    Button("Dismiss") { viewModel.wallpaperEngine.error = nil }
+                }
+                .font(.callout).padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 30).padding(.top, 78)
+            }
+        }
         .overlay(
             WindowAccessor(
                 window: $window,
@@ -171,13 +345,30 @@ struct ContentView: View {
             )
             .allowsHitTesting(false)
         )
+        .overlay(alignment: .top) {
+            if !viewModel.isCatalogOpen, viewModel.catalogDownloadID != nil {
+                CatalogDownloadProgressView(viewModel: viewModel)
+                    .padding(14)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    .frame(maxWidth: 480)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 82)
+            }
+        }
         .task {
             await viewModel.loadStatus()
         }
-        .environment(\.adaptiveGlassAppearance, viewModel.adaptiveGlassAppearance)
+        .environment(\.adaptiveGlassAppearance, effectiveGlassAppearance)
+        .environment(\.wallpaperPreviewGlassKind, previewSelectionStore.kind)
+        .environment(\.terminalPreviewTitle, previewSelectionStore.kind == .terminal
+            ? TerminalPreviewAppearanceModel.title(for: previewSelectionStore.terminalConfiguration?.command)
+            : (previewSelectionStore.kind == .web ? viewModel.wallpaperEngine.selectedProject?.title : nil))
+        .transformEnvironment(\.colorScheme) { scheme in
+            if previewSelectionStore.kind == .terminal { scheme = .dark }
+        }
         // Keep every text-bearing control on the same adaptive polarity. The
         // individual surfaces still choose their own backing strength below.
-        .foregroundStyle(viewModel.adaptiveGlassAppearance.textTone.primaryTextColor)
+        .foregroundStyle(effectiveGlassAppearance.textTone.primaryTextColor)
     }
 
     @ViewBuilder
@@ -196,10 +387,21 @@ struct ContentView: View {
             Color.clear
 
             PreviewLayer(
+                previewSelectionStore: previewSelectionStore,
+                terminalPreviewModel: terminalPreviewModel,
+                wallpaperEngine: viewModel.wallpaperEngine,
                 player: viewModel.previewPlayer,
                 wallpaperURL: viewModel.currentVideoURL ?? viewModel.appliedVideoURL,
-                aspectRatio: aspectRatio,
-                scaleMode: viewModel.scaleMode
+                isVideoReadyForDisplay: viewModel.isPreviewReadyForDisplay,
+                posterURL: viewModel.previewPosterURL,
+                posterRefererURL: viewModel.previewPosterRefererURL,
+                posterTitle: viewModel.previewPosterTitle,
+                onVideoReadyForDisplayChange: { player, isReady in
+                    viewModel.previewReadyForDisplayDidChange(
+                        player: player,
+                        isReady: isReady
+                    )
+                }
             )
             .frame(
                 width: proxy.size.width,
@@ -210,7 +412,7 @@ struct ContentView: View {
 
             TitlebarInteractionOverlay(
                 window: window,
-                protectedCenterWidth: viewModel.isCatalogOpen
+                protectedCenterWidth: viewModel.isCatalogOpen || !viewModel.showsPreviewSpeedControl
                     ? nil
                     : speedOverlayPillWidth(for: availableWidth),
                 onDragStateChange: { dragging in
@@ -288,7 +490,7 @@ struct ContentView: View {
                 alignment: .top
             )
             .overlay(alignment: .top) {
-            if !viewModel.isCatalogOpen {
+            if !viewModel.isCatalogOpen && viewModel.showsPreviewSpeedControl {
                 SpeedOverlay(
                     viewModel: viewModel,
                     isAdjustingSpeed: $isAdjustingSpeed,
@@ -318,10 +520,13 @@ struct ContentView: View {
                     ControlPanel(
                         viewModel: viewModel,
                         isAdjustingSpeed: $isAdjustingSpeed,
+                        showsWallpaperSourcePicker: $showsWallpaperSourcePicker,
                         panelWidth: controlPanelWidth,
-                        isCompactBySize: isCompactBySize,
+                        isCompactBySize: controlPanelWidth < 1080 || containerHeight - 48 < 620,
                         isVeryCompactByHeight: isVeryCompactByHeight
                     )
+                    .frame(width: controlPanelWidth)
+                    .frame(maxWidth: .infinity, alignment: .center)
                     .disabled(!viewModel.isControllerAvailable)
                     .overlay(
                         Group {
@@ -416,332 +621,62 @@ final class TitlebarInteractionNSView: NSView {
 }
 
 struct PreviewLayer: View {
+    @ObservedObject var previewSelectionStore: WallpaperPreviewSelectionStore
+    let terminalPreviewModel: TerminalWallpaperPreviewModel
+    @ObservedObject var wallpaperEngine: WallpaperEngineViewModel
     let player: AVPlayer?
     let wallpaperURL: URL?
-    let aspectRatio: CGFloat
-    let scaleMode: WallpaperScaleMode
+    let isVideoReadyForDisplay: Bool
+    let posterURL: URL?
+    let posterRefererURL: URL?
+    let posterTitle: String
+    let onVideoReadyForDisplayChange: (AVPlayer?, Bool) -> Void
 
     var body: some View {
+        GeometryReader { viewport in
+            previewContent(in: viewport.size)
+                .frame(width: viewport.size.width, height: viewport.size.height)
+                .background(Color.black)
+        }
+        .clipped()
+    }
+
+    // Scale uniformly to cover the actual window, not the monitor. No stretching
+    // or letterboxing; excess content is cropped symmetrically at the edges.
+    private func previewContent(in size: CGSize) -> some View {
         Group {
-            if let wallpaperURL,
+            if previewSelectionStore.kind == .terminal {
+                TerminalWallpaperPreviewSurface(model: terminalPreviewModel)
+            } else if previewSelectionStore.kind == .web {
+                WebWallpaperPreviewSurface(model: wallpaperEngine)
+            } else if let wallpaperURL,
                WallpaperMediaKind.forURL(wallpaperURL).isStaticImage,
                let image = NSImage(contentsOf: wallpaperURL) {
                 Image(nsImage: image)
                     .resizable()
-                    .aspectRatio(
-                        contentMode: scaleMode == .fit ? .fit : .fill
-                    )
+                    .scaledToFill()
             } else {
-                VideoPreview(player: player, videoGravity: scaleMode.previewGravity)
-                    .aspectRatio(aspectRatio, contentMode: .fill)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-    }
-}
+                ZStack {
+                    CatalogPreviewImage(
+                        url: posterURL,
+                        title: posterTitle,
+                        referer: posterRefererURL,
+                        contentMode: .fill
+                    )
+                    .frame(width: size.width, height: size.height)
+                    .clipped()
 
-struct ControlPanel: View {
-    @ObservedObject var viewModel: AppViewModel
-    @Binding var isAdjustingSpeed: Bool
-    let panelWidth: CGFloat
-    let isCompactBySize: Bool
-    let isVeryCompactByHeight: Bool
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
-
-    private var widthScale: CGFloat {
-        max(0.82, min(1.0, panelWidth / 1180))
-    }
-
-    private var panelHorizontalInset: CGFloat {
-        isCompactBySize ? 18 : 22
-    }
-
-    private var panelVerticalInset: CGFloat {
-        if isVeryCompactByHeight {
-            return 10
-        }
-        return isCompactBySize ? 12 : 14
-    }
-
-    private var rowSpacing: CGFloat {
-        if isVeryCompactByHeight {
-            return 8
-        }
-        return isCompactBySize ? 10 : 12
-    }
-
-    private var primarySpacing: CGFloat {
-        if isVeryCompactByHeight {
-            return 6
-        }
-        return isCompactBySize ? 8 : 12
-    }
-
-    private var secondarySpacing: CGFloat {
-        if isVeryCompactByHeight {
-            return 6
-        }
-        return isCompactBySize ? 8 : 12
-    }
-
-    private var controlSize: ControlSize {
-        if isVeryCompactByHeight {
-            return .mini
-        }
-        return isCompactBySize ? .small : .regular
-    }
-
-    private var primaryButtonWidth: CGFloat {
-        scaledWidth(104, min: 92)
-    }
-
-    private var removeButtonWidth: CGFloat {
-        scaledWidth(178, min: 154)
-    }
-
-    private var catalogButtonWidth: CGFloat {
-        scaledWidth(184, min: 160)
-    }
-
-    private var downloadedButtonWidth: CGFloat {
-        scaledWidth(226, min: 198)
-    }
-
-    private var changeWallpaperButtonWidth: CGFloat {
-        scaledWidth(228, min: 196)
-    }
-
-    private var settingsButtonWidth: CGFloat {
-        scaledWidth(126, min: 112)
-    }
-
-    private var monitoringButtonWidth: CGFloat {
-        scaledWidth(154, min: 136)
-    }
-
-    private var rowContentWidth: CGFloat {
-        max(panelWidth - (panelHorizontalInset * 2), 0)
-    }
-
-    private var controlButtonsRowWidth: CGFloat {
-        (primaryButtonWidth * 3) + removeButtonWidth + (primarySpacing * 3)
-    }
-
-    private var actionButtonsRowWidth: CGFloat {
-        controlButtonsRowWidth + changeWallpaperButtonWidth
-    }
-
-    private var libraryButtonsRowWidth: CGFloat {
-        catalogButtonWidth + downloadedButtonWidth + primarySpacing
-    }
-
-    private var secondaryButtonsRowWidth: CGFloat {
-        settingsButtonWidth + monitoringButtonWidth + secondarySpacing
-    }
-
-    private var actionRowGap: CGFloat {
-        max(primarySpacing, rowContentWidth - actionButtonsRowWidth)
-    }
-
-    private var bottomRowGap: CGFloat {
-        max(secondarySpacing, rowContentWidth - secondaryButtonsRowWidth - libraryButtonsRowWidth)
-    }
-
-    private var showsStatusMessage: Bool {
-        !isVeryCompactByHeight && panelWidth >= 860
-    }
-
-    private var showsOptimizationProgress: Bool {
-        !isVeryCompactByHeight && panelWidth >= 820
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: rowSpacing) {
-            if !isVeryCompactByHeight {
-                HStack(alignment: .top, spacing: 0) {
-                    videoInfo
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            HStack(alignment: .center, spacing: 0) {
-                ControlButtons(
-                    viewModel: viewModel,
-                    spacing: primarySpacing,
-                    primaryButtonWidth: primaryButtonWidth,
-                    removeButtonWidth: removeButtonWidth
-                )
-                .frame(width: controlButtonsRowWidth, alignment: .leading)
-
-                Color.clear
-                    .frame(width: actionRowGap, height: 1)
-
-                changeWallpaperButton
-                    .frame(width: changeWallpaperButtonWidth)
-                    .layoutPriority(2)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(alignment: .center, spacing: 0) {
-                HStack(alignment: .center, spacing: secondarySpacing) {
-                    settingsButton
-                        .frame(width: settingsButtonWidth)
-
-                    monitoringButton
-                        .frame(width: monitoringButtonWidth)
-                }
-                .frame(width: secondaryButtonsRowWidth, alignment: .leading)
-
-                Color.clear
-                    .frame(width: bottomRowGap, height: 1)
-
-                HStack(alignment: .center, spacing: primarySpacing) {
-                    catalogButton
-                        .frame(width: catalogButtonWidth)
-                        .layoutPriority(2)
-
-                    downloadedWallpapersButton
-                        .frame(width: downloadedButtonWidth)
-                        .layoutPriority(2)
-                }
-                .frame(width: libraryButtonsRowWidth, alignment: .trailing)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if showsStatusMessage, let message = viewModel.statusMessage {
-                Text(UserFacingMessageFormatter.format(message))
-                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            if viewModel.optimizationInProgress && showsOptimizationProgress {
-                VStack(alignment: .leading, spacing: 6) {
-                    if let label = viewModel.optimizationLabel {
-                        Text(UserFacingMessageFormatter.format(label))
-                            .font(.caption)
-                            .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    ProgressView(value: viewModel.optimizationProgress)
-                        .progressViewStyle(.linear)
+                    VideoPreview(
+                        player: player,
+                        videoGravity: .resizeAspectFill,
+                        onReadyForDisplayChange: { isReady in
+                            onVideoReadyForDisplayChange(player, isReady)
+                        }
+                    )
+                    .opacity(isVideoReadyForDisplay ? 1 : 0)
                 }
             }
         }
-        .controlSize(controlSize)
-        .padding(.vertical, panelVerticalInset)
-        .padding(.horizontal, panelHorizontalInset)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            AuraGlassRoundedSurface(
-                cornerRadius: 14,
-                material: .clear,
-                alphaMultiplier: adaptiveGlassAppearance.bottomGlassAlpha,
-                protectionOverlayOpacity: adaptiveGlassAppearance.bottomProtectionOverlayOpacity,
-                protectionOverlayColor: adaptiveGlassAppearance.bottomTextTone.contrastSurfaceColor
-            )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: Color.black.opacity(0.18), radius: 4, x: 0, y: 2)
-        .environment(\.colorScheme, .dark)
-    }
-
-    private var catalogButton: some View {
-        Button {
-            viewModel.openCatalog()
-        } label: {
-            Text("Wallpaper Catalog")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canClearWallpaper)
-    }
-
-    private var downloadedWallpapersButton: some View {
-        Button {
-            viewModel.openDownloadedWallpapers()
-        } label: {
-            Text("Downloaded Wallpapers")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canClearWallpaper)
-    }
-
-    private var changeWallpaperButton: some View {
-        Button {
-            viewModel.chooseVideo()
-        } label: {
-            Text("Change Wallpaper…")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canClearWallpaper)
-    }
-
-    private var settingsButton: some View {
-        Button {
-            viewModel.openSettings()
-        } label: {
-            Label("Settings", systemImage: "slider.horizontal.3.circle.fill")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(viewModel.isBusy)
-    }
-
-    private var monitoringButton: some View {
-        Button {
-            viewModel.openMonitoring()
-        } label: {
-            Label("Monitoring", systemImage: "gauge.with.dots.needle.67percent")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canOpenMonitoring)
-    }
-
-    private func scaledWidth(_ base: CGFloat, min minWidth: CGFloat) -> CGFloat {
-        max(minWidth, base * widthScale)
-    }
-
-    private var videoInfo: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Video")
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-            Text(viewModel.selectedVideoName)
-                .font(.caption)
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .layoutPriority(0)
     }
 }
 
@@ -761,7 +696,7 @@ struct SettingsPopupOverlay: View {
                         viewModel.closeSettings()
                     }
 
-                SettingsPopupCard(viewModel: viewModel)
+                SettingsPopupCard(viewModel: viewModel, maximumHeight: popupHeight)
                     .frame(
                         maxWidth: min(620, max(proxy.size.width - 48, 1)),
                         maxHeight: popupHeight
@@ -779,13 +714,23 @@ struct SettingsPopupOverlay: View {
 
 struct SettingsPopupCard: View {
     @ObservedObject var viewModel: AppViewModel
+    var maximumHeight: CGFloat = 520
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+    @State private var contentHeight: CGFloat = 0
+
     var body: some View {
         ScrollView(.vertical) {
             settingsContents
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(GeometryReader { proxy in
+                    Color.clear.preference(key: SettingsPopupContentHeightKey.self, value: proxy.size.height)
+                })
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(height: min(max(maximumHeight, 1), contentHeight > 0 ? contentHeight : maximumHeight))
+        .frame(maxWidth: .infinity, alignment: .top)
+        .onPreferenceChange(SettingsPopupContentHeightKey.self) { height in
+            if abs(contentHeight - height) > 0.5 { contentHeight = height }
+        }
         .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
         .background(
             AuraGlassRoundedSurface(
@@ -802,7 +747,7 @@ struct SettingsPopupCard: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, adaptiveGlassAppearance.centerTextTone.glassColorScheme)
     }
 
     private var settingsContents: some View {
@@ -821,6 +766,16 @@ struct SettingsPopupCard: View {
             }
 
             Divider()
+
+            Toggle(isOn: Binding(
+                get: { viewModel.settingsAutostartEnabled },
+                set: { viewModel.toggleAutostart($0) }
+            )) {
+                Label("Launch AuraFlow at login", systemImage: "power")
+            }
+            .toggleStyle(.switch)
+            .disabled(!viewModel.canToggleAutostart)
+            .help("Automatically starts the configured wallpaper when you sign in to your Mac.")
 
             Toggle(isOn: Binding(
                 get: { viewModel.pauseOnFullscreenEnabled },
@@ -843,13 +798,6 @@ struct SettingsPopupCard: View {
             .toggleStyle(.switch)
             .disabled(!viewModel.canToggleShowOnLockScreen)
 
-            Button {
-                viewModel.openScreenSaverSettings()
-            } label: {
-                Label("Screen Saver Settings", systemImage: "gear")
-            }
-            .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-
             Toggle(isOn: Binding(
                 get: { viewModel.blendInterpolationEnabled },
                 set: { newValue in viewModel.toggleBlendInterpolation(newValue) }
@@ -858,11 +806,20 @@ struct SettingsPopupCard: View {
             }
             .toggleStyle(.switch)
             .disabled(!viewModel.canToggleBlendInterpolation)
+            .help(viewModel.blendInterpolationHelp)
+
+            if viewModel.isPreparingBlendInterpolation {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Preparing blended video frames…").font(.caption)
+                    Button("Cancel") { viewModel.cancelBlendInterpolation() }
+                }
+            }
 
             HStack(spacing: 8) {
                 Text("Scale Algorithm")
 
-                ScaleAlgorithmSegmentedControl(selection: viewModel.scaleMode) { mode in
+                ScaleAlgorithmSegmentedControl(selection: viewModel.settingsScaleMode) { mode in
                     viewModel.setScaleMode(mode)
                 }
                 .disabled(!viewModel.canToggleScaleMode)
@@ -873,6 +830,10 @@ struct SettingsPopupCard: View {
 
             Text("Video Optimization")
                 .font(.subheadline.weight(.semibold))
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+
+            Text("Applies to newly imported local videos. Does not change terminal wallpapers or re-encode the currently installed wallpaper.")
+                .font(.caption)
                 .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
 
             Toggle(isOn: Binding(
@@ -950,7 +911,7 @@ struct SettingsPopupCard: View {
             Button {
                 viewModel.clearCache()
             } label: {
-                Label("Clear Cache", systemImage: "trash")
+                Label("Clear Cache & Downloads", systemImage: "trash")
             }
             .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
             .disabled(!viewModel.canClearCache)
@@ -970,6 +931,13 @@ struct SettingsPopupCard: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
+    }
+}
+
+struct SettingsPopupContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
@@ -1144,7 +1112,8 @@ struct MonitoringPopupCard: View {
 
             Divider()
 
-            if let metrics = viewModel.monitoringSnapshot {
+            if let snapshot = viewModel.monitoringSnapshot {
+                let metrics = snapshot.metrics
                 let cpu = metrics.cpu_percent.map { String(format: "%.1f%%", $0) } ?? "n/a"
                 let memory = metrics.memory_mb.map { String(format: "%.1f MB", $0) } ?? "n/a"
                 let virtualMemory = metrics.virtual_memory_mb.map { String(format: "%.1f MB", $0) } ?? "n/a"
@@ -1154,22 +1123,23 @@ struct MonitoringPopupCard: View {
                 let windows = metrics.health?.windows.map(String.init) ?? "n/a"
                 let rate = metrics.health?.player_rate.map { String(format: "%.2fx", $0) } ?? "n/a"
 
-                MonitoringRow(label: "Daemon PID", value: metrics.pid.map(String.init) ?? "n/a")
-                MonitoringRow(label: "Daemon Processes", value: "\(processCount)")
+                if let program = snapshot.terminalProgram {
+                    MonitoringRow(label: "Wallpaper", value: "Terminal · \(program)")
+                }
+                MonitoringRow(label: snapshot.isTerminal ? "Agent PID" : "Daemon PID", value: metrics.pid.map(String.init) ?? "n/a")
+                MonitoringRow(label: snapshot.isTerminal ? "Wallpaper Processes" : "Daemon Processes", value: "\(processCount)")
                 MonitoringRow(label: "Running", value: metrics.running ? "Yes" : "No")
                 MonitoringRow(label: "CPU", value: cpu)
                 MonitoringRow(label: "Memory", value: memory)
                 MonitoringRow(label: "Virtual Memory", value: virtualMemory)
                 MonitoringRow(label: "Threads", value: threads)
                 MonitoringRow(label: "Screens/Windows", value: "\(screens)/\(windows)")
-                MonitoringRow(label: "Player Rate", value: rate)
-
-                if let pids = metrics.daemon_pids, !pids.isEmpty {
-                    let rendered = pids.prefix(4).map(String.init).joined(separator: ", ")
-                    let suffix = pids.count > 4 ? ", ..." : ""
-                    Text("PIDs: \(rendered)\(suffix)")
-                        .font(.caption2)
-                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                if snapshot.isTerminal {
+                    if let health = snapshot.terminalHealth {
+                        MonitoringRow(label: "Terminal Grid", value: "\(health.columns.map(String.init) ?? "n/a") × \(health.rows.map(String.init) ?? "n/a")")
+                    }
+                } else {
+                    MonitoringRow(label: "Player Rate", value: rate)
                 }
 
                 if let reason = metrics.health?.reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1179,7 +1149,7 @@ struct MonitoringPopupCard: View {
                         .padding(.top, 4)
                 }
             } else {
-                Text("Collecting daemon metrics...")
+                Text("Collecting wallpaper metrics...")
                     .font(.caption)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             }
@@ -1223,7 +1193,7 @@ struct MonitoringPopupCard: View {
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, adaptiveGlassAppearance.centerTextTone.glassColorScheme)
     }
 }
 
@@ -1279,11 +1249,12 @@ struct DownloadedWallpapersCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            WallpaperEngineLibrarySwitch(model: viewModel.wallpaperEngine)
             HStack {
                 Label("Downloaded Wallpapers", systemImage: "arrow.down.circle.fill")
                     .font(.headline.weight(.semibold))
                 Spacer()
-                Text("\(viewModel.downloadedCatalogWallpapers.count)")
+                Text("\(viewModel.wallpaperEngine.libraryIsSelected ? viewModel.wallpaperEngine.libraryCount : viewModel.downloadedCatalogWallpapers.count)")
                     .font(.caption)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 Button {
@@ -1297,7 +1268,9 @@ struct DownloadedWallpapersCard: View {
 
             Divider()
 
-            if viewModel.downloadedCatalogWallpapers.isEmpty {
+            if viewModel.wallpaperEngine.libraryIsSelected {
+                WallpaperEngineLibraryRows(model: viewModel.wallpaperEngine)
+            } else if viewModel.downloadedCatalogWallpapers.isEmpty {
                 Text(UserFacingMessageFormatter.format(
                     "No downloaded wallpapers yet. Use Download to Preview in the catalog."
                 ))
@@ -1374,90 +1347,7 @@ struct DownloadedWallpapersCard: View {
                 .stroke(Color.white.opacity(0.14), lineWidth: 1.0)
         )
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
-        .environment(\.colorScheme, .dark)
-    }
-}
-
-struct ControlButtons: View {
-    @ObservedObject var viewModel: AppViewModel
-    let spacing: CGFloat
-    let primaryButtonWidth: CGFloat
-    let removeButtonWidth: CGFloat
-
-    var body: some View {
-        HStack(spacing: spacing) {
-            startButton
-                .frame(width: primaryButtonWidth)
-            lockScreenOnlyButton
-                .frame(width: primaryButtonWidth)
-            stopButton
-                .frame(width: primaryButtonWidth)
-            clearButton
-                .frame(width: removeButtonWidth)
-        }
-    }
-
-    private var startButton: some View {
-        Button {
-            viewModel.start()
-        } label: {
-            Label("Start", systemImage: "desktopcomputer")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canStart)
-    }
-
-    private var lockScreenOnlyButton: some View {
-        Button {
-            viewModel.applyLockScreenOnly()
-        } label: {
-            Label("Lock", systemImage: "lock.display")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .accessibilityLabel("Apply wallpaper to Lock Screen only")
-        .help("Apply wallpaper to Lock Screen only")
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canApplyLockScreenOnly)
-    }
-
-    private var stopButton: some View {
-        Button(role: viewModel.isPlaybackPaused ? nil : .destructive) {
-            viewModel.togglePlayback()
-        } label: {
-            Label(
-                viewModel.playbackButtonTitle,
-                systemImage: viewModel.playbackButtonSystemImage
-            )
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .accessibilityLabel(viewModel.playbackButtonTitle)
-        .help(viewModel.isPlaybackPaused ? "Resume wallpaper" : "Stop wallpaper")
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canTogglePlayback)
-    }
-
-    private var clearButton: some View {
-        Button(role: .destructive) {
-            viewModel.clearWallpaper()
-        } label: {
-            Text("Remove")
-                .lineLimit(1)
-                .minimumScaleFactor(0.95)
-                .allowsTightening(true)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(AuraPanelButtonStyle())
-        .disabled(!viewModel.canClearWallpaper)
+        .environment(\.colorScheme, adaptiveGlassAppearance.centerTextTone.glassColorScheme)
     }
 }
 
@@ -1546,7 +1436,7 @@ struct WallpaperCatalogView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: Color.black.opacity(0.26), radius: 12, x: 0, y: 7)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, adaptiveGlassAppearance.bottomTextTone.glassColorScheme)
     }
 
     private var catalogBrowser: some View {
@@ -1576,6 +1466,10 @@ struct WallpaperCatalogView: View {
             }
             .zIndex(10)
 
+            if catalogViewModel.downloadID != nil {
+                CatalogDownloadProgressView(viewModel: viewModel)
+            }
+
             HStack(spacing: 10) {
                 catalogGroupFilterButtons
 
@@ -1594,44 +1488,14 @@ struct WallpaperCatalogView: View {
     }
 
     private var catalogSearchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-
-            ZStack(alignment: .leading) {
-                TextField(
-                    "",
-                    text: Binding(
-                        get: { catalogViewModel.searchText },
-                        set: { viewModel.catalogSearchText = $0 }
-                    )
-                )
-                    .textFieldStyle(.plain)
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.primaryTextColor)
-
-                if catalogViewModel.searchText.isEmpty {
-                    Text("Search catalog")
-                        .font(.body.weight(.medium))
-                        .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
-                        .allowsHitTesting(false)
-                }
-            }
-        }
-        .padding(.vertical, 9)
-        .padding(.horizontal, 12)
-        .background(AuraGlassInsetCard(emphasized: true))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(
-                    adaptiveGlassAppearance.bottomTextTone.primaryTextColor.opacity(0.12),
-                    lineWidth: 0.9
-                )
+        AuraCatalogSearchField(
+            text: Binding(
+                get: { catalogViewModel.searchText },
+                set: { viewModel.catalogSearchText = $0 }
+            ),
+            placeholder: "Search catalog",
+            accessibilityLabel: "Search catalog"
         )
-        .frame(maxWidth: 260)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Search catalog")
     }
 
     @ViewBuilder
@@ -1652,7 +1516,7 @@ struct WallpaperCatalogView: View {
             Image(systemName: "arrow.counterclockwise")
                 .font(.caption2.weight(.semibold))
         }
-        .buttonStyle(AuraPanelButtonStyle(fillWidth: false))
+        .buttonStyle(AuraPanelButtonStyle(fillWidth: false, region: .center))
         .help("Reset search and category, then scroll to top")
         .accessibilityLabel("Reset catalog and scroll to top")
     }
@@ -1678,7 +1542,8 @@ struct CatalogGroupFilterButton: View {
             AuraPanelButtonStyle(
                 fillWidth: false,
                 emphasized: isSelected,
-                selected: isSelected
+                selected: isSelected,
+                region: .center
             )
         )
         .accessibilityLabel("\(group.title) wallpapers")
@@ -1695,22 +1560,8 @@ struct WallpaperCatalogGridView: View {
     var body: some View {
         ScrollViewReader { scrollViewProxy in
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(catalogViewModel.filteredWallpapers) { wallpaper in
-                        CatalogWallpaperCard(wallpaper: wallpaper) {
-                            viewModel.openCatalogWallpaper(wallpaper)
-                        }
-                        .id(wallpaper.id)
-                        .onAppear {
-                            viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: true)
-                            viewModel.catalogTrailingWallpaperBecameVisible(wallpaper.id)
-                        }
-                        .onDisappear {
-                            viewModel.catalogPreviewVisibilityChanged(wallpaper, isVisible: false)
-                        }
-                    }
-                }
-                .padding(.vertical, 2)
+                groupedWallpaperCards
+                    .padding(.vertical, 2)
 
                 if catalogViewModel.isLoadingMore {
                     ProgressView()
@@ -1722,6 +1573,35 @@ struct WallpaperCatalogGridView: View {
                 guard let targetID = catalogViewModel.scrollTargetID else { return }
                 withAnimation(.easeOut(duration: 0.2)) {
                     scrollViewProxy.scrollTo(targetID, anchor: .top)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var groupedWallpaperCards: some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: 12) {
+                wallpaperCards
+            }
+        } else {
+            wallpaperCards
+        }
+        #else
+        wallpaperCards
+        #endif
+    }
+
+    private var wallpaperCards: some View {
+        LazyVGrid(columns: columns, spacing: 12) {
+            ForEach(catalogViewModel.filteredWallpapers) { wallpaper in
+                CatalogWallpaperCard(wallpaper: wallpaper) {
+                    viewModel.openCatalogWallpaper(wallpaper)
+                }
+                .id(wallpaper.id)
+                .onAppear {
+                    viewModel.catalogTrailingWallpaperBecameVisible(wallpaper.id)
                 }
             }
         }
@@ -1754,11 +1634,46 @@ struct CatalogWallpaperCard: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(10)
-            .background(AuraGlassInsetCard())
+            .modifier(CatalogWallpaperCardGlass())
             .contentShape(Rectangle())
         }
         .buttonStyle(AuraPlainPressButtonStyle())
         .accessibilityIdentifier("catalog-card-\(wallpaper.id)")
+    }
+}
+
+private struct CatalogWallpaperCardGlass: ViewModifier {
+    @Environment(\.adaptiveGlassAppearance) private var appearance
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        Group {
+            #if compiler(>=6.2)
+            if #available(macOS 26.0, *) {
+                // Apply glass to the whole label so its image and text remain
+                // foreground content rather than entering the backdrop sample.
+                content.glassEffect(.clear.interactive(), in: shape)
+            } else {
+                content.background(AuraGlassRoundedSurface(
+                    cornerRadius: 10,
+                    alphaMultiplier: appearance.bottomGlassAlpha,
+                    protectionOverlayOpacity: appearance.bottomProtectionOverlayOpacity * 0.35,
+                    protectionOverlayColor: appearance.bottomTextTone.contrastSurfaceColor
+                ))
+            }
+            #else
+            content.background(AuraGlassRoundedSurface(
+                cornerRadius: 10,
+                alphaMultiplier: appearance.bottomGlassAlpha,
+                protectionOverlayOpacity: appearance.bottomProtectionOverlayOpacity * 0.35,
+                protectionOverlayColor: appearance.bottomTextTone.contrastSurfaceColor
+            ))
+            #endif
+        }
+        .overlay {
+            shape.stroke(appearance.bottomTextTone.primaryTextColor.opacity(0.14), lineWidth: 0.8)
+        }
+        .environment(\.colorScheme, appearance.bottomTextTone.glassColorScheme)
     }
 }
 
@@ -1851,32 +1766,36 @@ struct WallpaperCatalogDetailView: View {
 
                     Spacer(minLength: isCompactLayout ? 8 : 10)
 
-                    HStack(spacing: 8) {
-                        Button {
-                            mediaPreviewModel.suspendForForegroundDownload(
-                                wallpaper: wallpaper
-                            )
-                            viewModel.applyCatalogWallpaper(wallpaper)
-                        } label: {
-                            Text("Download")
-                        }
-                        .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
-                        .frame(maxWidth: .infinity)
-                        .disabled(!viewModel.canDownloadCatalogWallpaper)
-
-                        if let sourceURL = wallpaper.sourcePageURL {
+                    if viewModel.catalogDownloadID != nil {
+                        CatalogDownloadProgressView(viewModel: viewModel)
+                    } else {
+                        HStack(spacing: 8) {
                             Button {
-                                NSWorkspace.shared.open(sourceURL)
+                                mediaPreviewModel.suspendForForegroundDownload(
+                                    wallpaper: wallpaper
+                                )
+                                viewModel.applyCatalogWallpaper(wallpaper)
                             } label: {
-                                Image(systemName: "link")
+                                Text("Download")
                             }
-                            .accessibilityLabel("Open Source")
-                            .help("Open Source")
-                            .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
-                            .fixedSize(horizontal: true, vertical: false)
+                            .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
+                            .frame(maxWidth: .infinity)
+                            .disabled(!viewModel.canDownloadCatalogWallpaper)
+
+                            if let sourceURL = wallpaper.sourcePageURL {
+                                Button {
+                                    NSWorkspace.shared.open(sourceURL)
+                                } label: {
+                                    Image(systemName: "link")
+                                }
+                                .accessibilityLabel("Open Source")
+                                .help("Open Source")
+                                .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
+                                .fixedSize(horizontal: true, vertical: false)
+                            }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.top, isCompactLayout ? 2 : 4)
                 .padding(.bottom, previewVerticalInset)
@@ -1960,6 +1879,43 @@ struct WallpaperCatalogDetailView: View {
         value.rounded() == value
             ? String(Int(value))
             : String(format: "%.1f", value)
+    }
+}
+
+private struct CatalogDownloadProgressView: View {
+    let viewModel: AppViewModel
+    @ObservedObject private var catalog: CatalogViewModel
+    @Environment(\.adaptiveGlassAppearance) private var appearance
+
+    init(viewModel: AppViewModel) {
+        self.viewModel = viewModel
+        _catalog = ObservedObject(wrappedValue: viewModel.catalogViewModel)
+    }
+
+    var body: some View {
+        let progress = catalog.downloadProgress ?? .init()
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(progress.label)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(appearance.bottomTextTone.primaryTextColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .accessibilityIdentifier("catalog.downloadProgress")
+                Spacer(minLength: 0)
+                Button("Cancel") { viewModel.cancelCatalogDownload() }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+                    .disabled(catalog.isDownloadCancelling)
+                    .accessibilityIdentifier("catalog.cancelDownload")
+            }
+            if let fraction = progress.fraction {
+                ProgressView(value: fraction)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -2132,43 +2088,35 @@ final class CatalogPreviewImageLoader: ObservableObject {
         task = Task { [weak self] in
             guard let self else { return }
 
-            if url.isFileURL {
-                let decoded: DecodedPreview? = await Task.detached(priority: .utility) {
+            let decoded: DecodedPreview? = await Task.detached(priority: .utility) {
+                acquireCatalogPreviewImagePermit()
+                defer { catalogPreviewImageLoadLimiter.signal() }
+
+                if url.isFileURL {
                     guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else {
                         return nil
                     }
                     return Self.decodePreviewImage(data: data)
-                }.value
-                guard !Task.isCancelled, let decoded else { return }
-                Self.cache.setObject(decoded.image, forKey: url as NSURL, cost: decoded.cost)
-                self.image = decoded.image
-                return
-            }
-
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 20
-            request.setValue("AuraFlow/1.1", forHTTPHeaderField: "User-Agent")
-            request.setValue("image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
-            if let referer {
-                request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
-            }
-
-            do {
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard !Task.isCancelled else { return }
-                if let httpResponse = response as? HTTPURLResponse,
-                   !(200...299).contains(httpResponse.statusCode) {
-                    return
                 }
-                let decoded = await Task.detached(priority: .utility) {
-                    Self.decodePreviewImage(data: data)
-                }.value
-                guard !Task.isCancelled, let decoded else { return }
-                Self.cache.setObject(decoded.image, forKey: url as NSURL, cost: decoded.cost)
-                self.image = decoded.image
-            } catch {
-                // Keep fallback preview on failures.
-            }
+
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 20
+                request.setValue("AuraFlow/1.1", forHTTPHeaderField: "User-Agent")
+                request.setValue("image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+                if let referer {
+                    request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+                }
+
+                guard let (data, response) = try? await URLSession.shared.data(for: request),
+                      let httpResponse = response as? HTTPURLResponse,
+                      (200...299).contains(httpResponse.statusCode) else {
+                    return nil
+                }
+                return Self.decodePreviewImage(data: data)
+            }.value
+            guard !Task.isCancelled, let decoded else { return }
+            Self.cache.setObject(decoded.image, forKey: url as NSURL, cost: decoded.cost)
+            self.image = decoded.image
         }
     }
 
@@ -2182,7 +2130,10 @@ final class CatalogPreviewImageLoader: ObservableObject {
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceShouldCacheImmediately: true,
-                kCGImageSourceThumbnailMaxPixelSize: 960,
+                // Catalog cards are rendered at roughly 220×96 points. Keeping
+                // the decoded bitmap close to the display size prevents a dozen
+                // oversized 1080p thumbnails from competing with scrolling.
+                kCGImageSourceThumbnailMaxPixelSize: 512,
             ] as CFDictionary
 
             if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) {
@@ -2228,22 +2179,23 @@ struct SpeedOverlay: View {
                 .fixedSize(horizontal: true, vertical: false)
 
             AuraLegacySpeedSlider(
-                value: viewModel.playbackSpeed,
-                range: 0.25...2.0,
-                step: 0.05,
+                value: viewModel.previewSpeedControlValue,
+                range: viewModel.previewSpeedRange,
+                step: viewModel.previewSpeedStep,
                 onValueChanged: { newValue in
                     viewModel.setPreviewPlaybackSpeed(newValue)
                 },
                 onEditingChanged: { editing in
                     isAdjustingSpeed = editing
+                    viewModel.setSpeedEditing(editing)
                     if !editing {
-                        viewModel.updateSpeed(viewModel.playbackSpeed)
+                        viewModel.updateSpeed(viewModel.previewSpeedControlValue)
                     }
                 }
             )
             .frame(maxWidth: .infinity)
 
-            Text(String(format: "%.2fx", viewModel.playbackSpeed))
+            Text(viewModel.previewSpeedLabel)
                 .font(.body.weight(.semibold))
                 .monospacedDigit()
                 .foregroundStyle(adaptiveGlassAppearance.topTextTone.secondaryTextColor)
@@ -2271,142 +2223,37 @@ struct SpeedOverlay: View {
 
 }
 
-private struct AuraLegacySpeedSlider: View {
-    let value: Double
-    let range: ClosedRange<Double>
-    let step: Double
-    let onValueChanged: (Double) -> Void
-    let onEditingChanged: (Bool) -> Void
-
-    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
-    @State private var isDragging = false
-
-    private var normalizedValue: CGFloat {
-        guard range.upperBound > range.lowerBound else { return 0 }
-        let fraction = (value - range.lowerBound) / (range.upperBound - range.lowerBound)
-        return min(max(CGFloat(fraction), 0), 1)
-    }
-
-    var body: some View {
-        GeometryReader { proxy in
-            let trackHeight: CGFloat = 4
-            let knobSize = CGSize(width: 10, height: 24)
-            let knobShape = RoundedRectangle(cornerRadius: knobSize.width * 0.5, style: .continuous)
-            let usableWidth = max(proxy.size.width - knobSize.width, 1)
-            let knobX = normalizedValue * usableWidth
-
-            ZStack(alignment: .leading) {
-                AuraLegacySliderDashes()
-                    .mask(
-                        Capsule()
-                            .frame(height: trackHeight)
-                    )
-                    .frame(height: trackHeight)
-
-                Group {
-                    #if compiler(>=6.2)
-                    if #available(macOS 26.0, *) {
-                        knobShape
-                            .fill(Color.clear)
-                            .glassEffect(.clear.interactive(), in: knobShape)
-                    } else {
-                        knobShape
-                            .fill(Color.white.opacity(0.78))
-                    }
-                    #else
-                    knobShape
-                        .fill(Color.white.opacity(0.78))
-                    #endif
-                }
-                    .frame(width: knobSize.width, height: knobSize.height)
-                    .shadow(color: Color.black.opacity(0.20), radius: 2, x: 0, y: 1)
-                    .overlay(
-                        knobShape
-                            .stroke(
-                                adaptiveGlassAppearance.topTextTone.primaryTextColor.opacity(
-                                    isDragging ? 0.34 : 0.24
-                                ),
-                                lineWidth: 0.8
-                            )
-                    )
-                    .offset(x: knobX, y: 0)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { gesture in
-                        if !isDragging {
-                            isDragging = true
-                            onEditingChanged(true)
-                        }
-                        let position = min(max(gesture.location.x - (knobSize.width * 0.5), 0), usableWidth)
-                        let fraction = position / usableWidth
-                        let rawValue = range.lowerBound + Double(fraction) * (range.upperBound - range.lowerBound)
-                        onValueChanged(snapped(rawValue))
-                    }
-                    .onEnded { gesture in
-                        let position = min(max(gesture.location.x - (knobSize.width * 0.5), 0), usableWidth)
-                        let fraction = position / usableWidth
-                        let rawValue = range.lowerBound + Double(fraction) * (range.upperBound - range.lowerBound)
-                        onValueChanged(snapped(rawValue))
-                        isDragging = false
-                        onEditingChanged(false)
-                    }
-            )
-        }
-        .frame(height: 24)
-    }
-
-    private func snapped(_ value: Double) -> Double {
-        guard step > 0 else { return value }
-        let snappedValue = (value / step).rounded() * step
-        return min(max(snappedValue, range.lowerBound), range.upperBound)
-    }
-}
-
-private struct AuraLegacySliderDashes: View {
-    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
-
-    var body: some View {
-        GeometryReader { proxy in
-            let dashWidth: CGFloat = 1
-            let dashCount = max(38, Int(proxy.size.width / 4.2))
-            let dashHeight = max(proxy.size.height + 4, 8)
-            let spacing = max((proxy.size.width - (CGFloat(dashCount) * dashWidth)) / CGFloat(max(dashCount - 1, 1)), 1)
-
-            HStack(spacing: spacing) {
-                ForEach(0..<dashCount, id: \.self) { _ in
-                    Capsule()
-                        .fill(adaptiveGlassAppearance.topTextTone.primaryTextColor.opacity(0.28))
-                        .frame(width: dashWidth, height: dashHeight)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        }
-        .allowsHitTesting(false)
-    }
-}
-
 struct VideoPreview: NSViewRepresentable {
     let player: AVPlayer?
     let videoGravity: AVLayerVideoGravity
+    var onReadyForDisplayChange: ((Bool) -> Void)? = nil
 
     func makeNSView(context: Context) -> AuraPreviewPlayerView {
         let view = AuraPreviewPlayerView()
-        view.update(player: player, videoGravity: videoGravity)
+        view.update(
+            player: player,
+            videoGravity: videoGravity,
+            onReadyForDisplayChange: onReadyForDisplayChange
+        )
         return view
     }
 
     func updateNSView(_ nsView: AuraPreviewPlayerView, context: Context) {
-        nsView.update(player: player, videoGravity: videoGravity)
+        nsView.update(
+            player: player,
+            videoGravity: videoGravity,
+            onReadyForDisplayChange: onReadyForDisplayChange
+        )
     }
 }
 
 final class AuraPreviewPlayerView: NSView {
     override var isOpaque: Bool {
-        true
+        false
     }
+
+    private var readyForDisplayObservation: NSKeyValueObservation?
+    private var readyForDisplayHandler: ((Bool) -> Void)?
 
     private var playerLayer: AVPlayerLayer {
         guard let layer = self.layer as? AVPlayerLayer else {
@@ -2434,17 +2281,40 @@ final class AuraPreviewPlayerView: NSView {
     private func commonInit() {
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
-        playerLayer.backgroundColor = NSColor.black.cgColor
+        playerLayer.backgroundColor = NSColor.clear.cgColor
         playerLayer.needsDisplayOnBoundsChange = false
     }
 
-    func update(player: AVPlayer?, videoGravity: AVLayerVideoGravity) {
+    func update(
+        player: AVPlayer?,
+        videoGravity: AVLayerVideoGravity,
+        onReadyForDisplayChange: ((Bool) -> Void)? = nil
+    ) {
+        readyForDisplayHandler = onReadyForDisplayChange
         if playerLayer.player !== player {
+            readyForDisplayObservation?.invalidate()
+            readyForDisplayObservation = nil
+            onReadyForDisplayChange?(false)
             playerLayer.player = player
+            if player != nil {
+                readyForDisplayObservation = playerLayer.observe(
+                    \.isReadyForDisplay,
+                    options: [.initial, .new]
+                ) { [weak self] layer, _ in
+                    let ready = layer.isReadyForDisplay
+                    DispatchQueue.main.async { [weak self] in
+                        self?.readyForDisplayHandler?(ready)
+                    }
+                }
+            }
         }
         if playerLayer.videoGravity != videoGravity {
             playerLayer.videoGravity = videoGravity
         }
+    }
+
+    deinit {
+        readyForDisplayObservation?.invalidate()
     }
 }
 
@@ -2489,16 +2359,29 @@ struct DisabledOverlay: View {
 }
 
 struct AuraPanelButtonStyle: ButtonStyle {
+    enum Region {
+        case bottom
+        case center
+    }
+
     var fillWidth = true
     var emphasized = false
     var selected = false
+    var region: Region = .bottom
+    var height: CGFloat? = nil
+    var horizontalPadding: CGFloat? = nil
+    var cornerRadius: CGFloat = 10
 
     func makeBody(configuration: Configuration) -> some View {
         AuraPanelButton(
             configuration: configuration,
             fillWidth: fillWidth,
             emphasized: emphasized,
-            selected: selected
+            selected: selected,
+            region: region,
+            height: height,
+            horizontalPadding: horizontalPadding,
+            cornerRadius: cornerRadius
         )
     }
 }
@@ -2508,13 +2391,17 @@ private struct AuraPanelButton: View {
     let fillWidth: Bool
     let emphasized: Bool
     let selected: Bool
+    let region: AuraPanelButtonStyle.Region
+    let height: CGFloat?
+    let horizontalPadding: CGFloat?
+    let cornerRadius: CGFloat
 
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     private var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
     private var usesNativeLiquidGlass: Bool {
@@ -2537,15 +2424,26 @@ private struct AuraPanelButton: View {
 
     private var protectionOpacity: CGFloat {
         let adaptive = boundedAdaptiveSurfaceProtectionOpacity(
-            adaptiveGlassAppearance.bottomButtonProtectionOpacity
+            adaptiveProtectionOpacity
         )
         return (usesNativeLiquidGlass ? 0.035 : 0.10) + adaptive
     }
 
     private var topHighlightOpacity: CGFloat {
         guard isEnabled else { return 0.035 }
-        let adaptive = adaptiveGlassAppearance.bottomButtonHighlightOpacity
+        let adaptive = region == .bottom
+            ? adaptiveGlassAppearance.bottomButtonHighlightOpacity
+            : max(0.012, 0.055 - (0.050 * adaptiveGlassAppearance.centerProtectionOverlayOpacity))
         return min(0.22, (usesNativeLiquidGlass ? 0.105 : 0.075) + adaptive)
+    }
+
+    private var adaptiveProtectionOpacity: CGFloat {
+        switch region {
+        case .bottom:
+            return adaptiveGlassAppearance.bottomButtonProtectionOpacity
+        case .center:
+            return adaptiveGlassAppearance.centerProtectionOverlayOpacity
+        }
     }
 
     private var labelColor: Color {
@@ -2586,7 +2484,8 @@ private struct AuraPanelButton: View {
                 y: 1
             )
             .padding(.vertical, fillWidth ? 3 : 6)
-            .padding(.horizontal, fillWidth ? 12 : 9)
+            .padding(.horizontal, horizontalPadding ?? (fillWidth ? 12 : 9))
+            .frame(height: height)
             .background {
                 ZStack {
                     #if compiler(>=6.2)
@@ -2598,15 +2497,13 @@ private struct AuraPanelButton: View {
                             .glassEffect(.clear.interactive(), in: shape)
                         shape.fill(
                             textTone.contrastSurfaceColor.opacity(
-                                min(
-                                    0.34,
-                                    0.035
-                                        + boundedAdaptiveSurfaceProtectionOpacity(
-                                            adaptiveGlassAppearance.bottomButtonProtectionOpacity
-                                        )
-                                        + (configuration.isPressed ? 0.025 : 0.0)
-                                        + (selected ? 0.018 : (emphasized ? 0.010 : 0.0))
-                                    )
+                                AuraControlSurfaceMetrics.nativeProtectionOpacity(
+                                    tone: textTone,
+                                    adaptiveProtection: adaptiveProtectionOpacity,
+                                    isPressed: configuration.isPressed,
+                                    isSelected: selected,
+                                    isEmphasized: emphasized
+                                )
                             )
                         )
                     } else {
@@ -2912,12 +2809,20 @@ private struct AuraPlainPressButton: View {
     }
 }
 
-private enum AuraSurfaceMaterial: Equatable {
+enum AuraSurfaceMaterial: Equatable {
     case regular
     case clear
+
+    func forPreviewKind(_ kind: WallpaperPreviewKind) -> Self {
+        // Video and terminal share the existing Liquid Glass material. Keep
+        // the web preview's established regular backing independently.
+        kind == .web ? .regular : self
+    }
 }
 
-private struct AuraGlassRoundedSurface: View {
+struct AuraGlassRoundedSurface: View {
+    @Environment(\.wallpaperPreviewGlassKind) private var previewGlassKind
+    @Environment(\.adaptiveGlassAppearance) private var terminalAppearance
     let cornerRadius: CGFloat
     var material: AuraSurfaceMaterial = .clear
     var washColor: Color = .clear
@@ -2940,17 +2845,17 @@ private struct AuraGlassRoundedSurface: View {
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
-                    .glassEffect(material.systemGlass, in: shape)
+                    .glassEffect(material.forPreviewKind(previewGlassKind).systemGlass, in: shape)
             } else {
                 // SwiftUI Material maps to the efficient system visual-effect blur
                 // used by macOS 13–15; no custom Core Image filters are involved.
                 shape
-                    .fill(material.legacyMaterial)
+                    .fill(material.forPreviewKind(previewGlassKind).legacyMaterial)
                     .opacity(strength)
             }
             #else
             shape
-                .fill(material.legacyMaterial)
+                .fill(material.forPreviewKind(previewGlassKind).legacyMaterial)
                 .opacity(strength)
             #endif
         }
@@ -2965,10 +2870,17 @@ private struct AuraGlassRoundedSurface: View {
             }
         }
         .clipShape(shape)
+        .transformEnvironment(\.colorScheme) { scheme in
+            if previewGlassKind != .video {
+                scheme = terminalAppearance.textTone == .dark ? .light : .dark
+            }
+        }
     }
 }
 
 private struct AuraGlassCapsuleSurface: View {
+    @Environment(\.wallpaperPreviewGlassKind) private var previewGlassKind
+    @Environment(\.adaptiveGlassAppearance) private var terminalAppearance
     var material: AuraSurfaceMaterial = .clear
     var washColor: Color = .clear
     var alphaMultiplier: CGFloat = 1.0
@@ -2987,15 +2899,15 @@ private struct AuraGlassCapsuleSurface: View {
             if #available(macOS 26.0, *) {
                 shape
                     .fill(Color.clear)
-                    .glassEffect(material.systemGlass, in: shape)
+                    .glassEffect(material.forPreviewKind(previewGlassKind).systemGlass, in: shape)
             } else {
                 shape
-                    .fill(material.legacyMaterial)
+                    .fill(material.forPreviewKind(previewGlassKind).legacyMaterial)
                     .opacity(strength)
             }
             #else
             shape
-                .fill(material.legacyMaterial)
+                .fill(material.forPreviewKind(previewGlassKind).legacyMaterial)
                 .opacity(strength)
             #endif
         }
@@ -3010,6 +2922,11 @@ private struct AuraGlassCapsuleSurface: View {
             }
         }
         .clipShape(shape)
+        .transformEnvironment(\.colorScheme) { scheme in
+            if previewGlassKind != .video {
+                scheme = terminalAppearance.textTone == .dark ? .light : .dark
+            }
+        }
     }
 }
 
@@ -3163,7 +3080,7 @@ private struct AuraNotificationBanner: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: Color.black.opacity(0.18), radius: 4, x: 0, y: 2)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, adaptiveGlassAppearance.bottomTextTone.glassColorScheme)
     }
 }
 

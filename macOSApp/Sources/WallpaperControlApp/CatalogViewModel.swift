@@ -16,6 +16,8 @@ final class CatalogViewModel: ObservableObject {
     @Published var searchText = ""
     @Published var selectedGroup: CatalogWallpaperGroup?
     @Published var downloadID: String?
+    @Published var downloadProgress: CatalogDownloadProgress?
+    @Published var isDownloadCancelling = false
     @Published var wallpapers: [CatalogWallpaper] = []
     @Published var searchResults: [CatalogWallpaper] = []
     @Published var isRefreshing = false
@@ -23,6 +25,12 @@ final class CatalogViewModel: ObservableObject {
     @Published var isSearching = false
     @Published var hasMoreWallpapers = true
     @Published var downloadedWallpapers: [DownloadedCatalogWallpaper] = []
+
+    private let catalogDisplayPageSize = 12
+    private let searchDisplayPageSize = 24
+    private var deferredWallpapers: [CatalogWallpaper] = []
+    private var deferredSearchResults: [CatalogWallpaper] = []
+    private var hasMoreRemoteWallpapers = false
 
     var filteredWallpapers: [CatalogWallpaper] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -77,7 +85,84 @@ final class CatalogViewModel: ObservableObject {
         wallpapers.filter { $0.catalogGroup == group }.count
     }
 
+    var hasDeferredWallpapers: Bool {
+        !deferredWallpapers.isEmpty
+    }
+
+    var hasDeferredSearchResults: Bool {
+        !deferredSearchResults.isEmpty
+    }
+
+    func setWallpapersDirectly(_ wallpapers: [CatalogWallpaper]) {
+        self.wallpapers = wallpapers
+        deferredWallpapers = []
+        hasMoreRemoteWallpapers = false
+    }
+
+    func setSearchResultsDirectly(_ results: [CatalogWallpaper]) {
+        searchResults = results
+        deferredSearchResults = []
+    }
+
+    func appendSearchResults(_ additions: [CatalogWallpaper]) {
+        var seen = Set(searchResults.map(\.id))
+        seen.formUnion(deferredSearchResults.map(\.id))
+        let uniqueAdditions = additions.filter { seen.insert($0.id).inserted }
+        guard !uniqueAdditions.isEmpty else { return }
+
+        let availableSlots = max(0, searchDisplayPageSize - searchResults.count)
+        searchResults.append(contentsOf: uniqueAdditions.prefix(availableSlots))
+        deferredSearchResults.append(contentsOf: uniqueAdditions.dropFirst(availableSlots))
+    }
+
+    @discardableResult
+    func loadNextSearchPage() -> Bool {
+        guard !deferredSearchResults.isEmpty else { return false }
+        let page = Array(deferredSearchResults.prefix(searchDisplayPageSize))
+        deferredSearchResults.removeFirst(page.count)
+        searchResults.append(contentsOf: page)
+        return true
+    }
+
+    func replaceCatalogForDisplay(
+        with allWallpapers: [CatalogWallpaper],
+        hasMoreRemotePages: Bool
+    ) {
+        let uniqueWallpapers = Self.deduplicated(allWallpapers)
+        wallpapers = Array(uniqueWallpapers.prefix(catalogDisplayPageSize))
+        deferredWallpapers = Array(uniqueWallpapers.dropFirst(catalogDisplayPageSize))
+        hasMoreRemoteWallpapers = hasMoreRemotePages
+        hasMoreWallpapers = !deferredWallpapers.isEmpty || hasMoreRemotePages
+    }
+
+    @discardableResult
+    func loadNextDeferredPage() -> Bool {
+        guard !deferredWallpapers.isEmpty else { return false }
+        let page = Array(deferredWallpapers.prefix(catalogDisplayPageSize))
+        deferredWallpapers.removeFirst(page.count)
+        wallpapers.append(contentsOf: page)
+        hasMoreWallpapers = !deferredWallpapers.isEmpty || hasMoreRemoteWallpapers
+        return true
+    }
+
+    func appendCatalogPage(
+        mergedWallpapers: [CatalogWallpaper],
+        hasMoreRemotePages: Bool
+    ) {
+        var seen = Set(wallpapers.map(\.id))
+        let additions = mergedWallpapers.filter { seen.insert($0.id).inserted }
+        wallpapers.append(contentsOf: additions)
+        deferredWallpapers = []
+        hasMoreRemoteWallpapers = hasMoreRemotePages
+        hasMoreWallpapers = hasMoreRemotePages
+    }
+
     func isDownloading(_ wallpaper: CatalogWallpaper) -> Bool {
         downloadID == wallpaper.id
+    }
+
+    private static func deduplicated(_ wallpapers: [CatalogWallpaper]) -> [CatalogWallpaper] {
+        var seen = Set<String>()
+        return wallpapers.filter { seen.insert($0.id).inserted }
     }
 }

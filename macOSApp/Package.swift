@@ -19,12 +19,47 @@ let canBuildNativeBridge = !nativeBridgeIsDisabled && nativeBridgeFrameworks.all
 var products: [Product] = [
     .executable(name: "WallpaperControlApp", targets: ["WallpaperControlApp"]),
     .executable(name: "AuraWallpaperAgent", targets: ["AuraWallpaperAgent"]),
+    .executable(name: "AuraTerminalWallpaperAgent", targets: ["AuraTerminalWallpaperAgent"]),
+    .executable(name: "AuraWebWallpaperAgent", targets: ["AuraWebWallpaperAgent"]),
 ]
 
 var targets: [Target] = [
     .target(
+        name: "AuraLockScreenRendering",
+        path: "Sources/AuraLockScreenRendering",
+        publicHeadersPath: "include",
+        linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("Metal"),
+                         .linkedFramework("QuartzCore"), .linkedFramework("IOSurface")]
+    ),
+    .target(name: "AuraWallpaperEngineCore", path: "Sources/AuraWallpaperEngineCore"),
+    .executableTarget(
+        name: "AuraWebWallpaperAgent",
+        dependencies: ["AuraWallpaperEngineCore"],
+        path: "Sources/AuraWebWallpaperAgent",
+        swiftSettings: canBuildNativeBridge ? [.unsafeFlags(["-I", privateWallpaperModulesDirectory])] : [],
+        linkerSettings: canBuildNativeBridge ? [.unsafeFlags([
+            "-F\(privateFrameworksDirectory)", "-Xlinker", "-weak_framework", "-Xlinker", "Wallpaper",
+            "-Xlinker", "-weak_framework", "-Xlinker", "WallpaperTypes",
+        ])] : []
+    ),
+    .target(
+        name: "AuraTerminalPTYKit",
+        path: "Sources/AuraTerminalPTYKit",
+        publicHeadersPath: "include"
+    ),
+    .target(
+        name: "AuraTerminalWallpaperCore",
+        dependencies: ["AuraTerminalPTYKit"],
+        path: "Sources/AuraTerminalWallpaperCore"
+    ),
+    .target(
         name: "AuraWallpaperCore",
         path: "Sources/AuraWallpaperCore"
+    ),
+    .target(
+        name: "AuraTerminalRendering",
+        dependencies: ["AuraTerminalWallpaperCore"],
+        path: "Sources/AuraTerminalRendering"
     ),
     .executableTarget(
         name: "AuraWallpaperAgent",
@@ -32,9 +67,23 @@ var targets: [Target] = [
         path: "Sources/AuraWallpaperAgent"
     ),
     .executableTarget(
+        name: "AuraTerminalWallpaperAgent",
+        dependencies: ["AuraTerminalWallpaperCore", "AuraTerminalRendering"],
+        path: "Sources/AuraTerminalWallpaperAgent",
+        swiftSettings: canBuildNativeBridge ? [.unsafeFlags(["-I", privateWallpaperModulesDirectory])] : [],
+        linkerSettings: canBuildNativeBridge ? [.unsafeFlags([
+            "-F\(privateFrameworksDirectory)",
+            "-Xlinker", "-weak_framework", "-Xlinker", "Wallpaper",
+            "-Xlinker", "-weak_framework", "-Xlinker", "WallpaperTypes",
+        ])] : []
+    ),
+    .executableTarget(
         name: "WallpaperControlApp",
         dependencies: [
+            "AuraWallpaperEngineCore",
             "AuraWallpaperCore",
+            "AuraTerminalWallpaperCore",
+            "AuraTerminalRendering",
         ],
         exclude: ["WallpaperControlApp.entitlements"],
         resources: [
@@ -44,9 +93,14 @@ var targets: [Target] = [
     .testTarget(
         name: "WallpaperControlAppTests",
         dependencies: [
+            "AuraWallpaperEngineCore",
             "AuraWallpaperCore",
+            "AuraTerminalWallpaperCore",
             "WallpaperControlApp",
             "AuraWallpaperAgent",
+            "AuraTerminalWallpaperAgent",
+            "AuraTerminalRendering",
+            "AuraLockScreenRendering",
         ],
         path: "Tests/WallpaperControlAppTests",
         resources: [

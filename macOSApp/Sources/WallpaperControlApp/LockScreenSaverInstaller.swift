@@ -1,5 +1,6 @@
 import CoreFoundation
 import AuraWallpaperCore
+import AuraTerminalWallpaperCore
 import Foundation
 import OSLog
 
@@ -232,6 +233,13 @@ struct ScreenSaverSelectionCoordinator {
         }
         try? fileManager.removeItem(at: backupURL)
     }
+
+    /// Terminal wallpaper only restores a selection that it actually changed.
+    /// If AuraFlow was already selected, there is no terminal-owned backup.
+    func restoreIfOwned() throws {
+        guard fileManager.fileExists(atPath: backupURL.path) else { return }
+        try restoreIfNeeded()
+    }
 }
 
 final class LockScreenSaverInstaller: LockScreenSaverInstalling {
@@ -239,6 +247,10 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
     private let templateURL: URL?
     private let destinationURL: URL
     private let selectionCoordinator: ScreenSaverSelectionCoordinator
+    private let terminalSelectionCoordinator: ScreenSaverSelectionCoordinator
+    private let terminalWallpaperStore: any TerminalScreenSaverStoreCoordinating
+    private let webSelectionCoordinator: ScreenSaverSelectionCoordinator
+    private let webWallpaperStore: TerminalScreenSaverStoreCoordinator
     private let signatureVerifier: (URL) throws -> Void
     private let operationLock = NSLock()
 
@@ -248,6 +260,8 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         destinationURL: URL? = nil,
         preferences: ScreenSaverPreferenceManaging = HostScreenSaverPreferences(),
         preferenceBackupURL: URL? = nil,
+        terminalPreferenceBackupURL: URL? = nil,
+        terminalWallpaperStore: (any TerminalScreenSaverStoreCoordinating)? = nil,
         signatureVerifier: ((URL) throws -> Void)? = nil
     ) {
         self.fileManager = fileManager
@@ -268,6 +282,24 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
             destinationURL: resolvedDestinationURL,
             backupURL: resolvedBackupURL
         )
+        self.terminalSelectionCoordinator = ScreenSaverSelectionCoordinator(
+            fileManager: fileManager,
+            preferences: preferences,
+            destinationURL: resolvedDestinationURL,
+            backupURL: terminalPreferenceBackupURL
+                ?? TerminalWallpaperRuntimeStore.defaultAppSupportURL()
+                    .appendingPathComponent("screen-saver-selection-backup.json")
+        )
+        self.terminalWallpaperStore = terminalWallpaperStore
+            ?? TerminalScreenSaverStoreCoordinator(saverURL: resolvedDestinationURL)
+        let webRoot = resolvedBackupURL.deletingLastPathComponent().appendingPathComponent("wallpaper-engine/runtime")
+        self.webSelectionCoordinator = ScreenSaverSelectionCoordinator(
+            fileManager: fileManager, preferences: preferences, destinationURL: resolvedDestinationURL,
+            backupURL: webRoot.appendingPathComponent("screen-saver-selection-backup.json")
+        )
+        self.webWallpaperStore = TerminalScreenSaverStoreCoordinator(
+            journalURL: webRoot.appendingPathComponent("screen-saver-wallpaper-store-backup.json"), saverURL: resolvedDestinationURL
+        )
     }
 
     var isInstalled: Bool {
@@ -280,7 +312,53 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
 
     func install(videoURL: URL) async throws {
         try withOperationLock {
-            try installLocked(videoURL: videoURL)
+            try installLocked(videoURL: videoURL, selection: selectionCoordinator)
+        }
+    }
+
+    func activateForTerminal() throws {
+        try withOperationLock {
+            if isInstalled {
+                try refreshInstalledCompatibilityComponentLocked()
+                try terminalSelectionCoordinator.activate()
+            } else {
+                try installLocked(videoURL: nil, selection: terminalSelectionCoordinator)
+            }
+            do {
+                try terminalWallpaperStore.activate()
+            } catch {
+                try? terminalSelectionCoordinator.restoreIfOwned()
+                throw error
+            }
+        }
+    }
+
+    func restoreAfterTerminal(preferCurrentDesktop: Bool = false) throws {
+        try withOperationLock {
+            if preferCurrentDesktop {
+                try terminalWallpaperStore.restoreCurrentDesktopIfOwned()
+            } else {
+                try terminalWallpaperStore.restoreIfOwned()
+            }
+            try terminalSelectionCoordinator.restoreIfOwned()
+        }
+    }
+
+    func activateForWeb() throws {
+        try withOperationLock {
+            if isInstalled {
+                try refreshInstalledCompatibilityComponentLocked()
+                try webSelectionCoordinator.activate()
+            } else { try installLocked(videoURL: nil, selection: webSelectionCoordinator) }
+            do { try webWallpaperStore.activate() }
+            catch { try? webSelectionCoordinator.restoreIfOwned(); throw error }
+        }
+    }
+
+    func restoreAfterWeb() throws {
+        try withOperationLock {
+            try webWallpaperStore.restoreIfOwned()
+            try webSelectionCoordinator.restoreIfOwned()
         }
     }
 
@@ -305,13 +383,16 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         return try operation()
     }
 
-    private func installLocked(videoURL: URL) throws {
+    private func installLocked(
+        videoURL: URL?,
+        selection: ScreenSaverSelectionCoordinator
+    ) throws {
         guard let templateURL,
               fileManager.fileExists(atPath: templateURL.path)
         else {
             throw LockScreenSaverInstallerError.componentNotBundled
         }
-        guard fileManager.fileExists(atPath: videoURL.path) else {
+        if let videoURL, !fileManager.fileExists(atPath: videoURL.path) {
             throw LockScreenSaverInstallerError.videoMissing(videoURL.path)
         }
         // The saver resolves the current video, fallback frame, and scale mode
@@ -358,7 +439,7 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
             throw error
         }
         do {
-            try selectionCoordinator.activate()
+            try selection.activate()
         } catch {
             try restorePreviousInstallation(
                 from: previousInstallationURL,

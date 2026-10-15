@@ -213,6 +213,10 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     func showForLockTransition(completion: ((Bool, String?) -> Void)? = nil) {
+        guard WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false else {
+            completion?(false, "Lock Screen is disabled.")
+            return
+        }
         // Close the small Stop -> Lock race: the marker is committed before
         // the .pause command is delivered to the agent.
         if WallpaperRuntimeStore().isPaused() {

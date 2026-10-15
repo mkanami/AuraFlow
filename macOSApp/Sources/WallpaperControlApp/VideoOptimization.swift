@@ -161,9 +161,53 @@ final class VideoOptimizer {
     private let av1CodecType: CMVideoCodecType = CMVideoCodecType(0x61763031) // 'av01'
     private let vp9CodecType: CMVideoCodecType = CMVideoCodecType(0x76703039) // 'vp09'
     private let vp8CodecType: CMVideoCodecType = CMVideoCodecType(0x76703038) // 'vp08'
-    private let gifConversionRevision = 2
-    private let softwareAV1Revision = 1
-    private let compatibilityTranscodeRevision = 1
+    private let gifConversionRevision = 3
+    private let softwareAV1Revision = 2
+    private let compatibilityTranscodeRevision = 2
+    private let cacheDirectory: URL?
+
+    init(cacheDirectory: URL? = nil) { self.cacheDirectory = cacheDirectory }
+
+    private func cachedVideoIsPlayable(_ url: URL) async -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        let asset = AVURLAsset(url: url)
+        guard (try? await asset.load(.isPlayable)) == true,
+              let duration = try? await asset.load(.duration) else { return false }
+        return CMTimeGetSeconds(duration).isFinite && CMTimeGetSeconds(duration) > 0
+    }
+
+    private func temporaryOutput(for output: URL) -> URL {
+        output.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".partial.mp4")
+    }
+
+    private func publishVideo(_ temporary: URL, to output: URL) async throws {
+        guard await cachedVideoIsPlayable(temporary) else {
+            throw VideoOptimizerError.exportFailed("Video conversion produced an unreadable movie.")
+        }
+        if await cachedVideoIsPlayable(output) { return }
+        try? FileManager.default.removeItem(at: output)
+        try FileManager.default.moveItem(at: temporary, to: output)
+    }
+
+    func requiresMandatoryCompatibility(inputURL: URL) async -> Bool {
+        if isGIF(inputURL) || isCompatibilityFFmpegCandidate(inputURL) {
+            return true
+        }
+
+        let asset = AVURLAsset(url: inputURL)
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let codecType = try? await videoCodecType(for: track) else {
+            // An unreadable file is handled by AVPlayer's failure path while
+            // the poster remains visible. Do not mistake a metadata failure
+            // for a codec that definitely needs transcoding.
+            return false
+        }
+
+        if codecType == vp8CodecType || codecType == vp9CodecType {
+            return true
+        }
+        return codecType == av1CodecType && !supportsHardwareAV1Decode()
+    }
 
     func makeCatalogPreviewSample(inputURL: URL) async throws -> URL {
         guard let ffmpeg = resolveFFmpegExecutableForCompatibility() else {
@@ -221,7 +265,7 @@ final class VideoOptimizer {
                 codecType: 0,
                 kindTag: "gif-r\(gifConversionRevision)"
             )
-            if FileManager.default.fileExists(atPath: outputURL.path) {
+            if await cachedVideoIsPlayable(outputURL) {
                 progress(1.0)
                 return VideoOptimizationResult(outputURL: outputURL, decision: decision, fromCache: true)
             }
@@ -290,6 +334,16 @@ final class VideoOptimizer {
         case .passthrough:
             return VideoOptimizationResult(outputURL: inputURL, decision: decision, fromCache: false)
         case .transcode:
+            if codecType == av1CodecType, !supportsHardwareAV1Decode() {
+                return try await transcodeToCompatibilityUsingFFmpeg(
+                    inputURL: inputURL,
+                    settings: settings,
+                    codecType: codecType,
+                    reason: "AV1 hardware decode unavailable. Converted to H.264 for reliable playback.",
+                    progress: progress
+                )
+            }
+
             if shouldForceSoftwareAV1Encode(codecType: codecType, settings: settings) {
                 let outputURL = try optimizedOutputURL(
                     inputURL: inputURL,
@@ -297,7 +351,7 @@ final class VideoOptimizer {
                     codecType: codecType,
                     kindTag: "video-av1-sw-r\(softwareAV1Revision)"
                 )
-                if FileManager.default.fileExists(atPath: outputURL.path) {
+                if await cachedVideoIsPlayable(outputURL) {
                     progress(1.0)
                     return VideoOptimizationResult(outputURL: outputURL, decision: decision, fromCache: true)
                 }
@@ -319,7 +373,7 @@ final class VideoOptimizer {
                 settings: settings,
                 codecType: codecType
             )
-            if FileManager.default.fileExists(atPath: outputURL.path) {
+            if await cachedVideoIsPlayable(outputURL) {
                 progress(1.0)
                 return VideoOptimizationResult(outputURL: outputURL, decision: decision, fromCache: true)
             }
@@ -338,12 +392,37 @@ final class VideoOptimizer {
                 throw VideoOptimizerError.exportUnavailable
             }
 
-            exportSession.outputURL = outputURL
+            let temporary = temporaryOutput(for: outputURL)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            exportSession.outputURL = temporary
             exportSession.outputFileType = .mp4
             exportSession.shouldOptimizeForNetworkUse = false
+            if settings.profile == .balanced, videoSize.width > 1920 || videoSize.height > 1080 {
+                let scale = min(1920 / videoSize.width, 1080 / videoSize.height, 1)
+                let width = max(2, floor(videoSize.width * scale / 2) * 2)
+                let height = max(2, floor(videoSize.height * scale / 2) * 2)
+                let transform = try await track.load(.preferredTransform)
+                let naturalSize = try await track.load(.naturalSize)
+                let bounds = CGRect(origin: .zero, size: naturalSize).applying(transform).standardized
+                let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
+                layer.setTransform(transform
+                    .concatenating(CGAffineTransform(translationX: -bounds.minX, y: -bounds.minY))
+                    .concatenating(CGAffineTransform(scaleX: width / videoSize.width, y: height / videoSize.height)), at: .zero)
+                let instruction = AVMutableVideoCompositionInstruction()
+                instruction.timeRange = CMTimeRange(start: .zero, duration: try await asset.load(.duration))
+                instruction.layerInstructions = [layer]
+                let composition = AVMutableVideoComposition()
+                composition.renderSize = CGSize(width: width, height: height)
+                let frameDuration = try await track.load(.minFrameDuration)
+                composition.frameDuration = frameDuration.isValid && frameDuration.seconds > 0
+                    ? frameDuration : CMTime(value: 1, timescale: 30)
+                composition.instructions = [instruction]
+                exportSession.videoComposition = composition
+            }
 
             do {
                 try await export(session: exportSession, progress: progress)
+                try await publishVideo(temporary, to: outputURL)
             } catch {
                 if isCompatibilityFFmpegCandidate(inputURL) {
                     return try await transcodeToCompatibilityUsingFFmpeg(
@@ -426,7 +505,7 @@ final class VideoOptimizer {
             codecType: codecType,
             kindTag: "video-compat-r\(compatibilityTranscodeRevision)"
         )
-        if FileManager.default.fileExists(atPath: outputURL.path) {
+        if await cachedVideoIsPlayable(outputURL) {
             progress(1.0)
             return VideoOptimizationResult(outputURL: outputURL, decision: decision, fromCache: true)
         }
@@ -507,12 +586,14 @@ final class VideoOptimizer {
             }
         }
 
-        await withCheckedContinuation { continuation in
-            session.exportAsynchronously {
-                continuation.resume()
+        let cancellation = VideoExportCancellation(session)
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                session.exportAsynchronously { continuation.resume() }
             }
-        }
+        } onCancel: { cancellation.cancel() }
         progressTask.cancel()
+        try Task.checkCancellation()
 
         switch session.status {
         case .completed:
@@ -547,9 +628,15 @@ final class VideoOptimizer {
         )
         try? FileManager.default.removeItem(at: outputURL)
 
+        let temporary = temporaryOutput(for: outputURL)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        guard let encoder = preferredAV1Encoder(ffmpeg) else {
+            throw VideoOptimizerError.exportFailed("ffmpeg has no software AV1 encoder.")
+        }
         let arguments = ffmpegArgumentsForSoftwareAV1(
+            encoder: encoder,
             inputURL: inputURL,
-            outputURL: outputURL,
+            outputURL: temporary,
             settings: settings
         )
         try await runFFmpegProcess(
@@ -560,6 +647,7 @@ final class VideoOptimizer {
             launchFailureMessage: "Unable to start ffmpeg for AV1 software encode.",
             progress: progress
         )
+        try await publishVideo(temporary, to: outputURL)
     }
 
     private func transcodeToH264Compatibility(
@@ -576,9 +664,11 @@ final class VideoOptimizer {
         )
         try? FileManager.default.removeItem(at: outputURL)
 
+        let temporary = temporaryOutput(for: outputURL)
+        defer { try? FileManager.default.removeItem(at: temporary) }
         let arguments = ffmpegArgumentsForCompatibility(
             inputURL: inputURL,
-            outputURL: outputURL,
+            outputURL: temporary,
             settings: settings
         )
         try await runFFmpegProcess(
@@ -589,6 +679,7 @@ final class VideoOptimizer {
             launchFailureMessage: "Unable to start ffmpeg for compatibility transcode.",
             progress: progress
         )
+        try await publishVideo(temporary, to: outputURL)
     }
 
     private func runFFmpegProcess(
@@ -606,11 +697,21 @@ final class VideoOptimizer {
         final class StderrBufferState: @unchecked Sendable {
             let lock = NSLock()
             var data = Data()
+            var diagnostics = Data()
+            var process: Process?
+            var cancelled = false
+            func cancel() {
+                lock.withLock {
+                    cancelled = true
+                    if process?.isRunning == true { process?.terminate() }
+                }
+            }
         }
         let bufferState = StderrBufferState()
 
         progress(0.0)
-        try await withCheckedThrowingContinuation { continuation in
+        try await withTaskCancellationHandler {
+          try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executable)
             process.arguments = arguments
@@ -628,6 +729,8 @@ final class VideoOptimizer {
                 bufferState.lock.lock()
                 defer { bufferState.lock.unlock() }
 
+                bufferState.diagnostics.append(chunk)
+                bufferState.diagnostics = Data(bufferState.diagnostics.suffix(8192))
                 bufferState.data.append(chunk)
                 while let newline = bufferState.data.firstIndex(of: 0x0A) {
                     let lineData = Data(bufferState.data.prefix(upTo: newline))
@@ -655,7 +758,12 @@ final class VideoOptimizer {
             }
 
             process.terminationHandler = { proc in
+                bufferState.lock.withLock { bufferState.process = nil }
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
+                if bufferState.lock.withLock({ bufferState.cancelled }) {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
                 if proc.terminationStatus == 0 {
                     progress(1.0)
                     continuation.resume()
@@ -663,7 +771,8 @@ final class VideoOptimizer {
                 }
 
                 let stderrTail = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                let details = String(data: stderrTail, encoding: .utf8)?
+                let diagnostic = bufferState.lock.withLock { bufferState.diagnostics + stderrTail }
+                let details = String(data: diagnostic, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 let message = details.isEmpty
                     ? "\(failurePrefix)."
@@ -672,17 +781,22 @@ final class VideoOptimizer {
             }
 
             do {
-                try process.run()
+                try bufferState.lock.withLock {
+                    if bufferState.cancelled { throw CancellationError() }
+                    bufferState.process = process
+                    try process.run()
+                }
             } catch {
+                bufferState.lock.withLock { bufferState.process = nil }
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
-                continuation.resume(
-                    throwing: VideoOptimizerError.exportFailed(launchFailureMessage)
-                )
+                continuation.resume(throwing: error is CancellationError ? error : VideoOptimizerError.exportFailed(launchFailureMessage))
             }
-        }
+          }
+        } onCancel: { bufferState.cancel() }
     }
 
     private func ffmpegArgumentsForSoftwareAV1(
+        encoder: String,
         inputURL: URL,
         outputURL: URL,
         settings: VideoOptimizationSettings
@@ -704,15 +818,15 @@ final class VideoOptimizer {
             "-pix_fmt",
             "yuv420p",
             "-c:v",
-            "libsvtav1",
+            encoder,
         ]
 
         switch settings.profile {
         case .quality:
-            args.append(contentsOf: ["-preset", "6", "-crf", "30"])
+            args.append(contentsOf: [encoder == "libsvtav1" ? "-preset" : "-cpu-used", "6", "-crf", "30"])
         case .balanced:
-            args.append(contentsOf: ["-preset", "8", "-crf", "34"])
-            args.append(contentsOf: ["-vf", "scale=if(gt(iw\\,1920)\\,1920\\,iw):-2"])
+            args.append(contentsOf: [encoder == "libsvtav1" ? "-preset" : "-cpu-used", "8", "-crf", "34"])
+            args.append(contentsOf: ["-vf", "scale=min(1920\\,iw):min(1080\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2"])
         }
 
         args.append(contentsOf: ["-movflags", "+faststart", "-f", "mp4", outputURL.path])
@@ -859,6 +973,10 @@ final class VideoOptimizer {
     }
 
     private func ffmpegSupportsAV1Encoding(_ executable: String) -> Bool {
+        preferredAV1Encoder(executable) != nil
+    }
+
+    private func preferredAV1Encoder(_ executable: String) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = ["-hide_banner", "-encoders"]
@@ -868,15 +986,16 @@ final class VideoOptimizer {
         do {
             try process.run()
         } catch {
-            return false
-        }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            return false
+            return nil
         }
         let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            return nil
+        }
         let output = String(data: outputData, encoding: .utf8)?.lowercased() ?? ""
-        return output.contains("libsvtav1") || output.contains("libaom-av1")
+        if output.contains("libsvtav1") { return "libsvtav1" }
+        return output.contains("libaom-av1") ? "libaom-av1" : nil
     }
 
     private func videoCodecType(for track: AVAssetTrack) async throws -> CMVideoCodecType {
@@ -898,7 +1017,7 @@ final class VideoOptimizer {
         inputURL: URL,
         settings: VideoOptimizationSettings,
         codecType: CMVideoCodecType,
-        kindTag: String = "video"
+        kindTag: String = "video-r2"
     ) throws -> URL {
         let appSupport = try FileManager.default.url(
             for: .applicationSupportDirectory,
@@ -906,7 +1025,7 @@ final class VideoOptimizer {
             appropriateFor: nil,
             create: true
         )
-        let directory = appSupport
+        let directory = cacheDirectory ?? appSupport
             .appendingPathComponent(applicationSupportName, isDirectory: true)
             .appendingPathComponent(optimizedDirectoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -943,12 +1062,14 @@ final class VideoOptimizer {
         settings: VideoOptimizationSettings,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws {
+        let temporary = temporaryOutput(for: outputURL)
+        defer { try? FileManager.default.removeItem(at: temporary) }
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     try Self.convertGIFToMP4Sync(
                         inputURL: inputURL,
-                        outputURL: outputURL,
+                        outputURL: temporary,
                         settings: settings,
                         progress: progress
                     )
@@ -958,6 +1079,7 @@ final class VideoOptimizer {
                 }
             }
         }
+        try await publishVideo(temporary, to: outputURL)
     }
 
     private nonisolated static func convertGIFToMP4Sync(
@@ -979,8 +1101,10 @@ final class VideoOptimizer {
             throw VideoOptimizerError.invalidAnimatedImage
         }
 
-        let width = Self.evenDimension(firstFrame.width)
-        let height = Self.evenDimension(firstFrame.height)
+        let scale = settings.enabled && settings.profile == .balanced
+            ? min(1920.0 / Double(firstFrame.width), 1080.0 / Double(firstFrame.height), 1) : 1
+        let width = Self.evenDimension(Int(Double(firstFrame.width) * scale))
+        let height = Self.evenDimension(Int(Double(firstFrame.height) * scale))
         let bitrate = Self.gifBitrate(width: width, height: height, profile: settings.profile)
 
         try FileManager.default.createDirectory(
@@ -1035,6 +1159,9 @@ final class VideoOptimizer {
             let frameDuration = CMTime(seconds: delay, preferredTimescale: timescale)
 
             while !writerInput.isReadyForMoreMediaData {
+                guard writer.status == .writing else {
+                    throw VideoOptimizerError.exportFailed(writer.error?.localizedDescription ?? "GIF writer stopped.")
+                }
                 Thread.sleep(forTimeInterval: 0.002)
             }
 
@@ -1055,6 +1182,7 @@ final class VideoOptimizer {
             progress(Double(index + 1) / Double(frameCount))
         }
 
+        writer.endSession(atSourceTime: presentationTime)
         writerInput.markAsFinished()
         let semaphore = DispatchSemaphore(value: 0)
         writer.finishWriting {
@@ -1144,4 +1272,10 @@ final class VideoOptimizer {
         let clamped = max(value, 2)
         return clamped.isMultiple(of: 2) ? clamped : clamped - 1
     }
+}
+
+private final class VideoExportCancellation: @unchecked Sendable {
+    private let session: AVAssetExportSession
+    init(_ session: AVAssetExportSession) { self.session = session }
+    func cancel() { session.cancelExport() }
 }

@@ -77,7 +77,8 @@ enum CatalogFileDownloader {
         session: URLSession,
         parallelThreshold: Int64 = defaultParallelThreshold,
         chunkSize: Int64 = defaultChunkSize,
-        validationRangeBytes: Int64 = defaultValidationRangeBytes
+        validationRangeBytes: Int64 = defaultValidationRangeBytes,
+        progress: CatalogDownloadProgress.Handler? = nil
     ) async throws -> (temporaryURL: URL, response: URLResponse) {
         let host = request.url?.host?.lowercased() ?? "unknown"
         // MoeWalls' Cloudflare route is materially faster as one HTTP/2 body.
@@ -85,24 +86,25 @@ enum CatalogFileDownloader {
         // measured 3-4x slower for the same file on this CDN.
         if host.contains("moewalls.com") {
             logger.info("stage=range-strategy strategy=single-stream source=provider")
-            return try await regularDownloadWithRetry(request: request, session: session)
+            return try await regularDownloadWithRetry(request: request, session: session, progress: progress)
         }
         if await CatalogHostTransferProfileStore.shared.strategy(for: host) == .singleStream {
             logger.info("stage=range-strategy strategy=single-stream source=cached")
-            return try await regularDownloadWithRetry(request: request, session: session)
+            return try await regularDownloadWithRetry(request: request, session: session, progress: progress)
         }
 
         let probeStartedAt = Date()
         let rangeProbe: RangeProbeResult
         do {
-            rangeProbe = try await probe(request: request, session: session)
+            rangeProbe = try await probe(request: request, session: session, progress: progress)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             try Task.checkCancellation()
             return try await regularDownloadWithRetry(
                 request: request,
-                session: session
+                session: session,
+                progress: progress
             )
         }
         let firstByteMilliseconds = Int(Date().timeIntervalSince(probeStartedAt) * 1_000)
@@ -124,7 +126,8 @@ enum CatalogFileDownloader {
             try Task.checkCancellation()
             return try await regularDownloadWithRetry(
                 request: request,
-                session: session
+                session: session,
+                progress: progress
             )
         }
 
@@ -132,12 +135,17 @@ enum CatalogFileDownloader {
         let validationRange = Int64(0)...min(validationRangeBytes - 1, totalBytes - 1)
         let validationURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("AuraFlowRangeValidation-\(UUID().uuidString)")
+        let validationProgress = CatalogDownloadProgressRelay(handler: progress)
         let validation = try await downloadRangeWithRetry(
             request: request,
             session: session,
             range: validationRange,
             destinationURL: validationURL,
-            acceptsFullResponse: true
+            acceptsFullResponse: true,
+            progress: { received, expected, response in
+                let full = (response as? HTTPURLResponse)?.statusCode == 200
+                validationProgress.report(received: received, total: full ? expected : totalBytes)
+            }
         )
         switch validation {
         case let .full(temporaryURL, response):
@@ -153,20 +161,29 @@ enum CatalogFileDownloader {
                 totalBytes: totalBytes,
                 probeResponse: rangeProbe.response,
                 initialChunk: initialChunk,
-                chunkSize: chunkSize
+                chunkSize: chunkSize,
+                progress: progress
             )
         }
     }
 
     private static func regularDownloadWithRetry(
         request: URLRequest,
-        session: URLSession
+        session: URLSession,
+        progress: CatalogDownloadProgress.Handler?
     ) async throws -> (temporaryURL: URL, response: URLResponse) {
         var attempt = 0
         while true {
             do {
-                let (temporaryURL, response) = try await session.download(
-                    for: request
+                progress?(.init(phase: .downloading))
+                let relay = CatalogDownloadProgressRelay(handler: progress)
+                let observer = CatalogDownloadObserver(update: { received, expected, response in
+                    guard let status = (response as? HTTPURLResponse)?.statusCode,
+                          (200...299).contains(status) else { return }
+                    relay.report(received: received, total: expected)
+                })
+                let (temporaryURL, response) = try await downloadRequest(
+                    request, session: session, observer: observer
                 )
                 if let httpResponse = response as? HTTPURLResponse,
                    isRetryableStatus(httpResponse.statusCode),
@@ -176,6 +193,8 @@ enum CatalogFileDownloader {
                     attempt += 1
                     continue
                 }
+                try Task.checkCancellation()
+                relay.report(received: fileSize(at: temporaryURL), total: response.expectedContentLength, force: true)
                 return (temporaryURL, response)
             } catch is CancellationError {
                 throw CancellationError()
@@ -192,7 +211,8 @@ enum CatalogFileDownloader {
 
     private static func probe(
         request: URLRequest,
-        session: URLSession
+        session: URLSession,
+        progress: CatalogDownloadProgress.Handler?
     ) async throws -> RangeProbeResult {
         var probeRequest = request
         probeRequest.timeoutInterval = request.timeoutInterval > 0
@@ -200,7 +220,15 @@ enum CatalogFileDownloader {
             : 8
         probeRequest.setValue("bytes=0-0", forHTTPHeaderField: "Range")
         probeRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        let (temporaryURL, response) = try await session.download(for: probeRequest)
+        let relay = CatalogDownloadProgressRelay(handler: progress)
+        let observer = CatalogDownloadObserver(update: { received, expected, response in
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return }
+            relay.report(received: received, total: expected)
+        })
+        let (temporaryURL, response) = try await downloadRequest(probeRequest, session: session, observer: observer)
+        if (response as? HTTPURLResponse)?.statusCode == 200 {
+            relay.report(received: fileSize(at: temporaryURL), total: response.expectedContentLength, force: true)
+        }
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             try? FileManager.default.removeItem(at: temporaryURL)
@@ -238,7 +266,8 @@ enum CatalogFileDownloader {
         totalBytes: Int64,
         probeResponse: HTTPURLResponse,
         initialChunk: DownloadedChunk,
-        chunkSize: Int64
+        chunkSize: Int64,
+        progress: CatalogDownloadProgress.Handler?
     ) async throws -> (temporaryURL: URL, response: URLResponse) {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AuraFlowDownload-\(UUID().uuidString)", isDirectory: true)
@@ -269,6 +298,8 @@ enum CatalogFileDownloader {
             chunkSize: boundedChunkSize
         )
         var chunks: [DownloadedChunk] = [initialChunk]
+        let relay = CatalogDownloadProgressRelay(handler: progress)
+        relay.reportPart(key: 0, received: Int64(initialChunk.range.count), total: totalBytes, force: true)
 
         try await withThrowingTaskGroup(of: DownloadedChunk.self) { group in
             var nextRange = ranges.makeIterator()
@@ -284,7 +315,11 @@ enum CatalogFileDownloader {
                         session: session,
                         range: range,
                         destinationURL: chunkURL,
-                        acceptsFullResponse: false
+                        acceptsFullResponse: false,
+                        progress: { received, _, response in
+                            guard response == nil || (response as? HTTPURLResponse)?.statusCode == 206 else { return }
+                            relay.reportPart(key: range.lowerBound, received: min(received, Int64(range.count)), total: totalBytes)
+                        }
                     )
                     guard case let .partial(chunk) = result else {
                         throw RangeDownloadError.rangeUnsupported
@@ -302,6 +337,7 @@ enum CatalogFileDownloader {
 
             while let chunk = try await group.next() {
                 chunks.append(chunk)
+                relay.reportPart(key: chunk.range.lowerBound, received: Int64(chunk.range.count), total: totalBytes, force: true)
                 activeCount -= 1
                 addNextChunk()
             }
@@ -317,6 +353,7 @@ enum CatalogFileDownloader {
         try handle.truncate(atOffset: UInt64(totalBytes))
 
         for chunk in chunks.sorted(by: { $0.range.lowerBound < $1.range.lowerBound }) {
+            try Task.checkCancellation()
             guard fileSize(at: chunk.url) == chunk.range.count else {
                 throw RangeDownloadError.incompleteDownload
             }
@@ -324,6 +361,7 @@ enum CatalogFileDownloader {
             try copyFile(chunk.url, to: handle)
         }
 
+        try Task.checkCancellation()
         keepAssembledFile = true
         return (assembledURL, probeResponse)
     }
@@ -333,7 +371,8 @@ enum CatalogFileDownloader {
         session: URLSession,
         range: ClosedRange<Int64>,
         destinationURL: URL,
-        acceptsFullResponse: Bool
+        acceptsFullResponse: Bool,
+        progress: CatalogDownloadObserver.Update?
     ) async throws -> RangeResponse {
         var chunkRequest = request
         chunkRequest.setValue(
@@ -341,7 +380,8 @@ enum CatalogFileDownloader {
             forHTTPHeaderField: "Range"
         )
         chunkRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        let (temporaryURL, response) = try await session.download(for: chunkRequest)
+        let observer = CatalogDownloadObserver(update: progress)
+        let (temporaryURL, response) = try await downloadRequest(chunkRequest, session: session, observer: observer)
         guard let httpResponse = response as? HTTPURLResponse else {
             try? FileManager.default.removeItem(at: temporaryURL)
             throw RangeDownloadError.rangeUnsupported
@@ -374,17 +414,21 @@ enum CatalogFileDownloader {
         session: URLSession,
         range: ClosedRange<Int64>,
         destinationURL: URL,
-        acceptsFullResponse: Bool
+        acceptsFullResponse: Bool,
+        progress: CatalogDownloadObserver.Update?
     ) async throws -> RangeResponse {
         var attempt = 0
         while true {
             do {
+                try Task.checkCancellation()
+                progress?(0, -1, nil)
                 return try await downloadRange(
                     request: request,
                     session: session,
                     range: range,
                     destinationURL: destinationURL,
-                    acceptsFullResponse: acceptsFullResponse
+                    acceptsFullResponse: acceptsFullResponse,
+                    progress: progress
                 )
             } catch is CancellationError {
                 throw CancellationError()
@@ -401,6 +445,18 @@ enum CatalogFileDownloader {
 
     private static func contentRange(_ response: HTTPURLResponse) -> ClosedRange<Int64>? {
         contentRangeComponents(response)?.range
+    }
+
+    private static func downloadRequest(_ request: URLRequest, session: URLSession,
+                                        observer: CatalogDownloadObserver) async throws -> (URL, URLResponse) {
+        try Task.checkCancellation()
+        let result = try await observer.download(request: request, session: session)
+        do { try Task.checkCancellation() }
+        catch {
+            try? FileManager.default.removeItem(at: result.0)
+            throw error
+        }
+        return result
     }
 
     private static func retryDelay(after attempt: Int) async throws {
@@ -482,6 +538,7 @@ enum CatalogFileDownloader {
         let source = try FileHandle(forReadingFrom: sourceURL)
         defer { try? source.close() }
         while true {
+            try Task.checkCancellation()
             let data = try source.read(upToCount: 1_024 * 1_024) ?? Data()
             if data.isEmpty { break }
             try destination.write(contentsOf: data)

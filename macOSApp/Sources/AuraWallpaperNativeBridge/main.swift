@@ -67,7 +67,8 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
                 self?.respond(
                     to: request,
                     succeeded: succeeded,
-                    errorDescription: errorDescription
+                    errorDescription: errorDescription,
+                    cancelled: NativeLockScreenBridgeResponse.isExpectedPresentationCancellation(errorDescription)
                 )
             }
         case .hide:
@@ -104,6 +105,7 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
         succeeded: Bool,
         errorDescription: String? = nil,
         capabilities: NativeLockScreenBridgeRuntimeCapabilities? = nil,
+        cancelled: Bool? = nil,
         terminateAfterWrite: Bool = false
     ) {
         let response = NativeLockScreenBridgeResponse(
@@ -111,7 +113,8 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
             action: request.action,
             succeeded: succeeded,
             errorDescription: errorDescription,
-            capabilities: capabilities
+            capabilities: capabilities,
+            cancelled: cancelled
         )
         Task { [weak self] in
             guard let self else { return }

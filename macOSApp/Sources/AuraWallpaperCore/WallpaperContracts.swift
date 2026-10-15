@@ -18,7 +18,7 @@ public struct ControlConfig: Codable, Equatable, Sendable {
         autostart: Bool? = false,
         blend_interpolation: Bool? = false,
         pause_on_fullscreen: Bool? = true,
-        show_on_lock_screen: Bool? = false,
+        show_on_lock_screen: Bool? = true,
         scale_mode: String? = WallpaperScaleMode.fill.rawValue
     ) {
         self.video_path = video_path
@@ -34,7 +34,7 @@ public struct ControlConfig: Codable, Equatable, Sendable {
     public static let defaultConfig = ControlConfig(
         video_path: "",
         playback_speed: 1.0,
-        show_on_lock_screen: false
+        show_on_lock_screen: true
     )
 }
 

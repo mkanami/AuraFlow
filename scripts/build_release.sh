@@ -8,9 +8,11 @@ DIST_DIR="${AURAFLOW_OUTPUT_DIR:-$ROOT_DIR/dist}"
 APP_TARGET="WallpaperControlApp"
 HELPER_TARGET="AuraWallpaperAgent"
 NATIVE_BRIDGE_TARGET="AuraWallpaperNativeBridge"
+TERMINAL_HELPER_TARGET="AuraTerminalWallpaperAgent"
+WEB_HELPER_TARGET="AuraWebWallpaperAgent"
 APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-AuraFlow}"
-APP_VERSION="${AURAFLOW_VERSION:-1.3.1}"
-APP_BUILD="${AURAFLOW_BUILD:-10}"
+APP_VERSION="${AURAFLOW_VERSION:-1.4.0}"
+APP_BUILD="${AURAFLOW_BUILD:-11}"
 MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 export MACOSX_DEPLOYMENT_TARGET
 STAGING_DIR=""
@@ -300,6 +302,12 @@ build_swift_architecture() {
     return 1
   fi
 
+  if ! swift_build_product "$architecture" "$TERMINAL_HELPER_TARGET"; then
+    log "Failed to build ${TERMINAL_HELPER_TARGET} for $architecture."
+    return 1
+  fi
+  swift_build_product "$architecture" "$WEB_HELPER_TARGET" || return 1
+
   if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
     log "Building native bridge for $architecture"
     if ! swift_build_product "$architecture" "$NATIVE_BRIDGE_TARGET"; then
@@ -381,17 +389,23 @@ build_swift_app() {
       "$host_bin_path/${APP_TARGET}" "$secondary_bin_path/${APP_TARGET}"
     lipo -create -output "$universal_dir/${HELPER_TARGET}" \
       "$host_bin_path/${HELPER_TARGET}" "$secondary_bin_path/${HELPER_TARGET}"
+    lipo -create -output "$universal_dir/${TERMINAL_HELPER_TARGET}" \
+      "$host_bin_path/${TERMINAL_HELPER_TARGET}" "$secondary_bin_path/${TERMINAL_HELPER_TARGET}"
+    lipo -create -output "$universal_dir/${WEB_HELPER_TARGET}" \
+      "$host_bin_path/${WEB_HELPER_TARGET}" "$secondary_bin_path/${WEB_HELPER_TARGET}"
     if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
       lipo -create -output "$universal_dir/${NATIVE_BRIDGE_TARGET}" \
         "$host_bin_path/${NATIVE_BRIDGE_TARGET}" "$secondary_bin_path/${NATIVE_BRIDGE_TARGET}"
     fi
     bin_path="$universal_dir"
-    log "Created universal app and agent binaries"
   fi
   popd >/dev/null
 
   local binary="$bin_path/${APP_TARGET}"
   local helper_path="$bin_path/${HELPER_TARGET}"
+  local terminal_helper_path="$bin_path/${TERMINAL_HELPER_TARGET}"
+  local web_helper_path="$bin_path/${WEB_HELPER_TARGET}"
+  [[ -x "$web_helper_path" ]] || { log "Web helper binary not found: $web_helper_path"; exit 1; }
   local native_bridge_path=""
   if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
     native_bridge_path="$bin_path/${NATIVE_BRIDGE_TARGET}"
@@ -409,24 +423,35 @@ build_swift_app() {
     log "Native bridge binary not found: $native_bridge_path"
     exit 1
   fi
+  if [[ ! -x "$terminal_helper_path" ]]; then
+    log "Terminal helper binary not found: $terminal_helper_path"
+    exit 1
+  fi
 
   rm -rf "$APP_BUNDLE"
   mkdir -p "$APP_BUNDLE/Contents/MacOS"
   mkdir -p "$APP_BUNDLE/Contents/Resources"
+  local terminal_helper_bundle="$APP_BUNDLE/Contents/Helpers/${TERMINAL_HELPER_TARGET}.app"
+  mkdir -p "$terminal_helper_bundle/Contents/MacOS"
 
   cp "$binary" "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
   cp "$helper_path" "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
+  cp "$web_helper_path" "$APP_BUNDLE/Contents/MacOS/${WEB_HELPER_TARGET}"
+  chmod +x "$APP_BUNDLE/Contents/MacOS/${WEB_HELPER_TARGET}"
+  cp "$terminal_helper_path" "$terminal_helper_bundle/Contents/MacOS/${TERMINAL_HELPER_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}"
   chmod +x "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}"
   if [[ "$NATIVE_BRIDGE_ENABLED" == "1" ]]; then
     cp "$native_bridge_path" "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
     chmod +x "$APP_BUNDLE/Contents/MacOS/${NATIVE_BRIDGE_TARGET}"
   fi
+  chmod +x "$terminal_helper_bundle/Contents/MacOS/${TERMINAL_HELPER_TARGET}"
 
   if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
-    local app_archs helper_archs
+    local app_archs helper_archs terminal_helper_archs
     app_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${APP_TARGET}" 2>/dev/null || true)"
     helper_archs="$(lipo -archs "$APP_BUNDLE/Contents/MacOS/${HELPER_TARGET}" 2>/dev/null || true)"
+    terminal_helper_archs="$(lipo -archs "$terminal_helper_bundle/Contents/MacOS/${TERMINAL_HELPER_TARGET}" 2>/dev/null || true)"
     if [[ "$app_archs" != *"arm64"* || "$app_archs" != *"x86_64"* ]]; then
       log "Universal app binary required, produced: ${app_archs:-unknown}"
       exit 1
@@ -443,7 +468,38 @@ build_swift_app() {
         exit 1
       fi
     fi
+    if [[ "$terminal_helper_archs" != *"arm64"* || "$terminal_helper_archs" != *"x86_64"* ]]; then
+      log "Universal terminal helper binary required, produced: ${terminal_helper_archs:-unknown}"
+      exit 1
+    fi
   fi
+
+  cat > "$terminal_helper_bundle/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>${TERMINAL_HELPER_TARGET}</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.andrijvergeles.auraflow.terminal-wallpaper.helper</string>
+  <key>CFBundleName</key>
+  <string>AuraFlow Terminal Wallpaper</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${APP_VERSION}</string>
+  <key>CFBundleVersion</key>
+  <string>${APP_BUILD}</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>${MACOSX_DEPLOYMENT_TARGET}</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+</dict>
+</plist>
+EOF
 
   if [[ -d "$resources_bundle" ]]; then
     cp -R "$resources_bundle" "$APP_BUNDLE/Contents/Resources/$(basename "$resources_bundle")"
@@ -664,8 +720,13 @@ sign_app_bundle() {
   fi
 
   while IFS= read -r target; do
+    # The root executable is sealed when its app is signed, after all nested
+    # helper apps/plugins. Signing it earlier rejects unsealed nested bundles.
+    [[ "$target" == "$APP_BUNDLE/Contents/MacOS/$APP_TARGET" ]] && continue
     codesign_target "$target"
   done < <(find_macho_files)
+
+  codesign_target "$APP_BUNDLE/Contents/Helpers/${TERMINAL_HELPER_TARGET}.app"
 
   if [[ -d "$APP_BUNDLE/Contents/Frameworks" ]]; then
     while IFS= read -r framework; do
@@ -748,6 +809,11 @@ main() {
   build_swift_app
   apply_plist_customizations
   bundle_runtime_tools
+  local tool_verification_args=("$APP_BUNDLE")
+  if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
+    tool_verification_args+=(--universal)
+  fi
+  python3 "$ROOT_DIR/scripts/verify_bundled_tools.py" "${tool_verification_args[@]}"
   bundle_lock_screen_saver
   verify_private_framework_isolation
   sign_app_bundle

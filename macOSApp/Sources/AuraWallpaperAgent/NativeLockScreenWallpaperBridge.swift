@@ -145,6 +145,15 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
         }
     }
 
+    func invalidatePreparation() {
+        ioQueue.sync {
+            presentationGeneration &+= 1
+            // The display assertion belongs to the old provider route. Hide
+            // alone keeps it cached and cannot rebind after OFF -> ON.
+            closeTransport(finalState: .stopped, terminateProcess: true)
+        }
+    }
+
     private func ensureReady(
         _ continuation: @escaping @Sendable (Bool) -> Void
     ) {
@@ -330,7 +339,10 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
             else {
                 continue
             }
-            if !response.succeeded {
+            let presentationCancelled = request.action == .show
+                && (response.cancelled == true
+                    || NativeLockScreenBridgeResponse.isExpectedPresentationCancellation(response.errorDescription))
+            if !response.succeeded, !presentationCancelled {
                 Self.logger.error(
                     "Native bridge request failed action=\(request.action.rawValue, privacy: .public) reason=\(response.errorDescription ?? "unknown", privacy: .public)"
                 )
@@ -373,7 +385,7 @@ final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
                     succeeded: response.succeeded
                 )
             }
-            if !response.succeeded {
+            if !response.succeeded, !presentationCancelled {
                 failTransport(
                     reason: response.errorDescription
                         ?? "Native Lock Screen bridge rejected the request."

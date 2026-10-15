@@ -39,13 +39,45 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
     }
 
     public func installForDesktopAgent(videoURL: URL) async throws {
+        try await installForDesktopAgent(
+            videoURL: videoURL,
+            playbackSpeed: 1.0,
+            scaleMode: .fill
+        )
+    }
+
+    public func installForDesktopAgent(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
         try requireAvailability()
-        try await installer.installForDesktopAgent(videoURL: videoURL)
+        try await installer.installForDesktopAgent(
+            videoURL: videoURL,
+            playbackSpeed: playbackSpeed,
+            scaleMode: scaleMode
+        )
     }
 
     public func installLockScreenOnly(videoURL: URL) async throws {
+        try await installLockScreenOnly(
+            videoURL: videoURL,
+            playbackSpeed: 1.0,
+            scaleMode: .fill
+        )
+    }
+
+    public func installLockScreenOnly(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
         try requireAvailability()
-        try await installer.installLockScreenOnly(videoURL: videoURL)
+        try await installer.installLockScreenOnly(
+            videoURL: videoURL,
+            playbackSpeed: playbackSpeed,
+            scaleMode: scaleMode
+        )
     }
 
     public func installLegacyLockScreenFallback(
@@ -58,8 +90,24 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
     }
 
     public func prepareLockScreenMedia(videoURL: URL) async throws {
+        try await prepareLockScreenMedia(
+            videoURL: videoURL,
+            playbackSpeed: 1.0,
+            scaleMode: .fit
+        )
+    }
+
+    public func prepareLockScreenMedia(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
         try requireAvailability()
-        try await installer.prepareLockScreenMedia(videoURL: videoURL)
+        try await installer.prepareLockScreenMedia(
+            videoURL: videoURL,
+            playbackSpeed: playbackSpeed,
+            scaleMode: scaleMode
+        )
     }
 
     public func pauseLockScreenOnlyPlayback(videoURL: URL) async throws -> Bool {

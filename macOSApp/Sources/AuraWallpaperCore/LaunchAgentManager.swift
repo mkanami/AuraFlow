@@ -299,6 +299,7 @@ public final class LaunchAgentManager {
         if let nativeBridgePath {
             arguments.append(contentsOf: ["--native-bridge-path", nativeBridgePath])
         }
+        if store.isLockScreenOnlyMode() { arguments.append("--lock-screen-only") }
         return arguments
     }
 

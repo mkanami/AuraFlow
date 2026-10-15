@@ -1,15 +1,62 @@
 #import "AuraFlowLockScreen.h"
+#import "AuraFlowTerminalSurface.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import <ImageIO/ImageIO.h>
+#import <libproc.h>
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
+#import <signal.h>
+#import <errno.h>
+#import <pwd.h>
+#import <unistd.h>
+#import <sys/stat.h>
 
 static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
 static NSString * const AuraFlowRuntimeCommandNotification =
     @"com.andrijvergeles.auraflow.runtime-command-did-change";
 
+typedef struct {
+    dev_t device;
+    ino_t inode;
+    off_t size;
+    struct timespec modified;
+    struct timespec changed;
+} AuraFlowJSONMetadata;
+
+static BOOL AuraFlowJSONMetadataAtURL(NSURL *url, AuraFlowJSONMetadata *metadata) {
+    struct stat info;
+    if (stat(url.fileSystemRepresentation, &info) != 0) return NO;
+    *metadata = (AuraFlowJSONMetadata){info.st_dev, info.st_ino, info.st_size,
+        info.st_mtimespec, info.st_ctimespec};
+    return YES;
+}
+
+static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetadata b) {
+    return a.device == b.device && a.inode == b.inode && a.size == b.size
+        && a.modified.tv_sec == b.modified.tv_sec && a.modified.tv_nsec == b.modified.tv_nsec
+        && a.changed.tv_sec == b.changed.tv_sec && a.changed.tv_nsec == b.changed.tv_nsec;
+}
+
+@interface AuraFlowJSONCacheEntry : NSObject
+@property(nonatomic) AuraFlowJSONMetadata metadata;
+@property(nonatomic) CFTimeInterval createdAt;
+@property(nonatomic, copy) NSDictionary *dictionary;
+@end
+@implementation AuraFlowJSONCacheEntry
+@end
+
 @interface AuraFlowLockScreen ()
 @property(nonatomic, strong) CALayer *fallbackLayer;
+@property(nonatomic, strong) CALayer *terminalLayer;
+@property(nonatomic, strong) AuraFlowTerminalSurfaceLayer *terminalSurfaceLayer;
+@property(nonatomic) BOOL sharedSurfacePresentationEnabled;
+@property(nonatomic, copy, nullable) NSString *terminalFrameRevision;
+@property(nonatomic) BOOL terminalModeActive;
+@property(nonatomic, strong) CALayer *webLayer;
+@property(nonatomic) BOOL webModeActive;
+@property(nonatomic, copy, nullable) NSString *webFrameRevision;
+@property(nonatomic, copy, nullable) NSString *terminalDiagnosticState;
 @property(nonatomic, strong, nullable) AVQueuePlayer *player;
 @property(nonatomic, strong, nullable) AVPlayerLayer *playerLayer;
 @property(nonatomic, strong, nullable) AVPlayerLooper *playerLooper;
@@ -19,6 +66,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 @property(nonatomic) BOOL observingReadyForDisplay;
 @property(nonatomic) BOOL runtimePaused;
 @property(nonatomic) BOOL playerLayerPaused;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, AuraFlowJSONCacheEntry *> *jsonCache;
 @end
 
 @implementation AuraFlowLockScreen
@@ -33,11 +81,19 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 - (instancetype)initWithFrame:(NSRect)frame isPreview:(BOOL)isPreview {
     self = [super initWithFrame:frame isPreview:isPreview];
     if (self) {
+        self.jsonCache = [NSMutableDictionary dictionary];
         self.animationTimeInterval = 1.0 / 30.0;
         self.scaleMode = @"fill";
         self.playbackRate = 1.0;
         [self createLayers];
-        [self applyResolvedConfiguration:[self resolvedConfiguration] force:YES];
+        // The agent has already published a frame before Lock. Paint it while
+        // the view is constructed, without waiting for startAnimation or
+        // preparing an unrelated video underneath the terminal/web route.
+        [self syncTerminalFrame];
+        [self syncWebFrame];
+        if (!self.terminalModeActive && !self.webModeActive) {
+            [self applyResolvedConfiguration:[self resolvedConfiguration] force:YES];
+        }
         [[NSDistributedNotificationCenter defaultCenter]
             addObserver:self
                selector:@selector(runtimeCommandDidChange:)
@@ -67,17 +123,37 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     self.fallbackLayer.contentsGravity = kCAGravityResizeAspectFill;
     self.fallbackLayer.masksToBounds = YES;
     [self.layer addSublayer:self.fallbackLayer];
+    self.terminalLayer = [CALayer layer];
+    self.terminalLayer.backgroundColor = NSColor.blackColor.CGColor;
+    self.terminalLayer.contentsGravity = kCAGravityResizeAspectFill;
+    self.terminalLayer.hidden = YES;
+    [self.layer addSublayer:self.terminalLayer];
+    // Image frames must replace one another, not cross-fade for the default
+    // quarter-second Core Animation transaction duration.
+    self.terminalLayer.actions = @{@"contents":NSNull.null, @"hidden":NSNull.null};
+    self.webLayer = [CALayer layer];
+    self.webLayer.contentsGravity = kCAGravityResizeAspect;
+    self.webLayer.backgroundColor = NSColor.blackColor.CGColor;
+    self.webLayer.hidden = YES;
+    [self.layer addSublayer:self.webLayer];
     [self layoutVideoLayers];
 }
 
 - (void)startAnimation {
     [super startAnimation];
+    // Construction paints the existing PNG immediately. Metal is needed only
+    // for live presentation; do not compile its pipeline before the first frame.
+    self.sharedSurfacePresentationEnabled = YES;
 
     // ScreenSaverView instances can be reused. Refresh only when the effective
     // paths or scale mode changed so a pre-rolled first frame is preserved.
-    [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
+    [self syncTerminalFrame];
+    [self syncWebFrame];
+    if (!self.terminalModeActive && !self.webModeActive) {
+        [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
+    }
     [self syncRuntimePauseState];
-    if (!self.runtimePaused) {
+    if (!self.runtimePaused && !self.terminalModeActive && !self.webModeActive) {
         [self.player playImmediatelyAtRate:self.playbackRate];
     }
 }
@@ -92,7 +168,16 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     // cross-process Stop contract: ScreenSaverView is a separate process from
     // AuraWallpaperAgent, so the agent's CALayer pause alone cannot stop this
     // player when macOS enters the secure Lock Screen.
+    BOOL hadLiveSource = self.terminalModeActive || self.webModeActive;
     [self syncRuntimePauseState];
+    [self syncTerminalFrame];
+    [self syncWebFrame];
+    if (hadLiveSource && !self.terminalModeActive && !self.webModeActive) {
+        // A route can expire after the initial video setup was skipped.
+        [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
+        [self syncRuntimePauseState];
+        if (!self.runtimePaused) [self.player playImmediatelyAtRate:self.playbackRate];
+    }
 }
 
 - (void)runtimeCommandDidChange:(NSNotification *)notification {
@@ -100,9 +185,13 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     // Hop to the screen-saver view's thread so the player is paused before
     // the next secure-surface refresh, without waiting for animateOneFrame.
     dispatch_async(dispatch_get_main_queue(), ^{
+        [self syncTerminalFrame];
+        [self syncWebFrame];
+        if (!self.terminalModeActive && !self.webModeActive) {
+            [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
+        }
         [self syncRuntimePauseState];
-        [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
-        if (!self.runtimePaused) {
+        if (!self.runtimePaused && !self.terminalModeActive && !self.webModeActive) {
             [self.player playImmediatelyAtRate:self.playbackRate];
         }
     });
@@ -126,7 +215,194 @@ static NSString * const AuraFlowRuntimeCommandNotification =
     [CATransaction setDisableActions:YES];
     self.playerLayer.frame = self.bounds;
     self.fallbackLayer.frame = self.bounds;
+    self.terminalLayer.frame = self.bounds;
+    self.terminalSurfaceLayer.frame = self.bounds;
+    self.terminalSurfaceLayer.contentsScale = self.window.backingScaleFactor ?: NSScreen.mainScreen.backingScaleFactor;
+    self.webLayer.frame = self.bounds;
     [CATransaction commit];
+}
+
+- (NSURL *)terminalRuntimeURLForFile:(NSString *)name {
+    // legacyScreenSaver may run with a container HOME. Terminal frames are
+    // published by the user's helper, not into the extension's container.
+    static NSString *home;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        struct passwd account;
+        struct passwd *resolved = NULL;
+        char buffer[16384];
+        home = NSHomeDirectory();
+        if (getpwuid_r(getuid(), &account, buffer, sizeof(buffer), &resolved) == 0 &&
+            resolved != NULL && resolved->pw_dir != NULL) {
+            home = [NSString stringWithUTF8String:resolved->pw_dir] ?: home;
+        }
+    });
+    NSString *path = [home stringByAppendingPathComponent:
+        [@"Library/Application Support/AuraFlow/terminal-wallpaper"
+            stringByAppendingPathComponent:name]];
+    return [NSURL fileURLWithPath:path];
+}
+
+- (BOOL)terminalAgentIsAlive {
+    NSURL *auraRoot = [[[self terminalRuntimeURLForFile:@"unused"] URLByDeletingLastPathComponent] URLByDeletingLastPathComponent];
+    NSDictionary *config = [self JSONDictionaryAtURL:[auraRoot URLByAppendingPathComponent:@"config.json"]];
+    if ([config[@"show_on_lock_screen"] isEqual:@NO]) return NO;
+    NSDictionary *heartbeat = [self JSONDictionaryAtURL:
+        [self terminalRuntimeURLForFile:@"lock-screen-heartbeat.json"]];
+    NSNumber *pid = heartbeat[@"pid"];
+    NSNumber *updatedAt = heartbeat[@"updatedAt"];
+    if (![pid isKindOfClass:NSNumber.class] ||
+        ![updatedAt isKindOfClass:NSNumber.class] || pid.intValue <= 0 ||
+        updatedAt.doubleValue <= 0) {
+        return NO;
+    }
+    // macOS can App Nap an idle/static TUI helper while the session is locked.
+    // Its last frame is still valid as long as that helper process lives;
+    // requiring a fresh timer tick made the Lock Screen turn blank after 6 s.
+    return kill(pid.intValue, 0) == 0 || errno == EPERM;
+}
+
+// Web owns a separate route/lease. Never borrow terminal publications or the
+// ordinary video fallback configuration for an imported HTML wallpaper.
+- (void)syncWebFrame {
+    NSURL *auraRoot = [[[self terminalRuntimeURLForFile:@"unused"] URLByDeletingLastPathComponent] URLByDeletingLastPathComponent];
+    NSURL *root = [auraRoot URLByAppendingPathComponent:@"wallpaper-engine/runtime" isDirectory:YES];
+    NSDictionary *status = [self JSONDictionaryAtURL:[root URLByAppendingPathComponent:@"status.json"]];
+    NSString *route = [NSString stringWithContentsOfURL:[root URLByAppendingPathComponent:@"route-active"] encoding:NSUTF8StringEncoding error:nil];
+    NSNumber *pid = status[@"pid"];
+    NSString *generation = status[@"generation"];
+    NSDictionary *frames = status[@"frames"];
+    char processPath[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    BOOL ownsProcess = [pid isKindOfClass:NSNumber.class] && pid.intValue > 0 &&
+        proc_pidpath(pid.intValue, processPath, sizeof(processPath)) > 0 &&
+        [[NSString stringWithUTF8String:processPath].lastPathComponent isEqualToString:@"AuraWebWallpaperAgent"];
+    BOOL valid = [pid isKindOfClass:NSNumber.class] && pid.intValue > 0 &&
+        ownsProcess &&
+        [generation isKindOfClass:NSString.class] && [route isEqualToString:generation] &&
+        [frames isKindOfClass:NSDictionary.class];
+    NSString *display = [self.window.screen.deviceDescription[@"NSScreenNumber"] stringValue];
+    NSString *path = valid ? ((display ? frames[display] : nil) ?: frames.allValues.firstObject) : nil;
+    if (![path isKindOfClass:NSString.class] || ![path hasPrefix:[root.path stringByAppendingString:@"/"]]) {
+        if (self.webModeActive) {
+            self.webLayer.hidden = YES; self.webLayer.contents = nil;
+            self.webModeActive = NO; self.webFrameRevision = nil;
+            if (!self.runtimePaused && !self.terminalModeActive) [self.player playImmediatelyAtRate:self.playbackRate];
+        }
+        return;
+    }
+    NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+    if (![self.webFrameRevision hasPrefix:[generation stringByAppendingString:@":"]]) {
+        self.webLayer.contents = nil; self.webLayer.hidden = YES;
+        self.webModeActive = NO;
+    }
+    NSString *revision = [NSString stringWithFormat:@"%@:%@:%0.9f", generation, path, [attributes[NSFileModificationDate] timeIntervalSince1970]];
+    if (![revision isEqualToString:self.webFrameRevision]) {
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:path], NULL);
+        if (source != NULL) {
+            CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+            if (image != NULL) {
+                self.webLayer.contents = (__bridge id)image; self.webFrameRevision = revision;
+                CGImageRelease(image);
+            }
+            CFRelease(source);
+        }
+    }
+    if (self.webLayer.contents != nil) {
+        self.webModeActive = YES; self.webLayer.hidden = NO; [self.player pause];
+    }
+}
+
+- (void)syncTerminalFrame {
+    NSURL *frameURL = [self terminalRuntimeURLForFile:@"lock-screen-frame.png"];
+    BOOL alive = [self terminalAgentIsAlive];
+    BOOL readable = [[NSFileManager defaultManager] isReadableFileAtPath:frameURL.path];
+    NSString *diagnostic = [NSString stringWithFormat:@"alive=%d readable=%d", alive, readable];
+    if (![diagnostic isEqualToString:self.terminalDiagnosticState]) {
+        self.terminalDiagnosticState = diagnostic;
+        NSLog(@"AuraFlow terminal saver %@ path=%@", diagnostic, frameURL.path);
+    }
+    if (!alive) {
+        self.terminalSurfaceLayer.hidden = YES;
+        [self.terminalSurfaceLayer resetSource];
+        if (self.terminalModeActive) {
+            self.terminalModeActive = NO;
+            self.terminalLayer.hidden = YES;
+            self.terminalFrameRevision = nil;
+            if (!self.runtimePaused && self.player != nil) {
+                [self.player playImmediatelyAtRate:self.playbackRate];
+            }
+        }
+        return;
+    }
+
+    NSDictionary *terminalConfig = [self JSONDictionaryAtURL:[self terminalRuntimeURLForFile:@"config.json"]];
+    id render = terminalConfig[@"render"];
+    id configuredMode = [render isKindOfClass:NSDictionary.class] ? render[@"scaleMode"] : nil;
+    NSString *mode = [configuredMode isKindOfClass:NSString.class] ? configuredMode : @"fill";
+    id fps = [render isKindOfClass:NSDictionary.class] ? render[@"maxFPS"] : nil;
+    if ([fps isKindOfClass:NSNumber.class]) self.animationTimeInterval = 1.0 / MAX(1, MIN(60, [fps integerValue]));
+    NSDictionary *heartbeat = [self JSONDictionaryAtURL:[self terminalRuntimeURLForFile:@"lock-screen-heartbeat.json"]];
+    NSDictionary *surface = [self JSONDictionaryAtURL:[self terminalRuntimeURLForFile:@"shared-frame.json"]];
+    if (self.sharedSurfacePresentationEnabled && self.terminalSurfaceLayer == nil &&
+        [surface[@"surfaceID"] isKindOfClass:NSNumber.class] &&
+        [surface[@"surfaceID"] unsignedIntValue] > 0 &&
+        [surface[@"agentPID"] isKindOfClass:NSNumber.class] &&
+        [surface[@"agentPID"] intValue] == [heartbeat[@"pid"] intValue]) {
+        self.terminalSurfaceLayer = [AuraFlowTerminalSurfaceLayer layer];
+        self.terminalSurfaceLayer.hidden = YES;
+        [self.layer insertSublayer:self.terminalSurfaceLayer below:self.webLayer];
+        [self layoutVideoLayers];
+    }
+    NSDictionary *background = [render isKindOfClass:NSDictionary.class] && [render[@"background"] isKindOfClass:NSDictionary.class]
+        ? render[@"background"] : @{};
+    id configuredOpacity = [render isKindOfClass:NSDictionary.class] ? render[@"backgroundOpacity"] : nil;
+    double opacity = [configuredOpacity respondsToSelector:@selector(doubleValue)] ? [configuredOpacity doubleValue] : 1;
+    NSColor *canvasColor = [NSColor colorWithRed:[background[@"red"] doubleValue] * opacity
+        green:[background[@"green"] doubleValue] * opacity blue:[background[@"blue"] doubleValue] * opacity alpha:1];
+    self.terminalLayer.backgroundColor = canvasColor.CGColor;
+    self.terminalSurfaceLayer.backgroundColor = canvasColor.CGColor;
+    if ([self.terminalSurfaceLayer presentDescriptor:surface ?: @{}
+        expectedAgentPID:[heartbeat[@"pid"] intValue] scaleMode:mode]) {
+        self.terminalModeActive = YES;
+        self.terminalSurfaceLayer.hidden = NO;
+        self.terminalLayer.hidden = YES;
+        [self.player pause];
+        return;
+    }
+    self.terminalSurfaceLayer.hidden = YES;
+    self.terminalLayer.contentsGravity = [mode isEqualToString:@"stretch"]
+        ? kCAGravityResize : ([mode isEqualToString:@"fill"] ? kCAGravityResizeAspectFill : kCAGravityResizeAspect);
+    if (!readable) return;
+
+    // PNGs are replaced atomically several times per second. The generic
+    // revision formatter rounds NSDate to whole seconds, which would make
+    // animation appear frozen whenever consecutive frames have equal size.
+    NSDictionary<NSFileAttributeKey, id> *frameAttributes =
+        [[NSFileManager defaultManager] attributesOfItemAtPath:frameURL.path error:nil];
+    NSString *revision = [NSString stringWithFormat:@"%@:%@:%0.9f",
+        frameAttributes[NSFileSystemFileNumber],
+        frameAttributes[NSFileSize],
+        [frameAttributes[NSFileModificationDate] timeIntervalSince1970]];
+    if (![revision isEqualToString:self.terminalFrameRevision]) {
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)frameURL, NULL);
+        if (source != NULL) {
+            CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+            if (image != NULL) {
+                self.terminalLayer.contents = (__bridge id)image;
+                self.terminalFrameRevision = revision;
+                CGImageRelease(image);
+            }
+            CFRelease(source);
+        }
+    }
+    if (self.terminalLayer.contents != nil) {
+        if (!self.terminalModeActive) {
+            NSLog(@"AuraFlow terminal saver displaying frame %@", self.terminalFrameRevision);
+        }
+        self.terminalModeActive = YES;
+        self.terminalLayer.hidden = NO;
+        [self.player pause];
+    }
 }
 
 - (NSDictionary<NSString *, NSString *> *)resolvedConfiguration {
@@ -174,6 +450,21 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         runtimeVideoURL =
             [self existingURLForConfiguredValue:runtimeConfig[@"video_path"]
                                         relativeTo:applicationSupportURL];
+    }
+    if (runtimeVideoURL != nil && [runtimeConfig[@"blend_interpolation"] boolValue]) {
+        NSDictionary *sources = [self JSONDictionaryAtURL:
+            [applicationSupportURL URLByAppendingPathComponent:@"FrameBlendCache/sources.json"]];
+        NSDictionary *entry = sources[runtimeVideoURL.path];
+        if ([entry isKindOfClass:NSDictionary.class]) {
+            NSDictionary *attributes = [[NSFileManager defaultManager]
+                attributesOfItemAtPath:runtimeVideoURL.path error:nil];
+            double modified = [attributes[NSFileModificationDate] timeIntervalSince1970];
+            BOOL matches = [entry[@"size"] isEqual:attributes[NSFileSize]]
+                && fabs([entry[@"modified"] doubleValue] - modified) < 0.000001;
+            NSURL *prepared = matches ? [self existingURLForConfiguredValue:entry[@"path"]
+                relativeTo:applicationSupportURL] : nil;
+            if (prepared != nil) { runtimeVideoURL = prepared; }
+        }
     }
     if (runtimeVideoURL != nil) {
         videoURL = runtimeVideoURL;
@@ -231,7 +522,9 @@ static NSString * const AuraFlowRuntimeCommandNotification =
 
     self.runtimePaused = NO;
     [self resumePlayerLayer];
-    [self.player playImmediatelyAtRate:self.playbackRate];
+    if (!self.terminalModeActive && !self.webModeActive) {
+        [self.player playImmediatelyAtRate:self.playbackRate];
+    }
 }
 
 - (void)pausePlayerLayerAtCurrentFrame {
@@ -271,15 +564,44 @@ static NSString * const AuraFlowRuntimeCommandNotification =
         return @{};
     }
 
+    NSString *path = URL.path;
+    AuraFlowJSONMetadata before, after;
+    if (!AuraFlowJSONMetadataAtURL(URL, &before)) {
+        [self.jsonCache removeObjectForKey:path];
+        return @{};
+    }
+    CFTimeInterval now = CACurrentMediaTime();
+    AuraFlowJSONCacheEntry *cached = self.jsonCache[path];
+    if (cached && now >= cached.createdAt && now - cached.createdAt < 60
+        && AuraFlowJSONMetadataEqual(before, cached.metadata)) {
+        return cached.dictionary;
+    }
     NSData *data = [NSData dataWithContentsOfURL:URL
                                          options:NSDataReadingMappedIfSafe
                                            error:nil];
     if (data == nil) {
+        [self.jsonCache removeObjectForKey:path];
         return @{};
     }
 
     id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    return [object isKindOfClass:NSDictionary.class] ? object : @{};
+    if (![object isKindOfClass:NSDictionary.class]) {
+        [self.jsonCache removeObjectForKey:path];
+        return @{};
+    }
+    // Atomic replacement, same-size edits and permission changes invalidate
+    // immediately. Never retain a read that raced a writer; no per-frame logs.
+    if (AuraFlowJSONMetadataAtURL(URL, &after) && AuraFlowJSONMetadataEqual(before, after)) {
+        if (self.jsonCache.count >= 16) [self.jsonCache removeAllObjects];
+        AuraFlowJSONCacheEntry *entry = [AuraFlowJSONCacheEntry new];
+        entry.metadata = before;
+        entry.createdAt = now;
+        entry.dictionary = object;
+        self.jsonCache[path] = entry;
+    } else {
+        [self.jsonCache removeObjectForKey:path];
+    }
+    return object;
 }
 
 - (nullable NSURL *)existingURLForConfiguredValue:(id)value
@@ -334,7 +656,7 @@ static NSString * const AuraFlowRuntimeCommandNotification =
                                    [self fileRevisionAtPath:configuration[@"video_path"]],
                                    [self fileRevisionAtPath:configuration[@"fallback_path"]]];
     if (!force && [signature isEqualToString:self.configurationSignature]) {
-        if (playbackRateChanged && !self.runtimePaused && self.player != nil) {
+        if (playbackRateChanged && !self.runtimePaused && !self.terminalModeActive && !self.webModeActive && self.player != nil) {
             [self.player playImmediatelyAtRate:self.playbackRate];
         }
         return;

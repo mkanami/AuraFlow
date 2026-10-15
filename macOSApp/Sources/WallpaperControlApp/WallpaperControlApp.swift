@@ -1,14 +1,52 @@
 import AppKit
+import AuraTerminalWallpaperCore
 import SwiftUI
 
 @MainActor
 final class AuraFlowApplication {
     static let shared = AuraFlowApplication()
 
-    let viewModel = AppViewModel()
+    let previewSelectionStore: WallpaperPreviewSelectionStore
+    let terminalWallpaperViewModel: TerminalWallpaperViewModel
+    let terminalPreviewModel: TerminalWallpaperPreviewModel
+    let viewModel: AppViewModel
     private var mainWindow: NSWindow?
+    private var previewVisibilityMonitor: WallpaperPreviewVisibilityMonitor?
 
-    private init() {}
+    private init() {
+        let previewStore = WallpaperPreviewSelectionStore()
+        let runtimeStore = TerminalWallpaperRuntimeStore()
+        if !previewStore.hasSavedSelection,
+           let status = try? NativeTerminalWallpaperController().status(),
+           status.running {
+            previewStore.selectTerminal(status.config)
+        }
+        previewSelectionStore = previewStore
+        let previewModel = TerminalWallpaperPreviewModel(
+            selectionStore: previewStore,
+            runtimeStore: runtimeStore
+        )
+        terminalPreviewModel = previewModel
+        terminalWallpaperViewModel = TerminalWallpaperViewModel(
+            previewSelectionStore: previewStore,
+            libraryStore: TerminalAnimationLibraryStore(url: TerminalAnimationLibraryStore.defaultURL),
+            programSearchProvider: SystemTerminalProgramSearchProvider(),
+            previewReady: { [weak previewModel] configuration, operationID in
+                guard let previewModel else { throw CancellationError() }
+                try await previewModel.waitUntilReady(configuration: configuration, operationID: operationID)
+            }
+        )
+        viewModel = AppViewModel(previewSelectionStore: previewStore)
+        viewModel.connectTerminalScaleControls(terminalWallpaperViewModel)
+        viewModel.terminalStartAction = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.start() }
+        viewModel.terminalRemoveAction = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.stop() }
+        viewModel.terminalCanStart = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.canStart == true }
+        viewModel.terminalIsActive = { [weak terminalWallpaperViewModel] in terminalWallpaperViewModel?.status.running == true }
+        previewVisibilityMonitor = WallpaperPreviewVisibilityMonitor { [weak viewModel, weak previewModel] visible in
+            viewModel?.setPreviewWindowVisible(visible)
+            previewModel?.previewVisibilityDidChange()
+        }
+    }
 
     func showMainWindow() {
         let window = mainWindow ?? makeMainWindow()
@@ -46,7 +84,12 @@ final class AuraFlowApplication {
             defer: false
         )
         window.title = "AuraFlow"
-        window.contentViewController = NSHostingController(rootView: ContentView(viewModel: self.viewModel))
+        window.contentViewController = NSHostingController(rootView: ContentView(
+            viewModel: self.viewModel,
+            terminalWallpaperViewModel: terminalWallpaperViewModel,
+            terminalPreviewModel: terminalPreviewModel,
+            previewSelectionStore: previewSelectionStore
+        ))
         configureWindowForClientDecorations(window)
         return window
     }
@@ -96,19 +139,39 @@ struct WallpaperControlApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarControls(viewModel: viewModel)
+            MenuBarControls(
+                viewModel: viewModel,
+                terminalWallpaperViewModel: AuraFlowApplication.shared.terminalWallpaperViewModel,
+                previewSelectionStore: AuraFlowApplication.shared.previewSelectionStore
+            )
         } label: {
             MenuBarIcon()
         }
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
+
     }
 }
 
 private struct MenuBarControls: View {
     @ObservedObject var viewModel: AppViewModel
+    @ObservedObject var terminalWallpaperViewModel: TerminalWallpaperViewModel
+    @ObservedObject var previewSelectionStore: WallpaperPreviewSelectionStore
     @State private var menuOpenedAt: Date = .distantPast
+
+    private var terminalRuntimeActive: Bool { terminalWallpaperViewModel.status.running }
+    private var videoRuntimeActive: Bool { viewModel.hasInstalledWallpaperSessionForControls }
+    private var removeTarget: WallpaperMenuRuntimeTarget {
+        WallpaperMenuActionPolicy.removeTarget(
+            terminalRuntimeActive: terminalRuntimeActive,
+            videoRuntimeActive: videoRuntimeActive,
+            webRuntimeActive: viewModel.wallpaperEngine.runtimeActive
+        )
+    }
+    private var canStartSelectedPreview: Bool {
+        viewModel.canStart && !terminalWallpaperViewModel.isBusy
+    }
 
     var body: some View {
         Button("Open AuraFlow") {
@@ -123,7 +186,7 @@ private struct MenuBarControls: View {
                 viewModel.start()
             }
         }
-        .disabled(!viewModel.canStart)
+        .disabled(!canStartSelectedPreview)
 
         Button("Lock") {
             guard allowActionAfterMenuOpen else { return }
@@ -147,17 +210,29 @@ private struct MenuBarControls: View {
                 viewModel.clearWallpaper()
             }
         }
-        .disabled(!viewModel.canClearWallpaper)
+        .disabled(
+            removeTarget == .none
+                || viewModel.wallpaperEngine.isBusy
+                || (removeTarget == .video && (!viewModel.canClearWallpaper || viewModel.isBusy || viewModel.isLifecycleBusy))
+                || (removeTarget == .terminal && terminalWallpaperViewModel.isBusy)
+        )
 
-        Button("Change Wallpaper…") {
-            guard allowActionAfterMenuOpen else { return }
-            changeWallpaperFromMenuBar()
+        Menu("Change Wallpaper…") {
+            Button("Choose video or image…") {
+                guard allowActionAfterMenuOpen else { return }
+                changeWallpaperFromMenuBar()
+            }
         }
         .disabled(!viewModel.canClearWallpaper)
 
         Button("Wallpaper Catalog") {
             guard allowActionAfterMenuOpen else { return }
             openCatalogFromMenuBar()
+        }
+
+        Button("Terminal Wallpaper…") {
+            guard allowActionAfterMenuOpen else { return }
+            openTerminalWallpaper()
         }
 
         Divider()
@@ -167,6 +242,7 @@ private struct MenuBarControls: View {
         }
         .onAppear {
             menuOpenedAt = Date()
+            terminalWallpaperViewModel.refresh()
         }
     }
 
@@ -190,6 +266,14 @@ private struct MenuBarControls: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             viewModel.openCatalogFromMenuBar()
         }
+    }
+
+    private func openTerminalWallpaper() {
+        openMainWindow()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            viewModel.openTerminalWallpaper()
+        }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func performMenuBarActionAfterDismiss(_ action: @escaping () -> Void) {

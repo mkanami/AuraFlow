@@ -217,12 +217,28 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     func installForDesktopAgent(videoURL: URL) async throws {
+        try await installForDesktopAgent(
+            videoURL: videoURL,
+            playbackSpeed: 1.0,
+            scaleMode: .fill
+        )
+    }
+
+    func installForDesktopAgent(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
         if modernIsUsable {
             // AuraWallpaperAgent owns the visible Desktop. Install the native
             // route without replacing macOS's Desktop/Linked selections.
             try await legacy.install(videoURL: videoURL)
             do {
-                try await modern.installForDesktopAgent(videoURL: videoURL)
+                try await modern.installForDesktopAgent(
+                    videoURL: videoURL,
+                    playbackSpeed: playbackSpeed,
+                    scaleMode: scaleMode
+                )
             } catch {
                 try? legacy.uninstall()
                 throw error
@@ -233,6 +249,18 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     func installLockScreenOnly(videoURL: URL) async throws {
+        try await installLockScreenOnly(
+            videoURL: videoURL,
+            playbackSpeed: 1.0,
+            scaleMode: .fill
+        )
+    }
+
+    func installLockScreenOnly(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
         let canUseModern = modernIsUsable
         let modernAvailable = modern.capabilities.isAvailable
         let bridgeAvailable = nativeBridgeCapabilities.isAvailable
@@ -241,7 +269,12 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
             "Lock Screen adapter install modernUsable=\(canUseModern, privacy: .public) modernAvailable=\(modernAvailable, privacy: .public) nativeBridge=\(bridgeAvailable, privacy: .public) legacyAvailable=\(legacyAvailable, privacy: .public)"
         )
         if canUseModern {
-            try await installModernAndLegacy(videoURL: videoURL, lockScreenOnly: true)
+            try await installModernAndLegacy(
+                videoURL: videoURL,
+                playbackSpeed: playbackSpeed,
+                scaleMode: scaleMode,
+                lockScreenOnly: true
+            )
         } else if legacy.capabilities.isAvailable {
             try await legacy.installLockScreenOnly(videoURL: videoURL)
         } else {
@@ -293,7 +326,23 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
     }
 
     func prepareLockScreenMedia(videoURL: URL) async throws {
-        try await selectedPlatform.prepareLockScreenMedia(videoURL: videoURL)
+        try await prepareLockScreenMedia(
+            videoURL: videoURL,
+            playbackSpeed: 1.0,
+            scaleMode: .fit
+        )
+    }
+
+    func prepareLockScreenMedia(
+        videoURL: URL,
+        playbackSpeed: Double,
+        scaleMode: WallpaperScaleMode
+    ) async throws {
+        try await selectedPlatform.prepareLockScreenMedia(
+            videoURL: videoURL,
+            playbackSpeed: playbackSpeed,
+            scaleMode: scaleMode
+        )
     }
 
     func updateScaleMode(
@@ -439,6 +488,8 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
 
     private func installModernAndLegacy(
         videoURL: URL,
+        playbackSpeed: Double = 1.0,
+        scaleMode: WallpaperScaleMode = .fill,
         lockScreenOnly: Bool
     ) async throws {
         // The legacy saver is the compatibility companion for the native
@@ -447,7 +498,11 @@ final class WallpaperPlatformAdapter: LockScreenSaverInstalling {
 
         do {
             if lockScreenOnly {
-                try await modern.installLockScreenOnly(videoURL: videoURL)
+                try await modern.installLockScreenOnly(
+                    videoURL: videoURL,
+                    playbackSpeed: playbackSpeed,
+                    scaleMode: scaleMode
+                )
             } else {
                 try await modern.install(videoURL: videoURL)
             }

@@ -165,12 +165,17 @@ compile_architecture() {
     -isysroot "$SDK_PATH" \
     -mmacosx-version-min="$MINIMUM_MACOS" \
     -I"$SOURCE_DIR" \
+    -I"$ROOT_DIR/macOSApp/Sources/AuraLockScreenRendering/include" \
     -bundle \
     -framework AppKit \
     -framework AVFoundation \
+    -framework ImageIO \
     -framework QuartzCore \
+    -framework Metal \
+    -framework IOSurface \
     -framework ScreenSaver \
     "$SOURCE_DIR/AuraFlowLockScreen.m" \
+    "$ROOT_DIR/macOSApp/Sources/AuraLockScreenRendering/AuraFlowTerminalSurface.m" \
     -o "$output"
 }
 
