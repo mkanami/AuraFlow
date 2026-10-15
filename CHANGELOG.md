@@ -12,4 +12,4 @@
 - Reduced hidden-preview work, bounded font caches, reusable rendering resources, and cached file metadata.
 - Fixed a shutdown crash when the wallpaper-store monitor stopped inside its own callback.
 
-Release artifacts are published only after CI, Developer ID signing, Apple notarization, and artifact smoke checks succeed.
+Source releases follow successful CI. Current distribution archives use ad-hoc signatures and are uploaded manually; they are not Apple-notarized. The optional Developer ID workflow retains signing, notarization and artifact smoke checks for future automated distribution.

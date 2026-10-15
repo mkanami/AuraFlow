@@ -1,9 +1,9 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  # Binary uploads are manual for the current release. This optional workflow
+  # is explicitly dispatched on a version tag when Developer ID is configured.
+  workflow_dispatch:
 
 permissions:
   contents: write
