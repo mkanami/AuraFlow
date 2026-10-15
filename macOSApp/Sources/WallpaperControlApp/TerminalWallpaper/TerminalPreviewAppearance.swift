@@ -283,7 +283,7 @@ final class TerminalAppearanceGPUSampler: @unchecked Sendable {
     }
 
     func sample(descriptor: TerminalSharedFrameDescriptor, viewport: CGSize,
-                completion: @escaping (AdaptiveGlassAppearance?) -> Void) -> Bool {
+                completion: @escaping @Sendable (AdaptiveGlassAppearance?) -> Void) -> Bool {
         lock.lock()
         guard !busy else { lock.unlock(); return false }
         busy = true
@@ -326,6 +326,7 @@ final class TerminalAppearanceGPUSampler: @unchecked Sendable {
             analysisQueue.async {
                 defer { self.finish() }
                 var bytes = [UInt8](repeating: 0, count: Self.width * Self.height * 4)
+                guard let output = self.output else { completion(nil); return }
                 output.getBytes(&bytes, bytesPerRow: Self.width * 4,
                     from: MTLRegionMake2D(0, 0, Self.width, Self.height), mipmapLevel: 0)
                 let provider = CGDataProvider(data: Data(bytes) as CFData)

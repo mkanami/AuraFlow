@@ -9,22 +9,26 @@ enum TerminalFontResolver {
         let size: CGFloat
         let bold: Bool
     }
-    private static let cacheLock = NSLock()
-    private static var cachedFonts: [Key: CTFont] = [:]
+    // The shared cache owns its lock; every dictionary access below holds it.
+    private final class Cache: @unchecked Sendable {
+        let lock = NSLock()
+        var values: [Key: CTFont] = [:]
+    }
+    private static let cache = Cache()
 
     static func font(family: String, size: CGFloat, bold: Bool = false) -> CTFont {
         let normalizedFamily = family.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = Key(family: normalizedFamily, size: size, bold: bold)
-        cacheLock.lock()
-        let cached = cachedFonts[key]
-        cacheLock.unlock()
+        cache.lock.lock()
+        let cached = cache.values[key]
+        cache.lock.unlock()
         if let cached { return cached }
         let font = resolveFont(family: normalizedFamily, size: size, bold: bold)
-        cacheLock.lock()
+        cache.lock.lock()
         // Font-size sliders must not retain an unbounded set of fonts.
-        if cachedFonts.count >= 64 { cachedFonts.removeAll(keepingCapacity: true) }
-        cachedFonts[key] = font
-        cacheLock.unlock()
+        if cache.values.count >= 64 { cache.values.removeAll(keepingCapacity: true) }
+        cache.values[key] = font
+        cache.lock.unlock()
         return font
     }
 

@@ -32,6 +32,10 @@ final class MoeWallsBrowserResolver: NSObject {
     private var downloadContinuation: CheckedContinuation<URL, Error>?
     private var pendingDownloadDestinationURL: URL?
     private var downloadTimeoutWorkItem: DispatchWorkItem?
+    private var activeDownload: WKDownload?
+    private var downloadProgressObservation: NSKeyValueObservation?
+    private var downloadProgressHandler: CatalogDownloadProgress.Handler?
+    private var cancellationInProgress = false
 
     override init() {
         let configuration = WKWebViewConfiguration()
@@ -44,7 +48,19 @@ final class MoeWallsBrowserResolver: NSObject {
         webView.setValue(false, forKey: "drawsBackground")
     }
 
-    func downloadWallpaper(from pageURL: URL, to destinationURL: URL) async throws -> URL {
+    func downloadWallpaper(from pageURL: URL, to destinationURL: URL,
+                           progress: CatalogDownloadProgress.Handler? = nil) async throws -> URL {
+        downloadProgressHandler = progress
+        defer { downloadProgressHandler = nil }
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await performDownloadWallpaper(from: pageURL, to: destinationURL)
+        } onCancel: {
+            Task { @MainActor [self] in cancelCurrentOperation() }
+        }
+    }
+
+    private func performDownloadWallpaper(from pageURL: URL, to destinationURL: URL) async throws -> URL {
         try await load(pageURL: pageURL)
         try await prepareDownloadState()
         var lastError: Error?
@@ -61,10 +77,12 @@ final class MoeWallsBrowserResolver: NSObject {
                     destinationURL: destinationURL
                 )
             } catch {
+                try Task.checkCancellation()
                 lastError = error
             }
         }
 
+        try Task.checkCancellation()
         do {
             let playableSourceURL = try await waitForPlayableSourceURL(pageURL: pageURL)
             do {
@@ -75,9 +93,11 @@ final class MoeWallsBrowserResolver: NSObject {
                     destinationURL: destinationURL
                 )
             } catch {
+                try Task.checkCancellation()
                 lastError = error
             }
         } catch {
+            try Task.checkCancellation()
         }
 
         // A JavaScript click can be intercepted by WebKit without producing
@@ -88,6 +108,7 @@ final class MoeWallsBrowserResolver: NSObject {
         do {
             return try await startBrowserManagedDownload(to: destinationURL)
         } catch {
+            try Task.checkCancellation()
             lastError = error
         }
 
@@ -101,6 +122,8 @@ final class MoeWallsBrowserResolver: NSObject {
     }
 
     private func load(pageURL: URL) async throws {
+        try Task.checkCancellation()
+        cancellationInProgress = false
         var request = URLRequest(url: pageURL)
         request.timeoutInterval = 60
         request.setValue(
@@ -108,9 +131,14 @@ final class MoeWallsBrowserResolver: NSObject {
             forHTTPHeaderField: "User-Agent"
         )
 
-        try await withCheckedThrowingContinuation { continuation in
-            navigationContinuation = continuation
-            webView.load(request)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                navigationContinuation = continuation
+                webView.load(request)
+            }
+        } onCancel: {
+            Task { @MainActor [self] in cancelCurrentOperation() }
         }
     }
 
@@ -124,6 +152,7 @@ final class MoeWallsBrowserResolver: NSObject {
         """
 
         for _ in 0..<maxAttempts {
+            try Task.checkCancellation()
             if let value = try await webView.evaluateJavaScript(script) as? String,
                !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                !value.contains("facebook.com/sharer"),
@@ -150,6 +179,7 @@ final class MoeWallsBrowserResolver: NSObject {
         """
 
         for _ in 0..<80 {
+            try Task.checkCancellation()
             if let rawValue = try await webView.evaluateJavaScript(script) as? String,
                let url = try? Self.resolvedDownloadURL(from: rawValue, pageURL: pageURL) {
                 return url
@@ -181,10 +211,12 @@ final class MoeWallsBrowserResolver: NSObject {
     }
 
     private func startBrowserManagedDownload(to destinationURL: URL) async throws -> URL {
+        try Task.checkCancellation()
         pendingDownloadDestinationURL = destinationURL
         downloadTimeoutWorkItem?.cancel()
 
         return try await withCheckedThrowingContinuation { continuation in
+            guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
             downloadContinuation = continuation
 
             let timeout = DispatchWorkItem { [weak self] in
@@ -217,6 +249,8 @@ final class MoeWallsBrowserResolver: NSObject {
     }
 
     private func finishDownload(with result: Result<URL, Error>) {
+        downloadProgressObservation = nil
+        activeDownload = nil
         downloadTimeoutWorkItem?.cancel()
         downloadTimeoutWorkItem = nil
 
@@ -229,6 +263,35 @@ final class MoeWallsBrowserResolver: NSObject {
             continuation?.resume(returning: url)
         case .failure(let error):
             continuation?.resume(throwing: error)
+        }
+    }
+
+    private func cancelCurrentOperation() {
+        guard !cancellationInProgress else { return }
+        cancellationInProgress = true
+        webView.stopLoading()
+        popupWebViews.forEach { $0.stopLoading() }
+        navigationContinuation?.resume(throwing: CancellationError())
+        navigationContinuation = nil
+        let destination = pendingDownloadDestinationURL
+        if let activeDownload {
+            downloadProgressObservation = nil
+            activeDownload.cancel { [self] _ in
+                if let destination { try? FileManager.default.removeItem(at: destination) }
+                finishDownload(with: .failure(CancellationError()))
+            }
+        } else {
+            finishDownload(with: .failure(CancellationError()))
+        }
+    }
+
+    private func observe(_ download: WKDownload) {
+        guard downloadContinuation != nil else { download.cancel(nil); return }
+        activeDownload = download
+        download.delegate = self
+        let relay = CatalogDownloadProgressRelay(handler: downloadProgressHandler)
+        downloadProgressObservation = download.progress.observe(\.completedUnitCount, options: [.initial, .new]) { progress, _ in
+            relay.report(received: progress.completedUnitCount, total: progress.totalUnitCount)
         }
     }
 
@@ -298,13 +361,20 @@ final class MoeWallsBrowserResolver: NSObject {
         cookies.forEach { configuration.httpCookieStorage?.setCookie($0) }
 
         let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
         // The browser resolver already has a page-scoped token and cookies.
         // Use one regular download for this compatibility path: the range
         // assembler is optimized for stable CDN assets, while token-backed
         // responses can reject parallel range requests even though a normal
         // full response is valid.
-        let (temporaryURL, response) = try await session.download(for: request)
+        downloadProgressHandler?(.init(phase: .downloading))
+        let relay = CatalogDownloadProgressRelay(handler: downloadProgressHandler)
+        let observer = CatalogDownloadObserver(update: { received, expected, _ in
+            relay.report(received: received, total: expected)
+        })
+        let (temporaryURL, response) = try await observer.download(request: request, session: session)
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        try Task.checkCancellation()
         if let httpResponse = response as? HTTPURLResponse,
            !(200...299).contains(httpResponse.statusCode) {
             throw CatalogDownloadError.badStatus(url: downloadURL, statusCode: httpResponse.statusCode)
@@ -338,11 +408,11 @@ extension MoeWallsBrowserResolver: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
-        download.delegate = self
+        observe(download)
     }
 
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
-        download.delegate = self
+        observe(download)
     }
 }
 
@@ -383,6 +453,7 @@ extension MoeWallsBrowserResolver: WKDownloadDelegate {
     }
 
     func downloadDidFinish(_ download: WKDownload) {
+        guard !cancellationInProgress else { return }
         guard let destinationURL = pendingDownloadDestinationURL else {
             finishDownload(with: .failure(MoeWallsBrowserResolverError.downloadDestinationMissing))
             return
@@ -391,6 +462,7 @@ extension MoeWallsBrowserResolver: WKDownloadDelegate {
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        guard !cancellationInProgress else { return }
         _ = resumeData
         finishDownload(with: .failure(error))
     }

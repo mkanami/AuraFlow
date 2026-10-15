@@ -13,8 +13,12 @@ public enum TerminalFontMetrics {
         let size: Double
         let spacing: Double
     }
-    private static let cacheLock = NSLock()
-    private static var cachedMetrics: [Key: TerminalCellMetrics] = [:]
+    // The shared cache owns its lock; every dictionary access below holds it.
+    private final class Cache: @unchecked Sendable {
+        let lock = NSLock()
+        var values: [Key: TerminalCellMetrics] = [:]
+    }
+    private static let cache = Cache()
 
     public static func cellMetrics(for configuration: TerminalRenderConfiguration) -> TerminalCellMetrics {
         cellMetrics(
@@ -30,19 +34,19 @@ public enum TerminalFontMetrics {
         cellSpacing: Double = 0
     ) -> TerminalCellMetrics {
         let key = Key(family: family, size: max(pointSize, 1), spacing: max(cellSpacing, 0))
-        cacheLock.lock()
-        let cached = cachedMetrics[key]
-        cacheLock.unlock()
+        cache.lock.lock()
+        let cached = cache.values[key]
+        cache.lock.unlock()
         if let cached { return cached }
         let font = TerminalFontResolver.font(
             family: family,
             size: CGFloat(max(pointSize, 1))
         )
         let metrics = cellMetrics(font: font, cellSpacing: CGFloat(max(cellSpacing, 0)))
-        cacheLock.lock()
-        if cachedMetrics.count >= 64 { cachedMetrics.removeAll(keepingCapacity: true) }
-        cachedMetrics[key] = metrics
-        cacheLock.unlock()
+        cache.lock.lock()
+        if cache.values.count >= 64 { cache.values.removeAll(keepingCapacity: true) }
+        cache.values[key] = metrics
+        cache.lock.unlock()
         return metrics
     }
 

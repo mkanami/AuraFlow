@@ -1,0 +1,24 @@
+// Policy/IPC checks only. Never record, open an audio device or play sound.
+#include <dlfcn.h>
+#include <mach/mach.h>
+#include <servers/bootstrap.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+    void *library = dlopen("/usr/lib/libsandbox.dylib", RTLD_NOW);
+    int (*check)(pid_t, const char *, int, ...) = library ? dlsym(library, "sandbox_check") : NULL;
+    if (!check) return 2;
+    int microphone = check(getpid(), "device-microphone", 0);
+    int events = check(getpid(), "appleevent-send", 0);
+    mach_port_t audio = MACH_PORT_NULL;
+    kern_return_t lookup = bootstrap_look_up(bootstrap_port, "com.apple.audio.coreaudiod", &audio);
+    if (audio != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), audio);
+    printf("MIC:%d EVENTS:%d AUDIO:%d\n", microphone, events, lookup);
+    if (argc > 1 && strcmp(argv[1], "silent") == 0 &&
+        (microphone == 0 || events == 0 || lookup == KERN_SUCCESS)) return 3;
+    printf("\033[36mVISUAL: retained\033[0m\n");
+    return 0;
+}

@@ -22,10 +22,10 @@ struct TerminalWallpaperSectionInteractionTests {
         hosting.layoutSubtreeIfNeeded()
         try await Task.sleep(nanoseconds: 30_000_000)
 
-        // The left, middle and far right of the 64-point header all respond.
+        // The left, middle and far right of the compact header all respond.
         for (index, x) in [25.0, 270.0, 515.0].enumerated() {
             let expected = !state.isExpanded
-            try click(at: NSPoint(x: x, y: size.height - 44), in: window, eventNumber: index * 2)
+            try click(at: NSPoint(x: x, y: size.height - 36), in: window, eventNumber: index * 2)
             for _ in 0..<20 where state.isExpanded != expected {
                 try await Task.sleep(nanoseconds: 10_000_000)
             }
@@ -35,7 +35,7 @@ struct TerminalWallpaperSectionInteractionTests {
         }
 
         // The first content control sits below the header, divider and inset.
-        try click(at: NSPoint(x: 270, y: size.height - 108), in: window, eventNumber: 10)
+        try click(at: NSPoint(x: 270, y: size.height - 92), in: window, eventNumber: 10)
         for _ in 0..<20 where state.controlClicks == 0 {
             try await Task.sleep(nanoseconds: 10_000_000)
         }

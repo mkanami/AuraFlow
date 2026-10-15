@@ -7,7 +7,7 @@ import IOSurface
 import Metal
 import MetalKit
 
-struct TerminalMetalCellInstance {
+struct TerminalMetalCellInstance: Sendable {
     var rect: SIMD4<Float>
     var uv: SIMD4<Float>
     var foreground: SIMD4<Float>
@@ -15,7 +15,7 @@ struct TerminalMetalCellInstance {
     var flags: SIMD4<UInt32>
 }
 
-struct TerminalGlyphAtlasUpdate {
+struct TerminalGlyphAtlasUpdate: Sendable {
     var x: Int
     var y: Int
     var width: Int
@@ -23,12 +23,12 @@ struct TerminalGlyphAtlasUpdate {
     var pixels: Data
 }
 
-struct TerminalInstanceUpdate {
+struct TerminalInstanceUpdate: Sendable {
     var index: Int
     var value: TerminalMetalCellInstance
 }
 
-struct TerminalPreparedFrame {
+struct TerminalPreparedFrame: Sendable {
     var revision: UInt64
     var width: Int
     var height: Int
@@ -44,6 +44,20 @@ struct TerminalPreparedFrame {
     }
 }
 
+// Accessed only on a view's preparationQueue; kept separate from the
+// main-actor MTKView so preparing glyphs never reads UI-isolated state.
+private final class TerminalFramePreparationState: @unchecked Sendable {
+    let renderer: CoreTextGlyphAtlas
+    var epoch: UInt64?
+    init(atlasSize: Int) { renderer = CoreTextGlyphAtlas(atlasSize: atlasSize) }
+}
+
+// Retains the exact readback buffer until GPU completion. The callback only
+// reads it after Metal signals completion; the view does not reuse it in flight.
+private struct TerminalReadbackBuffer: @unchecked Sendable {
+    let buffer: MTLBuffer
+}
+
 public final class TerminalMetalView: MTKView {
     private static let atlasSize = 2048
 
@@ -56,10 +70,7 @@ public final class TerminalMetalView: MTKView {
         label: "com.andrijvergeles.auraflow.terminal-frame-prepare",
         qos: .userInitiated
     )
-    private let frameRenderer = CoreTextGlyphAtlas(atlasSize: TerminalMetalView.atlasSize)
-    // Owned by preparationQueue. An invalidated preparation must not leave
-    // incremental atlas/cell state that was never uploaded to the GPU.
-    private var preparationEpoch: UInt64?
+    private let preparationState = TerminalFramePreparationState(atlasSize: TerminalMetalView.atlasSize)
     private var frameTexture: MTLTexture?
     private var frameSurface: IOSurfaceRef?
     private var frameSurfaceDescriptor: TerminalSharedFrameDescriptor?
@@ -338,13 +349,13 @@ public final class TerminalMetalView: MTKView {
             logicalWidth: sourceWidth,
             logicalHeight: sourceHeight
         )
+        let state = preparationState
         preparationQueue.async { [weak self] in
-            guard let self else { return }
-            if self.preparationEpoch != epoch {
-                self.frameRenderer.invalidate()
-                self.preparationEpoch = epoch
+            if state.epoch != epoch {
+                state.renderer.invalidate()
+                state.epoch = epoch
             }
-            let prepared = self.frameRenderer.prepare(
+            let prepared = state.renderer.prepare(
                 snapshot: snapshot,
                 configuration: configuration,
                 width: width,
@@ -399,7 +410,8 @@ public final class TerminalMetalView: MTKView {
                 kIOSurfaceBytesPerRow as String: bytesPerRow,
                 kIOSurfacePixelFormat as String: OSType(0x42475241), // BGRA
                 kIOSurfaceAllocSize as String: bytesPerRow * prepared.height,
-                kIOSurfaceIsGlobal as String: true,
+                // Required by the existing IOSurface ID transport to the Lock Screen.
+                "IOSurfaceIsGlobal": true,
             ]
             guard let surface = IOSurfaceCreate(surfaceProperties as CFDictionary) else { return }
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -541,12 +553,13 @@ public final class TerminalMetalView: MTKView {
             destinationBytesPerImage: requiredBytes
         )
         blit.endEncoding()
+        let readback = TerminalReadbackBuffer(buffer: lockCaptureBuffer)
         commandBuffer.addCompletedHandler { [weak self] commandBuffer in
             guard let self else { return }
             let pixels: Data?
             if commandBuffer.status == .completed {
                 pixels = Self.copyPixels(
-                    from: lockCaptureBuffer.contents(),
+                    from: readback.buffer.contents(),
                     width: width,
                     height: height,
                     bytesPerRow: bytesPerRow
@@ -578,7 +591,7 @@ public final class TerminalMetalView: MTKView {
         }
     }
 
-    private static func copyPixels(from source: UnsafeRawPointer, width: Int, height: Int, bytesPerRow: Int) -> Data {
+    nonisolated private static func copyPixels(from source: UnsafeRawPointer, width: Int, height: Int, bytesPerRow: Int) -> Data {
         var pixels = Data(count: width * height * 4)
         pixels.withUnsafeMutableBytes { destination in
             guard let destinationBase = destination.baseAddress else { return }

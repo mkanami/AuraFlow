@@ -168,6 +168,12 @@ final class WallpaperPreviewSelectionStore: ObservableObject {
         isAdjustingTerminalSpeed = false
     }
 
+    func replaceTemporaryTerminal(_ configuration: TerminalWallpaperConfig, operationID: UUID) throws {
+        guard pendingOperationID == operationID else { throw CancellationError() }
+        // Retry a discovered option without losing the original rollback source.
+        terminalConfiguration = configuration.normalized()
+    }
+
     func commitTemporaryTerminal(operationID: UUID) throws {
         guard pendingOperationID == operationID else { throw CancellationError() }
         let record = WallpaperPreviewSelectionRecord(kind: kind, terminalConfiguration: terminalConfiguration, webProjectID: webProjectID)
@@ -219,9 +225,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
             cellWidth: metrics.width, lineHeight: metrics.height)
     }
     private var selectionObservation: AnyCancellable?
-    private var frameObserver: NSObjectProtocol?
-    private var terminationObserver: NSObjectProtocol?
-    private var refreshTimer: Timer?
+    private var observationLifetime: TerminalPreviewObservationLifetime?
     private var rateUpdateTask: Task<Void, Never>?
     private var previewRateUpdateTask: Task<Void, Never>?
     private var speedRestartInFlight = false
@@ -247,34 +251,34 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         selectionObservation = selectionStore.objectWillChange.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.reconcile() }
         }
-        frameObserver = DistributedNotificationCenter.default().addObserver(
+        let frameObserver = DistributedNotificationCenter.default().addObserver(
             forName: TerminalWallpaperRuntimeNotifications.sharedFrameDidUpdate,
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            Task { @MainActor [weak self] in self?.receiveSharedFrame(notification) }
+            guard let info = notification.userInfo,
+                  let surfaceID = info["surface_id"] as? UInt32,
+                  let width = info["width"] as? Int, let height = info["height"] as? Int,
+                  let agentPID = info["agent_pid"] as? Int,
+                  let generation = info["generation"] as? String,
+                  let sequence = info["sequence"] as? UInt64 else { return }
+            let descriptor = TerminalSharedFrameDescriptor(surfaceID: surfaceID, width: width,
+                height: height, agentPID: agentPID, generation: generation)
+            Task { @MainActor [weak self] in self?.receiveSharedFrame(descriptor, sequence: sequence) }
         }
-        terminationObserver = NotificationCenter.default.addObserver(
+        let terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.stopPreviewSession(waitForExit: true) }
         }
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+        let refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.reconcile() }
         }
+        observationLifetime = TerminalPreviewObservationLifetime(frameObserver: frameObserver,
+            terminationObserver: terminationObserver, timer: refreshTimer)
         reconcile()
-    }
-
-    deinit {
-        refreshTimer?.invalidate()
-        if let frameObserver {
-            DistributedNotificationCenter.default().removeObserver(frameObserver)
-        }
-        if let terminationObserver {
-            NotificationCenter.default.removeObserver(terminationObserver)
-        }
     }
 
     private func reconcile() {
@@ -381,22 +385,9 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         if forPreview { previewRateUpdateTask = task } else { rateUpdateTask = task }
     }
 
-    private func receiveSharedFrame(_ notification: Notification) {
-        guard windowIsVisible(), let userInfo = notification.userInfo,
-              let surfaceID = userInfo["surface_id"] as? UInt32,
-              let width = userInfo["width"] as? Int,
-              let height = userInfo["height"] as? Int,
-              let agentPID = userInfo["agent_pid"] as? Int,
-              let generation = userInfo["generation"] as? String,
-              let sequence = userInfo["sequence"] as? UInt64
-        else { return }
-        let descriptor = TerminalSharedFrameDescriptor(
-            surfaceID: surfaceID,
-            width: width,
-            height: height,
-            agentPID: agentPID,
-            generation: generation
-        )
+    private func receiveSharedFrame(_ descriptor: TerminalSharedFrameDescriptor, sequence: UInt64) {
+        guard windowIsVisible() else { return }
+        let agentPID = descriptor.agentPID
         let runtimeStatus = runtimeStore.status()
         guard selectionStore.kind == .terminal,
               selectionStore.pendingOperationID == nil,
@@ -482,35 +473,57 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         }
     }
 
+    var previewProcessIsRunning: Bool { previewSession?.isRunning == true }
+    var previewProcessExitCode: Int32? { previewSession?.exitCode }
+
     func waitUntilReady(configuration: TerminalWallpaperConfig, operationID: UUID, timeout: TimeInterval = 10) async throws {
         let deadline = Date().addingTimeInterval(timeout)
+        var firstVisibleFrame: Date?
         reconcile()
         while Date() < deadline {
             try Task.checkCancellation()
             guard selectionStore.pendingOperationID == operationID,
                   selectionStore.terminalConfiguration == configuration.normalized() else { throw CancellationError() }
             if let previewError { throw TerminalWallpaperControllerError.unavailable(previewError) }
-            if let session = previewSession, !session.isRunning {
-                throw TerminalWallpaperControllerError.unavailable("The animation exited before its preview was ready.")
+            if let code = previewSession?.exitCode, code != 0 {
+                let details = previewSession?.exitDetails ?? ""
+                let reason = details.isEmpty ? "" : " \(details)"
+                throw TerminalWallpaperControllerError.unavailable("The program exited with status \(code).\(reason) The previous preview was kept.")
             }
-            if previewSession?.isRunning == true,
-               snapshot?.cells.contains(where: {
-                   !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                       || ($0.style.background != .default && $0.style.background != .indexed(0)
-                           && $0.style.background != .rgb(0, 0, 0))
-               }) == true {
-                return
+            if (previewSession?.isRunning == true || previewSession?.exitCode == 0),
+               snapshot?.hasVisibleContent == true {
+                if previewSession?.exitCode == 0 {
+                    snapshot = previewSession?.deliverLatestSnapshot() ?? snapshot
+                    return
+                }
+                if firstVisibleFrame == nil { firstVisibleFrame = Date() }
+                // Give a one-shot command time to report its true exit code;
+                // a quick error with printed diagnostics is not a good preview.
+                if Date().timeIntervalSince(firstVisibleFrame!) >= 0.15 { return }
             }
-            if sharedFrame != nil, frameSequence > 0, runtimeStore.status().health?.childRunning == true { return }
+            if sharedFrame != nil, frameSequence > 0, runtimeStore.status().health?.running == true { return }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        throw TerminalWallpaperControllerError.unavailable("The animation did not produce a live frame within 10 seconds.")
+        throw TerminalWallpaperControllerError.unavailable(
+            "The program did not produce visible output within \(Int(timeout)) seconds. It may be waiting for input. Set arguments or an input file in Add a custom command."
+        )
     }
 
 }
 
-private final class TerminalWallpaperPreviewPTY {
+// Parser data is confined to parserQueue; published snapshots and completion
+// state use snapshotLock. UI delivery and timers remain on the main queue.
+private final class TerminalWallpaperPreviewPTY: @unchecked Sendable {
     var isRunning: Bool { session.childPID != nil }
+    var exitCode: Int32? {
+        snapshotLock.lock(); defer { snapshotLock.unlock() }
+        return finishedExitCode
+    }
+    var diagnosticText: String {
+        snapshotLock.lock(); defer { snapshotLock.unlock() }
+        return String(decoding: diagnosticOutput, as: UTF8.self)
+    }
+    var exitDetails: String { TerminalProgramDiagnostics.summary(diagnosticText) }
     var configuration: TerminalWallpaperConfig?
     private let session = TerminalPTYSession()
     private let parserQueue = DispatchQueue(
@@ -520,6 +533,8 @@ private final class TerminalWallpaperPreviewPTY {
     private let snapshotLock = NSLock()
     private var parser: VTParser?
     private var latestSnapshot: TerminalGridSnapshot?
+    private var finishedExitCode: Int32?
+    private var diagnosticOutput = Data()
     private var lastDeliveredRevision: UInt64?
     private var snapshotHandler: ((TerminalGridSnapshot) -> Void)?
     private var frameTimer: DispatchSourceTimer?
@@ -574,20 +589,35 @@ private final class TerminalWallpaperPreviewPTY {
                     self.parser = parser
                     let newest = parser.grid.snapshot()
                     self.snapshotLock.lock()
+                    if self.diagnosticOutput.count < 65_536 {
+                        self.diagnosticOutput.append(data.prefix(65_536 - self.diagnosticOutput.count))
+                    }
                     self.latestSnapshot = newest
                     self.snapshotLock.unlock()
                 }
             },
-            onExit: { [weak self] _ in
+            onExit: { [weak self] code in
                 self?.parserQueue.async { [weak self] in
                     guard let self else { return }
+                    // Data and exit are serialized behind the parser queue so
+                    // even a one-shot program keeps its complete final image.
                     self.snapshotLock.lock()
+                    self.finishedExitCode = code
                     self.hasFinishedOutput = true
                     self.snapshotLock.unlock()
                     self.parser = nil
                 }
             }
         )
+    }
+
+    func deliverLatestSnapshot() -> TerminalGridSnapshot? {
+        snapshotLock.lock()
+        let newest = latestSnapshot
+        snapshotLock.unlock()
+        guard let newest else { return nil }
+        lastDeliveredRevision = newest.revision
+        return newest
     }
 
     func setPaused(_ paused: Bool) {
@@ -619,7 +649,7 @@ private final class TerminalWallpaperPreviewPTY {
         }
     }
 
-    func afterStopped(_ completion: @escaping () -> Void) {
+    func afterStopped(_ completion: @escaping @Sendable () -> Void) {
         shutdownQueue.async(execute: completion)
     }
 
@@ -642,5 +672,23 @@ private final class TerminalWallpaperPreviewPTY {
         }
         session.stop()
         parserQueue.async { [weak self] in self?.parser = nil }
+    }
+}
+
+// Foundation permits observer removal and timer invalidation during teardown.
+// This immutable owner makes that lifetime explicit across a MainActor deinit.
+private final class TerminalPreviewObservationLifetime: @unchecked Sendable {
+    let frameObserver: NSObjectProtocol
+    let terminationObserver: NSObjectProtocol
+    let timer: Timer
+    init(frameObserver: NSObjectProtocol, terminationObserver: NSObjectProtocol, timer: Timer) {
+        self.frameObserver = frameObserver
+        self.terminationObserver = terminationObserver
+        self.timer = timer
+    }
+    deinit {
+        timer.invalidate()
+        DistributedNotificationCenter.default().removeObserver(frameObserver)
+        NotificationCenter.default.removeObserver(terminationObserver)
     }
 }

@@ -55,7 +55,7 @@ public struct TerminalLockScreenHeartbeat: Codable, Equatable, Sendable {
     }
 }
 
-public final class TerminalWallpaperRuntimeStore {
+public final class TerminalWallpaperRuntimeStore: Sendable {
     public let appSupportURL: URL
     private let launchAgentURL: URL
 

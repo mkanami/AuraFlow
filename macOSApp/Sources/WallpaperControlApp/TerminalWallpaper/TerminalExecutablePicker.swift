@@ -1,6 +1,6 @@
 import AppKit
 
-enum TerminalExecutablePicker {
+@MainActor enum TerminalExecutablePicker {
     static func choose() -> URL? {
         let panel = NSOpenPanel()
         panel.title = "Choose Terminal Executable"

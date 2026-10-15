@@ -14,7 +14,7 @@ enum WallpaperPreviewVisibility {
 /// animates. The installed wallpaper agents are deliberately outside this policy.
 @MainActor
 final class WallpaperPreviewVisibilityMonitor {
-    private var observers: [NSObjectProtocol] = []
+    private var observers: [NotificationObserverLifetime] = []
     private var lastVisible: Bool?
     private let onChange: (Bool) -> Void
 
@@ -27,17 +27,13 @@ final class WallpaperPreviewVisibilityMonitor {
                      NSWindow.willCloseNotification,
                      NSApplication.didHideNotification,
                      NSApplication.didUnhideNotification] {
-            observers.append(NotificationCenter.default.addObserver(
+            observers.append(NotificationObserverLifetime(NotificationCenter.default.addObserver(
                 forName: name, object: nil, queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.refresh() }
-            })
+            }))
         }
         refresh()
-    }
-
-    deinit {
-        observers.forEach(NotificationCenter.default.removeObserver)
     }
 
     func refresh() {

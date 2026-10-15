@@ -13,6 +13,7 @@ internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
     private let directoryURL: URL
     private let storeURL: URL
     private let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<Bool>()
     private let callback: (Data) -> Void
     private let stateLock = NSLock()
     private var source: DispatchSourceFileSystemObject?
@@ -34,6 +35,7 @@ internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
             qos: .utility
         )
         self.callback = callback
+        self.queue.setSpecific(key: queueKey, value: true)
     }
 
     @discardableResult
@@ -119,7 +121,10 @@ internal final class WallpaperStoreChangeMonitor: @unchecked Sendable {
         // Wait for an already queued callback before the owner removes its
         // journal directory. The generation check prevents delayed work from
         // recreating that directory after Remove has completed.
-        queue.sync {}
+        // The owner's last reference can be released from our callback.
+        // In that case we already own this queue and must not synchronously
+        // dispatch back to it while the owner's deinit stops the monitor.
+        if DispatchQueue.getSpecific(key: queueKey) != true { queue.sync {} }
     }
 
     private func observeStoreForChanges() {

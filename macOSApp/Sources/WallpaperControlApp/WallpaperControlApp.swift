@@ -30,6 +30,7 @@ final class AuraFlowApplication {
         terminalWallpaperViewModel = TerminalWallpaperViewModel(
             previewSelectionStore: previewStore,
             libraryStore: TerminalAnimationLibraryStore(url: TerminalAnimationLibraryStore.defaultURL),
+            programSearchProvider: SystemTerminalProgramSearchProvider(),
             previewReady: { [weak previewModel] configuration, operationID in
                 guard let previewModel else { throw CancellationError() }
                 try await previewModel.waitUntilReady(configuration: configuration, operationID: operationID)

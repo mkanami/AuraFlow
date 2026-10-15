@@ -3,8 +3,8 @@ import Foundation
 /// Finder/launchd do not supply the PATH or locale of an interactive terminal.
 /// Use the same environment for preview and wallpaper sessions, including
 /// interpreters selected by a script's /usr/bin/env shebang.
-enum TerminalProcessEnvironment {
-    static func make(
+public enum TerminalProcessEnvironment {
+    public static func make(
         inherited: [String: String] = ProcessInfo.processInfo.environment,
         overrides: [String: String],
         executable: String,
@@ -37,8 +37,12 @@ enum TerminalProcessEnvironment {
         }
         environment["TERM"] = "xterm-256color"
         environment["COLORTERM"] = "truecolor"
-        environment["COLUMNS"] = String(columns)
-        environment["LINES"] = String(rows)
+        // TIOCSWINSZ is authoritative. Stale environment dimensions override
+        // SIGWINCH in ncurses and leave its last rows outside the new viewport.
+        // Keep deliberate per-command overrides, but do not export defaults or
+        // inherited shell dimensions into a resizable terminal session.
+        environment.removeValue(forKey: "COLUMNS")
+        environment.removeValue(forKey: "LINES")
         environment["AURAFLOW_TERMINAL_WALLPAPER"] = "1"
         // An explicit per-command environment remains authoritative.
         environment.merge(overrides) { _, value in value }

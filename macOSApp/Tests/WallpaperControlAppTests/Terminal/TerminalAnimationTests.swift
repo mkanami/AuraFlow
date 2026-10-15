@@ -14,11 +14,11 @@ func animationSearchFindsReviewedNamesAliasesAndTypos(query: String, id: String)
 }
 
 @Test func animationSearchNeverIncludesRandomCommands() {
-    for query in ["rm", "sh", "btop", "curl", "brew install", "/bin/sh", "nonexistent animation"] {
+    for query in ["rm", "sh", "curl", "brew install", "/bin/sh", "nonexistent animation"] {
         #expect(TerminalWallpaperPreset.search(query).isEmpty)
     }
     #expect(TerminalWallpaperPreset.search("c").count > 1)
-    #expect(TerminalWallpaperPreset.all.count == 6)
+    #expect(TerminalWallpaperPreset.all.count == 7)
     #expect(TerminalWallpaperPreset.preset(id: "cbonsai")?.item.arguments == ["-l", "-i"])
     #expect(TerminalWallpaperPreset.preset(id: "nyancat")?.item.arguments == ["-n", "-s"])
     for id in ["cbonsai", "nyancat"] {
@@ -68,7 +68,8 @@ private actor AnimationNetworkRecorder {
         defer { active -= 1 }
         try await Task.sleep(nanoseconds: 30_000_000)
         let name = request.url!.deletingPathExtension().lastPathComponent
-        return (Data("{\"name\":\"\(name)\",\"disabled\":false,\"versions\":{\"stable\":\"1.0\"}}".utf8),
+        let binary = name == "pipes-sh" ? "pipes.sh" : name
+        return (Data("{\"name\":\"\(name)\",\"tap\":\"homebrew/core\",\"executables\":[\"\(binary)\"],\"disabled\":false,\"versions\":{\"stable\":\"1.0\"}}".utf8),
                 HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
     }
 }
@@ -266,7 +267,7 @@ private struct AnimationTestController: TerminalWallpaperControlling {
 private struct ReviewedTestPackages: TerminalAnimationPackageProviding {
     var disabled = false
     func metadata(for preset: TerminalWallpaperPreset) async throws -> TerminalAnimationPackageMetadata {
-        TerminalAnimationPackageMetadata(name: preset.formula, version: "1", disabled: disabled)
+        TerminalAnimationPackageMetadata(name: preset.formula, version: preset.compatibilityProfile!.verifiedVersions[0], disabled: disabled, executables: [preset.compatibilityProfile!.executable])
     }
 }
 
@@ -321,7 +322,7 @@ func animationMissingExecutablesRetainSavedCardsAndOfflineSearchIsIndependent() 
     model.setCatalogSearch("бонсай")
     model.setCatalogSearch("аквариум")
     try await Task.sleep(nanoseconds: 400_000_000)
-    #expect(model.catalogItems.map(\.id) == ["asciiquarium"])
+    #expect(model.catalogItems.first?.id == "asciiquarium")
     #expect(model.libraryPresets.map(\.id) == ["asciiquarium", "lavat", "cmatrix", "pipes", "nyancat"])
     #expect(model.cachedExecutablePath(for: TerminalWallpaperPreset.all[5].item) == nil)
     guard case .failed = model.availability["asciiquarium"] else { Issue.record("Expected network error on the missing package"); return }
@@ -377,7 +378,7 @@ func animationCatalogPTYHonorsVerifiedCustomPackageLocation() async throws {
     let preview = TerminalWallpaperPreviewModel(selectionStore: store, runtimeStore: runtime, windowIsVisible: { true })
     var config = TerminalWallpaperConfig.defaultConfig
     config.command = TerminalCommandConfiguration(catalogItemID: "nyancat", executable: executable.path,
-        arguments: ["-c", "printf 'verified path'; sleep 3"])
+        arguments: ["-c", "i=0; while [ $i -lt 30 ]; do printf '\\033[Hverified path %s' \"$i\"; i=$((i+1)); sleep 0.1; done"])
     let id = UUID()
     store.beginTemporaryTerminal(config, operationID: id)
     defer { store.rollbackTemporaryTerminal(operationID: id) }

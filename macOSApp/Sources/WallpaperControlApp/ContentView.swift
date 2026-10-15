@@ -345,6 +345,16 @@ struct ContentView: View {
             )
             .allowsHitTesting(false)
         )
+        .overlay(alignment: .top) {
+            if !viewModel.isCatalogOpen, viewModel.catalogDownloadID != nil {
+                CatalogDownloadProgressView(viewModel: viewModel)
+                    .padding(14)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    .frame(maxWidth: 480)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 82)
+            }
+        }
         .task {
             await viewModel.loadStatus()
         }
@@ -788,13 +798,6 @@ struct SettingsPopupCard: View {
             .toggleStyle(.switch)
             .disabled(!viewModel.canToggleShowOnLockScreen)
 
-            Button {
-                viewModel.openScreenSaverSettings()
-            } label: {
-                Label("Screen Saver Settings", systemImage: "gear")
-            }
-            .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-
             Toggle(isOn: Binding(
                 get: { viewModel.blendInterpolationEnabled },
                 set: { newValue in viewModel.toggleBlendInterpolation(newValue) }
@@ -1109,7 +1112,8 @@ struct MonitoringPopupCard: View {
 
             Divider()
 
-            if let metrics = viewModel.monitoringSnapshot {
+            if let snapshot = viewModel.monitoringSnapshot {
+                let metrics = snapshot.metrics
                 let cpu = metrics.cpu_percent.map { String(format: "%.1f%%", $0) } ?? "n/a"
                 let memory = metrics.memory_mb.map { String(format: "%.1f MB", $0) } ?? "n/a"
                 let virtualMemory = metrics.virtual_memory_mb.map { String(format: "%.1f MB", $0) } ?? "n/a"
@@ -1119,22 +1123,23 @@ struct MonitoringPopupCard: View {
                 let windows = metrics.health?.windows.map(String.init) ?? "n/a"
                 let rate = metrics.health?.player_rate.map { String(format: "%.2fx", $0) } ?? "n/a"
 
-                MonitoringRow(label: "Daemon PID", value: metrics.pid.map(String.init) ?? "n/a")
-                MonitoringRow(label: "Daemon Processes", value: "\(processCount)")
+                if let program = snapshot.terminalProgram {
+                    MonitoringRow(label: "Wallpaper", value: "Terminal · \(program)")
+                }
+                MonitoringRow(label: snapshot.isTerminal ? "Agent PID" : "Daemon PID", value: metrics.pid.map(String.init) ?? "n/a")
+                MonitoringRow(label: snapshot.isTerminal ? "Wallpaper Processes" : "Daemon Processes", value: "\(processCount)")
                 MonitoringRow(label: "Running", value: metrics.running ? "Yes" : "No")
                 MonitoringRow(label: "CPU", value: cpu)
                 MonitoringRow(label: "Memory", value: memory)
                 MonitoringRow(label: "Virtual Memory", value: virtualMemory)
                 MonitoringRow(label: "Threads", value: threads)
                 MonitoringRow(label: "Screens/Windows", value: "\(screens)/\(windows)")
-                MonitoringRow(label: "Player Rate", value: rate)
-
-                if let pids = metrics.daemon_pids, !pids.isEmpty {
-                    let rendered = pids.prefix(4).map(String.init).joined(separator: ", ")
-                    let suffix = pids.count > 4 ? ", ..." : ""
-                    Text("PIDs: \(rendered)\(suffix)")
-                        .font(.caption2)
-                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                if snapshot.isTerminal {
+                    if let health = snapshot.terminalHealth {
+                        MonitoringRow(label: "Terminal Grid", value: "\(health.columns.map(String.init) ?? "n/a") × \(health.rows.map(String.init) ?? "n/a")")
+                    }
+                } else {
+                    MonitoringRow(label: "Player Rate", value: rate)
                 }
 
                 if let reason = metrics.health?.reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1144,7 +1149,7 @@ struct MonitoringPopupCard: View {
                         .padding(.top, 4)
                 }
             } else {
-                Text("Collecting daemon metrics...")
+                Text("Collecting wallpaper metrics...")
                     .font(.caption)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             }
@@ -1461,6 +1466,10 @@ struct WallpaperCatalogView: View {
             }
             .zIndex(10)
 
+            if catalogViewModel.downloadID != nil {
+                CatalogDownloadProgressView(viewModel: viewModel)
+            }
+
             HStack(spacing: 10) {
                 catalogGroupFilterButtons
 
@@ -1757,32 +1766,36 @@ struct WallpaperCatalogDetailView: View {
 
                     Spacer(minLength: isCompactLayout ? 8 : 10)
 
-                    HStack(spacing: 8) {
-                        Button {
-                            mediaPreviewModel.suspendForForegroundDownload(
-                                wallpaper: wallpaper
-                            )
-                            viewModel.applyCatalogWallpaper(wallpaper)
-                        } label: {
-                            Text("Download")
-                        }
-                        .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
-                        .frame(maxWidth: .infinity)
-                        .disabled(!viewModel.canDownloadCatalogWallpaper)
-
-                        if let sourceURL = wallpaper.sourcePageURL {
+                    if viewModel.catalogDownloadID != nil {
+                        CatalogDownloadProgressView(viewModel: viewModel)
+                    } else {
+                        HStack(spacing: 8) {
                             Button {
-                                NSWorkspace.shared.open(sourceURL)
+                                mediaPreviewModel.suspendForForegroundDownload(
+                                    wallpaper: wallpaper
+                                )
+                                viewModel.applyCatalogWallpaper(wallpaper)
                             } label: {
-                                Image(systemName: "link")
+                                Text("Download")
                             }
-                            .accessibilityLabel("Open Source")
-                            .help("Open Source")
-                            .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
-                            .fixedSize(horizontal: true, vertical: false)
+                            .buttonStyle(AuraGlassButtonStyle(fillWidth: true, compact: isCompactLayout))
+                            .frame(maxWidth: .infinity)
+                            .disabled(!viewModel.canDownloadCatalogWallpaper)
+
+                            if let sourceURL = wallpaper.sourcePageURL {
+                                Button {
+                                    NSWorkspace.shared.open(sourceURL)
+                                } label: {
+                                    Image(systemName: "link")
+                                }
+                                .accessibilityLabel("Open Source")
+                                .help("Open Source")
+                                .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: isCompactLayout))
+                                .fixedSize(horizontal: true, vertical: false)
+                            }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.top, isCompactLayout ? 2 : 4)
                 .padding(.bottom, previewVerticalInset)
@@ -1866,6 +1879,43 @@ struct WallpaperCatalogDetailView: View {
         value.rounded() == value
             ? String(Int(value))
             : String(format: "%.1f", value)
+    }
+}
+
+private struct CatalogDownloadProgressView: View {
+    let viewModel: AppViewModel
+    @ObservedObject private var catalog: CatalogViewModel
+    @Environment(\.adaptiveGlassAppearance) private var appearance
+
+    init(viewModel: AppViewModel) {
+        self.viewModel = viewModel
+        _catalog = ObservedObject(wrappedValue: viewModel.catalogViewModel)
+    }
+
+    var body: some View {
+        let progress = catalog.downloadProgress ?? .init()
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(progress.label)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(appearance.bottomTextTone.primaryTextColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .accessibilityIdentifier("catalog.downloadProgress")
+                Spacer(minLength: 0)
+                Button("Cancel") { viewModel.cancelCatalogDownload() }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+                    .disabled(catalog.isDownloadCancelling)
+                    .accessibilityIdentifier("catalog.cancelDownload")
+            }
+            if let fraction = progress.fraction {
+                ProgressView(value: fraction)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -2251,8 +2301,9 @@ final class AuraPreviewPlayerView: NSView {
                     \.isReadyForDisplay,
                     options: [.initial, .new]
                 ) { [weak self] layer, _ in
+                    let ready = layer.isReadyForDisplay
                     DispatchQueue.main.async { [weak self] in
-                        self?.readyForDisplayHandler?(layer.isReadyForDisplay)
+                        self?.readyForDisplayHandler?(ready)
                     }
                 }
             }

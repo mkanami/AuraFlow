@@ -38,7 +38,7 @@ final class WallpaperEngineViewModel: ObservableObject {
     var removeWallpaper: @MainActor () async throws -> Void = {
         try await Task.detached(priority: .userInitiated) { try WebWallpaperController.remove() }.value
     }
-    private var timer: Timer?
+    private var timer: ScheduledTimerLifetime?
     private var importTask: Task<Void, Never>?
     private var importGeneration = 0
     private var propertyTask: Task<Void, Never>?
@@ -61,9 +61,9 @@ final class WallpaperEngineViewModel: ObservableObject {
         observer = selection.objectWillChange.sink { [weak self] _ in
             Task { @MainActor in self?.reloadValues() }
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        timer = ScheduledTimerLifetime(Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshRuntime() }
-        }
+        })
         reloadValues()
     }
     deinit { timer?.invalidate(); importTask?.cancel(); propertyTask?.cancel(); scanTask?.cancel(); locationTask?.cancel() }
@@ -397,15 +397,15 @@ struct WebWallpaperPreviewSurface: NSViewRepresentable {
         let model: WallpaperEngineViewModel
         var token: String?
         var visible = false
-        var timer: Timer?
+        var timer: ScheduledTimerLifetime?
         init(model: WallpaperEngineViewModel) { self.model = model }
         func attach(_ view: WebWallpaperView) {
             self.view = view
             view.onError = { [weak model] text in model?.error = text }
             view.onWarning = { [weak model] text in model?.message = text }
-            timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            timer = ScheduledTimerLifetime(Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.refresh() }
-            }
+            })
         }
         func refresh() {
             guard let view else { return }

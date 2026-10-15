@@ -195,6 +195,7 @@ public enum TerminalWallpaperCatalog {
         if let item = items.first(where: { $0.id == id }) {
             return item
         }
+        if let profile = TerminalWallpaperCompatibility.profile(id: id) { return profile.item }
         guard id.hasPrefix("discovered:") else { return nil }
         let path = String(id.dropFirst("discovered:".count))
         return discoveredItem(at: path)

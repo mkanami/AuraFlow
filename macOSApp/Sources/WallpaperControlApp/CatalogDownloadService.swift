@@ -13,7 +13,7 @@ final class CatalogDownloadService: @unchecked Sendable {
 
     private let provider: WallpaperCatalogProviding
     private let catalogDirectoryURL: URL
-    private let fileDownloader: FileDownload
+    private let fileDownloader: @Sendable (URLRequest, URLSession, CatalogDownloadProgress.Handler?) async throws -> (temporaryURL: URL, response: URLResponse)
     private let standardSession: URLSession
     private let browserSession: URLSession
 
@@ -26,13 +26,17 @@ final class CatalogDownloadService: @unchecked Sendable {
         catalogDirectoryURL: URL,
         standardSession: URLSession? = nil,
         browserSession: URLSession? = nil,
-        fileDownloader: @escaping FileDownload = { request, session in
-            try await CatalogFileDownloader.download(request: request, session: session)
-        }
+        fileDownloader: FileDownload? = nil
     ) {
         self.provider = provider
         self.catalogDirectoryURL = catalogDirectoryURL
-        self.fileDownloader = fileDownloader
+        if let fileDownloader {
+            self.fileDownloader = { request, session, _ in try await fileDownloader(request, session) }
+        } else {
+            self.fileDownloader = { request, session, progress in
+                try await CatalogFileDownloader.download(request: request, session: session, progress: progress)
+            }
+        }
         self.standardSession = standardSession ?? Self.makeSession(browserStyle: false)
         self.browserSession = browserSession ?? Self.makeSession(browserStyle: true)
     }
@@ -42,7 +46,8 @@ final class CatalogDownloadService: @unchecked Sendable {
     func download(
         _ wallpaper: CatalogWallpaper,
         preferredSources: [CatalogVideoSource],
-        allowProviderFallbackAfterStaleRoute: Bool = true
+        allowProviderFallbackAfterStaleRoute: Bool = true,
+        progress: CatalogDownloadProgress.Handler? = nil
     ) async throws -> URL {
         try Task.checkCancellation()
         try FileManager.default.createDirectory(
@@ -55,10 +60,11 @@ final class CatalogDownloadService: @unchecked Sendable {
         var staleRouteError: Error?
         for source in preferredSources where seen.insert(source.url.absoluteString).inserted {
             do {
-                return try await downloadSource(source, for: wallpaper)
+                return try await downloadSource(source, for: wallpaper, progress: progress)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                try Task.checkCancellation()
                 lastError = error
                 if Self.isStaleRouteError(error) {
                     staleRouteError = staleRouteError ?? error
@@ -73,7 +79,7 @@ final class CatalogDownloadService: @unchecked Sendable {
 
         if isMoeWallsWallpaper(wallpaper), let pageURL = wallpaper.sourcePageURL {
             do {
-                return try await downloadMoeWallsVideo(for: wallpaper, pageURL: pageURL)
+                return try await downloadMoeWallsVideo(for: wallpaper, pageURL: pageURL, progress: progress)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -91,7 +97,7 @@ final class CatalogDownloadService: @unchecked Sendable {
         return false
     }
 
-    func download(_ wallpaper: CatalogWallpaper) async throws -> URL {
+    func download(_ wallpaper: CatalogWallpaper, progress: CatalogDownloadProgress.Handler? = nil) async throws -> URL {
         try Task.checkCancellation()
         try FileManager.default.createDirectory(
             at: downloadedWallpapersDirectoryURL,
@@ -108,7 +114,7 @@ final class CatalogDownloadService: @unchecked Sendable {
                     try Task.checkCancellation()
                     // Direct CDN requests are faster than the browser flow and
                     // still receive browser-style headers when required.
-                    return try await downloadSource(source, for: wallpaper)
+                    return try await downloadSource(source, for: wallpaper, progress: progress)
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
@@ -132,7 +138,7 @@ final class CatalogDownloadService: @unchecked Sendable {
                 try Task.checkCancellation()
                 if let detailSource = try await moeWallsDetailDownloadSource(for: wallpaper) {
                     try Task.checkCancellation()
-                    return try await downloadSource(detailSource, for: wallpaper)
+                    return try await downloadSource(detailSource, for: wallpaper, progress: progress)
                 }
             } catch is CancellationError {
                 throw CancellationError()
@@ -152,7 +158,8 @@ final class CatalogDownloadService: @unchecked Sendable {
                 try Task.checkCancellation()
                 return try await downloadSource(
                     CatalogVideoSource(url: resolvedURL, width: 0, height: 0),
-                    for: wallpaper
+                    for: wallpaper,
+                    progress: progress
                 )
             } catch is CancellationError {
                 throw CancellationError()
@@ -170,7 +177,8 @@ final class CatalogDownloadService: @unchecked Sendable {
                 try Task.checkCancellation()
                 return try await downloadMoeWallsVideo(
                     for: wallpaper,
-                    pageURL: pageURL
+                    pageURL: pageURL,
+                    progress: progress
                 )
             } catch is CancellationError {
                 throw CancellationError()
@@ -210,7 +218,8 @@ final class CatalogDownloadService: @unchecked Sendable {
 
     private func downloadSource(
         _ source: CatalogVideoSource,
-        for wallpaper: CatalogWallpaper
+        for wallpaper: CatalogWallpaper,
+        progress: CatalogDownloadProgress.Handler?
     ) async throws -> URL {
         try Task.checkCancellation()
         let widthLabel = source.width > 0 ? String(source.width) : "auto"
@@ -254,9 +263,11 @@ final class CatalogDownloadService: @unchecked Sendable {
         }
 
         try Task.checkCancellation()
+        progress?(.init(phase: .downloading))
         let (temporaryURL, response) = try await fileDownloader(
             request,
-            useBrowserStyleHeaders ? browserSession : standardSession
+            useBrowserStyleHeaders ? browserSession : standardSession,
+            progress
         )
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
         try Task.checkCancellation()
@@ -282,13 +293,21 @@ final class CatalogDownloadService: @unchecked Sendable {
         if destination != cachedDestination {
             try? FileManager.default.removeItem(at: destination)
         }
+        progress?(.init(phase: .saving))
+        try Task.checkCancellation()
         try FileManager.default.moveItem(at: temporaryURL, to: destination)
+        do { try Task.checkCancellation() }
+        catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
         return destination.standardizedFileURL
     }
 
     private func downloadMoeWallsVideo(
         for wallpaper: CatalogWallpaper,
-        pageURL: URL
+        pageURL: URL,
+        progress: CatalogDownloadProgress.Handler?
     ) async throws -> URL {
         try Task.checkCancellation()
         let resolver = await MainActor.run { MoeWallsBrowserResolver() }
@@ -297,15 +316,23 @@ final class CatalogDownloadService: @unchecked Sendable {
         )
         try? FileManager.default.removeItem(at: destination)
         try Task.checkCancellation()
+        var keepDownloadedFile = false
+        defer {
+            if !keepDownloadedFile { try? FileManager.default.removeItem(at: destination) }
+        }
         let downloadedURL = try await resolver.downloadWallpaper(
             from: pageURL,
-            to: destination
+            to: destination,
+            progress: progress
         )
         try Task.checkCancellation()
+        progress?(.init(phase: .saving))
         guard await isPreviewPlayableVideo(at: downloadedURL) else {
             try? FileManager.default.removeItem(at: downloadedURL)
             throw URLError(.cannotDecodeContentData)
         }
+        try Task.checkCancellation()
+        keepDownloadedFile = true
         return downloadedURL
     }
 

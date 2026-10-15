@@ -115,7 +115,7 @@ public final class WebWallpaperView: NSView, WKNavigationDelegate, WKUIDelegate,
             if let error { self?.onError?("Wallpaper property callback failed: \(error.localizedDescription)") }
         }
     }
-    public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+    public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url, let config = configuration,
               url.isFileURL, url.resolvingSymlinksInPath().path.hasPrefix(config.project.rootURL.resolvingSymlinksInPath().path + "/"),
               !navigationAction.shouldPerformDownload,
@@ -129,7 +129,7 @@ public final class WebWallpaperView: NSView, WKNavigationDelegate, WKUIDelegate,
         retryCount += 1; load(configuration)
     }
     public func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-    public func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) { decisionHandler(.deny) }
+    public func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) { decisionHandler(.deny) }
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard userContentController === webView?.configuration.userContentController,
               message.frameInfo.isMainFrame, let text = message.body as? String else { return }

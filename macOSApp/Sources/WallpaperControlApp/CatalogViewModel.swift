@@ -16,6 +16,8 @@ final class CatalogViewModel: ObservableObject {
     @Published var searchText = ""
     @Published var selectedGroup: CatalogWallpaperGroup?
     @Published var downloadID: String?
+    @Published var downloadProgress: CatalogDownloadProgress?
+    @Published var isDownloadCancelling = false
     @Published var wallpapers: [CatalogWallpaper] = []
     @Published var searchResults: [CatalogWallpaper] = []
     @Published var isRefreshing = false

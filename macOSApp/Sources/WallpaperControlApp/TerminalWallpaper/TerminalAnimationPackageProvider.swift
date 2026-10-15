@@ -27,6 +27,7 @@ struct TerminalAnimationPackageMetadata: Codable, Equatable, Sendable {
     let name: String
     let version: String
     let disabled: Bool
+    var executables: [String]? = nil
 }
 
 protocol TerminalAnimationPackageProviding: Sendable {
@@ -34,6 +35,8 @@ protocol TerminalAnimationPackageProviding: Sendable {
 }
 
 actor SystemTerminalAnimationPackageProvider: TerminalAnimationPackageProviding {
+    /// Availability and installation share the same verified in-memory cache.
+    static let shared = SystemTerminalAnimationPackageProvider()
     private struct CacheEntry: Codable {
         let date: Date
         let metadata: TerminalAnimationPackageMetadata
@@ -42,11 +45,14 @@ actor SystemTerminalAnimationPackageProvider: TerminalAnimationPackageProviding 
         let name: String
         let disabled: Bool
         let versions: Versions
+        let executables: [String]?
+        let tap: String?
         struct Versions: Decodable { let stable: String? }
     }
     private var cache: [String: CacheEntry] = [:]
     private var loadedCache = false
     private var activeRequests = 0
+    private var inFlight: [String: Task<TerminalAnimationPackageMetadata, Error>] = [:]
     private let cacheURL: URL?
     private let now: @Sendable () -> Date
     private let fetch: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
@@ -64,7 +70,7 @@ actor SystemTerminalAnimationPackageProvider: TerminalAnimationPackageProviding 
     }
 
     func metadata(for preset: TerminalWallpaperPreset) async throws -> TerminalAnimationPackageMetadata {
-        guard TerminalWallpaperPreset.preset(id: preset.id) == preset else {
+        guard preset.isValid, !preset.formula.isEmpty else {
             throw TerminalWallpaperInstallError.invalidPreset
         }
         if !loadedCache {
@@ -75,7 +81,16 @@ actor SystemTerminalAnimationPackageProvider: TerminalAnimationPackageProviding 
             }
         }
         if let entry = cache[preset.formula], entry.metadata.name == preset.formula,
+           entry.metadata.executables?.contains(preset.executableName) == true,
            (0..<86_400).contains(now().timeIntervalSince(entry.date)) { return entry.metadata }
+        if let pending = inFlight[preset.formula] { return try await pending.value }
+        let operation = Task { try await self.fetchMetadata(for: preset) }
+        inFlight[preset.formula] = operation
+        defer { inFlight[preset.formula] = nil }
+        return try await operation.value
+    }
+
+    private func fetchMetadata(for preset: TerminalWallpaperPreset) async throws -> TerminalAnimationPackageMetadata {
         while activeRequests >= 3 {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
@@ -91,10 +106,13 @@ actor SystemTerminalAnimationPackageProvider: TerminalAnimationPackageProviding 
             throw URLError(.badServerResponse)
         }
         let formula = try JSONDecoder().decode(Formula.self, from: data)
-        guard formula.name == preset.formula, let version = formula.versions.stable, !version.isEmpty else {
+        guard formula.name == preset.formula, let version = formula.versions.stable, !version.isEmpty,
+              formula.tap == "homebrew/core",
+              formula.executables?.contains(preset.executableName) == true else {
             throw TerminalAnimationPackageError.invalidResponse
         }
-        let metadata = TerminalAnimationPackageMetadata(name: formula.name, version: version, disabled: formula.disabled)
+        let metadata = TerminalAnimationPackageMetadata(name: formula.name, version: version, disabled: formula.disabled,
+                                                       executables: formula.executables)
         cache[preset.formula] = CacheEntry(date: now(), metadata: metadata)
         if let cacheURL {
             try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)

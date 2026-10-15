@@ -66,6 +66,7 @@ import Testing
 }
 
 @Test func catalogDownloaderRetriesOnlyTheMissingChunkWithoutAFullRestart() async throws {
+    let progress = CatalogRangeProgressRecorder()
     await CatalogHostTransferProfileStore.shared.removeProfile(for: "parallel-range.test")
     RangeChunkURLProtocol.configure(totalBytes: 40, transientRange: "bytes=13-21")
     let configuration = URLSessionConfiguration.ephemeral
@@ -81,7 +82,8 @@ import Testing
         session: session,
         parallelThreshold: 16,
         chunkSize: 8,
-        validationRangeBytes: 4
+        validationRangeBytes: 4,
+        progress: { progress.append($0) }
     )
     defer { try? FileManager.default.removeItem(at: result.temporaryURL) }
 
@@ -92,6 +94,17 @@ import Testing
     #expect(RangeChunkURLProtocol.requestCount(for: "bytes=13-21") == 2)
     #expect(RangeChunkURLProtocol.uniqueRequestedRangeCount == 6)
     #expect(RangeChunkURLProtocol.fullRequestCount == 0)
+    #expect(progress.values.last?.receivedBytes == 40)
+    #expect(progress.values.last?.fraction == 1)
+    #expect(progress.values.allSatisfy { $0.receivedBytes <= 40 })
+    #expect(progress.values.contains { $0.receivedBytes > 4 && $0.receivedBytes < 40 })
+}
+
+private final class CatalogRangeProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var snapshots: [CatalogDownloadProgress] = []
+    func append(_ value: CatalogDownloadProgress) { lock.lock(); defer { lock.unlock() }; snapshots.append(value) }
+    var values: [CatalogDownloadProgress] { lock.lock(); defer { lock.unlock() }; return snapshots }
 }
 
 private final class RangeIgnoringURLProtocol: URLProtocol, @unchecked Sendable {

@@ -110,6 +110,27 @@ private final class StubTerminalWallpaperController: TerminalWallpaperControllin
 }
 
 @Test @MainActor
+func terminalStartAndRestartDoNotShowUpdatedConfirmation() async throws {
+    let controller = StubTerminalWallpaperController()
+    let viewModel = TerminalWallpaperViewModel(controller: controller, resolveExecutable: { _ in nil })
+    viewModel.start()
+    while viewModel.isBusy { try await Task.sleep(nanoseconds: 1_000_000) }
+    #expect(controller.startCount == 1)
+    #expect(viewModel.status.running)
+    #expect(viewModel.statusMessage == nil)
+    viewModel.statusMessage = "Earlier confirmation"
+    viewModel.restart()
+    while viewModel.isBusy { try await Task.sleep(nanoseconds: 1_000_000) }
+    #expect(viewModel.status.running)
+    #expect(viewModel.statusMessage == nil)
+    controller.rejectStart = true
+    viewModel.start()
+    while viewModel.isBusy { try await Task.sleep(nanoseconds: 1_000_000) }
+    #expect(viewModel.errorMessage != nil)
+    #expect(viewModel.statusMessage == nil)
+}
+
+@Test @MainActor
 func terminalStatusPollingPublishesOnlyActualChanges() async throws {
     let controller = StubTerminalWallpaperController()
     let viewModel = TerminalWallpaperViewModel(controller: controller, resolveExecutable: { _ in nil })
@@ -470,7 +491,7 @@ func terminalPreviewSelectionDoesNotRunWallpaperConflictPreflight() async throws
 }
 
 @Test @MainActor
-func terminalUnknownSearchCommandsCannotInstallOrPreview() async throws {
+func terminalDiscoveredSearchDoesNotRunOrInstallAndRejectsUnregisteredItem() async throws {
     let recorder = TerminalDiscoveryRecorder()
     let controller = StubTerminalWallpaperController()
     let availability = TerminalPresetAvailability()
@@ -486,8 +507,9 @@ func terminalUnknownSearchCommandsCannotInstallOrPreview() async throws {
 
     viewModel.setCatalogSearch("mytool")
     try await Task.sleep(nanoseconds: 300_000_000)
-    #expect(viewModel.catalogItems.isEmpty)
-    #expect(recorder.count == 0)
+    #expect(viewModel.catalogItems.map(\.id) == ["local:true"])
+    #expect(recorder.count == 1)
+    #expect(installer.calls.isEmpty && controller.startCount == 0 && previewStore.kind == .video)
     viewModel.use(item)
     try await waitForTerminalAction(viewModel)
 
@@ -558,19 +580,21 @@ func terminalWallpaperPreviewSummarySupportsCustomCommandsWithoutApplying() {
 }
 
 @Test @MainActor
-func terminalCustomPreviewUsesSelectionStateInsteadOfRepeatedInstructions() {
+func terminalCustomPreviewUsesSelectionStateInsteadOfRepeatedInstructions() async throws {
     let store = makePreviewSelectionStore()
     let controller = StubTerminalWallpaperController()
     let viewModel = TerminalWallpaperViewModel(controller: controller, previewSelectionStore: store)
     viewModel.statusMessage = "Previous runtime action"
 
     #expect(viewModel.selectCustomExecutable(URL(fileURLWithPath: "/usr/local/bin/my-animation")))
+    try await waitForTerminalAction(viewModel)
     #expect(viewModel.previewTitle == "my-animation")
     #expect(viewModel.statusMessage == nil)
     #expect(viewModel.errorMessage == nil)
 
     viewModel.statusMessage = "Previous runtime action"
     viewModel.showCurrentCommandInPreview()
+    try await waitForTerminalAction(viewModel)
     #expect(viewModel.previewTitle == "my-animation")
     #expect(viewModel.statusMessage == nil)
     #expect(controller.startCount == 0)
@@ -578,7 +602,7 @@ func terminalCustomPreviewUsesSelectionStateInsteadOfRepeatedInstructions() {
 
 private struct StubAvailableAnimationPackages: TerminalAnimationPackageProviding {
     func metadata(for preset: TerminalWallpaperPreset) async throws -> TerminalAnimationPackageMetadata {
-        TerminalAnimationPackageMetadata(name: preset.formula, version: "1.0", disabled: false)
+        TerminalAnimationPackageMetadata(name: preset.formula, version: preset.compatibilityProfile!.verifiedVersions[0], disabled: false, executables: [preset.compatibilityProfile!.executable])
     }
 }
 

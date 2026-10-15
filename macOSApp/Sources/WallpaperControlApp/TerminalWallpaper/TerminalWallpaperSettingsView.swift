@@ -50,8 +50,8 @@ struct TerminalWallpaperDisclosureStyle: DisclosureGroupStyle {
                     configuration.label
                 }
                 .padding(.horizontal, usesCard ? 16 : 0)
-                .padding(.vertical, usesCard ? 12 : 4)
-                .frame(maxWidth: .infinity, minHeight: usesCard ? 64 : 0, alignment: .leading)
+                .padding(.vertical, usesCard ? 8 : 4)
+                .frame(maxWidth: .infinity, minHeight: usesCard ? 48 : 0, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(AuraPlainPressButtonStyle())
@@ -76,7 +76,7 @@ struct TerminalWallpaperDisclosureStyle: DisclosureGroupStyle {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             if usesCard {
-                AuraGlassInsetCard(cornerRadius: 14)
+                AuraGlassInsetCard(cornerRadius: 12)
                     .allowsHitTesting(false)
             }
         }
@@ -126,6 +126,7 @@ struct TerminalWallpaperSettingsView: View {
     @State private var showAppearance = false
     @State private var showBehavior = false
     @State private var showRuntime = false
+    @State private var searchText = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -158,6 +159,7 @@ struct TerminalWallpaperSettingsView: View {
                             .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    customCommandSection
                     settingsDisclosure(
                         "Appearance & performance", subtitle: "Font, size, background and frame rate",
                         systemImage: "paintbrush.pointed", isExpanded: $showAppearance
@@ -205,6 +207,9 @@ struct TerminalWallpaperSettingsView: View {
         .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 8)
         .environment(\.colorScheme, .dark)
         .disclosureGroupStyle(TerminalWallpaperDisclosureStyle())
+        .onAppear { searchText = viewModel.catalogSearch }
+        .onChange(of: searchText) { viewModel.setCatalogSearch($0) }
+        .onChange(of: viewModel.catalogSearch) { if searchText != $0 { searchText = $0 } }
         .task {
             viewModel.prepareCatalogIfNeeded()
             while !Task.isCancelled {
@@ -271,16 +276,13 @@ struct TerminalWallpaperSettingsView: View {
     }
 
     private var catalogSection: some View {
-        TerminalWallpaperSection(title: "Animations", systemImage: "rectangle.grid.2x2") {
+        TerminalWallpaperSection(title: "Terminal programs", systemImage: "rectangle.grid.2x2") {
             LazyVStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 10) {
                     AuraCatalogSearchField(
-                        text: Binding(
-                            get: { viewModel.catalogSearch },
-                            set: { viewModel.setCatalogSearch($0) }
-                        ),
-                        placeholder: "Search animations…",
-                        accessibilityLabel: "Search animations",
+                        text: $searchText,
+                        placeholder: "Search terminal programs…",
+                        accessibilityLabel: "Search terminal programs",
                         maxWidth: .infinity
                     )
                     if !viewModel.catalogSearch.isEmpty {
@@ -300,21 +302,26 @@ struct TerminalWallpaperSettingsView: View {
                     .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                     .accessibilityLabel("Refresh wallpaper choices")
                 }
+                .id("terminal-program-search")
 
                 if !viewModel.catalogSearch.isEmpty {
                     ForEach(viewModel.catalogItems) { item in
-                        if let preset = TerminalWallpaperPreset.preset(id: item.id) {
+                        if let preset = viewModel.preset(for: item) {
                             presetCard(preset, compact: true)
                         }
                     }
                     if viewModel.catalogItems.isEmpty && !viewModel.catalogIsLoading {
-                        Label("No matching animation. Other commands can be added below.", systemImage: "magnifyingglass")
+                        Label("No terminal programs found.", systemImage: "magnifyingglass")
                             .font(.callout)
                             .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                     }
                     if viewModel.catalogIsLoading {
-                        ProgressView("Checking animations…")
+                        ProgressView("Searching programs…")
                             .controlSize(.small)
+                    }
+                    if let error = viewModel.searchError {
+                        Text(error).font(.caption)
+                            .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                     }
                 }
 
@@ -334,34 +341,34 @@ struct TerminalWallpaperSettingsView: View {
                     Button("Cancel") { viewModel.cancelInstallation() }
                         .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
                 }
-
-                Divider()
-
-                DisclosureGroup(isExpanded: $showAdvancedCommand) {
-                    Text("Only run commands you trust. Custom commands may be incompatible.")
-                        .font(.caption)
-                        .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                        .padding(.vertical, 8)
-                    Button {
-                        guard let url = TerminalExecutablePicker.choose() else { return }
-                        _ = viewModel.selectCustomExecutable(url)
-                    } label: {
-                        Label("Choose executable…", systemImage: "folder")
-                    }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                    .disabled(viewModel.isBusy)
-                    advancedCommandFields
-                    Button("Show command in preview") {
-                        viewModel.showCurrentCommandInPreview()
-                    }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
-                    .disabled(viewModel.isBusy || viewModel.executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                } label: {
-                    Text("Add a custom command").font(.headline)
-                }
-                .tint(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
             }
         }
+    }
+
+    private var customCommandSection: some View {
+        DisclosureGroup(isExpanded: $showAdvancedCommand) {
+            Text("Only run commands you trust. Custom commands may be incompatible.")
+                .font(.caption)
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                .padding(.vertical, 8)
+            Button {
+                guard let url = TerminalExecutablePicker.choose() else { return }
+                _ = viewModel.selectCustomExecutable(url)
+            } label: {
+                Label("Choose executable…", systemImage: "folder")
+            }
+            .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+            .disabled(viewModel.isBusy)
+            advancedCommandFields
+            Button("Show command in preview") {
+                viewModel.showCurrentCommandInPreview()
+            }
+            .buttonStyle(AuraGlassButtonStyle(fillWidth: false))
+            .disabled(viewModel.isBusy || viewModel.executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } label: {
+            Text("Add a custom command").font(.headline)
+        }
+        .tint(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
     }
 
     private func presetCard(_ preset: TerminalWallpaperPreset, compact: Bool = false) -> some View {
@@ -380,6 +387,11 @@ struct TerminalWallpaperSettingsView: View {
                     .frame(width: 32, height: 32)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title).font(.headline)
+                    if !preset.isReviewedAnimation {
+                        Text(item.subtitle)
+                            .font(.caption).lineLimit(2)
+                            .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                    }
                     if !presentation.installed {
                         Text(availability.message)
                             .font(.caption)
@@ -430,19 +442,8 @@ struct TerminalWallpaperSettingsView: View {
     }
 
     private var catalogRowBackground: some View {
-        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
-        return shape
-            .fill(
-                adaptiveGlassAppearance.centerTextTone == .dark
-                    ? Color.white.opacity(0.12)
-                    : Color.black.opacity(0.24)
-            )
-            .overlay {
-                shape.stroke(
-                    adaptiveGlassAppearance.centerTextTone.primaryTextColor.opacity(0.10),
-                    lineWidth: 0.8
-                )
-            }
+        AuraGlassInsetCard(cornerRadius: 14)
+            .allowsHitTesting(false)
     }
 
     private var advancedCommandFields: some View {
@@ -675,6 +676,6 @@ private struct TerminalWallpaperSection<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 6)
+        .padding(.top, 6)
     }
 }

@@ -5,6 +5,15 @@ import Foundation
 import Testing
 @testable import WallpaperControlApp
 
+@Test func terminalResponsiveEnvironmentUsesPTYInsteadOfStaleShellSize() {
+    let automatic = TerminalProcessEnvironment.make(inherited: ["COLUMNS": "80", "LINES": "24"],
+        overrides: [:], executable: "/usr/bin/uname", columns: 153, rows: 48)
+    #expect(automatic["COLUMNS"] == nil && automatic["LINES"] == nil)
+    let explicit = TerminalProcessEnvironment.make(inherited: [:], overrides: ["COLUMNS": "73", "LINES": "30"],
+        executable: "/usr/bin/uname", columns: 153, rows: 48)
+    #expect(explicit["COLUMNS"] == "73" && explicit["LINES"] == "30")
+}
+
 @Test @MainActor func terminalScaleHtopKeepsItsSourceGridAfterViewportResize() async throws {
     guard let executable = TerminalExecutableLocator.resolve("htop") else { return }
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraFlow-htop-resize-\(UUID())")

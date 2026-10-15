@@ -8,7 +8,10 @@ final class TerminalInstallCommandOperation: @unchecked Sendable {
     private var child: pid_t = 0
     private var cancelled = false
 
-    func run(executable: String, arguments: [String], environment: [String: String]) async throws -> (code: Int32, output: String) {
+    func run(executable: String, arguments: [String], environment: [String: String],
+             stdinFromNull: Bool = false,
+             workingDirectory: String? = nil,
+             onOutput: @escaping @Sendable (String) -> Void = { _ in }) async throws -> (code: Int32, output: String) {
         try await withCheckedThrowingContinuation { completion in
             DispatchQueue.global(qos: .userInitiated).async { [self] in
                 let pipe = Pipe()
@@ -20,6 +23,12 @@ final class TerminalInstallCommandOperation: @unchecked Sendable {
                     posix_spawn_file_actions_destroy(&actions)
                     posix_spawnattr_destroy(&attributes)
                     try? pipe.fileHandleForReading.close()
+                }
+                if stdinFromNull {
+                    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
+                }
+                if let workingDirectory {
+                    posix_spawn_file_actions_addchdir_np(&actions, workingDirectory)
                 }
                 posix_spawn_file_actions_adddup2(&actions, pipe.fileHandleForWriting.fileDescriptor, STDOUT_FILENO)
                 posix_spawn_file_actions_adddup2(&actions, pipe.fileHandleForWriting.fileDescriptor, STDERR_FILENO)
@@ -52,11 +61,15 @@ final class TerminalInstallCommandOperation: @unchecked Sendable {
                     return
                 }
                 var output = Data()
+                var buffer = [UInt8](repeating: 0, count: 4096)
                 while true {
-                    let bytes = pipe.fileHandleForReading.readData(ofLength: 4096)
-                    if bytes.isEmpty { break }
+                    let count = read(pipe.fileHandleForReading.fileDescriptor, &buffer, buffer.count)
+                    if count < 0 && errno == EINTR { continue }
+                    if count <= 0 { break }
+                    let bytes = Data(buffer.prefix(count))
                     output.append(bytes)
                     if output.count > 16_384 { output = output.suffix(16_384) }
+                    onOutput(String(decoding: bytes, as: UTF8.self))
                 }
                 var status: Int32 = 0
                 while waitpid(pid, &status, 0) < 0 && errno == EINTR { }

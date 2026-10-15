@@ -65,7 +65,7 @@ import Testing
     publisher.revoke()
 }
 
-@Test @MainActor func terminalLockScreenPublisherWritesOneDesktopSeedPerGeneration() async throws {
+@Test @MainActor func terminalLockScreenPublisherThrottlesDesktopSeedAndRestartsGeneration() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("AuraTerminalLockSeed-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -81,9 +81,12 @@ import Testing
     publisher.beginDesktopGeneration()
     publisher.publishDesktopSeed(firstPixel, width: 1, height: 1)
     let firstDeadline = Date().addingTimeInterval(2)
-    while !FileManager.default.fileExists(atPath: store.lockScreenFrameURL.path), Date() < firstDeadline {
+    // The atomic PNG becomes visible before the main-thread completion saves
+    // its heartbeat. Wait for the publication, not merely for its file.
+    while publisher.isWritingFrame, Date() < firstDeadline {
         try await Task.sleep(nanoseconds: 20_000_000)
     }
+    #expect(!publisher.isWritingFrame)
     let firstFrame = try #require(try? Data(contentsOf: store.lockScreenFrameURL))
     #expect(store.loadLockScreenHeartbeat()?.pid == Int(getpid()))
 
@@ -100,6 +103,10 @@ import Testing
     }
     let lockedFrame = try #require(try? Data(contentsOf: store.lockScreenFrameURL))
     #expect(lockedFrame != firstFrame)
+    let encodingDeadline = Date().addingTimeInterval(2)
+    while publisher.isWritingFrame && Date() < encodingDeadline {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
 
     publisher.setLockScreenActive(false)
     publisher.beginDesktopGeneration()
@@ -120,7 +127,7 @@ import Testing
         executable: "/bin/sh",
         arguments: [
             "-c",
-            "printf '%s' \"$TERM:$COLORTERM:$COLUMNS:$LINES\"; sleep 5"
+            "printf '%s' \"$TERM:$COLORTERM:${COLUMNS-unset}:${LINES-unset}:\"; /bin/stty size; sleep 5"
         ]
     )
 
@@ -143,14 +150,14 @@ import Testing
         outputLock.lock()
         let text = String(decoding: output, as: UTF8.self)
         outputLock.unlock()
-        if text.contains("xterm-256color:truecolor:153:48") { break }
+        if text.contains("xterm-256color:truecolor:unset:unset:48 153") { break }
         Thread.sleep(forTimeInterval: 0.02)
     }
 
     outputLock.lock()
     let text = String(decoding: output, as: UTF8.self)
     outputLock.unlock()
-    #expect(text.contains("xterm-256color:truecolor:153:48"))
+    #expect(text.contains("xterm-256color:truecolor:unset:unset:48 153"))
     try session.resize(columns: 120, rows: 40)
     #expect(session.childPID == childPID)
 

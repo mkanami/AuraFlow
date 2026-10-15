@@ -32,7 +32,7 @@ enum TerminalWallpaperInstallError: LocalizedError {
         case .unsupportedHomebrewPlatform:
             return "Automatic Homebrew setup needs Apple Silicon and macOS 15 or newer. See docs.brew.sh/Installation."
         case .invalidPreset:
-            return "Only reviewed animations from the catalog can be installed automatically."
+            return "Choose a valid terminal program from the search results."
         case .downloadFailed:
             return "Could not download the official Homebrew installer. Try again."
         case .invalidPackage:
@@ -51,10 +51,41 @@ enum TerminalWallpaperInstallError: LocalizedError {
     }
 }
 
-/// Installs only reviewed catalog formulae. Search text and manually selected
+/// Installs validated Homebrew core formulae. Search text and manually selected
 /// executable paths never become package-manager arguments.
 final class SystemTerminalWallpaperInstaller: TerminalWallpaperInstalling {
-    var homebrewAvailable: Bool { Self.brewExecutable() != nil }
+    typealias CommandRunner = @Sendable (
+        String, [String], [String: String], @escaping @Sendable (String) -> Void
+    ) async throws -> (code: Int32, output: String)
+    private let packageProvider: any TerminalAnimationPackageProviding
+    private let resolveExecutable: @Sendable (TerminalWallpaperCatalogItem) -> String?
+    private let resolveBrew: @Sendable () -> String?
+    private let runCommand: CommandRunner
+
+    init(
+        packageProvider: any TerminalAnimationPackageProviding = SystemTerminalAnimationPackageProvider.shared,
+        resolveExecutable: @escaping @Sendable (TerminalWallpaperCatalogItem) -> String? = { $0.resolvedExecutable() },
+        resolveBrew: @escaping @Sendable () -> String? = { SystemTerminalWallpaperInstaller.brewExecutable() },
+        runCommand: @escaping CommandRunner = { executable, arguments, environment, output in
+            try await SystemTerminalWallpaperInstaller.run(executable, arguments: arguments, environment: environment, onOutput: output)
+        }
+    ) {
+        self.packageProvider = packageProvider
+        self.resolveExecutable = resolveExecutable
+        self.resolveBrew = resolveBrew
+        self.runCommand = runCommand
+    }
+
+    var homebrewAvailable: Bool { resolveBrew() != nil }
+
+    /// Scoped to this command, not the user's global Homebrew settings.
+    /// Normal bottle selection, checksums and dependency/linkage checks remain.
+    static let installationEnvironment = [
+        "HOMEBREW_NO_AUTO_UPDATE": "1",
+        "HOMEBREW_NO_INSTALL_CLEANUP": "1",
+        "HOMEBREW_NO_INSTALL_UPGRADE": "1",
+        "HOMEBREW_NO_ANALYTICS": "1",
+    ]
 
     func prepareHomebrew(onStage: @escaping @Sendable (String) -> Void) async throws {
         guard !homebrewAvailable else { return }
@@ -65,17 +96,28 @@ final class SystemTerminalWallpaperInstaller: TerminalWallpaperInstalling {
         preset: TerminalWallpaperPreset,
         onStage: @escaping @Sendable (String) -> Void
     ) async throws {
-        guard let allowed = TerminalWallpaperPreset.preset(id: preset.id),
-              allowed == preset else { throw TerminalWallpaperInstallError.invalidPreset }
+        guard preset.isValid, !preset.formula.isEmpty else { throw TerminalWallpaperInstallError.invalidPreset }
+        try Task.checkCancellation()
+        // Another operation may have finished while metadata was being checked.
+        // An installed executable needs neither the network nor a brew process.
+        if resolveExecutable(preset.item) != nil { return }
+        let metadata = try await packageProvider.metadata(for: preset)
+        guard !metadata.disabled, metadata.name == preset.formula,
+              metadata.executables?.contains(preset.executableName) == true else {
+            throw TerminalAnimationPackageError.invalidResponse
+        }
 
         try Task.checkCancellation()
-        guard let brew = Self.brewExecutable() else { throw TerminalWallpaperInstallError.homebrewRequired }
+        if resolveExecutable(preset.item) != nil { return }
+        guard let brew = resolveBrew() else { throw TerminalWallpaperInstallError.homebrewRequired }
 
         onStage("Installing \(preset.item.title)…")
-        let result = try await Self.run(
+        let progress = TerminalInstallProgressReporter(onStage: onStage)
+        let result = try await runCommand(
             brew,
-            arguments: ["install", "--formula", "homebrew/core/\(preset.formula)"],
-            environment: ["HOMEBREW_NO_AUTO_UPDATE": "1"]
+            ["install", "--formula", "homebrew/core/\(preset.formula)"],
+            Self.installationEnvironment,
+            { progress.receive($0) }
         )
         guard result.code == 0 else {
             throw TerminalWallpaperInstallError.commandFailed(
@@ -83,7 +125,7 @@ final class SystemTerminalWallpaperInstaller: TerminalWallpaperInstalling {
             )
         }
         try Task.checkCancellation()
-        guard preset.item.resolvedExecutable() != nil else {
+        guard resolveExecutable(preset.item) != nil else {
             throw TerminalWallpaperInstallError.executableStillMissing
         }
     }
@@ -151,12 +193,46 @@ final class SystemTerminalWallpaperInstaller: TerminalWallpaperInstalling {
     static func run(
         _ executable: String,
         arguments: [String],
-        environment extraEnvironment: [String: String] = [:]
+        environment extraEnvironment: [String: String] = [:],
+        onOutput: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> (code: Int32, output: String) {
         let operation = TerminalInstallCommandOperation()
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            return try await operation.run(executable: executable, arguments: arguments, environment: extraEnvironment)
+            return try await operation.run(executable: executable, arguments: arguments, environment: extraEnvironment,
+                                           onOutput: onOutput)
         } onCancel: { operation.cancel() }
+    }
+}
+
+/// Bounded streaming progress, deduplicated before reaching the main actor.
+final class TerminalInstallProgressReporter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tail = ""
+    private var lastStage: String?
+    private let onStage: @Sendable (String) -> Void
+
+    init(onStage: @escaping @Sendable (String) -> Void) { self.onStage = onStage }
+
+    func receive(_ output: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        tail = String((tail + output).suffix(4096))
+        let lines = tail.components(separatedBy: .newlines)
+        tail = lines.last ?? ""
+        let stage = lines.dropLast().compactMap(Self.stage(for:)).last
+        if let stage, stage != lastStage {
+            lastStage = stage
+            onStage(stage)
+        }
+    }
+
+    static func stage(for line: String) -> String? {
+        if line.contains("Downloading") || line.contains("Fetching") { return "Downloading packages…" }
+        if line.contains("Installing dependencies") || line.contains("Installing dependency") { return "Installing dependencies…" }
+        if line.contains("Pouring") { return "Installing prebuilt package…" }
+        if line.contains("==> make") || line.contains("==> cmake") || line.contains("==> gem") { return "Building package…" }
+        if line.contains("Installing") { return "Installing package…" }
+        return nil
     }
 }

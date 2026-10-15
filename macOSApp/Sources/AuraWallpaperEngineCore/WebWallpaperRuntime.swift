@@ -47,7 +47,7 @@ public enum WebWallpaperRuntime {
         guard alive(pid) else { return false }
         var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { return false }
-        return URL(fileURLWithPath: String(cString: path)).lastPathComponent == "AuraWebWallpaperAgent"
+        return URL(fileURLWithPath: String(decoding: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)).lastPathComponent == "AuraWebWallpaperAgent"
     }
     public static var status: WebWallpaperStatus? {
         guard let state = read(WebWallpaperStatus.self, from: "status.json"), isAgent(state.pid) else { return nil }

@@ -1,7 +1,9 @@
 import AuraTerminalPTYKit
 import Foundation
 
-public final class TerminalPTYSession {
+// Mutable session state is protected by stateLock; callbacks run on the PTY
+// queue or exit-reaping worker and consumers serialize their own delivery.
+public final class TerminalPTYSession: @unchecked Sendable {
     public typealias DataHandler = (Data) -> Void
     public typealias ExitHandler = (Int32) -> Void
 
@@ -25,6 +27,8 @@ public final class TerminalPTYSession {
     private var exitHandler: ExitHandler?
     private var didFinish = false
     private let inheritedEnvironment: [String: String]
+    private var cavaVisualInput: TerminalCavaVisualInput?
+    private var lolcatVisualInput: TerminalLolcatVisualInput?
 
     public init(environment: [String: String] = ProcessInfo.processInfo.environment) {
         inheritedEnvironment = environment
@@ -53,7 +57,14 @@ public final class TerminalPTYSession {
             rows: rows
         )
         let executable = try resolveExecutable(for: command, environment: searchEnvironment)
-        let arguments = [executable] + command.arguments
+        let visualInput = TerminalCavaVisualInput.applies(to: command, executable: executable)
+            ? try TerminalCavaVisualInput() : nil
+        let textInput = TerminalLolcatVisualInput.applies(to: command, executable: executable)
+            ? try TerminalLolcatVisualInput(columns: columns, rows: rows) : nil
+        let launch = try TerminalVisualOnlyLaunch(executable: executable,
+            arguments: visualInput.map { ["-p", $0.configurationURL.path] } ?? textInput?.arguments
+                ?? TerminalWallpaperLaunchDefaults.arguments(for: command, executable: executable))
+        let arguments = launch.arguments
         let environment = TerminalProcessEnvironment.make(
             inherited: inheritedEnvironment,
             overrides: command.environment,
@@ -67,7 +78,7 @@ public final class TerminalPTYSession {
         var master: Int32 = -1
         var errorBuffer = [CChar](repeating: 0, count: 512)
 
-        let result = executable.withCString { executablePointer in
+        let result = launch.executable.withCString { executablePointer in
             argumentBlob.withUnsafeBytes { argumentBytes in
                 environmentBlob.withUnsafeBytes { environmentBytes in
                     aura_terminal_pty_spawn(
@@ -89,16 +100,20 @@ public final class TerminalPTYSession {
         }
 
         guard result == 0 else {
-            let message = String(cString: errorBuffer)
+            let message = String(decoding: errorBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
             throw TerminalPTYError.spawnFailed(message.isEmpty ? "forkpty failed" : message)
         }
 
         runningPID = child
+        cavaVisualInput = visualInput
+        lolcatVisualInput = textInput
         paused = false
         masterDescriptor = master
         exitHandler = onExit
         didFinish = false
         installReadSource(onData: onData)
+        visualInput?.start()
+        textInput?.start()
         return child
     }
 
@@ -116,6 +131,7 @@ public final class TerminalPTYSession {
         ) == 0 else {
             throw TerminalPTYError.resizeFailed
         }
+        lolcatVisualInput?.resize(columns: columns, rows: rows)
     }
 
     public func setPaused(_ paused: Bool) throws {
@@ -129,6 +145,8 @@ public final class TerminalPTYSession {
             throw TerminalPTYError.pauseFailed
         }
         self.paused = paused
+        cavaVisualInput?.setPaused(paused)
+        lolcatVisualInput?.setPaused(paused)
     }
 
     public func writeInput(_ data: Data) throws {
@@ -149,6 +167,10 @@ public final class TerminalPTYSession {
         stateLock.lock()
         defer { stateLock.unlock() }
         generation &+= 1
+        cavaVisualInput?.stop()
+        cavaVisualInput = nil
+        lolcatVisualInput?.stop()
+        lolcatVisualInput = nil
         readSource?.cancel()
         readSource = nil
         if let childPID {
@@ -220,20 +242,34 @@ public final class TerminalPTYSession {
         defer { stateLock.unlock() }
         guard !didFinish else { return }
         didFinish = true
+        cavaVisualInput?.stop()
+        cavaVisualInput = nil
+        lolcatVisualInput?.stop()
+        lolcatVisualInput = nil
         readSource?.cancel()
         readSource = nil
-        let callback = exitHandler
-        exitHandler = nil
         if let childPID {
+            let finishedGeneration = generation
             DispatchQueue.global(qos: .utility).async {
                 var childStatus: Int32 = 0
-                _ = waitpid(childPID, &childStatus, 0)
+                var result: pid_t
+                repeat { result = waitpid(childPID, &childStatus, 0) } while result == -1 && errno == EINTR
+                let code = result == childPID
+                    ? ((childStatus & 0x7f) == 0 ? (childStatus >> 8) & 0xff : 128 + (childStatus & 0x7f)) : -1
+                self.stateLock.lock()
+                let current = self.generation == finishedGeneration
+                let callback = current ? self.exitHandler : nil
+                if current { self.runningPID = nil; self.exitHandler = nil }
+                self.stateLock.unlock()
+                if current { callback?(code) }
             }
+        } else {
+            let callback = exitHandler
+            exitHandler = nil
+            callback?(status)
         }
         masterDescriptor = nil
-        runningPID = nil
         paused = false
-        callback?(status)
     }
 
     private func nulSeparatedBlob(_ values: [String]) -> Data {
@@ -276,6 +312,7 @@ public final class TerminalPTYSession {
 }
 
 public enum TerminalPTYError: LocalizedError, Equatable {
+    case audioIsolationUnavailable
     case invalidCommand
     case executableNotFound(String)
     case spawnFailed(String)
@@ -287,6 +324,8 @@ public enum TerminalPTYError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
+        case .audioIsolationUnavailable:
+            return "Silent terminal mode is unavailable on this Mac. The program was not started."
         case .invalidCommand:
             return "Enter an executable command."
         case .executableNotFound(let path):

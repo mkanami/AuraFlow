@@ -2172,7 +2172,7 @@ final class AppViewModel: ObservableObject {
     @Published var isSettingsOpen: Bool = false
     @Published var isMonitoringOpen: Bool = false
     @Published var isTerminalWallpaperOpen: Bool = false
-    @Published var monitoringSnapshot: DaemonMetrics?
+    @Published var monitoringSnapshot: WallpaperMonitoringSnapshot?
     @Published var monitoringErrorMessage: String?
     @Published var isMonitoringRefreshing: Bool = false
     @Published var optimizationEnabled: Bool = true
@@ -2363,6 +2363,7 @@ final class AppViewModel: ObservableObject {
     private var lowPowerAutoPauseActive = false
     private var fullscreenAutoPauseActive = false
     private var monitoringTask: Task<Void, Never>?
+    private let terminalMonitoringSnapshot: @Sendable () -> WallpaperMonitoringSnapshot?
     private var terminationObserver: ObserverToken?
     private var isShuttingDown = false
     private var catalogRefreshTask: Task<Void, Never>?
@@ -2373,6 +2374,7 @@ final class AppViewModel: ObservableObject {
     private var pendingCatalogSearchResults: [CatalogWallpaper] = []
     private var lastCatalogPaginationTriggerID: String?
     private var catalogDownloadTask: Task<Void, Never>?
+    private var catalogDownloadGeneration = UUID()
     private var catalogPreviewViewportTask: Task<Void, Never>?
     private var visibleCatalogPreviewIDs = Set<String>()
     private var previousCatalogPreviewCenterIndex: Int?
@@ -2642,7 +2644,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canOpenMonitoring: Bool {
-        isControllerAvailable
+        isControllerAvailable || terminalIsActive?() == true
     }
 
     var canChangeOptimizationSettings: Bool {
@@ -2678,10 +2680,16 @@ final class AppViewModel: ObservableObject {
         catalogProvider: WallpaperCatalogProviding = ManagedWallpaperCatalogProvider(),
         appSupportDirectoryURL: URL? = nil,
         previewStateURL: URL? = nil,
-        previewSelectionStore: WallpaperPreviewSelectionStore? = nil
+        previewSelectionStore: WallpaperPreviewSelectionStore? = nil,
+        terminalMonitoringSnapshot: (@Sendable () -> WallpaperMonitoringSnapshot?)? = nil,
+        catalogDownloadService: CatalogDownloadService? = nil
     ) {
         let resolvedAppSupportURL = appSupportDirectoryURL
             ?? Self.defaultAppSupportDirectoryForCurrentProcess()
+        let terminalMonitoring = TerminalWallpaperMonitoring(store: TerminalWallpaperRuntimeStore(
+            appSupportURL: resolvedAppSupportURL.appendingPathComponent("terminal-wallpaper", isDirectory: true)
+        ))
+        self.terminalMonitoringSnapshot = terminalMonitoringSnapshot ?? { terminalMonitoring.snapshot() }
         let resolvedPreviewStateURL = previewStateURL
             ?? resolvedAppSupportURL.appendingPathComponent("last_preview.json")
         self.catalogViewModel = CatalogViewModel()
@@ -2700,7 +2708,7 @@ final class AppViewModel: ObservableObject {
             provider: catalogProvider,
             catalogDirectoryURL: catalogDirectoryURL
         )
-        self.catalogDownloadService = CatalogDownloadService(
+        self.catalogDownloadService = catalogDownloadService ?? CatalogDownloadService(
             provider: catalogProvider,
             catalogDirectoryURL: catalogDirectoryURL
         )
@@ -3624,12 +3632,27 @@ final class AppViewModel: ObservableObject {
         // warm-up work. This does not stop an already-running wallpaper.
         cancelLockScreenMediaPreparation()
         catalogDownloadID = wallpaper.id
+        catalogViewModel.downloadProgress = .init()
+        catalogViewModel.isDownloadCancelling = false
+        let downloadGeneration = UUID()
+        catalogDownloadGeneration = downloadGeneration
         let requestedCacheGeneration = cacheGeneration
+        let progress: CatalogDownloadProgress.Handler = { [weak self] update in
+            Task { @MainActor [weak self] in
+                guard let self, self.catalogDownloadGeneration == downloadGeneration,
+                      self.catalogDownloadID == wallpaper.id,
+                      !self.catalogViewModel.isDownloadCancelling,
+                      update.sampledAt >= (self.catalogViewModel.downloadProgress?.sampledAt ?? 0) else { return }
+                self.catalogViewModel.downloadProgress = update
+            }
+        }
 
         catalogDownloadTask = Task { [weak self] in
             guard let self else { return }
             defer {
                 catalogDownloadID = nil
+                catalogViewModel.downloadProgress = nil
+                catalogViewModel.isDownloadCancelling = false
                 catalogDownloadTask = nil
                 scheduleLockScreenMediaPreparationForCurrentPreview()
                 if selectedCatalogWallpaper?.id == wallpaper.id {
@@ -3638,9 +3661,11 @@ final class AppViewModel: ObservableObject {
                 applyCatalogPreviewViewport()
             }
             do {
-                let localURL = try await downloadCatalogVideo(for: wallpaper)
+                let localURL = try await downloadCatalogVideo(for: wallpaper, progress: progress)
                 guard !Task.isCancelled, requestedCacheGeneration == cacheGeneration else {
-                    try? FileManager.default.removeItem(at: localURL)
+                    if requestedCacheGeneration != cacheGeneration {
+                        try? FileManager.default.removeItem(at: localURL)
+                    }
                     return
                 }
                 let persistenceStatus = stageCatalogWallpaperForPreview(
@@ -3657,6 +3682,13 @@ final class AppViewModel: ObservableObject {
                 alertMessage = "Failed to download wallpaper: \(error.localizedDescription)"
             }
         }
+    }
+
+    func cancelCatalogDownload() {
+        guard catalogDownloadID != nil, !catalogViewModel.isDownloadCancelling else { return }
+        catalogViewModel.isDownloadCancelling = true
+        catalogViewModel.downloadProgress = .init(phase: .cancelling)
+        catalogDownloadTask?.cancel()
     }
 
     func applyVideoSelection(_ url: URL, surfaceErrors: Bool = true) async {
@@ -4014,21 +4046,6 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func openScreenSaverSettings() {
-        let destinations = [
-            "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension",
-            "x-apple.systempreferences:com.apple.preference.desktopscreeneffect",
-        ]
-        for destination in destinations {
-            guard let url = URL(string: destination) else { continue }
-            if NSWorkspace.shared.open(url) {
-                return
-            }
-        }
-        alertMessage =
-            "Open System Settings → Wallpaper to inspect the active Lock Screen wallpaper."
-    }
-
     func startSystemScreenSaver() {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
@@ -4120,6 +4137,7 @@ final class AppViewModel: ObservableObject {
         closeSettings()
         closeTerminalWallpaper()
         isMonitoringOpen = true
+        monitoringSnapshot = nil
         monitoringErrorMessage = nil
         startMonitoringLoop()
     }
@@ -4618,10 +4636,6 @@ final class AppViewModel: ObservableObject {
     private func refreshMonitoringSnapshot(surfaceErrors: Bool) async {
         guard !isShuttingDown else { return }
         guard isMonitoringOpen else { return }
-        guard let controller else {
-            monitoringErrorMessage = "Native wallpaper runtime unavailable."
-            return
-        }
         if isMonitoringRefreshing {
             return
         }
@@ -4630,10 +4644,20 @@ final class AppViewModel: ObservableObject {
         defer { isMonitoringRefreshing = false }
 
         do {
-            let metrics = try await runAsync { try controller.metrics() }
-            monitoringSnapshot = metrics
+            let terminalSnapshot = terminalMonitoringSnapshot
+            let controller = controller
+            let snapshot = try await runAsync {
+                if let terminal = terminalSnapshot() { return terminal }
+                guard let controller else {
+                    throw TerminalWallpaperControllerError.unavailable("Native wallpaper runtime unavailable.")
+                }
+                return WallpaperMonitoringSnapshot(metrics: try controller.metrics())
+            }
+            guard isMonitoringOpen, !isShuttingDown else { return }
+            monitoringSnapshot = snapshot
             monitoringErrorMessage = nil
         } catch {
+            monitoringSnapshot = nil
             monitoringErrorMessage = error.localizedDescription
             if surfaceErrors {
                 alertMessage = "Failed to refresh monitoring: \(error.localizedDescription)"
@@ -4942,7 +4966,8 @@ final class AppViewModel: ObservableObject {
         catalogViewModel.appendSearchResults(additions)
     }
 
-    private func downloadCatalogVideo(for wallpaper: CatalogWallpaper) async throws -> URL {
+    private func downloadCatalogVideo(for wallpaper: CatalogWallpaper, progress: @escaping CatalogDownloadProgress.Handler) async throws -> URL {
+        try Task.checkCancellation()
         if let existingURL = catalogRepository.reusableDownloadedWallpaperURL(
             for: wallpaper.id,
             in: downloadedCatalogWallpapers
@@ -4968,7 +4993,8 @@ final class AppViewModel: ObservableObject {
                 localURL = try await catalogDownloadService.download(
                     wallpaper,
                     preferredSources: media.originalSources,
-                    allowProviderFallbackAfterStaleRoute: false
+                    allowProviderFallbackAfterStaleRoute: false,
+                    progress: progress
                 )
             } catch {
                 guard Self.catalogRouteNeedsRefresh(error) else { throw error }
@@ -4976,7 +5002,8 @@ final class AppViewModel: ObservableObject {
                 media = try await catalogPreviewPipeline.resolvedMediaForForegroundDownload(wallpaper)
                 localURL = try await catalogDownloadService.download(
                     wallpaper,
-                    preferredSources: media.originalSources
+                    preferredSources: media.originalSources,
+                    progress: progress
                 )
             }
 

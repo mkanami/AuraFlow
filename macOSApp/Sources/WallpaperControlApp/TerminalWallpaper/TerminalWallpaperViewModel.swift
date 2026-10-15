@@ -9,25 +9,33 @@ private let terminalWallpaperViewModelLogger = Logger(
 
 protocol TerminalWallpaperCatalogProviding: Sendable {
     func discover(query: String) -> [TerminalWallpaperCatalogItem]
+    func search(query: String) -> [TerminalWallpaperCatalogItem]
     func refresh()
 }
 
 extension TerminalWallpaperCatalogProviding {
     func refresh() {}
+    func search(query: String) -> [TerminalWallpaperCatalogItem] { discover(query: query) }
 }
 
 final class SystemTerminalWallpaperCatalogProvider: TerminalWallpaperCatalogProviding, @unchecked Sendable {
     private let lock = NSLock()
     private let searchItems: @Sendable (String) -> [TerminalWallpaperCatalogItem]
+    private let indexItems: @Sendable () -> [TerminalWallpaperCatalogItem]
     private var cachedItems: [String: [TerminalWallpaperCatalogItem]] = [:]
     private var generation = 0
+    private var localIndex: [TerminalWallpaperCatalogItem]?
 
     init(
         searchItems: @escaping @Sendable (String) -> [TerminalWallpaperCatalogItem] = {
             TerminalWallpaperCatalog.exactExecutableItems(named: $0)
+        },
+        indexItems: @escaping @Sendable () -> [TerminalWallpaperCatalogItem] = {
+            TerminalWallpaperCatalog.recommendedItems() + TerminalWallpaperCatalog.discoveredItems()
         }
     ) {
         self.searchItems = searchItems
+        self.indexItems = indexItems
     }
 
     func discover(query: String) -> [TerminalWallpaperCatalogItem] {
@@ -48,8 +56,29 @@ final class SystemTerminalWallpaperCatalogProvider: TerminalWallpaperCatalogProv
     func refresh() {
         lock.lock()
         cachedItems = [:]
+        localIndex = nil
         generation &+= 1
         lock.unlock()
+    }
+
+    func search(query: String) -> [TerminalWallpaperCatalogItem] {
+        lock.lock()
+        let cached = localIndex
+        let searchGeneration = generation
+        lock.unlock()
+        let index = cached ?? indexItems()
+        lock.lock()
+        if generation == searchGeneration { localIndex = index }
+        lock.unlock()
+        let query = TerminalProgramSearchRanking.normalize(query)
+        let results = index.filter {
+            TerminalWallpaperCatalog.matchesSearch(query: query, item: $0, includeExecutablePaths: false)
+                || $0.executableCandidates.contains { URL(fileURLWithPath: $0).lastPathComponent.lowercased().contains(query) }
+        }
+        let eligible = discover(query: query) + results
+        let ranked = TerminalProgramSearchRanking.items(eligible, query: query)
+        var seen = Set<String>()
+        return Array(ranked.filter { seen.insert($0.id).inserted }.prefix(24))
     }
 }
 
@@ -91,6 +120,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
     @Published private(set) var libraryIDs: [String] = []
     @Published private(set) var installingAnimationID: String?
     @Published private(set) var needsHomebrew = false
+    @Published private(set) var searchError: String?
+    @Published private(set) var programs: [String: TerminalWallpaperPreset] = [:]
 
     private let controller: TerminalWallpaperControlling
     private let catalogProvider: any TerminalWallpaperCatalogProviding
@@ -99,6 +130,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private let previewSelectionStore: WallpaperPreviewSelectionStore?
     private let libraryStore: TerminalAnimationLibraryStore
     private let packageProvider: any TerminalAnimationPackageProviding
+    private let programSearchProvider: (any TerminalProgramSearchProviding)?
+    private let animationResolver: any TerminalProgramAnimationResolving
     private let previewReady: @MainActor (TerminalWallpaperConfig, UUID) async throws -> Void
     private var installationTask: Task<Void, Never>?
     private var availabilityTasks: [String: Task<Void, Never>] = [:]
@@ -110,7 +143,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private var activeInstallationID: UUID?
     private(set) var statusRefreshInFlight = false
     private var statusRefreshGeneration = 0
-    private var agentStartObserver: NSObjectProtocol?
+    private var agentStartObserver: NotificationObserverLifetime?
     private var previewConfigPersistence: AnyCancellable?
     private var scaleUpdateTask: Task<Void, Never>?
     private var pendingScaleMode: TerminalScaleMode?
@@ -124,7 +157,9 @@ final class TerminalWallpaperViewModel: ObservableObject {
         previewSelectionStore: WallpaperPreviewSelectionStore? = nil,
         resolveExecutable: @escaping @Sendable (TerminalWallpaperCatalogItem) -> String? = { $0.resolvedExecutable() },
         libraryStore: TerminalAnimationLibraryStore = TerminalAnimationLibraryStore(),
-        packageProvider: any TerminalAnimationPackageProviding = SystemTerminalAnimationPackageProvider(),
+        packageProvider: any TerminalAnimationPackageProviding = SystemTerminalAnimationPackageProvider.shared,
+        programSearchProvider: (any TerminalProgramSearchProviding)? = nil,
+        animationResolver: any TerminalProgramAnimationResolving = SystemTerminalProgramAnimationResolver.shared,
         previewReady: @escaping @MainActor (TerminalWallpaperConfig, UUID) async throws -> Void = { _, _ in
             throw TerminalWallpaperControllerError.unavailable("Preview readiness is unavailable.")
         }
@@ -144,6 +179,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
         self.previewSelectionStore = previewSelectionStore
         self.libraryStore = libraryStore
         self.packageProvider = packageProvider
+        self.programSearchProvider = programSearchProvider
+        self.animationResolver = animationResolver
         self.previewReady = previewReady
 
         let runtimeConfig = (try? resolvedController.status().config) ?? .defaultConfig
@@ -184,13 +221,13 @@ final class TerminalWallpaperViewModel: ObservableObject {
             config: config
         )
         if status.running { reconcileLockScreen() }
-        agentStartObserver = DistributedNotificationCenter.default().addObserver(
+        agentStartObserver = NotificationObserverLifetime(DistributedNotificationCenter.default().addObserver(
             forName: TerminalWallpaperRuntimeNotifications.agentDidStart,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
-        }
+        }, center: DistributedNotificationCenter.default())
         // Status polling, search and progress are not configuration edits.
         // Coalesce actual edits before scheduling persistence on the main actor.
         previewConfigPersistence = configurationEdits
@@ -217,12 +254,6 @@ final class TerminalWallpaperViewModel: ObservableObject {
             edits($backgroundHex), edits($backgroundOpacity), edits($allDisplays),
             edits($pauseOnFullscreen), edits($launchAtLogin)
         ]).eraseToAnyPublisher()
-    }
-
-    deinit {
-        if let agentStartObserver {
-            DistributedNotificationCenter.default().removeObserver(agentStartObserver)
-        }
     }
 
     var canStart: Bool {
@@ -257,7 +288,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
     var libraryPresets: [TerminalWallpaperPreset] {
         featuredPresets + libraryIDs.compactMap { id in
             guard !featuredPresets.contains(where: { $0.id == id }) else { return nil }
-            return TerminalWallpaperPreset.preset(id: id)
+            let preset = TerminalWallpaperPreset.preset(id: id) ?? programs[id]
+            return preset?.isValid == true ? preset : nil
         }
     }
 
@@ -309,7 +341,13 @@ final class TerminalWallpaperViewModel: ObservableObject {
         catalogItems = initialCatalogItems
         Task { [weak self] in
             guard let self else { return }
-            do { self.libraryIDs = try await self.libraryStore.load() }
+            do {
+                self.libraryIDs = try await self.libraryStore.load()
+                for preset in try await self.libraryStore.loadPrograms() {
+                    self.programs[preset.id] = preset
+                    if preset.isValid { self.checkAvailability(preset) }
+                }
+            }
             catch { self.errorMessage = "Could not read the animation library: \(error.localizedDescription)" }
         }
         for preset in TerminalWallpaperPreset.all { checkAvailability(preset) }
@@ -324,12 +362,14 @@ final class TerminalWallpaperViewModel: ObservableObject {
         catalogProvider.refresh()
         catalogSearchGeneration &+= 1
         catalogSearch = ""
+        searchError = nil
         resolvedExecutableCache = [:]
         for task in availabilityTasks.values { task.cancel() }
         availabilityTasks = [:]
         availability = [:]
         for preset in TerminalWallpaperPreset.all { checkAvailability(preset) }
         catalogIsLoading = false
+        for preset in programs.values where preset.isValid { checkAvailability(preset) }
         catalogPrepared = true
         catalogItems = initialCatalogItems
     }
@@ -342,6 +382,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         catalogSearchTask?.cancel()
         catalogSearchTask = nil
         let query = normalizedCatalogSearch
+        searchError = nil
         let retained = Set(libraryPresets.map(\.id) + TerminalWallpaperPreset.search(query).map(\.id))
         for id in Array(availabilityTasks.keys) where !retained.contains(id) {
             availabilityTasks.removeValue(forKey: id)?.cancel()
@@ -353,8 +394,13 @@ final class TerminalWallpaperViewModel: ObservableObject {
             return
         }
 
-        catalogItems = TerminalWallpaperPreset.search(query).map(\.item)
-        catalogIsLoading = !catalogItems.isEmpty
+        // Seed known presets immediately; PATH and Homebrew results arrive independently.
+        catalogItems = TerminalProgramSearchRanking.presets(TerminalWallpaperPreset.search(query), query: query).map(\.item)
+        for preset in TerminalWallpaperPreset.search(query) {
+            if preset.program != nil { programs[preset.id] = preset }
+            checkAvailability(preset)
+        }
+        catalogIsLoading = true
 
         catalogSearchTask = Task { [weak self] in
             do {
@@ -365,7 +411,64 @@ final class TerminalWallpaperViewModel: ObservableObject {
             guard let self,
                   generation == self.catalogSearchGeneration,
                   !Task.isCancelled else { return }
-            for preset in TerminalWallpaperPreset.search(query) { self.checkAvailability(preset) }
+            let provider = self.catalogProvider
+            let localTask = Task.detached(priority: .userInitiated) {
+                provider.search(query: query).compactMap(TerminalProgramDefinition.local)
+            }
+            let local = await withTaskCancellationHandler {
+                await localTask.value
+            } onCancel: { localTask.cancel() }
+            guard generation == self.catalogSearchGeneration, !Task.isCancelled else { return }
+            var matches: [TerminalWallpaperPreset] = []
+            @MainActor func appendUnique(_ values: [TerminalWallpaperPreset]) async {
+                for preset in values where preset.isValid {
+                    guard generation == self.catalogSearchGeneration, !Task.isCancelled else { return }
+                    let name = preset.program?.name ?? URL(fileURLWithPath: preset.item.executableCandidates.last ?? "").lastPathComponent
+                    if let index = matches.firstIndex(where: {
+                        $0.id == preset.id || $0.executableName == preset.executableName
+                    }) {
+                        if let existing = matches[index].program, existing.formula.isEmpty, !preset.formula.isEmpty {
+                            let enriched = TerminalProgramDefinition(id: existing.id, name: name, formula: preset.formula,
+                                                                     executable: existing.executable)
+                            matches[index] = enriched.preset
+                        }
+                        self.programs[matches[index].id] = matches[index].program == nil ? self.programs[matches[index].id] : matches[index]
+                        self.checkAvailability(matches[index])
+                        continue
+                    }
+                    let saved = self.libraryPresets.first { $0.executableName == preset.executableName }
+                    if let saved, saved.id.hasPrefix("local:"), preset.program != nil {
+                        // Preserve a library ID, never its stale executable path.
+                        let fresh = TerminalProgramDefinition(id: saved.id, name: name, formula: preset.formula,
+                                                              executable: preset.program?.executable).preset
+                        matches.append(fresh)
+                        self.resolvedExecutableCache[fresh.id] = self.resolvedExecutableCache[preset.id]
+                        self.availability[fresh.id] = self.availability[preset.id]
+                    } else { matches.append(preset) }
+                    self.programs[preset.id] = preset.program == nil ? self.programs[preset.id] : preset
+                    self.catalogItems = TerminalProgramSearchRanking.presets(matches, query: query).prefix(24).map(\.item)
+                }
+                for preset in matches {
+                    if !preset.isReviewedAnimation { self.programs[preset.id] = preset }
+                    self.checkAvailability(preset)
+                }
+                self.catalogItems = TerminalProgramSearchRanking.presets(matches, query: query).prefix(24).map(\.item)
+            }
+            // Installed results come first without waiting for the network.
+            await appendUnique(local)
+            await appendUnique(TerminalWallpaperPreset.search(query))
+            guard generation == self.catalogSearchGeneration, !Task.isCancelled else { return }
+            if let remote = self.programSearchProvider {
+                do {
+                    let online = try await remote.search(query)
+                    guard generation == self.catalogSearchGeneration, !Task.isCancelled else { return }
+                    await appendUnique(online)
+                } catch {
+                    guard generation == self.catalogSearchGeneration, !Task.isCancelled else { return }
+                    self.searchError = "Online search is unavailable. Local results are still available."
+                }
+            }
+            guard generation == self.catalogSearchGeneration, !Task.isCancelled else { return }
             self.catalogIsLoading = false
         }
     }
@@ -373,6 +476,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     var statusTitle: String {
         if status.running && status.paused { return "Paused" }
         if status.running && status.health?.childRunning == true { return "Running" }
+        if status.running && status.health?.running == true { return "Static output" }
         if status.running { return "Agent running" }
         return "Stopped"
     }
@@ -429,7 +533,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
 
     func use(_ item: TerminalWallpaperCatalogItem) {
         guard !isBusy else { return }
-        guard let preset = TerminalWallpaperPreset.preset(id: item.id), preset.item == item else {
+        guard let preset = preset(for: item), preset.isValid, preset.item == item else {
             errorMessage = TerminalWallpaperInstallError.invalidPreset.localizedDescription
             return
         }
@@ -446,6 +550,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         let selectionRevision = previewSelectionStore?.selectionRevision
         installationTask = Task { @MainActor in
             var addedLibraryID: String?
+            var previewStarted = false
             defer {
                 isBusy = false
                 installStage = nil
@@ -457,13 +562,16 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 var path = await locate(item)
                 try Task.checkCancellation()
                 if path == nil {
+                    guard !preset.formula.isEmpty else {
+                        throw TerminalWallpaperControllerError.unavailable("This local program is no longer available. Choose its executable in Add a custom command.")
+                    }
                     guard installer.homebrewAvailable else {
                         needsHomebrew = true
                         throw TerminalWallpaperInstallError.homebrewRequired
                     }
                     installStage = "Checking package…"
                     let metadata = try await packageProvider.metadata(for: preset)
-                    guard metadata.name == preset.formula else { throw TerminalAnimationPackageError.invalidResponse }
+                    guard metadata.name == preset.formula, metadata.executables?.contains(preset.executableName) == true else { throw TerminalAnimationPackageError.invalidResponse }
                     guard !metadata.disabled else { throw TerminalAnimationPackageError.notFound }
                     try await installer.install(preset: preset) { [weak self] stage in
                         Task { @MainActor in
@@ -482,7 +590,11 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 availability[item.id] = .installed(path)
                 guard let store = previewSelectionStore, store.selectionRevision == selectionRevision else { throw CancellationError() }
                 var config = makeConfig()
-                let command = TerminalCommandConfiguration(catalogItemID: item.id, executable: path, arguments: item.arguments)
+                let baseCommand = TerminalCommandConfiguration(catalogItemID: item.id, executable: path, arguments: item.arguments)
+                installStage = "Checking animation options…"
+                let command = try await animationResolver.resolve(baseCommand)
+                try Task.checkCancellation()
+                guard store.selectionRevision == selectionRevision else { throw CancellationError() }
                 if config.command != command {
                     config.nativeSpeed = nil
                     config.playbackSpeed = 1
@@ -491,26 +603,31 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 config = config.normalized()
                 installStage = "Starting preview…"
                 store.beginTemporaryTerminal(config, operationID: installationID)
-                try await previewReady(config, installationID)
+                previewStarted = true
+                config = try await readyWithAnimationFallback(config, original: baseCommand, operationID: installationID)
                 try Task.checkCancellation()
                 guard store.pendingOperationID == installationID else { throw CancellationError() }
-                // Persist only a confirmed, living preview. The actor serializes
+                // Persist only a confirmed live or static preview. The actor serializes
                 // atomic library writes and preserves first-add order.
                 let previousIDs = try await libraryStore.load()
                 guard store.pendingOperationID == installationID else { throw CancellationError() }
-                libraryIDs = try await libraryStore.add(preset.id)
+                libraryIDs = try await libraryStore.add(preset)
                 if !previousIDs.contains(preset.id) { addedLibraryID = preset.id }
                 try Task.checkCancellation()
                 guard store.pendingOperationID == installationID else { throw CancellationError() }
                 try store.commitTemporaryTerminal(operationID: installationID)
                 select(item)
+                argumentsText = config.command.arguments.joined(separator: "\n")
             } catch is CancellationError {
                 if let addedLibraryID { libraryIDs = (try? await libraryStore.remove(addedLibraryID)) ?? libraryIDs }
                 previewSelectionStore?.rollbackTemporaryTerminal(operationID: installationID)
             } catch {
                 if let addedLibraryID { libraryIDs = (try? await libraryStore.remove(addedLibraryID)) ?? libraryIDs }
                 previewSelectionStore?.rollbackTemporaryTerminal(operationID: installationID)
-                errorMessage = error.localizedDescription
+                terminalWallpaperViewModelLogger.error("Terminal program failed: \(error.localizedDescription, privacy: .public)")
+                errorMessage = previewStarted
+                    ? "Не удалось запустить программу. Пожалуйста, выберите другую."
+                    : error.localizedDescription
                 if case TerminalWallpaperInstallError.unsupportedHomebrewPlatform = error {
                     installHelpURL = URL(string: "https://docs.brew.sh/Installation")
                 }
@@ -519,6 +636,34 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     func cancelInstallation() { installationTask?.cancel() }
+
+    private func readyWithAnimationFallback(_ configuration: TerminalWallpaperConfig,
+                                            original: TerminalCommandConfiguration,
+                                            operationID: UUID) async throws -> TerminalWallpaperConfig {
+        do {
+            try await previewReady(configuration, operationID)
+            return configuration
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            try Task.checkCancellation()
+            guard let store = previewSelectionStore, store.pendingOperationID == operationID else { throw CancellationError() }
+            guard configuration.command != original else { throw error }
+            // A flag from outdated/incomplete documentation must not prevent
+            // the normal static/live output from being used. Retry only once.
+            await animationResolver.reject(original)
+            try Task.checkCancellation()
+            var fallback = configuration
+            fallback.command = original
+            installStage = "Trying normal output…"
+            try store.replaceTemporaryTerminal(fallback, operationID: operationID)
+            try await previewReady(fallback, operationID)
+            return fallback
+        }
+    }
+
+    func preset(for item: TerminalWallpaperCatalogItem) -> TerminalWallpaperPreset? {
+        TerminalWallpaperPreset.preset(id: item.id) ?? programs[item.id]
+    }
 
     func prepareHomebrew() {
         guard !isBusy else { return }
@@ -550,7 +695,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         let provider = catalogProvider
         return await Task.detached(priority: .userInitiated) {
             if let path = resolve(item) { return path }
-            // Spotlight gets only reviewed executable names, never search text.
+            // Resolve specific executable names, never a shell command from search text.
             for name in Set(item.executableCandidates.map { URL(fileURLWithPath: $0).lastPathComponent }) {
                 for candidate in provider.discover(query: name) {
                     if let path = resolve(candidate), URL(fileURLWithPath: path).lastPathComponent == name { return path }
@@ -561,7 +706,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     func checkAvailability(_ preset: TerminalWallpaperPreset) {
-        guard availabilityTasks[preset.id] == nil else { return }
+        guard preset.isValid, availabilityTasks[preset.id] == nil else { return }
         availability[preset.id] = .checking
         availabilityTasks[preset.id] = Task { [weak self] in
             guard let self else { return }
@@ -574,11 +719,16 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 return
             }
             self.resolvedExecutableCache[preset.id] = nil
+            guard !preset.formula.isEmpty else {
+                self.availability[preset.id] = .unavailable("Executable not found. Choose its new location in Add a custom command.")
+                return
+            }
             do {
                 let metadata = try await self.packageProvider.metadata(for: preset)
                 guard !Task.isCancelled else { return }
-                guard metadata.name == preset.formula else { throw TerminalAnimationPackageError.invalidResponse }
-                self.availability[preset.id] = metadata.disabled ? .unavailable("Package unavailable") : .available(metadata.version)
+                guard metadata.name == preset.formula, metadata.executables?.contains(preset.executableName) == true else { throw TerminalAnimationPackageError.invalidResponse }
+                self.availability[preset.id] = metadata.disabled
+                    ? .unavailable("This package is no longer available in Homebrew.") : .available(metadata.version)
             } catch is CancellationError { }
             catch {
                 guard !Task.isCancelled else { return }
@@ -589,6 +739,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
 
     @discardableResult
     func selectCustomExecutable(_ url: URL) -> Bool {
+        guard !isBusy else { return false }
         if url.pathExtension.lowercased() == "app" {
             errorMessage = "GUI .app applications cannot be rendered as Terminal Wallpaper. Choose a command-line executable or TUI app."
             return false
@@ -600,7 +751,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         argumentsText = ""
         workingDirectory = ""
         environmentText = ""
-        previewSelectionStore?.selectTerminal(makeConfig())
+        showCurrentCommandInPreview()
         statusMessage = nil
         return true
     }
@@ -611,13 +762,48 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     func showCurrentCommandInPreview() {
+        guard !isBusy else { return }
         guard !executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             errorMessage = "Choose a terminal executable first."
             return
         }
         errorMessage = nil
-        previewSelectionStore?.selectTerminal(makeConfig())
         statusMessage = nil
+        guard let store = previewSelectionStore else { return }
+        let original = makeConfig()
+        let revision = store.selectionRevision
+        isBusy = true
+        let id = UUID()
+        activeInstallationID = id
+        installStage = "Checking animation options…"
+        installationTask = Task { @MainActor in
+            defer {
+                isBusy = false; installStage = nil
+                activeInstallationID = nil; installationTask = nil
+            }
+            do {
+                let command = try await animationResolver.resolve(original.command)
+                try Task.checkCancellation()
+                guard store.selectionRevision == revision, makeConfig().command == original.command else { throw CancellationError() }
+                var config = original
+                config.command = command
+                if command == original.command {
+                    store.selectTerminal(config)
+                } else {
+                    installStage = "Starting preview…"
+                    store.beginTemporaryTerminal(config, operationID: id)
+                    config = try await readyWithAnimationFallback(config, original: original.command, operationID: id)
+                    try Task.checkCancellation()
+                    try store.commitTemporaryTerminal(operationID: id)
+                    argumentsText = config.command.arguments.joined(separator: "\n")
+                }
+            } catch is CancellationError {
+                store.rollbackTemporaryTerminal(operationID: id)
+            } catch {
+                store.rollbackTemporaryTerminal(operationID: id)
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     var controlsScaleMode: TerminalScaleMode {
@@ -693,6 +879,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
         let controller = controller
         var config = status.running ? status.config : makeConfig()
         config.behavior.launchAtLogin = enabled
+        let loginConfig = config
         pendingLaunchAtLogin = enabled
         perform(successMessage: enabled ? "Launch at login enabled." : "Launch at login disabled.",
                 onCompletion: { [weak self] succeeded in
@@ -704,7 +891,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
                     } else if !succeeded { self.launchAtLogin = previous }
                     self.pendingLaunchAtLogin = nil
                 }) {
-            do { return try controller.setLaunchAtLogin(enabled, config: config) }
+            do { return try controller.setLaunchAtLogin(enabled, config: loginConfig) }
             catch {
                 throw TerminalWallpaperControllerError.unavailable("Failed to update launch at login: \(error.localizedDescription)")
             }
@@ -716,7 +903,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private func applyRuntime(_ action: RuntimeAction) {
         let controller = controller
         let config = makeConfig()
-        perform(successMessage: action == .stop ? "Terminal Wallpaper stopped." : "Terminal Wallpaper updated.") {
+        perform(successMessage: action == .stop ? "Terminal Wallpaper stopped." : nil) {
             switch action {
             case .start: return try controller.start(config: config)
             case .stop: return try controller.stop()
@@ -732,7 +919,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private func perform(
         successMessage: String? = nil,
         onCompletion: ((Bool) -> Void)? = nil,
-        _ work: @escaping () throws -> TerminalWallpaperStatus
+        _ work: @escaping @Sendable () throws -> TerminalWallpaperStatus
     ) {
         guard !isBusy else { return }
         isBusy = true
