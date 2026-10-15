@@ -720,6 +720,9 @@ sign_app_bundle() {
   fi
 
   while IFS= read -r target; do
+    # The root executable is sealed when its app is signed, after all nested
+    # helper apps/plugins. Signing it earlier rejects unsealed nested bundles.
+    [[ "$target" == "$APP_BUNDLE/Contents/MacOS/$APP_TARGET" ]] && continue
     codesign_target "$target"
   done < <(find_macho_files)
 

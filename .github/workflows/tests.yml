@@ -46,15 +46,26 @@ jobs:
           DEVELOPER_DIR="$developer_dir" xcodebuild -version
           DEVELOPER_DIR="$developer_dir" xcrun swift --version
 
+      - name: Install video test dependencies
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install ffmpeg
+          fi
+          ffmpeg -version
+          ffprobe -version
+
       - name: Run Swift tests
         working-directory: macOSApp
         shell: bash
         run: |
           set -euo pipefail
-          swift test --no-parallel 2>&1 | tee "$RUNNER_TEMP/swift-tests.log"
-          # AppKit integration tests share the process-wide application. A
-          # premature NSApplication exit must never look like a passing suite.
+          # Agent tests change NSApplication activation/lifecycle state. Run
+          # SwiftUI preview windows in a fresh host, retaining all test cases.
+          swift test --no-parallel --skip TerminalPreviewWindowResizeTests 2>&1 | tee "$RUNNER_TEMP/swift-tests.log"
           grep -Eq 'Test run with [0-9]+ tests.*passed' "$RUNNER_TEMP/swift-tests.log"
+          swift test --skip-build --no-parallel --filter TerminalPreviewWindowResizeTests 2>&1 | tee "$RUNNER_TEMP/preview-window-tests.log"
+          grep -Eq 'Test run with [0-9]+ tests.*passed' "$RUNNER_TEMP/preview-window-tests.log"
 
       - name: Build portable release targets
         working-directory: macOSApp

@@ -175,7 +175,7 @@ Create a universal `arm64 + x86_64` release:
 BUILD_UNIVERSAL=1 REQUIRE_UNIVERSAL=1 scripts/build_release.sh
 ```
 
-Artifacts are written to `dist-builds/` by default. Set
+Artifacts are written to `dist/` by default. Set
 `AURAFLOW_OUTPUT_DIR` to choose a different destination.
 
 ## Repository Layout

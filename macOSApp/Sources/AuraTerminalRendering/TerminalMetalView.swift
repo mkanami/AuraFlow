@@ -212,7 +212,7 @@ public final class TerminalMetalView: MTKView {
         // preceding (or uninitialized) frame. Read back only inside draw(),
         // after the current cells have actually been rendered into the texture.
         schedulePreparation()
-        needsDisplay = true
+        draw(bounds)
     }
 
     public override func draw(_ rect: NSRect) {
@@ -230,8 +230,9 @@ public final class TerminalMetalView: MTKView {
         // The desktop window is occluded behind the secure Lock Screen. Its
         // drawable is not the clock for the shared surface: render offscreen
         // while locked, so neither AppKit occlusion nor nextDrawable stalls it.
-        let drawable = lockScreenCaptureEnabled ? nil : currentDrawable
-        guard lockScreenCaptureEnabled || drawable != nil else { return }
+        let offscreenCapture = lockScreenCaptureEnabled || lockCaptureSeedPending
+        let drawable = offscreenCapture ? nil : currentDrawable
+        guard offscreenCapture || drawable != nil else { return }
 
         let cellPass = MTLRenderPassDescriptor()
         cellPass.colorAttachments[0].texture = frameTexture
@@ -307,7 +308,7 @@ public final class TerminalMetalView: MTKView {
                 }
                 if self.presentationPending {
                     self.presentationPending = false
-                    if self.lockScreenCaptureEnabled { self.draw(self.bounds) }
+                    if self.lockScreenCaptureEnabled || self.lockCaptureSeedPending { self.draw(self.bounds) }
                     else { self.needsDisplay = true }
                 }
             }
@@ -385,7 +386,7 @@ public final class TerminalMetalView: MTKView {
         install(prepared)
         rasterizedRevision = prepared.revision
         if prepared.requiresPresentation || lockCaptureSeedPending {
-            if lockScreenCaptureEnabled { draw(bounds) }
+            if lockScreenCaptureEnabled || lockCaptureSeedPending { draw(bounds) }
             else { needsDisplay = true }
         }
         if snapshot?.revision != prepared.revision { schedulePreparation() }
@@ -584,8 +585,10 @@ public final class TerminalMetalView: MTKView {
                     }
                     return
                 }
+                let wasSeedPending = self.lockCaptureSeedPending
                 self.onLockScreenFrame?(pixels, width, height)
                 self.lockCaptureSeedPending = false
+                if wasSeedPending && !self.lockScreenCaptureEnabled { self.needsDisplay = true }
                 if retryCapture && self.lockScreenCaptureEnabled { self.captureCurrentTexture() }
             }
         }

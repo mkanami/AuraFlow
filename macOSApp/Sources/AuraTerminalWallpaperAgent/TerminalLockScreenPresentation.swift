@@ -60,7 +60,7 @@ final class TerminalLockScreenPresentation {
             forName: TerminalWallpaperRuntimeNotifications.lockScreenRouteDidChange,
             object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.prepare(reloadRoute: true) }
+            Task { @MainActor [weak self] in self?.prepare(reloadRoute: true) }
         }
         let center = DistributedNotificationCenter.default()
         for (name, locked) in [
@@ -70,7 +70,7 @@ final class TerminalLockScreenPresentation {
             (Notification.Name("com.apple.sessionagent.shieldWindowRaised"), true),
         ] {
             let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.handleLockNotification(locked) }
+                Task { @MainActor [weak self] in self?.handleLockNotification(locked) }
             }
             sessionObservers.append(token)
         }
@@ -79,10 +79,10 @@ final class TerminalLockScreenPresentation {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.handleLockNotification(false) }
+            Task { @MainActor [weak self] in self?.handleLockNotification(false) }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.pollSession() }
+            Task { @MainActor [weak self] in self?.pollSession() }
         }
         prepare()
     }

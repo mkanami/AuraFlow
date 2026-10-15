@@ -97,6 +97,11 @@ func cavaInstalledRealPTYAnimatesWithoutAudioAndSupportsPauseResizeAndStop(colum
     #expect(output.read().0.count > pausedBytes)
     session.stop()
     #expect(session.childPID == nil)
+    // stop bounds foreground work and may reap a slow CLI on its worker.
+    let stopDeadline = Date().addingTimeInterval(2)
+    while kill(pid, 0) == 0, Date() < stopDeadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
     #expect(kill(pid, 0) == -1 && errno == ESRCH)
 }
 

@@ -48,16 +48,16 @@ final class WebWallpaperAgent: NSObject, NSApplicationDelegate {
             try String(getpid()).write(to: WebWallpaperRuntime.url("agent.pid"), atomically: true, encoding: .utf8)
         } catch { NSApp.terminate(nil); return }
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.rebuild() }
+            Task { @MainActor [weak self] in self?.rebuild() }
         }
         let center = DistributedNotificationCenter.default()
         for (name, lock) in [("com.apple.screenIsLocked", true), ("com.apple.screenIsUnlocked", false), ("com.apple.shieldWindowRaised", true)] {
             sessionObservers.append(center.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.transitionLock(lock) }
+                Task { @MainActor [weak self] in self?.transitionLock(lock) }
             })
         }
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
+            Task { @MainActor [weak self] in self?.tick() }
         }
         tick()
     }
