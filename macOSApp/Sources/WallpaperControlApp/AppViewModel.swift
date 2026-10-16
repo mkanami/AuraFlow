@@ -3610,7 +3610,7 @@ final class AppViewModel: ObservableObject {
         guard selectedCatalogWallpaper == nil,
               filteredCatalogWallpapers.last?.id == wallpaperID,
               lastCatalogPaginationTriggerID != wallpaperID,
-              !catalogIsRefreshing,
+              (!catalogIsRefreshing || canLoadDeferredCatalogPage || catalogViewModel.hasDeferredSearchResults),
               catalogLoadMoreTask == nil else {
             return
         }

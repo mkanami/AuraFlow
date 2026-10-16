@@ -1640,6 +1640,32 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
+@Test func cachedCatalogPagesExpandWhileMetadataRefreshIsStillRunning() async throws {
+    let wallpapers = (0..<36).map { index in
+        CatalogWallpaper(id: "cached-\(index)", title: "Cached \(index)", category: "Anime",
+            attribution: "Test", previewImageURL: nil, sourcePageURL: nil, sources: [])
+    }
+    let model = AppViewModel(controller: MockNativeWallpaperController(),
+        catalogProvider: MockCatalogProvider(wallpapers: wallpapers))
+    for _ in 0..<100 where model.catalogWallpapers.isEmpty {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    model.catalogViewModel.replaceCatalogForDisplay(with: wallpapers, hasMoreRemotePages: true)
+    model.catalogIsRefreshing = true
+    defer { model.catalogIsRefreshing = false }
+    model.catalogTrailingWallpaperBecameVisible(try #require(model.catalogWallpapers.last?.id))
+    for _ in 0..<100 where model.catalogWallpapers.count < 24 {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    #expect(model.catalogWallpapers.count == 24)
+    // Progress/final refreshes must not hide a page the user already reached.
+    model.catalogViewModel.replaceCatalogForDisplay(with: wallpapers, hasMoreRemotePages: true)
+    #expect(model.catalogWallpapers.count == 24)
+    #expect(model.catalogViewModel.loadNextDeferredPage())
+    #expect(model.catalogWallpapers.count == 36)
+}
+
+@MainActor
 @Test func catalogSearchResultsDoNotMutateBrowsingCatalog() async throws {
     let seed = CatalogWallpaper(
         id: "seed",

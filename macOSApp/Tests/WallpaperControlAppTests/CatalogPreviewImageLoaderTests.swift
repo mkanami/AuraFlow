@@ -7,6 +7,46 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct CatalogPreviewImageLoaderTests {
+    @Test func visibleCardSharesPrefetchAndDoesNotCancelTheOtherConsumer() async throws {
+        let session = try makeSession()
+        defer { session.invalidateAndCancel() }
+        let source = url("hold-shared")
+        let prefetch = CatalogPreviewImageLoader(session: session)
+        prefetch.load(url: source, referer: nil, priority: .lookahead)
+        try await eventually { PreviewImageURLProtocol.startedCount == 1 }
+        let visible = CatalogPreviewImageLoader(session: session)
+        visible.load(url: source, referer: nil)
+        for _ in 0..<5 { await Task.yield() }
+        prefetch.cancel()
+        try await Task.sleep(nanoseconds: 30_000_000)
+        #expect(PreviewImageURLProtocol.startedCount == 1)
+        #expect(PreviewImageURLProtocol.stoppedCount == 0)
+        visible.cancel()
+        try await eventually { PreviewImageURLProtocol.stoppedCount == 1 }
+    }
+
+    @Test func nextRowsAreWarmedWithoutFetchingTheWholeCatalog() async throws {
+        let session = try makeSession()
+        defer { session.invalidateAndCancel() }
+        let posters = CatalogPosterPrefetcher(session: session)
+        defer { posters.cancel() }
+        let wallpapers = (0..<100).map { index in
+            CatalogWallpaper(id: "poster-\(index)", title: "Poster \(index)", category: "Anime",
+                attribution: "Test", previewImageURL: url("poster-\(index)"), sourcePageURL: nil, sources: [])
+        }
+        posters.update(wallpapers: wallpapers)
+        for wallpaper in wallpapers.prefix(4) { posters.setVisible(wallpaper.id, true) }
+        try await eventually { PreviewImageURLProtocol.startedCount == 8 }
+        // Visible rows have their own loader; lookahead warms just the next eight.
+        let next = CatalogPreviewImageLoader(session: session)
+        next.load(url: wallpapers[4].previewImageURL, referer: nil)
+        try await eventually { next.image != nil }
+        let cached = CatalogPreviewImageLoader(session: session)
+        cached.load(url: wallpapers[4].previewImageURL, referer: nil)
+        #expect(cached.image != nil)
+        #expect(PreviewImageURLProtocol.startedCount == 8)
+    }
+
     @Test func fastScrollingCancelsActiveAndQueuedImagesBeforeLoadingLatestCard() async throws {
         let session = try makeSession()
         defer { session.invalidateAndCancel() }

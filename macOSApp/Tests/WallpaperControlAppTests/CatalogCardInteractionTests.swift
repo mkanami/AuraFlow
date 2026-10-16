@@ -6,6 +6,42 @@ import Testing
 @Suite(.serialized)
 struct CatalogCardInteractionTests {
 @MainActor
+@Test func cachedNextPageArrivesBeforeScrollingToTheLastRow() async throws {
+    let wallpapers = (0..<36).map { index in
+        CatalogWallpaper(id: "early-\(index)", title: "Wallpaper \(index)", category: "Anime",
+            attribution: "Test", previewImageURL: nil, sourcePageURL: nil, sources: [])
+    }
+    let model = AppViewModel(controller: MockNativeWallpaperController(),
+        catalogProvider: MockCatalogProvider(wallpapers: wallpapers))
+    for _ in 0..<100 where model.catalogWallpapers.isEmpty {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    model.catalogIsRefreshing = true
+    defer { model.catalogIsRefreshing = false }
+    let hosting = NSHostingView(rootView: WallpaperCatalogGridView(viewModel: model,
+        catalogViewModel: model.catalogViewModel).frame(width: 500, height: 220))
+    hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 220)
+    let window = makeInteractionWindow(contentView: hosting, size: hosting.frame.size)
+    defer { window.orderOut(nil); window.close() }
+    hosting.layoutSubtreeIfNeeded()
+    try await Task.sleep(nanoseconds: 50_000_000)
+    func findScroll(_ view: NSView) -> NSScrollView? {
+        if let scroll = view as? NSScrollView { return scroll }
+        return view.subviews.lazy.compactMap(findScroll).first
+    }
+    let scroll = try #require(findScroll(hosting))
+    // Enter the middle of page one, well before its sixth/final row.
+    scroll.contentView.scroll(to: NSPoint(x: 0, y: 330))
+    scroll.reflectScrolledClipView(scroll.contentView)
+    for _ in 0..<100 where model.catalogWallpapers.count < 24 {
+        hosting.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    #expect(model.catalogWallpapers.count >= 24)
+    #expect(scroll.contentView.bounds.origin.y < 600)
+}
+
+@MainActor
 @Test func downloadedLibraryScrollsBothWaysWithoutChangingItsViewport() async throws {
     let model = AppViewModel(controller: MockNativeWallpaperController(),
         catalogProvider: MockCatalogProvider(wallpapers: []))

@@ -1566,6 +1566,8 @@ struct CatalogGroupFilterButton: View {
 struct WallpaperCatalogGridView: View {
     let viewModel: AppViewModel
     @ObservedObject var catalogViewModel: CatalogViewModel
+    @StateObject private var posterPrefetcher = CatalogPosterPrefetcher()
+    @State private var paginationAnchorID: String?
 
     private let columns = [GridItem(.adaptive(minimum: 220), spacing: 12)]
 
@@ -1587,6 +1589,14 @@ struct WallpaperCatalogGridView: View {
                     scrollViewProxy.scrollTo(targetID, anchor: .top)
                 }
             }
+            .onChange(of: catalogViewModel.isRefreshing) { refreshing in
+                if !refreshing, let paginationAnchorID {
+                    viewModel.catalogTrailingWallpaperBecameVisible(paginationAnchorID)
+                }
+            }
+            .onChange(of: catalogViewModel.searchText) { _ in paginationAnchorID = nil }
+            .onChange(of: catalogViewModel.selectedGroup) { _ in paginationAnchorID = nil }
+            .onDisappear { posterPrefetcher.cancel() }
         }
     }
 
@@ -1608,6 +1618,7 @@ struct WallpaperCatalogGridView: View {
     private var wallpaperCards: some View {
         let wallpapers = catalogViewModel.filteredWallpapers
         let trailingID = wallpapers.last?.id
+        let nearEndIDs = Set(wallpapers.suffix(6).map(\.id))
         return LazyVGrid(columns: columns, spacing: 12) {
             ForEach(wallpapers) { wallpaper in
                 CatalogWallpaperCard(wallpaper: wallpaper) {
@@ -1615,12 +1626,17 @@ struct WallpaperCatalogGridView: View {
                 }
                 .id(wallpaper.id)
                 .onAppear {
-                    if wallpaper.id == trailingID {
-                        viewModel.catalogTrailingWallpaperBecameVisible(wallpaper.id)
+                    posterPrefetcher.setVisible(wallpaper.id, true)
+                    if nearEndIDs.contains(wallpaper.id), let trailingID {
+                        paginationAnchorID = trailingID
+                        viewModel.catalogTrailingWallpaperBecameVisible(trailingID)
                     }
                 }
+                .onDisappear { posterPrefetcher.setVisible(wallpaper.id, false) }
             }
         }
+        .onAppear { posterPrefetcher.update(wallpapers: wallpapers) }
+        .onChange(of: wallpapers) { posterPrefetcher.update(wallpapers: $0) }
     }
 }
 
@@ -2065,13 +2081,14 @@ struct CatalogPreviewImage: View {
 final class CatalogPreviewImageLoader: ObservableObject {
     @Published private(set) var image: NSImage?
 
-    private struct DecodedPreview: @unchecked Sendable {
+    private final class DecodedPreview: @unchecked Sendable {
         let image: NSImage
         let cost: Int
+        init(image: NSImage, cost: Int) { self.image = image; self.cost = cost }
     }
 
-    private static let cache: NSCache<NSURL, NSImage> = {
-        let cache = NSCache<NSURL, NSImage>()
+    private static let cache: NSCache<NSURL, DecodedPreview> = {
+        let cache = NSCache<NSURL, DecodedPreview>()
         cache.countLimit = 120
         cache.totalCostLimit = 96 * 1024 * 1024
         return cache
@@ -2089,7 +2106,7 @@ final class CatalogPreviewImageLoader: ObservableObject {
         cache.removeAllObjects()
     }
 
-    func load(url: URL?, fallbackURL: URL? = nil, referer: URL?) {
+    func load(url: URL?, fallbackURL: URL? = nil, referer: URL?, priority: CatalogPreviewPriority = .visible) {
         task?.cancel()
         task = nil
         guard let url else {
@@ -2098,21 +2115,71 @@ final class CatalogPreviewImageLoader: ObservableObject {
         }
 
         if let cached = Self.cache.object(forKey: url as NSURL) {
-            image = cached
+            image = cached.image
             return
         }
 
         if let fallbackURL,
            let cachedFallback = Self.cache.object(forKey: fallbackURL as NSURL) {
-            image = cachedFallback
+            image = cachedFallback.image
         } else {
             image = nil
         }
 
         let session = session
+        task = Task { [weak self] in
+            let decoded = await Self.sharedImage(url: url, referer: referer, session: session, priority: priority)
+            guard !Task.isCancelled, let decoded else { return }
+            self?.image = decoded.image
+        }
+    }
+
+    private struct ImageRequest {
+        let generation: UUID
+        let fetch: Task<DecodedPreview?, Never>
+        var waiters: [UUID: CheckedContinuation<DecodedPreview?, Never>]
+    }
+    private static var requests: [URL: ImageRequest] = [:]
+
+    private static func sharedImage(url: URL, referer: URL?, session: URLSession,
+                                    priority: CatalogPreviewPriority) async -> DecodedPreview? {
+        if let cached = cache.object(forKey: url as NSURL) { return cached }
+        let waiter = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(returning: nil); return }
+                if var existing = requests[url] {
+                    existing.waiters[waiter] = continuation
+                    requests[url] = existing
+                    Task { await catalogPreviewImageLoadLimiter.promote(key: url.absoluteString, to: priority) }
+                } else {
+                    startRequest(url: url, referer: referer, session: session,
+                        priority: priority, waiter: waiter, continuation: continuation)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in cancelWaiter(waiter, url: url) }
+        }
+    }
+
+    private static func cancelWaiter(_ id: UUID, url: URL) {
+        guard var request = requests[url], let waiter = request.waiters.removeValue(forKey: id) else { return }
+        if request.waiters.isEmpty {
+            requests.removeValue(forKey: url)
+            request.fetch.cancel()
+        } else {
+            requests[url] = request
+        }
+        waiter.resume(returning: nil)
+    }
+
+    private static func startRequest(url: URL, referer: URL?, session: URLSession,
+        priority: CatalogPreviewPriority, waiter: UUID,
+        continuation: CheckedContinuation<DecodedPreview?, Never>) {
+        let generation = UUID()
         let fetch = Task.detached(priority: .utility) { () -> DecodedPreview? in
             do {
-                try await catalogPreviewImageLoadLimiter.acquire(priority: .visible)
+                try await catalogPreviewImageLoadLimiter.acquire(priority: priority, key: url.absoluteString)
             } catch { return nil }
             let decoded: DecodedPreview?
             do {
@@ -2143,15 +2210,15 @@ final class CatalogPreviewImageLoader: ObservableObject {
             return decoded
         }
 
-        task = Task { [weak self] in
-            let decoded = await withTaskCancellationHandler {
-                await fetch.value
-            } onCancel: {
-                fetch.cancel()
+        requests[url] = ImageRequest(generation: generation, fetch: fetch, waiters: [waiter: continuation])
+        Task {
+            let decoded = await fetch.value
+            guard requests[url]?.generation == generation,
+                  let request = requests.removeValue(forKey: url) else { return }
+            if let decoded {
+                cache.setObject(decoded, forKey: url as NSURL, cost: decoded.cost)
             }
-            guard !Task.isCancelled, let decoded else { return }
-            Self.cache.setObject(decoded.image, forKey: url as NSURL, cost: decoded.cost)
-            self?.image = decoded.image
+            for waiter in request.waiters.values { waiter.resume(returning: decoded) }
         }
     }
 

@@ -129,8 +129,11 @@ final class CatalogViewModel: ObservableObject {
         hasMoreRemotePages: Bool
     ) {
         let uniqueWallpapers = Self.deduplicated(allWallpapers)
-        wallpapers = Array(uniqueWallpapers.prefix(catalogDisplayPageSize))
-        deferredWallpapers = Array(uniqueWallpapers.dropFirst(catalogDisplayPageSize))
+        // A refresh must not fold already expanded cached pages back to twelve
+        // cards while the user is scrolling them.
+        let displayedCount = max(catalogDisplayPageSize, wallpapers.count)
+        wallpapers = Array(uniqueWallpapers.prefix(displayedCount))
+        deferredWallpapers = Array(uniqueWallpapers.dropFirst(displayedCount))
         hasMoreRemoteWallpapers = hasMoreRemotePages
         hasMoreWallpapers = !deferredWallpapers.isEmpty || hasMoreRemotePages
     }
