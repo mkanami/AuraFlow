@@ -1,4 +1,6 @@
 import AppKit
+import Combine
+import IOSurface
 import AuraTerminalRendering
 import AuraTerminalWallpaperCore
 import SwiftUI
@@ -7,6 +9,107 @@ import Testing
 
 @Suite(.serialized) @MainActor
 struct TerminalPreviewWindowResizeTests {
+    @Test func animatedFramesReachMetalWithoutInvalidatingSwiftUIComposition() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraDirectFrames-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let selection = WallpaperPreviewSelectionStore(selectionURL: root.appendingPathComponent("selection.json"))
+        let model = TerminalWallpaperPreviewModel(selectionStore: selection,
+            runtimeStore: .init(appSupportURL: root.appendingPathComponent("runtime")), windowIsVisible: { true })
+        let config = TerminalWallpaperConfig(command: .init(executable: "/bin/sh", arguments: ["-c",
+            "i=0; while :; do printf '\\033[H%08d' $i; i=$((i+1)); sleep 0.02; done"]),
+            render: .init(columns: 80, rows: 24, maxFPS: 30))
+        selection.selectTerminal(config)
+        defer { selection.selectVideo() }
+        let hosting = NSHostingView(rootView: TerminalWallpaperPreviewSurface(model: model))
+        hosting.sizingOptions = []
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 760, height: 480),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.close() }
+        let deadline = Date().addingTimeInterval(4)
+        while model.snapshot == nil && Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+        hosting.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let renderer = try #require(findRenderer(in: hosting))
+        let presentation = TerminalPreviewPresentationModel(model: model)
+        var compositionUpdates = 0
+        var snapshots = 0
+        var frames = 0
+        let uiObservation = presentation.objectWillChange.sink { compositionUpdates += 1 }
+        let frameObservation = model.$snapshot.dropFirst().sink { _ in snapshots += 1 }
+        defer { uiObservation.cancel(); frameObservation.cancel() }
+        renderer.onSharedFrame = { _, _ in frames += 1 }
+        for _ in 0..<30 {
+            renderer.draw(renderer.bounds)
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(snapshots >= 5)
+        #expect(frames >= 5)
+        #expect(compositionUpdates == 0)
+        #expect(findRenderer(in: hosting) === renderer)
+        var changed = config
+        changed.render.scaleMode = .stretch
+        selection.selectTerminal(changed)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(presentation.state.configuration?.render.scaleMode == .stretch)
+        #expect(compositionUpdates > 0)
+        #expect(findRenderer(in: hosting) === renderer)
+        selection.selectVideo()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(!presentation.state.hasSnapshot && !presentation.state.hasSharedFrame)
+    }
+
+    @Test func sharedFramesReachExistingViewWithoutSwiftUIFrameUpdates() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraSharedDirectFrames-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = TerminalWallpaperRuntimeStore(appSupportURL: root.appendingPathComponent("runtime"),
+            launchAgentURL: root.appendingPathComponent("agent.plist"))
+        let surface = try #require(IOSurfaceCreate([
+            kIOSurfaceWidth: 4, kIOSurfaceHeight: 4, kIOSurfaceBytesPerElement: 4,
+            kIOSurfaceBytesPerRow: 64, kIOSurfaceAllocSize: 256,
+            kIOSurfacePixelFormat: UInt32(0x42475241),
+        ] as CFDictionary))
+        let descriptor = TerminalSharedFrameDescriptor(surfaceID: IOSurfaceGetID(surface),
+            width: 4, height: 4, agentPID: Int(getpid()))
+        let config = TerminalWallpaperConfig(command: .init(executable: "/usr/bin/true"))
+        try store.saveConfig(config)
+        try store.savePID()
+        try store.saveSharedFrameDescriptor(descriptor)
+        let selection = WallpaperPreviewSelectionStore(selectionURL: root.appendingPathComponent("selection.json"))
+        selection.selectTerminal(config)
+        defer { selection.selectVideo() }
+        let model = TerminalWallpaperPreviewModel(selectionStore: selection, runtimeStore: store,
+            windowIsVisible: { true })
+        let hosting = NSHostingView(rootView: TerminalWallpaperPreviewSurface(model: model))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 760, height: 480),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        defer { window.orderOut(nil); window.close() }
+        hosting.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        func sharedView(_ view: NSView) -> TerminalIOSurfacePreviewView? {
+            if let view = view as? TerminalIOSurfacePreviewView { return view }
+            return view.subviews.lazy.compactMap(sharedView).first
+        }
+        let renderer = try #require(sharedView(hosting))
+        let presentation = TerminalPreviewPresentationModel(model: model)
+        var compositionUpdates = 0
+        let observation = presentation.objectWillChange.sink { compositionUpdates += 1 }
+        defer { observation.cancel() }
+        // Visibility refresh requests the current surface again, using exactly
+        // the same frame publisher as installed wallpaper notifications.
+        for _ in 0..<100 { model.previewVisibilityDidChange() }
+        #expect(renderer.lastSequence == model.frameSequence)
+        #expect(renderer.lastSequence >= 100)
+        #expect(sharedView(hosting) === renderer)
+        #expect(compositionUpdates == 0)
+        #expect(!model.previewProcessIsRunning)
+        withExtendedLifetime(surface) {}
+    }
+
     @Test func nyancatPreviewHasNoBlackRightOrBottomEdgeAfterResize() async throws {
         guard let executable = TerminalExecutableLocator.resolve("nyancat") else { return }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraNyanEdges-\(UUID())")

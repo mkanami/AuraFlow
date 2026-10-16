@@ -300,9 +300,13 @@ struct TerminalWallpaperSettingsView: View {
                 .id("terminal-program-search")
 
                 if !viewModel.catalogSearch.isEmpty {
-                    ForEach(viewModel.catalogItems) { item in
-                        if let preset = viewModel.preset(for: item) {
-                            presetCard(preset, compact: true)
+                    // Search can return hundreds of programs. Instantiate glass
+                    // only near the viewport, just like the saved library grid.
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(viewModel.catalogItems) { item in
+                            if let preset = viewModel.preset(for: item) {
+                                presetCard(preset, compact: true)
+                            }
                         }
                     }
                     if viewModel.catalogItems.isEmpty && !viewModel.catalogIsLoading {

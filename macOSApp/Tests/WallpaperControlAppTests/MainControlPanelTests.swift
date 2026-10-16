@@ -6,6 +6,42 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct MainControlPanelTests {
+    @Test func repeatedMovementAndLiveResizeHaveOneInteractionLifetime() async throws {
+        let activity = WindowInteractionActivity()
+        var starts = 0
+        var ends = 0
+        activity.onStart = { starts += 1 }
+        activity.onEnd = { ends += 1 }
+        activity.begin()
+        for _ in 0..<500 {
+            activity.begin()
+            activity.moved()
+        }
+        #expect(starts == 1 && ends == 0)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        #expect(!activity.isActive && ends == 1)
+        activity.begin(resizing: true)
+        activity.moved()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        #expect(activity.isActive && starts == 2 && ends == 1)
+        activity.end()
+        activity.end()
+        #expect(!activity.isActive && ends == 2)
+    }
+
+    @Test func interactionTimerDoesNotRetainClosedWindowActivity() async throws {
+        var activity: WindowInteractionActivity? = WindowInteractionActivity()
+        weak var released = activity
+        var ends = 0
+        activity?.onEnd = { ends += 1 }
+        activity?.begin()
+        activity?.moved()
+        activity = nil
+        #expect(released == nil)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        #expect(ends == 0)
+    }
+
     @Test(arguments: [676.0, 899, 900, 901, 1036, 1396])
     func rowFramesStayInsideAvailableWidth(width: Double) {
         for row in [MainControlRowLayout.Row.playback, .library] {

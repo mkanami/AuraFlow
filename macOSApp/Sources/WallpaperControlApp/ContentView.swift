@@ -3283,12 +3283,10 @@ struct WindowAccessor: NSViewRepresentable {
         }
     }
 
-    final class Coordinator: @unchecked Sendable {
+    @MainActor final class Coordinator {
         private weak var configuredWindow: NSWindow?
-        private var observers: [NSObjectProtocol] = []
-        private var interactionEndWorkItem: DispatchWorkItem?
-        private var onInteractionStart: () -> Void = {}
-        private var onInteractionEnd: () -> Void = {}
+        private var observers: [NotificationObserverLifetime] = []
+        private let interaction = WindowInteractionActivity()
 
         @MainActor
         func attachIfNeeded(
@@ -3296,9 +3294,10 @@ struct WindowAccessor: NSViewRepresentable {
             onInteractionStart: @escaping () -> Void,
             onInteractionEnd: @escaping () -> Void
         ) {
-            self.onInteractionStart = onInteractionStart
-            self.onInteractionEnd = onInteractionEnd
+            interaction.onStart = onInteractionStart
+            interaction.onEnd = onInteractionEnd
             if configuredWindow !== window {
+                interaction.end()
                 detachObservers()
                 configuredWindow = window
                 let center = NotificationCenter.default
@@ -3309,74 +3308,42 @@ struct WindowAccessor: NSViewRepresentable {
                     NSWindow.didResignMainNotification
                 ]
                 observers = names.map { name in
-                    center.addObserver(forName: name, object: window, queue: .main) { _ in
+                    NotificationObserverLifetime(center.addObserver(forName: name, object: window, queue: .main) { _ in
                         Task { @MainActor in
                             applyStandardWindowButtonAppearance(for: window)
                         }
-                    }
+                    })
                 }
                 observers.append(
-                    center.addObserver(forName: NSWindow.willMoveNotification, object: window, queue: .main) { [weak self] _ in
-                        Task { @MainActor [weak self] in
-                            self?.beginWindowInteraction()
-                        }
-                    }
+                    NotificationObserverLifetime(center.addObserver(forName: NSWindow.willMoveNotification, object: window, queue: .main) { [weak self] _ in
+                        MainActor.assumeIsolated { self?.interaction.begin() }
+                    })
                 )
                 observers.append(
-                    center.addObserver(forName: NSWindow.didMoveNotification, object: window, queue: .main) { [weak self] _ in
-                        Task { @MainActor [weak self] in
-                            self?.scheduleWindowInteractionEnd()
-                        }
-                    }
+                    NotificationObserverLifetime(center.addObserver(forName: NSWindow.didMoveNotification, object: window, queue: .main) { [weak self] _ in
+                        MainActor.assumeIsolated { self?.interaction.moved() }
+                    })
                 )
                 observers.append(
-                    center.addObserver(forName: NSWindow.willStartLiveResizeNotification, object: window, queue: .main) { [weak self] _ in
-                        Task { @MainActor [weak self] in
-                            self?.beginWindowInteraction()
-                        }
-                    }
+                    NotificationObserverLifetime(center.addObserver(forName: NSWindow.willStartLiveResizeNotification, object: window, queue: .main) { [weak self] _ in
+                        MainActor.assumeIsolated { self?.interaction.begin(resizing: true) }
+                    })
                 )
                 observers.append(
-                    center.addObserver(forName: NSWindow.didEndLiveResizeNotification, object: window, queue: .main) { [weak self] _ in
-                        Task { @MainActor [weak self] in
-                            self?.scheduleWindowInteractionEnd()
-                        }
-                    }
+                    NotificationObserverLifetime(center.addObserver(forName: NSWindow.didEndLiveResizeNotification, object: window, queue: .main) { [weak self] _ in
+                        MainActor.assumeIsolated { self?.interaction.end() }
+                    })
                 )
                 configureWindowForClientDecorations(window)
             }
         }
 
-        deinit {
-            detachObservers()
-        }
-
         private func detachObservers() {
-            let center = NotificationCenter.default
-            observers.forEach(center.removeObserver)
             observers.removeAll()
-            interactionEndWorkItem?.cancel()
-            interactionEndWorkItem = nil
+            // Notification tokens can be torn down off-actor during deinit.
+            // The activity owns its timer and invalidates it on release.
         }
 
-        @MainActor
-        private func beginWindowInteraction() {
-            interactionEndWorkItem?.cancel()
-            interactionEndWorkItem = nil
-            onInteractionStart()
-        }
-
-        @MainActor
-        private func scheduleWindowInteractionEnd() {
-            interactionEndWorkItem?.cancel()
-            let workItem = DispatchWorkItem { [weak self] in
-                Task { @MainActor [weak self] in
-                    self?.onInteractionEnd()
-                }
-            }
-            interactionEndWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
-        }
     }
 }
 

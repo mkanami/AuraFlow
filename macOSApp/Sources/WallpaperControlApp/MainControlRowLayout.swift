@@ -69,14 +69,29 @@ struct MainControlRowLayout: Layout {
         }
     }
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let ideals = idealWidths(subviews)
-        return CGSize(width: proposal.width ?? (ideals.reduce(0, +) + Self.spacing * 4),
-                      height: height)
+    struct Cache {
+        var idealWidths: [CGFloat]?
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let frames = frames(width: bounds.width, idealWidths: idealWidths(subviews))
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {
+        // SwiftUI invalidates this when labels, fonts or enabled states change.
+        cache.idealWidths = nil
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        // The window supplies a width during scrolling/resizing. Do not walk
+        // every glass button's intrinsic layout just to return that same width.
+        if let width = proposal.width { return CGSize(width: width, height: height) }
+        return CGSize(width: idealWidths(subviews, cache: &cache).reduce(0, +) + Self.spacing * 4, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        // Library allocations depend only on the available width, not labels.
+        let widths = row == .library ? Array(repeating: CGFloat.zero, count: subviews.count)
+            : idealWidths(subviews, cache: &cache)
+        let frames = frames(width: bounds.width, idealWidths: widths)
         for (subview, frame) in zip(subviews, frames) {
             subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
                           anchor: .topLeading,
@@ -84,7 +99,10 @@ struct MainControlRowLayout: Layout {
         }
     }
 
-    private func idealWidths(_ subviews: Subviews) -> [CGFloat] {
-        subviews.map { $0.sizeThatFits(.unspecified).width }
+    private func idealWidths(_ subviews: Subviews, cache: inout Cache) -> [CGFloat] {
+        if let widths = cache.idealWidths { return widths }
+        let widths = subviews.map { $0.sizeThatFits(.unspecified).width }
+        cache.idealWidths = widths
+        return widths
     }
 }
