@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/mkanami/AuraFlow/actions/workflows/tests.yml"><img src="https://github.com/mkanami/AuraFlow/actions/workflows/tests.yml/badge.svg" alt="Tests" /></a>
-  <a href="https://github.com/mkanami/AuraFlow/releases"><img src="https://img.shields.io/github/downloads/mkanami/AuraFlow/total?label=downloads&color=brightgreen" alt="Downloads" /></a>
+  <a href="https://github.com/mkanami/AuraFlow/releases"><img src="https://raw.githubusercontent.com/mkanami/AuraFlow/mkkitsune/download-badge/downloads.svg" alt="Downloads" /></a>
   <img src="https://img.shields.io/badge/macOS-13%2B-black" alt="macOS 13 or newer" />
   <img src="https://img.shields.io/badge/Swift-5.9-F05138" alt="Swift 5.9" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
