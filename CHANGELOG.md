@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.3
+
+- Fixed terminal wallpapers stalling on the desktop by correctly retiring Metal drawables between frames.
+- Improved scrolling in the catalog, terminal settings, and downloaded wallpapers without changing the glass appearance.
+- Prefetched catalog posters and upcoming pages for faster scrolling immediately after opening the catalog.
+- Restored the download-count badge with a scheduled GitHub-hosted update.
+
 ## 1.3.2
 
 - Terminal wallpapers with live previews, local and Homebrew CLI search, guided installation, and custom commands.
