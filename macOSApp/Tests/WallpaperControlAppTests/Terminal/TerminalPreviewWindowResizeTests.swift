@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import IOSurface
+import Metal
 import AuraTerminalRendering
 import AuraTerminalWallpaperCore
 import SwiftUI
@@ -9,6 +10,51 @@ import Testing
 
 @Suite(.serialized) @MainActor
 struct TerminalPreviewWindowResizeTests {
+    @Test func preparedFramesPublishWithoutAnAppKitDisplayPass() async throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let renderer = TerminalMetalView(frame: .init(x: 0, y: 0, width: 160, height: 80),
+            logicalSize: .init(width: 160, height: 80), device: device)
+        let window = NSWindow(contentRect: renderer.frame, styleMask: [.borderless],
+            backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = renderer
+        defer { window.close() }
+        // An occluded desktop window cannot depend on AppKit's opportunistic
+        // display invalidations. Do not show the window or call draw() here.
+        #expect(!window.occlusionState.contains(.visible))
+        var latestPixel: [UInt8] = []
+        var lastSequence: UInt64 = 0
+        renderer.onSharedFrame = { descriptor, sequence in
+            guard let surface = IOSurfaceLookup(descriptor.surfaceID) else { return }
+            IOSurfaceLock(surface, .readOnly, nil)
+            let offset = (descriptor.height / 2) * IOSurfaceGetBytesPerRow(surface) + descriptor.width / 2 * 4
+            let bytes = IOSurfaceGetBaseAddress(surface).advanced(by: offset).assumingMemoryBound(to: UInt8.self)
+            latestPixel = Array(UnsafeBufferPointer(start: bytes, count: 4))
+            lastSequence = sequence
+            IOSurfaceUnlock(surface, .readOnly, nil)
+        }
+        var parser = VTParser(columns: 8, rows: 4)
+        let render = TerminalRenderConfiguration(pixelMode: .fixed, fixedWidth: 160, fixedHeight: 80,
+            columns: 8, rows: 4, fontSize: 12, maxFPS: 30)
+        // BGRA channel indices for red, green, blue.
+        for (ansi, channel) in [(41, 2), (42, 1), (44, 0)] {
+            parser.feed(Data("\u{1B}[\(ansi)m\u{1B}[2J".utf8))
+            let previousSequence = lastSequence
+            renderer.update(snapshot: parser.grid.snapshot(), configuration: render)
+            let deadline = Date().addingTimeInterval(2)
+            while Date() < deadline {
+                if lastSequence > previousSequence, latestPixel.count == 4,
+                   latestPixel[channel] > latestPixel[(channel + 1) % 3],
+                   latestPixel[channel] > latestPixel[(channel + 2) % 3] { break }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            #expect(lastSequence > previousSequence)
+            let pixel = try #require(latestPixel.count == 4 ? latestPixel : nil)
+            #expect(pixel[channel] > pixel[(channel + 1) % 3])
+            #expect(pixel[channel] > pixel[(channel + 2) % 3])
+        }
+    }
+
     @Test func animatedFramesReachMetalWithoutInvalidatingSwiftUIComposition() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraDirectFrames-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

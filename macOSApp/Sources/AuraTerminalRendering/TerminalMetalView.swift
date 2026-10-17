@@ -138,6 +138,26 @@ public final class TerminalMetalView: MTKView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let center = NotificationCenter.default
+        center.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+        if let window {
+            center.addObserver(self, selector: #selector(windowVisibilityChanged),
+                name: NSWindow.didChangeOcclusionStateNotification, object: window)
+        }
+    }
+
+    @objc private func windowVisibilityChanged() {
+        guard window?.occlusionState.contains(.visible) == true else { return }
+        // A completed static command has no next input frame to repaint it.
+        // Present its retained source when the desktop/preview is uncovered.
+        needsDisplay = true
+        draw(bounds)
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
     public override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         needsDisplay = true
@@ -201,6 +221,8 @@ public final class TerminalMetalView: MTKView {
             captureCurrentTexture()
         } else {
             lockCapturePending = false
+            needsDisplay = true
+            draw(bounds)
         }
     }
 
@@ -227,10 +249,11 @@ public final class TerminalMetalView: MTKView {
               let frameTexture,
               let commandBuffer = commandQueue.makeCommandBuffer()
         else { return }
-        // The desktop window is occluded behind the secure Lock Screen. Its
-        // drawable is not the clock for the shared surface: render offscreen
-        // while locked, so neither AppKit occlusion nor nextDrawable stalls it.
+        // A desktop/preview covered by other windows or the Lock Screen has
+        // no reliable drawable. Keep the shared source current offscreen so
+        // occlusion and nextDrawable cannot stall its consumers.
         let offscreenCapture = lockScreenCaptureEnabled || lockCaptureSeedPending
+            || window?.occlusionState.contains(.visible) == false
         let drawable = offscreenCapture ? nil : currentDrawable
         guard offscreenCapture || drawable != nil else { return }
 
@@ -308,8 +331,9 @@ public final class TerminalMetalView: MTKView {
                 }
                 if self.presentationPending {
                     self.presentationPending = false
-                    if self.lockScreenCaptureEnabled || self.lockCaptureSeedPending { self.draw(self.bounds) }
-                    else { self.needsDisplay = true }
+                    // Accepting a pending installation may already have drawn
+                    // the latest state. Do not queue a duplicate presentation.
+                    if !self.gpuFrameInFlight { self.draw(self.bounds) }
                 }
             }
         }
@@ -386,8 +410,11 @@ public final class TerminalMetalView: MTKView {
         install(prepared)
         rasterizedRevision = prepared.revision
         if prepared.requiresPresentation || lockCaptureSeedPending {
-            if lockScreenCaptureEnabled || lockCaptureSeedPending { draw(bounds) }
-            else { needsDisplay = true }
+            // AppKit can throttle display invalidations for desktop/background
+            // windows to roughly 10 Hz and occasionally skips a whole tick.
+            // Present prepared frames directly; the existing GPU fence and
+            // snapshot producer already bound work to the configured cadence.
+            draw(bounds)
         }
         if snapshot?.revision != prepared.revision { schedulePreparation() }
     }

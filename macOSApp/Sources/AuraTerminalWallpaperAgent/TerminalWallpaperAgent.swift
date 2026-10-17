@@ -469,9 +469,9 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func requestDesktopSeedIfNeeded() {
         guard !terminating,
               lockScreenPlaybackEnabled,
-              store.lockScreenPlaybackEnabled,
-              outputPublication.canPublish(childRunning: session.childPID != nil),
               framePublisher.needsDesktopSeed,
+              outputPublication.canPublish(childRunning: session.childPID != nil),
+              store.lockScreenPlaybackEnabled,
               let firstWindow = windows.first else { return }
         firstWindow.requestLockScreenSeedCapture()
     }
