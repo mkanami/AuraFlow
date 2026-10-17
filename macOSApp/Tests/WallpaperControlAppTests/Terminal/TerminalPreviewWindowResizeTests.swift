@@ -10,6 +10,51 @@ import Testing
 
 @Suite(.serialized) @MainActor
 struct TerminalPreviewWindowResizeTests {
+    @Test func explicitFramesRetireDrawablesWithoutAppKitInvalidations() async throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let renderer = TerminalMetalView(frame: .init(x: 0, y: 0, width: 160, height: 80),
+            logicalSize: .init(width: 160, height: 80), device: device)
+        let window = NSWindow(contentRect: renderer.frame, styleMask: [.borderless],
+            backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = renderer
+        window.orderFrontRegardless()
+        defer { window.close() }
+        // Only explicit frame delivery drives rendering. AppKit must not
+        // accidentally recycle the drawable on behalf of the animation.
+        renderer.enableSetNeedsDisplay = false
+        // Acquiring a drawable also works in the UI test host when macOS
+        // reports its windows occluded. Exercise its lifetime independently
+        // of whether WindowServer currently exposes the test window.
+        _ = try #require(renderer.currentDrawable)
+        var deliveredFrames = 0
+        var drawableIDs: [Int] = []
+        renderer.onSharedFrame = { _, _ in
+            deliveredFrames += 1
+            // Reading this reserves the drawable for the next frame. A proper
+            // MTKView draw cycle must release it after submitting that frame.
+            if let drawable = renderer.currentDrawable { drawableIDs.append(drawable.drawableID) }
+        }
+        var parser = VTParser(columns: 8, rows: 4)
+        let render = TerminalRenderConfiguration(pixelMode: .fixed, fixedWidth: 160, fixedHeight: 80,
+            columns: 8, rows: 4, fontSize: 12, maxFPS: 30)
+        for index in 0..<24 {
+            let previousCount = deliveredFrames
+            parser.feed(Data("\u{1B}[\(index % 2 == 0 ? 41 : 44)m\u{1B}[2J".utf8))
+            renderer.update(snapshot: parser.grid.snapshot(), configuration: render)
+            let deadline = Date().addingTimeInterval(2)
+            while deliveredFrames == previousCount && Date() < deadline {
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            #expect(deliveredFrames > previousCount)
+        }
+        #expect(drawableIDs.count >= 24)
+        // A drawable's ID identifies a presentation, not its reusable texture.
+        // IOSurface publication alone cannot detect repeatedly presenting the
+        // same drawable while the actual desktop stops advancing.
+        #expect(Set(drawableIDs).count >= 20)
+    }
+
     @Test func preparedFramesPublishWithoutAnAppKitDisplayPass() async throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let renderer = TerminalMetalView(frame: .init(x: 0, y: 0, width: 160, height: 80),

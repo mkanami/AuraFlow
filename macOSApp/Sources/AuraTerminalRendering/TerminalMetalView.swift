@@ -153,7 +153,7 @@ public final class TerminalMetalView: MTKView {
         // A completed static command has no next input frame to repaint it.
         // Present its retained source when the desktop/preview is uncovered.
         needsDisplay = true
-        draw(bounds)
+        draw()
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -222,7 +222,7 @@ public final class TerminalMetalView: MTKView {
         } else {
             lockCapturePending = false
             needsDisplay = true
-            draw(bounds)
+            draw()
         }
     }
 
@@ -234,7 +234,7 @@ public final class TerminalMetalView: MTKView {
         // preceding (or uninitialized) frame. Read back only inside draw(),
         // after the current cells have actually been rendered into the texture.
         schedulePreparation()
-        draw(bounds)
+        draw()
     }
 
     public override func draw(_ rect: NSRect) {
@@ -333,7 +333,7 @@ public final class TerminalMetalView: MTKView {
                     self.presentationPending = false
                     // Accepting a pending installation may already have drawn
                     // the latest state. Do not queue a duplicate presentation.
-                    if !self.gpuFrameInFlight { self.draw(self.bounds) }
+                    if !self.gpuFrameInFlight { self.draw() }
                 }
             }
         }
@@ -412,9 +412,12 @@ public final class TerminalMetalView: MTKView {
         if prepared.requiresPresentation || lockCaptureSeedPending {
             // AppKit can throttle display invalidations for desktop/background
             // windows to roughly 10 Hz and occasionally skips a whole tick.
-            // Present prepared frames directly; the existing GPU fence and
-            // snapshot producer already bound work to the configured cadence.
-            draw(bounds)
+            // Use MTKView.draw(), not its draw(_:) callback: MetalKit must
+            // retire currentDrawable after every submission. Calling the
+            // callback directly re-presents the same drawable indefinitely,
+            // even while the offscreen IOSurface continues to update.
+            // The GPU fence and snapshot producer still bound frame cadence.
+            draw()
         }
         if snapshot?.revision != prepared.revision { schedulePreparation() }
     }
