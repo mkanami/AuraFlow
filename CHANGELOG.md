@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Recover terminal wallpaper surfaces after sleep, display wake, session changes, and Spaces transitions without restarting the command or clearing manual pause.
+- Retry transient Lock Screen preparation failures and reconcile missed lock/unlock notifications.
+
 ## 1.3.3
 
 - Fixed terminal wallpapers stalling on the desktop by correctly retiring Metal drawables between frames.

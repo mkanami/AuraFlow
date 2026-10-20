@@ -60,4 +60,12 @@ final class TerminalWallpaperWindow: NSWindow {
     func requestLockScreenSeedCapture(refresh: Bool = false) {
         terminalView.requestLockScreenSeedCapture(refresh: refresh)
     }
+
+    func restoreDesktopPresentation() {
+        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))
+        orderBack(nil)
+        orderFrontRegardless()
+        terminalView.needsDisplay = true
+        terminalView.draw()
+    }
 }

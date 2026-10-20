@@ -109,6 +109,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func screensChanged() {
+        guard !terminating else { return }
         if config.render.columns == nil || config.render.rows == nil {
             if session.childPID != nil {
                 rebuildRuntime(restartChild: false)
@@ -148,6 +149,21 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             name: NSWorkspace.didWakeNotification,
             object: nil
         )
+        for name in [NSWorkspace.activeSpaceDidChangeNotification,
+                     NSWorkspace.sessionDidBecomeActiveNotification,
+                     NSWorkspace.screensDidWakeNotification] {
+            NSWorkspace.shared.notificationCenter.addObserver(
+                self, selector: #selector(restoreDesktopPresentation), name: name, object: nil
+            )
+        }
+    }
+
+    @objc private func restoreDesktopPresentation() {
+        guard !terminating else { return }
+        // WindowServer can detach desktop windows during sleep, session and
+        // Spaces transitions. Restore the existing surfaces without restarting
+        // the command (which may have completed successfully) or losing pause.
+        for window in windows { window.restoreDesktopPresentation() }
     }
 
     private func pollCommand() {
@@ -482,6 +498,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         framePublisher.setLockScreenActive(locked)
         for window in windows { window.setLockScreenCaptureEnabled(locked) }
         updateFullscreenPausePolicy()
+        if !locked { restoreDesktopPresentation() }
     }
 
     private func syncLockScreenPlaybackPolicy(forceSeed: Bool = false) {

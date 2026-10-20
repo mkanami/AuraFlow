@@ -29,12 +29,35 @@ final class TerminalLockScreenPresentation {
     private var started = false
     private var transition = TerminalLockTransition()
     private var notifiedLockState: Bool?
+    private var notificationExpiresAt: TimeInterval = 0
+    private var retryAt: TimeInterval?
+    private var saverStartNeedsRetry = false
     private var generation: UInt64 = 0
     private var task: Task<Void, Never>?
     private var activity: NSObjectProtocol?
     private var observer: NSObjectProtocol?
-    private var workspaceObserver: NSObjectProtocol?
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var screenObserver: NSObjectProtocol?
+    private let sessionIsLocked: () -> Bool?
+    private let uptime: () -> TimeInterval
+    private let startScreenSaver: () -> Int32?
+    private let presentationPreparer: ((Bool, Bool) async throws -> Void)?
     var onLockStateChange: ((Bool) -> Void)?
+
+    init(
+        sessionIsLocked: @escaping () -> Bool? = {
+            let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+            return session.map { ($0["CGSSessionScreenIsLocked"] as? Bool) ?? false }
+        },
+        uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        startScreenSaver: (() -> Int32?)? = nil,
+        presentationPreparer: ((Bool, Bool) async throws -> Void)? = nil
+    ) {
+        self.sessionIsLocked = sessionIsLocked
+        self.uptime = uptime
+        self.startScreenSaver = startScreenSaver ?? { Self.startFunction?() }
+        self.presentationPreparer = presentationPreparer
+    }
 
     #if canImport(Wallpaper)
     // Erased storage avoids resolving private Swift type metadata at helper
@@ -49,6 +72,8 @@ final class TerminalLockScreenPresentation {
         started = true
         transition = TerminalLockTransition()
         notifiedLockState = nil
+        retryAt = nil
+        saverStartNeedsRetry = false
         // Resolve the system entry point while the desktop is still visible,
         // rather than loading login.framework at the secure-screen boundary.
         _ = Self.startFunction
@@ -74,12 +99,32 @@ final class TerminalLockScreenPresentation {
             }
             sessionObservers.append(token)
         }
-        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.sessionDidBecomeActiveNotification,
-            object: nil,
-            queue: .main
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.recoverAfterSystemChange() }
+            })
+        }
+        workspaceObservers.append(workspace.addObserver(
+            forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.handleLockNotification(false) }
+            Task { @MainActor [weak self] in
+                // CGSession may still report the lock while unlock completes.
+                self?.handleLockNotification(false)
+                self?.prepare(reloadRoute: true)
+            }
+        })
+        workspaceObservers.append(workspace.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.bundleIdentifier == "com.apple.wallpaper.agent" else { return }
+            Task { @MainActor [weak self] in self?.recoverAfterSystemChange() }
+        })
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.recoverAfterSystemChange() }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.pollSession() }
@@ -95,8 +140,12 @@ final class TerminalLockScreenPresentation {
         observer = nil
         for token in sessionObservers { DistributedNotificationCenter.default().removeObserver(token) }
         sessionObservers.removeAll()
-        if let workspaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver) }
-        workspaceObserver = nil
+        for token in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(token) }
+        workspaceObservers.removeAll()
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        screenObserver = nil
+        retryAt = nil
+        saverStartNeedsRetry = false
         generation &+= 1
         task?.cancel()
         task = nil
@@ -109,26 +158,45 @@ final class TerminalLockScreenPresentation {
         activity = nil
     }
 
-    private func pollSession() {
+    func pollSession() {
         guard started else { return }
-        let session = CGSessionCopyCurrentDictionary() as? [String: Any]
-        let locked = session.map { ($0["CGSSessionScreenIsLocked"] as? Bool) ?? false }
-        let resolved = notifiedLockState ?? locked
-        guard let changed = transition.update(resolved) else { return }
-        logger.notice("Terminal Lock Screen session locked=\(changed)")
-        onLockStateChange?(changed)
-        if changed { startSaver() }
-        prepare()
+        // Notifications can lead CGSession briefly, but must not override it
+        // forever when an unlock notification is lost during sleep.
+        if uptime() >= notificationExpiresAt { notifiedLockState = nil }
+        if let changed = transition.update(notifiedLockState ?? sessionIsLocked()) {
+            logger.notice("Terminal Lock Screen session locked=\(changed)")
+            onLockStateChange?(changed)
+            if !changed { saverStartNeedsRetry = false }
+            if changed { startSaver() }
+            prepare()
+        } else if let retryAt, uptime() >= retryAt {
+            prepare(reloadRoute: true, restartSaverAfterPreparation: sessionIsLocked() == true)
+        }
+    }
+
+    func recoverAfterSystemChange() {
+        guard started else { return }
+        // Waking an already locked session emits no new lock transition.
+        // Rebind its system surface and restart its saver explicitly, while
+        // preserving the running PTY, parser, and manual pause intent.
+        notifiedLockState = nil
+        let locked = sessionIsLocked()
+        logger.notice("Restoring terminal system presentation after wake or display change; locked=\(locked == true)")
+        if let changed = transition.update(locked) { onLockStateChange?(changed) }
+        if locked == false { saverStartNeedsRetry = false }
+        prepare(reloadRoute: true, restartSaverAfterPreparation: locked == true)
     }
 
     private var sessionObservers: [NSObjectProtocol] = []
 
-    private func handleLockNotification(_ locked: Bool) {
+    func handleLockNotification(_ locked: Bool) {
         guard started else { return }
         notifiedLockState = locked
+        notificationExpiresAt = uptime() + 1
         guard let changed = transition.update(locked) else { return }
         logger.notice("Terminal Lock Screen notification locked=\(changed)")
         onLockStateChange?(changed)
+        if !changed { saverStartNeedsRetry = false }
         if changed { startSaver() }
         // Lock changes presentation, not the selected saver route. Reuse the
         // display assertions prepared on the desktop; rebuilding them here
@@ -136,7 +204,7 @@ final class TerminalLockScreenPresentation {
         prepare()
     }
 
-    private func prepare(reloadRoute: Bool = false) {
+    private func prepare(reloadRoute: Bool = false, restartSaverAfterPreparation: Bool = false) {
         guard started else { return }
         #if canImport(Wallpaper)
         if reloadRoute {
@@ -150,55 +218,76 @@ final class TerminalLockScreenPresentation {
         generation &+= 1
         let requestedGeneration = generation
         let locked = transition.locked
+        retryAt = nil
         task?.cancel()
         task = Task { [weak self] in
             guard let self else { return }
-            #if canImport(Wallpaper)
-            guard #available(macOS 26, *) else { return }
             do {
-                var nextDisplays: [WallpaperDisplayAssertion] = []
-                var nextIDs: [UInt32] = []
-                var nextPresentations: [WallpaperPresentationModeAssertion] = []
-                for screen in NSScreen.screens {
-                    guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
-                    let display: WallpaperDisplayAssertion
-                    if !reloadRoute,
-                       let index = self.displayIDs.firstIndex(of: id.uint32Value),
-                       let warm = self.displays[index] as? WallpaperDisplayAssertion {
-                        display = warm
-                    } else {
-                        display = try await self.makeDisplay(id.uint32Value)
-                    }
-                    guard !Task.isCancelled, self.generation == requestedGeneration else { return }
-                    let presentation = try await Self.presentation(for: DisplayBox(display), locked: locked)
-                    guard !Task.isCancelled, self.generation == requestedGeneration else { return }
-                    nextDisplays.append(display)
-                    nextIDs.append(id.uint32Value)
-                    nextPresentations.append(presentation.value)
+                if let presentationPreparer = self.presentationPreparer {
+                    try await presentationPreparer(locked, reloadRoute)
+                } else {
+                    try await self.prepareNativePresentation(
+                        locked: locked, reloadRoute: reloadRoute, generation: requestedGeneration
+                    )
                 }
-                self.displays = nextDisplays
-                self.displayIDs = nextIDs
-                self.presentations = nextPresentations
-                self.logger.notice("Terminal native presentation ready: locked=\(locked), displays=\(nextDisplays.count)")
+                guard !Task.isCancelled, self.generation == requestedGeneration else { return }
+                self.task = nil
+                if restartSaverAfterPreparation, self.sessionIsLocked() == true { self.startSaver() }
+                if self.saverStartNeedsRetry { self.retryAt = self.uptime() + 5 }
             } catch {
-                guard self.generation == requestedGeneration else { return }
-                self.logger.error("Terminal native presentation failed: \(error.localizedDescription, privacy: .public)")
+                guard !Task.isCancelled, self.generation == requestedGeneration, self.started else { return }
+                self.task = nil
+                self.retryAt = self.uptime() + 5
+                self.logger.error("Terminal native presentation failed; retrying: \(error.localizedDescription, privacy: .public)")
             }
-            #else
-            #endif
         }
     }
 
+    private func prepareNativePresentation(locked: Bool, reloadRoute: Bool, generation requestedGeneration: UInt64) async throws {
+        #if canImport(Wallpaper)
+        if #available(macOS 26, *) {
+            guard !NSScreen.screens.isEmpty else { throw PresentationError.noDisplays }
+            var nextDisplays: [WallpaperDisplayAssertion] = []
+            var nextIDs: [UInt32] = []
+            var nextPresentations: [WallpaperPresentationModeAssertion] = []
+            for screen in NSScreen.screens {
+                guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
+                let display: WallpaperDisplayAssertion
+                if !reloadRoute,
+                   let index = self.displayIDs.firstIndex(of: id.uint32Value),
+                   let warm = self.displays[index] as? WallpaperDisplayAssertion {
+                    display = warm
+                } else {
+                    display = try await self.makeDisplay(id.uint32Value)
+                }
+                guard !Task.isCancelled, self.generation == requestedGeneration else { return }
+                let presentation = try await Self.presentation(for: DisplayBox(display), locked: locked)
+                guard !Task.isCancelled, self.generation == requestedGeneration else { return }
+                nextDisplays.append(display)
+                nextIDs.append(id.uint32Value)
+                nextPresentations.append(presentation.value)
+            }
+            self.displays = nextDisplays
+            self.displayIDs = nextIDs
+            self.presentations = nextPresentations
+            self.logger.notice("Terminal native presentation ready: locked=\(locked), displays=\(nextDisplays.count)")
+        }
+        #endif
+    }
+
     private func startSaver() {
-        // Never call this from app startup or an unconfirmed workspace event.
+        // Only a lock transition or a confirmed locked recovery may start it.
         guard started, transition.locked else { return }
-        guard let function = Self.startFunction else {
+        guard let result = startScreenSaver() else {
             logger.error("SACScreenSaverStartNow is unavailable")
+            saverStartNeedsRetry = true
             return
         }
-        let result = function()
         logger.notice("Terminal system saver start result=\(result)")
+        saverStartNeedsRetry = result != 0
     }
+
+    private enum PresentationError: Error { case noDisplays }
 
     private static let startFunction: (@convention(c) () -> Int32)? = {
         guard let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_NOW | RTLD_LOCAL),
