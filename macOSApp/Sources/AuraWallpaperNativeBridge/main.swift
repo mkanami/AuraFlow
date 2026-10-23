@@ -7,9 +7,21 @@ import Foundation
 private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegate {
     private let bridge = NativeLockScreenWallpaperBridge()
     private let transport = NativeBridgeTransport()
+    private var observers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            observers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.bridge.recoverAfterSystemChange() }
+            })
+        }
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.bridge.recoverAfterSystemChange() }
+        })
         Task { [weak self] in
             guard let self else { return }
             await self.transport.start(
@@ -35,6 +47,11 @@ private final class NativeLockScreenBridgeServer: NSObject, NSApplicationDelegat
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        for observer in observers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            NotificationCenter.default.removeObserver(observer)
+        }
+        observers.removeAll()
         bridge.shutdown()
         Task {
             await transport.stop()

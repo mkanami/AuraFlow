@@ -365,7 +365,10 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         expectedAgentPID:[heartbeat[@"pid"] intValue] scaleMode:mode]) {
         self.terminalModeActive = YES;
         self.terminalSurfaceLayer.hidden = NO;
-        self.terminalLayer.hidden = YES;
+        // Keep the decoded PNG underneath Metal. WindowServer may discard
+        // drawables during lid sleep; switching to the retained raster must
+        // not depend on another successful file read at that instant.
+        self.terminalLayer.hidden = self.terminalLayer.contents == nil;
         [self.player pause];
         return;
     }
@@ -770,10 +773,11 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
                        context:(void *)context {
     if (context == AuraFlowReadyForDisplayContext) {
         AVPlayerLayer *observedLayer = object;
-        BOOL ready = observedLayer.readyForDisplay;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (observedLayer == self.playerLayer) {
-                self.fallbackLayer.hidden = ready;
+                // Read on the presentation thread: a queued "ready" callback
+                // can otherwise hide the still after wake made it unready.
+                self.fallbackLayer.hidden = observedLayer.readyForDisplay;
             }
         });
         return;

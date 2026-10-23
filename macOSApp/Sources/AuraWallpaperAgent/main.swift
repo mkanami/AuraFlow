@@ -294,22 +294,7 @@ private actor LockScreenPlatformExecutor {
 }
 
 private func agentSystemSessionIsLocked() -> Bool? {
-    guard let session = CGSessionCopyCurrentDictionary() as? [String: Any]
-    else {
-        return nil
-    }
-    if let value = session["CGSSessionScreenIsLocked"] as? NSNumber {
-        return value.boolValue
-    }
-
-    let onConsole =
-        (session["kCGSSessionOnConsoleKey"] as? NSNumber)?.boolValue
-    let loginDone =
-        (session["kCGSessionLoginDoneKey"] as? NSNumber)?.boolValue
-    if onConsole == true, loginDone == true {
-        return false
-    }
-    return nil
+    LockScreenSession.currentIsLocked()
 }
 
 @MainActor
@@ -339,6 +324,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var lockShieldNotificationTokens: [Int32] = []
     private var lockConfirmationTask: Task<Void, Never>?
     private var earlyLockScreenHandoffArmed = false
+    private var earlyLockScreenHandoffGeneration: UInt64 = 0
     private var lastCommandID: String?
     private var lastCommandOperationID: UInt64?
     private var manualPaused = false
@@ -827,7 +813,8 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             } else {
                 scheduleLockConfirmation(reason: "session-notification")
             }
-        } else if actualLocked == nil || actualLocked == false {
+        } else if actualLocked == false,
+                  sessionInactive || lockConfirmationTask == nil {
             applySystemSessionState(locked: false)
         }
 
@@ -850,6 +837,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         else {
             return
         }
+        // A shield can lead CGSession. Periodic health/delayed polls must not
+        // cancel its early surface while the bounded confirmation is pending.
+        if !locked, !sessionInactive, lockConfirmationTask != nil { return }
         applySystemSessionState(locked: locked)
     }
 
@@ -953,11 +943,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
 
         earlyLockScreenHandoffArmed = true
+        earlyLockScreenHandoffGeneration &+= 1
+        let handoffGeneration = earlyLockScreenHandoffGeneration
         nativeLockScreenBridge.showForLockTransition { [weak self] shown in
             Task { @MainActor [weak self] in
                 guard let self,
                       !self.isTerminating,
-                      self.earlyLockScreenHandoffArmed
+                      self.earlyLockScreenHandoffArmed,
+                      self.earlyLockScreenHandoffGeneration == handoffGeneration
                 else {
                     return
                 }
@@ -975,6 +968,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func cancelEarlyLockScreenHandoff() {
+        earlyLockScreenHandoffGeneration &+= 1
         earlyLockScreenHandoffArmed = false
         nativeLockScreenBridge.hideAfterUnlock()
     }
@@ -1229,6 +1223,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func recoverAfterWake(reason: String) {
         guard !isTerminating else { return }
         sleeping = false
+        // Sleep may swallow both distributed lock notifications. Establish
+        // the current session intent before .wake can enqueue an idle repair
+        // and hide the prepared secure surface.
+        reconcileSystemSessionState()
         if lockScreenOnlyMode {
             // A display-sleep lock can reset SystemWallpaperURL while the
             // password surface is waking. Reassert the dedicated Aerial
@@ -1634,6 +1632,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // A shield can precede CGSession. An older idle preparation or wake
+        // must not hide its early surface while confirmation is still pending.
+        if !operation.expectedLocked, earlyLockScreenHandoffArmed,
+           lockConfirmationTask != nil {
+            finishLockScreenLifecycle(operation, reason: "awaiting-lock-confirmation")
+            return
+        }
         let status = lockScreenPlatform.lockScreenOnlyStatus(
             videoURL: videoURL
         )
@@ -1781,7 +1786,15 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     self.finishLockScreenLifecycle(operation, reason: reason)
                     return
                 }
+                guard operation.expectedLocked == self.lockScreenLifecycleCoordinator.desiredLocked else {
+                    self.finishLockScreenLifecycle(operation, reason: "superseded-" + reason)
+                    return
+                }
                 guard operation.expectedLocked else {
+                    if self.earlyLockScreenHandoffArmed, self.lockConfirmationTask != nil {
+                        self.finishLockScreenLifecycle(operation, reason: "awaiting-lock-confirmation")
+                        return
+                    }
                     self.nativeLockScreenBridge.hideAfterUnlock()
                     self.store.markLockScreenAgentReady(
                         self.isLockScreenGenerationReady(status)
@@ -1832,6 +1845,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         _ operation: LockScreenLifecycleOperation,
         reason: String
     ) {
+        guard isCurrentLockScreenLifecycleOperation(operation.operationID) else { return }
         guard let next = lockScreenLifecycleCoordinator.finish(
             operationID: operation.operationID
         ) else {

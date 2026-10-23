@@ -1,8 +1,18 @@
 #import "AuraFlowLockScreen.h"
+#import "AuraFlowTerminalSurface.h"
 #import <QuartzCore/QuartzCore.h>
 #import <unistd.h>
 
 static NSURL *runtimeRoot;
+
+@interface IntermittentSurface : AuraFlowTerminalSurfaceLayer
+@property(nonatomic) BOOL canPresent;
+@end
+@implementation IntermittentSurface
+- (BOOL)presentDescriptor:(NSDictionary *)descriptor expectedAgentPID:(int)pid scaleMode:(NSString *)mode {
+    return self.canPresent;
+}
+@end
 
 @interface FirstFrameSaver : AuraFlowLockScreen
 @property(nonatomic) NSUInteger videoConfigurationReads;
@@ -53,6 +63,22 @@ int main(int argc, char **argv) {
         printf("first-frame-before-start %.6f\n", NSProcessInfo.processInfo.systemUptime - started);
         [saver startAnimation];
         if (saver.videoConfigurationReads != 0 || frame.hidden) return 4;
+        // A GPU drawable may become unavailable while the lid wakes, even
+        // when the live route and its last published image remain valid.
+        IntermittentSurface *surface = [IntermittentSurface layer];
+        [saver setValue:surface forKey:@"terminalSurfaceLayer"];
+        [saver.layer addSublayer:surface];
+        surface.canPresent = YES;
+        [saver animateOneFrame];
+        if (surface.hidden || frame.hidden || frame.contents == nil) return 9;
+        NSURL *frameURL = [runtimeRoot URLByAppendingPathComponent:@"lock-screen-frame.png"];
+        NSData *savedPNG = [NSData dataWithContentsOfURL:frameURL];
+        [[NSFileManager defaultManager] removeItemAtURL:frameURL error:nil];
+        surface.canPresent = NO;
+        [saver animateOneFrame];
+        if (!surface.hidden || frame.hidden || frame.contents == nil ||
+            ![[saver valueForKey:@"terminalModeActive"] boolValue]) return 10;
+        [savedPNG writeToURL:frameURL atomically:YES];
         // OFF must reject a live terminal lease immediately, even if the
         // helper has not consumed its update command yet.
         NSURL *configURL = [root URLByAppendingPathComponent:@"config.json"];

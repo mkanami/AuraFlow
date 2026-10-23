@@ -128,9 +128,16 @@
 
 - (BOOL)presentDescriptor:(NSDictionary *)descriptor expectedAgentPID:(int)pid scaleMode:(NSString *)mode {
     if (![self.renderer updateDescriptor:descriptor expectedAgentPID:pid]) { [self resetSource]; return NO; }
-    if (self.frameInFlight) return self.hasPresented;
     if (self.bounds.size.width <= 0 || self.bounds.size.height <= 0 || !self.superlayer) return NO;
-    self.drawableSize = CGSizeMake(self.bounds.size.width * self.contentsScale, self.bounds.size.height * self.contentsScale);
+    CGSize size = CGSizeMake(self.bounds.size.width * self.contentsScale, self.bounds.size.height * self.contentsScale);
+    if (!CGSizeEqualToSize(self.drawableSize, size)) {
+        // Resizing discards the previous drawable. Do not treat its completed
+        // frame as proof that the new display size has been rendered.
+        self.sourceGeneration += 1;
+        self.hasPresented = NO;
+        self.drawableSize = size;
+    }
+    if (self.frameInFlight) return self.hasPresented;
     id<CAMetalDrawable> drawable = [self nextDrawable];
     id<MTLCommandBuffer> command = [self.commandQueue commandBuffer];
     NSColor *background = [NSColor colorWithCGColor:self.backgroundColor ?: NSColor.blackColor.CGColor];
@@ -145,15 +152,16 @@
             AuraFlowTerminalSurfaceLayer *layer = weakSelf;
             if (!layer) return;
             layer.frameInFlight = NO;
-            if (layer.sourceGeneration == generation && completed.status == MTLCommandBufferStatusError) {
-                layer.hasPresented = NO;
+            if (layer.sourceGeneration == generation) {
+                layer.hasPresented = completed.status == MTLCommandBufferStatusCompleted;
             }
         });
     }];
     [command presentDrawable:drawable];
     [command commit];
-    self.hasPresented = YES;
-    return YES;
+    // Submission is not a displayed frame. Leave the saver on its retained
+    // PNG until the GPU has completed the first drawable successfully.
+    return self.hasPresented;
 }
 
 - (void)resetSource {

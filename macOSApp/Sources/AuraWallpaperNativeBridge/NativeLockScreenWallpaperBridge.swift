@@ -25,7 +25,70 @@ final class NativeLockScreenWallpaperBridge {
     private var pauseEnforcementTask: Task<Void, Never>?
     private var pendingCompletions: [(Bool, String?) -> Void] = []
     private var pendingShowCompletions: [(Bool, String?) -> Void] = []
-    private var presentationRequestID: UInt64 = 0
+    private var recoveryTask: Task<Void, Never>?
+    private var restartSaverWhenReady = false
+    private var consecutivePresentationFailures = 0
+    private struct PresentationSurface {
+        let display: WallpaperDisplayAssertion
+        let presentation: WallpaperPresentationModeAssertion
+        let window: NSWindow
+    }
+    private lazy var presentationQueue: LockScreenPresentationQueue<PresentationSurface> = {
+        let queue = LockScreenPresentationQueue<PresentationSurface> { [weak self] request, previous in
+            guard let self else { throw CancellationError() }
+            let display: WallpaperDisplayAssertion
+            let window: NSWindow
+            if !request.reloadRoute, let previous {
+                display = previous.display
+                window = previous.window
+            } else {
+                display = try await self.makeDisplayAssertion()
+                guard !Task.isCancelled, self.presentationQueue.isCurrent(request.id) else { throw CancellationError() }
+                window = self.makeWindow(for: display.layer)
+            }
+            let box = DisplayAssertionBox(display)
+            let presentation = try await request.locked
+                ? Self.takeLockedAssertion(displayAssertion: box)
+                : Self.takeIdleAssertion(displayAssertion: box)
+            return PresentationSurface(display: display, presentation: presentation.value, window: window)
+        }
+        queue.onApplied = { [weak self] request in
+            guard let self, let surface = self.presentationQueue.surface else { return }
+            if self.window !== surface.window { self.window?.orderOut(nil) }
+            self.displayAssertion = surface.display
+            self.presentationAssertion = surface.presentation
+            self.window = surface.window
+            self.lockedPresentationReady = request.locked
+            self.consecutivePresentationFailures = 0
+            if self.paused {
+                self.pauseLayer(surface.display.layer)
+                self.startPauseEnforcement()
+            }
+            if self.preparing { self.finishPreparation(succeeded: true) }
+            if request.locked {
+                if self.restartSaverWhenReady { self.startSystemScreenSaverNow() }
+                self.finishShowRequests(succeeded: true)
+            }
+            self.restartSaverWhenReady = false
+        }
+        queue.onFailure = { [weak self] _, error in
+            guard let self else { return }
+            Self.logger.error("Native presentation failed: \(error.localizedDescription, privacy: .public)")
+            self.consecutivePresentationFailures += 1
+            if self.isReady {
+                // Keep any pending show alive through a transient display
+                // failure; replying with failure would kill the client and
+                // discard the retained surface before recovery can finish.
+                self.recoverAfterSystemChange()
+                return
+            }
+            if self.preparing {
+                self.finishPreparation(succeeded: false, errorDescription: error.localizedDescription)
+            }
+            self.finishShowRequests(succeeded: false, errorDescription: error.localizedDescription)
+        }
+        return queue
+    }()
 
     /// Performs a non-mutating startup probe. The bridge only reports itself
     /// as usable after dyld can load every framework it relies on and the
@@ -130,32 +193,37 @@ final class NativeLockScreenWallpaperBridge {
         guard !preparing else { return }
         preparing = true
 
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let assertion = try await makeDisplayAssertion()
-                let presentationBox = try await Self.takeIdleAssertion(
-                    displayAssertion: DisplayAssertionBox(assertion)
-                )
-                let presentation = presentationBox.value
-                let window = makeWindow(for: assertion.layer)
-                self.displayAssertion = assertion
-                self.presentationAssertion = presentation
-                self.window = window
-                if self.paused {
-                    self.pauseLayer(assertion.layer)
-                    self.startPauseEnforcement()
+        presentationQueue.request(locked: showing)
+    }
+
+    /// Lid wake can replace the display/provider without a new lock event.
+    /// Rebind while retaining the previous surface, and restart the saver only
+    /// after the replacement locked assertion is ready.
+    func recoverAfterSystemChange() {
+        guard isReady, WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false else { return }
+        recoveryTask?.cancel()
+        recoveryTask = Task { @MainActor [weak self] in
+            // Delay the first rebind until WindowServer has restored its
+            // display list. Unknown session state must never imply unlock.
+            var attempts = 0
+            while !Task.isCancelled {
+                let failures = self?.consecutivePresentationFailures ?? 0
+                let delay = UInt64(min(max(failures, attempts / 10 + 1), 10)) * 100_000_000
+                do { try await Task.sleep(nanoseconds: delay) }
+                catch { return }
+                guard let self, !Task.isCancelled,
+                      WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false else { return }
+                guard let locked = LockScreenSession.currentIsLocked(),
+                      !NSScreen.screens.isEmpty else {
+                    attempts += 1
+                    continue
                 }
-                self.finishPreparation(succeeded: true)
-                Self.logger.notice("Native Lock Screen layer prepared")
-            } catch {
-                Self.logger.error(
-                    "Native Lock Screen preparation failed: \(error.localizedDescription, privacy: .public)"
-                )
-                self.finishPreparation(
-                    succeeded: false,
-                    errorDescription: error.localizedDescription
-                )
+                if locked { self.showing = true }
+                self.lockedPresentationReady = false
+                self.restartSaverWhenReady = self.showing && locked
+                self.presentationQueue.request(locked: self.showing, reloadRoute: true)
+                self.recoveryTask = nil
+                return
             }
         }
     }
@@ -236,10 +304,8 @@ final class NativeLockScreenWallpaperBridge {
         if let completion {
             pendingShowCompletions.append(completion)
         }
-        presentationRequestID &+= 1
-        let requestID = presentationRequestID
         startSystemScreenSaverNow()
-        guard let displayAssertion else {
+        guard displayAssertion != nil else {
             showing = false
             finishShowRequests(
                 succeeded: false,
@@ -251,38 +317,7 @@ final class NativeLockScreenWallpaperBridge {
         // three-frame transition: Aura, loginwindow's Desktop snapshot, then
         // the real Aura Lock Screen. loginwindow owns the secure surface and
         // presents the prepared screen-saver route itself.
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let assertionBox = try await Self.takeLockedAssertion(
-                    displayAssertion: DisplayAssertionBox(displayAssertion)
-                )
-                let assertion = assertionBox.value
-                guard self.presentationRequestID == requestID,
-                      self.showing
-                else {
-                    return
-                }
-                self.presentationAssertion = assertion
-                self.lockedPresentationReady = true
-                if self.paused {
-                    self.pauseLayer(displayAssertion.layer)
-                    self.startPauseEnforcement()
-                }
-                self.finishShowRequests(succeeded: true)
-            } catch {
-                guard self.presentationRequestID == requestID else { return }
-                Self.logger.error(
-                    "Native locked presentation failed: \(error.localizedDescription, privacy: .public)"
-                )
-                self.showing = false
-                self.lockedPresentationReady = false
-                self.finishShowRequests(
-                    succeeded: false,
-                    errorDescription: error.localizedDescription
-                )
-            }
-        }
+        presentationQueue.request(locked: true)
     }
 
     private func finishShowRequests(
@@ -366,35 +401,24 @@ final class NativeLockScreenWallpaperBridge {
     func hideAfterUnlock() {
         showing = false
         lockedPresentationReady = false
-        presentationRequestID &+= 1
-        let requestID = presentationRequestID
+        restartSaverWhenReady = false
         finishShowRequests(
             succeeded: false,
             errorDescription: "Lock Screen presentation was cancelled by unlock."
         )
         window?.alphaValue = 0
-        guard let displayAssertion else { return }
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            guard let assertion = (try? await Self.takeIdleAssertion(
-                displayAssertion: DisplayAssertionBox(displayAssertion)
-            ))?.value,
-                self.presentationRequestID == requestID,
-                !self.showing
-            else {
-                return
-            }
-            self.presentationAssertion = assertion
-            if self.paused {
-                self.pauseLayer(displayAssertion.layer)
-            }
-        }
+        guard displayAssertion != nil else { return }
+        presentationQueue.request(locked: false)
     }
 
     func shutdown() {
         pauseEnforcementTask?.cancel()
         pauseEnforcementTask = nil
-        presentationRequestID &+= 1
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        presentationQueue.stop()
+        restartSaverWhenReady = false
+        consecutivePresentationFailures = 0
         showing = false
         lockedPresentationReady = false
         finishShowRequests(

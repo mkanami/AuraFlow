@@ -183,6 +183,74 @@ struct TerminalPresentationRecoveryTests {
         #expect(starts == 0)
     }
 
+    @Test @MainActor func terminalWakeDefersUnknownSessionWithoutReplacingItsSurface() async {
+        let fixture = PresentationRecoveryFixture()
+        let presentation = fixture.presentation
+        defer { presentation.stop() }
+        presentation.start()
+        await fixture.settle()
+        fixture.locked = true
+        presentation.handleLockNotification(true)
+        await fixture.settle()
+        let count = fixture.preparations.count
+        fixture.locked = nil
+        presentation.recoverAfterSystemChange()
+        presentation.handleLockNotification(false)
+        await fixture.settle()
+        #expect(fixture.preparations.count == count)
+        #expect(fixture.transitions == [true])
+        fixture.locked = true
+        presentation.pollSession()
+        await fixture.settle()
+        #expect(fixture.preparations.count == count + 1)
+        #expect(fixture.preparations.last?.locked == true)
+        #expect(fixture.preparations.last?.reload == true)
+        #expect(fixture.starts == 2)
+    }
+
+    @Test @MainActor func terminalUnlockNotificationCannotReleaseStillLockedSurface() async {
+        let fixture = PresentationRecoveryFixture()
+        let presentation = fixture.presentation
+        defer { presentation.stop() }
+        presentation.start()
+        await fixture.settle()
+        fixture.locked = true
+        presentation.handleLockNotification(true)
+        await fixture.settle()
+        let count = fixture.preparations.count
+        presentation.handleLockNotification(false)
+        presentation.pollSession()
+        await fixture.settle()
+        #expect(fixture.preparations.count == count)
+        #expect(fixture.transitions == [true])
+        fixture.locked = false
+        presentation.pollSession()
+        await fixture.settle()
+        #expect(fixture.transitions == [true, false])
+    }
+
+    @Test @MainActor func terminalWakeDoesNotOverrideShieldWhileWindowServerLockStateLags() async {
+        let fixture = PresentationRecoveryFixture()
+        let presentation = fixture.presentation
+        defer { presentation.stop() }
+        presentation.start()
+        await fixture.settle()
+        // The secure shield notification leads CGSession at the lid edge.
+        presentation.handleLockNotification(true)
+        await fixture.settle()
+        let count = fixture.preparations.count
+        presentation.recoverAfterSystemChange()
+        presentation.pollSession()
+        await fixture.settle()
+        #expect(fixture.preparations.count == count)
+        #expect(fixture.transitions == [true])
+        fixture.locked = true
+        presentation.pollSession()
+        await fixture.settle()
+        #expect(fixture.preparations.last?.locked == true)
+        #expect(fixture.starts == 2)
+    }
+
     @Test @MainActor func terminalDesktopRecoversExistingStaticWindowAfterSpaceAndWakeWithoutRerunningCommand() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraPresentationRecovery-\(UUID())")

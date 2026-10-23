@@ -34,7 +34,7 @@ var targets: [Target] = [
     .target(name: "AuraWallpaperEngineCore", path: "Sources/AuraWallpaperEngineCore"),
     .executableTarget(
         name: "AuraWebWallpaperAgent",
-        dependencies: ["AuraWallpaperEngineCore"],
+        dependencies: ["AuraWallpaperEngineCore", "AuraWallpaperCore"],
         path: "Sources/AuraWebWallpaperAgent",
         swiftSettings: canBuildNativeBridge ? [.unsafeFlags(["-I", privateWallpaperModulesDirectory])] : [],
         linkerSettings: canBuildNativeBridge ? [.unsafeFlags([
@@ -68,7 +68,7 @@ var targets: [Target] = [
     ),
     .executableTarget(
         name: "AuraTerminalWallpaperAgent",
-        dependencies: ["AuraTerminalWallpaperCore", "AuraTerminalRendering"],
+        dependencies: ["AuraTerminalWallpaperCore", "AuraTerminalRendering", "AuraWallpaperCore"],
         path: "Sources/AuraTerminalWallpaperAgent",
         swiftSettings: canBuildNativeBridge ? [.unsafeFlags(["-I", privateWallpaperModulesDirectory])] : [],
         linkerSettings: canBuildNativeBridge ? [.unsafeFlags([

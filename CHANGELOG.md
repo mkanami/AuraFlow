@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve video, terminal, and web Lock Screen surfaces through lid sleep and wake; serialize system presentation changes and retain fallback frames until replacements are ready.
+
 - Recover terminal wallpaper surfaces after sleep, display wake, session changes, and Spaces transitions without restarting the command or clearing manual pause.
 - Retry transient Lock Screen preparation failures and reconcile missed lock/unlock notifications.
 

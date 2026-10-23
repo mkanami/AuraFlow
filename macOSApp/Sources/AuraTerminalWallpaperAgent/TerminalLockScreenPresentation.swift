@@ -1,5 +1,6 @@
 import AppKit
 import AuraTerminalWallpaperCore
+import AuraWallpaperCore
 import CoreGraphics
 import Darwin
 import OSLog
@@ -32,8 +33,35 @@ final class TerminalLockScreenPresentation {
     private var notificationExpiresAt: TimeInterval = 0
     private var retryAt: TimeInterval?
     private var saverStartNeedsRetry = false
-    private var generation: UInt64 = 0
-    private var task: Task<Void, Never>?
+    private var systemRecoveryPending = false
+    private var restartSaverWhenReady = false
+    private struct PresentationSurface {
+        var displays: [AnyObject] = []
+        var displayIDs: [UInt32] = []
+        var presentations: [AnyObject] = []
+    }
+    private lazy var presentationQueue: LockScreenPresentationQueue<PresentationSurface> = {
+        let queue = LockScreenPresentationQueue<PresentationSurface> { [weak self] request, previous in
+            guard let self else { throw CancellationError() }
+            if let presentationPreparer = self.presentationPreparer {
+                try await presentationPreparer(request.locked, request.reloadRoute)
+                return PresentationSurface()
+            }
+            return try await self.prepareNativePresentation(request, previous: previous)
+        }
+        queue.onApplied = { [weak self] _ in
+            guard let self, self.started else { return }
+            if self.restartSaverWhenReady, self.sessionIsLocked() == true { self.startSaver() }
+            self.restartSaverWhenReady = false
+            if self.saverStartNeedsRetry { self.retryAt = self.uptime() + 5 }
+        }
+        queue.onFailure = { [weak self] _, error in
+            guard let self, self.started else { return }
+            self.retryAt = self.uptime() + 5
+            self.logger.error("Terminal native presentation failed; retrying: \(error.localizedDescription, privacy: .public)")
+        }
+        return queue
+    }()
     private var activity: NSObjectProtocol?
     private var observer: NSObjectProtocol?
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -45,10 +73,7 @@ final class TerminalLockScreenPresentation {
     var onLockStateChange: ((Bool) -> Void)?
 
     init(
-        sessionIsLocked: @escaping () -> Bool? = {
-            let session = CGSessionCopyCurrentDictionary() as? [String: Any]
-            return session.map { ($0["CGSSessionScreenIsLocked"] as? Bool) ?? false }
-        },
+        sessionIsLocked: @escaping () -> Bool? = { LockScreenSession.currentIsLocked() },
         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         startScreenSaver: (() -> Int32?)? = nil,
         presentationPreparer: ((Bool, Bool) async throws -> Void)? = nil
@@ -59,14 +84,6 @@ final class TerminalLockScreenPresentation {
         self.presentationPreparer = presentationPreparer
     }
 
-    #if canImport(Wallpaper)
-    // Erased storage avoids resolving private Swift type metadata at helper
-    // startup on older macOS. The frameworks are weak-linked and gated below.
-    private var displays: [AnyObject] = []
-    private var displayIDs: [UInt32] = []
-    private var presentations: [AnyObject] = []
-    #endif
-
     func start() {
         guard !started else { return }
         started = true
@@ -74,6 +91,7 @@ final class TerminalLockScreenPresentation {
         notifiedLockState = nil
         retryAt = nil
         saverStartNeedsRetry = false
+        systemRecoveryPending = false
         // Resolve the system entry point while the desktop is still visible,
         // rather than loading login.framework at the secure-screen boundary.
         _ = Self.startFunction
@@ -146,20 +164,19 @@ final class TerminalLockScreenPresentation {
         screenObserver = nil
         retryAt = nil
         saverStartNeedsRetry = false
-        generation &+= 1
-        task?.cancel()
-        task = nil
-        #if canImport(Wallpaper)
-        presentations.removeAll()
-        displays.removeAll()
-        displayIDs.removeAll()
-        #endif
+        presentationQueue.stop()
+        systemRecoveryPending = false
+        restartSaverWhenReady = false
         if let activity { ProcessInfo.processInfo.endActivity(activity) }
         activity = nil
     }
 
     func pollSession() {
         guard started else { return }
+        if systemRecoveryPending, sessionIsLocked() != nil {
+            recoverAfterSystemChange()
+            return
+        }
         // Notifications can lead CGSession briefly, but must not override it
         // forever when an unlock notification is lost during sleep.
         if uptime() >= notificationExpiresAt { notifiedLockState = nil }
@@ -179,8 +196,19 @@ final class TerminalLockScreenPresentation {
         // Waking an already locked session emits no new lock transition.
         // Rebind its system surface and restart its saver explicitly, while
         // preserving the running PTY, parser, and manual pause intent.
+        // WindowServer can be unavailable at the wake edge. Preserve the
+        // current surface and retry on the session poll instead of replacing
+        // it with an unconfirmed idle/locked assertion.
+        guard let locked = sessionIsLocked() else {
+            systemRecoveryPending = true
+            return
+        }
+        if !locked, notifiedLockState == true, uptime() < notificationExpiresAt {
+            systemRecoveryPending = true
+            return
+        }
+        systemRecoveryPending = false
         notifiedLockState = nil
-        let locked = sessionIsLocked()
         logger.notice("Restoring terminal system presentation after wake or display change; locked=\(locked == true)")
         if let changed = transition.update(locked) { onLockStateChange?(changed) }
         if locked == false { saverStartNeedsRetry = false }
@@ -191,6 +219,13 @@ final class TerminalLockScreenPresentation {
 
     func handleLockNotification(_ locked: Bool) {
         guard started else { return }
+        // Unlock notifications can precede CGSession, including an unrelated
+        // session-active callback during lid wake. Never release the secure
+        // presentation until the system confirms that it is unlocked.
+        if !locked, sessionIsLocked() != false {
+            notifiedLockState = nil
+            return
+        }
         notifiedLockState = locked
         notificationExpiresAt = uptime() + 1
         guard let changed = transition.update(locked) else { return }
@@ -206,73 +241,42 @@ final class TerminalLockScreenPresentation {
 
     private func prepare(reloadRoute: Bool = false, restartSaverAfterPreparation: Bool = false) {
         guard started else { return }
-        #if canImport(Wallpaper)
-        if reloadRoute {
-            // A Lock arriving during reload must not reuse the display
-            // assertion bound to the user's previous Idle provider.
-            presentations.removeAll()
-            displays.removeAll()
-            displayIDs.removeAll()
-        }
-        #endif
-        generation &+= 1
-        let requestedGeneration = generation
-        let locked = transition.locked
+        restartSaverWhenReady = transition.locked && (restartSaverWhenReady || restartSaverAfterPreparation)
         retryAt = nil
-        task?.cancel()
-        task = Task { [weak self] in
-            guard let self else { return }
-            do {
-                if let presentationPreparer = self.presentationPreparer {
-                    try await presentationPreparer(locked, reloadRoute)
-                } else {
-                    try await self.prepareNativePresentation(
-                        locked: locked, reloadRoute: reloadRoute, generation: requestedGeneration
-                    )
-                }
-                guard !Task.isCancelled, self.generation == requestedGeneration else { return }
-                self.task = nil
-                if restartSaverAfterPreparation, self.sessionIsLocked() == true { self.startSaver() }
-                if self.saverStartNeedsRetry { self.retryAt = self.uptime() + 5 }
-            } catch {
-                guard !Task.isCancelled, self.generation == requestedGeneration, self.started else { return }
-                self.task = nil
-                self.retryAt = self.uptime() + 5
-                self.logger.error("Terminal native presentation failed; retrying: \(error.localizedDescription, privacy: .public)")
-            }
-        }
+        presentationQueue.request(locked: transition.locked, reloadRoute: reloadRoute)
     }
 
-    private func prepareNativePresentation(locked: Bool, reloadRoute: Bool, generation requestedGeneration: UInt64) async throws {
+    private func prepareNativePresentation(
+        _ request: LockScreenPresentationQueue<PresentationSurface>.Request,
+        previous: PresentationSurface?
+    ) async throws -> PresentationSurface {
         #if canImport(Wallpaper)
         if #available(macOS 26, *) {
             guard !NSScreen.screens.isEmpty else { throw PresentationError.noDisplays }
-            var nextDisplays: [WallpaperDisplayAssertion] = []
-            var nextIDs: [UInt32] = []
-            var nextPresentations: [WallpaperPresentationModeAssertion] = []
+            var next = PresentationSurface()
             for screen in NSScreen.screens {
                 guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
                 let display: WallpaperDisplayAssertion
-                if !reloadRoute,
-                   let index = self.displayIDs.firstIndex(of: id.uint32Value),
-                   let warm = self.displays[index] as? WallpaperDisplayAssertion {
+                if !request.reloadRoute,
+                   let previous, let index = previous.displayIDs.firstIndex(of: id.uint32Value),
+                   let warm = previous.displays[index] as? WallpaperDisplayAssertion {
                     display = warm
                 } else {
                     display = try await self.makeDisplay(id.uint32Value)
                 }
-                guard !Task.isCancelled, self.generation == requestedGeneration else { return }
-                let presentation = try await Self.presentation(for: DisplayBox(display), locked: locked)
-                guard !Task.isCancelled, self.generation == requestedGeneration else { return }
-                nextDisplays.append(display)
-                nextIDs.append(id.uint32Value)
-                nextPresentations.append(presentation.value)
+                guard !Task.isCancelled, presentationQueue.isCurrent(request.id) else { throw CancellationError() }
+                let presentation = try await Self.presentation(for: DisplayBox(display), locked: request.locked)
+                guard !Task.isCancelled, presentationQueue.isCurrent(request.id) else { throw CancellationError() }
+                next.displays.append(display)
+                next.displayIDs.append(id.uint32Value)
+                next.presentations.append(presentation.value)
             }
-            self.displays = nextDisplays
-            self.displayIDs = nextIDs
-            self.presentations = nextPresentations
-            self.logger.notice("Terminal native presentation ready: locked=\(locked), displays=\(nextDisplays.count)")
+            guard !next.displays.isEmpty else { throw PresentationError.noDisplays }
+            self.logger.notice("Terminal native presentation ready: locked=\(request.locked), displays=\(next.displays.count)")
+            return next
         }
         #endif
+        return PresentationSurface()
     }
 
     private func startSaver() {

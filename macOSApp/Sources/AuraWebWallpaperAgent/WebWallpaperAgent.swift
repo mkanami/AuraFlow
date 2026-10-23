@@ -1,5 +1,6 @@
 import AppKit
 import AuraWallpaperEngineCore
+import AuraWallpaperCore
 import Darwin
 import Foundation
 #if canImport(Wallpaper)
@@ -27,6 +28,7 @@ final class WebWallpaperAgent: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private var paused = false
     private var locked = false
+    private var lockIntentUntil: TimeInterval = 0
     private var pausePending = false
     private var pidLock: Int32 = -1
     private var ownsLock = false
@@ -35,6 +37,7 @@ final class WebWallpaperAgent: NSObject, NSApplicationDelegate {
     private var renderEpoch = UUID()
     private var screenObserver: NSObjectProtocol?
     private var sessionObservers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var presentation = WebLockPresentation()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -48,12 +51,21 @@ final class WebWallpaperAgent: NSObject, NSApplicationDelegate {
             try String(getpid()).write(to: WebWallpaperRuntime.url("agent.pid"), atomically: true, encoding: .utf8)
         } catch { NSApp.terminate(nil); return }
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.rebuild() }
+            Task { @MainActor [weak self] in
+                self?.rebuild()
+                self?.recoverAfterSystemChange()
+            }
+        }
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.recoverAfterSystemChange() }
+            })
         }
         let center = DistributedNotificationCenter.default()
         for (name, lock) in [("com.apple.screenIsLocked", true), ("com.apple.screenIsUnlocked", false), ("com.apple.shieldWindowRaised", true)] {
             sessionObservers.append(center.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.transitionLock(lock) }
+                Task { @MainActor [weak self] in self?.transitionLock(lock, fromNotification: true) }
             })
         }
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -65,6 +77,8 @@ final class WebWallpaperAgent: NSObject, NSApplicationDelegate {
         timer?.invalidate()
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         for observer in sessionObservers { DistributedNotificationCenter.default().removeObserver(observer) }
+        for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+        presentation.stop()
         for view in views.values { view.unload() }
         if ownsLock {
             try? FileManager.default.removeItem(at: WebWallpaperRuntime.url("agent.pid"))
@@ -83,9 +97,10 @@ final class WebWallpaperAgent: NSObject, NSApplicationDelegate {
             config = next
             for view in views.values { view.update(values: next.values, fps: next.fps) }
         }
-        if let session = CGSessionCopyCurrentDictionary() as? [String: Any], let actual = session["CGSSessionScreenIsLocked"] as? Bool, actual != locked {
+        if let actual = LockScreenSession.currentIsLocked(), actual != locked {
             transitionLock(actual)
         }
+        presentation.pollRecovery()
         guard let config else { return }
         let route = try? String(contentsOf: WebWallpaperRuntime.url("route-active"))
         if route == config.generation, routeGeneration != route {
@@ -106,7 +121,9 @@ final class WebWallpaperAgent: NSObject, NSApplicationDelegate {
         for view in views.values { view.unload() }
         for window in windows.values { window.orderOut(nil); window.close() }
         windows.removeAll(); views.removeAll()
-        state?.frames = [:]
+        // The saver still owns these valid snapshots while WebKit/display
+        // replacement warms up. A temporary empty display list must not
+        // revoke the Lock Screen frame during lid close or wake.
         state?.expectedDisplays = []; displayErrors = [:]; state?.error = nil
         for screen in NSScreen.screens {
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
@@ -136,7 +153,16 @@ final class WebWallpaperAgent: NSObject, NSApplicationDelegate {
         publish()
         if routeGeneration == config.generation { presentation.update(locked: locked) }
     }
-    private func transitionLock(_ value: Bool) {
+    private func recoverAfterSystemChange() {
+        guard let config, routeGeneration == config.generation else { return }
+        if let actual = LockScreenSession.currentIsLocked() { transitionLock(actual) }
+        for window in windows.values { window.orderFrontRegardless() }
+        presentation.recoverAfterSystemChange()
+    }
+    private func transitionLock(_ value: Bool, fromNotification: Bool = false) {
+        guard value || LockScreenSession.currentIsLocked() == false else { return }
+        if fromNotification { lockIntentUntil = value ? ProcessInfo.processInfo.systemUptime + 1 : 0 }
+        if !value, ProcessInfo.processInfo.systemUptime < lockIntentUntil { return }
         guard value != locked else { return }
         locked = value
         if value { freeze() }
@@ -229,43 +255,109 @@ final class WebWallpaperAgent: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Web-only presentation assertions. The video/terminal implementations and
-/// their route journals remain unchanged.
+/// Owns only the web route's system presentation and preserves its committed
+/// surface while WindowServer restores displays after lid sleep.
 @MainActor
 final class WebLockPresentation {
     var onError: ((String) -> Void)?
     var onReady: (() -> Void)?
-    private var assertions: [AnyObject] = []
-    private var generation = 0
-    private var task: Task<Void, Never>?
+    private struct Surface {
+        var displays: [AnyObject] = []
+        var ids: [UInt32] = []
+        var presentations: [AnyObject] = []
+    }
+    private var locked = false
+    private var lockIntentUntil: TimeInterval = 0
+    private var recoveryPending = false
+    private var restartSaverWhenReady = false
+    private var retryAt: TimeInterval?
+    private lazy var queue: LockScreenPresentationQueue<Surface> = {
+        let queue = LockScreenPresentationQueue<Surface> { [weak self] request, previous in
+            guard let self else { throw CancellationError() }
+            return try await self.prepare(request, previous: previous)
+        }
+        queue.onApplied = { [weak self] _ in
+            guard let self else { return }
+            if self.restartSaverWhenReady, LockScreenSession.currentIsLocked() == true { self.startSaver() }
+            self.restartSaverWhenReady = false
+            self.onReady?()
+        }
+        queue.onFailure = { [weak self] _, error in
+            self?.retryAt = ProcessInfo.processInfo.systemUptime + 1
+            self?.onError?("Lock Screen presentation failed: \(error.localizedDescription)")
+        }
+        return queue
+    }()
+
     func update(locked: Bool) {
-        generation += 1; let current = generation
-        task?.cancel()
-        if locked, let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_NOW | RTLD_LOCAL),
-           let symbol = dlsym(handle, "SACScreenSaverStartNow") {
-            let start = unsafeBitCast(symbol, to: (@convention(c) () -> Int32).self)
-            _ = start()
-        }
-        task = Task {
-            #if canImport(Wallpaper)
-            guard #available(macOS 26, *) else { return }
-            do {
-                var next: [AnyObject] = []
-                for screen in NSScreen.screens {
-                    guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
-                    let display = try await makeDisplay(number.uint32Value)
-                    let presentation = try await Self.mode(DisplayBox(display), locked: locked)
-                    guard !Task.isCancelled, generation == current else { return }
-                    next.append(display); next.append(presentation.value)
+        let changed = self.locked != locked
+        self.locked = locked
+        lockIntentUntil = locked ? ProcessInfo.processInfo.systemUptime + 1 : 0
+        if !locked { restartSaverWhenReady = false }
+        if locked && changed { startSaver() }
+        queue.request(locked: locked)
+    }
+
+    func recoverAfterSystemChange() {
+        recoveryPending = true
+        pollRecovery()
+    }
+
+    func pollRecovery() {
+        guard recoveryPending || retryAt.map({ ProcessInfo.processInfo.systemUptime >= $0 }) == true,
+              let actual = LockScreenSession.currentIsLocked() else { return }
+        if !actual, locked, ProcessInfo.processInfo.systemUptime < lockIntentUntil { return }
+        recoveryPending = false
+        retryAt = nil
+        locked = actual
+        restartSaverWhenReady = actual
+        queue.request(locked: actual, reloadRoute: true)
+    }
+
+    func stop() {
+        recoveryPending = false
+        retryAt = nil
+        restartSaverWhenReady = false
+        queue.stop()
+    }
+
+    private func startSaver() {
+        guard locked else { return }
+        if Self.startFunction?() != 0 { retryAt = ProcessInfo.processInfo.systemUptime + 1 }
+    }
+
+    private static let startFunction: (@convention(c) () -> Int32)? = {
+        guard let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_NOW | RTLD_LOCAL),
+              let symbol = dlsym(handle, "SACScreenSaverStartNow") else { return nil }
+        return unsafeBitCast(symbol, to: (@convention(c) () -> Int32).self)
+    }()
+
+    private func prepare(_ request: LockScreenPresentationQueue<Surface>.Request, previous: Surface?) async throws -> Surface {
+        #if canImport(Wallpaper)
+        if #available(macOS 26, *) {
+            guard !NSScreen.screens.isEmpty else { throw CocoaError(.fileReadUnknown) }
+            var next = Surface()
+            for screen in NSScreen.screens {
+                guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
+                let display: WallpaperDisplayAssertion
+                if !request.reloadRoute, let previous, let index = previous.ids.firstIndex(of: number.uint32Value),
+                   let warm = previous.displays[index] as? WallpaperDisplayAssertion {
+                    display = warm
+                } else {
+                    display = try await makeDisplay(number.uint32Value)
                 }
-                assertions = next
-                onReady?()
-            } catch {
-                guard generation == current, !Task.isCancelled else { return }
-                onError?("Lock Screen presentation failed: \(error.localizedDescription)")
+                guard !Task.isCancelled, queue.isCurrent(request.id) else { throw CancellationError() }
+                let presentation = try await Self.mode(DisplayBox(display), locked: request.locked)
+                guard !Task.isCancelled, queue.isCurrent(request.id) else { throw CancellationError() }
+                next.displays.append(display)
+                next.ids.append(number.uint32Value)
+                next.presentations.append(presentation.value)
             }
-            #endif
+            guard !next.displays.isEmpty else { throw CocoaError(.fileReadUnknown) }
+            return next
         }
+        #endif
+        return Surface()
     }
     #if canImport(Wallpaper)
     @_optimize(none) private func makeDisplay(_ id: UInt32) async throws -> WallpaperDisplayAssertion {
