@@ -1,6 +1,7 @@
 import AuraTerminalWallpaperCore
 import AuraWallpaperCore
 import Foundation
+import Darwin
 import AuraWallpaperEngineCore
 
 protocol TerminalWallpaperControlling: Sendable {
@@ -82,6 +83,8 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     private let lockScreenVideoIsActive: () -> Bool
     private let lockScreenCoordinator: any TerminalLockScreenCoordinating
     private let lockScreenFrameReadinessWaiter: (TimeInterval, String?) -> Bool
+    private let runningAgentNeedsReplacement: () -> Bool
+    private let sessionIsLocked: () -> Bool?
     // Preview speed updates use a separate controller instance. Serialize them
     // with Start/Remove so a stale slider event cannot restore an old command.
     private static let runtimeMutationLock = NSRecursiveLock()
@@ -93,10 +96,24 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         videoRuntimeIsRunning: (() -> Bool)? = nil,
         lockScreenVideoIsActive: (() -> Bool)? = nil,
         lockScreenCoordinator: (any TerminalLockScreenCoordinating)? = nil,
-        lockScreenFrameReadinessWaiter: ((TimeInterval, String?) -> Bool)? = nil
+        lockScreenFrameReadinessWaiter: ((TimeInterval, String?) -> Bool)? = nil,
+        runningAgentNeedsReplacement: (() -> Bool)? = nil,
+        sessionIsLocked: @escaping () -> Bool? = { LockScreenSession.currentIsLocked() }
     ) throws {
         self.store = store
-        self.helperURL = try Self.resolveHelperURL(explicitURL: helperURL)
+        let resolvedHelper = try Self.resolveHelperURL(explicitURL: helperURL)
+        self.helperURL = resolvedHelper
+        self.sessionIsLocked = sessionIsLocked
+        self.runningAgentNeedsReplacement = runningAgentNeedsReplacement ?? {
+            guard resolvedHelper.lastPathComponent == "AuraTerminalWallpaperAgent",
+                  let pid = store.loadPID(), store.processIsAlive(pid: pid),
+                  let expected = RuntimeExecutableFingerprint.digest(at: resolvedHelper) else { return false }
+            var path = [CChar](repeating: 0, count: 4096)
+            guard proc_pidpath(pid_t(pid), &path, UInt32(path.count)) > 0,
+                  URL(fileURLWithPath: String(cString: path)).lastPathComponent == "AuraTerminalWallpaperAgent" else { return false }
+            let health = store.loadHealth()
+            return health?.agentPID != pid || health?.executableFingerprint != expected
+        }
         self.videoRuntimeIsRunning = videoRuntimeIsRunning ?? {
             WallpaperRuntimeStore().status().running
         }
@@ -132,7 +149,9 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
             try store.setPlaybackPaused(false)
             try store.saveConfig(normalized)
             try applyLaunchAtLogin(normalized)
-            if wasRunning {
+            if wasRunning, runningAgentNeedsReplacement() {
+                try replaceRunningAgent(config: normalized)
+            } else if wasRunning {
                 try send(.restart, config: normalized)
             } else {
                 try launchAgent()
@@ -330,6 +349,16 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         guard store.processIsAlive(pid: store.loadPID()) else { return }
         guard store.lockScreenPlaybackEnabled else { return }
         try ensureCanStart()
+        if !store.isPlaybackPaused, sessionIsLocked() == false, runningAgentNeedsReplacement() {
+            let startedAt = Date().timeIntervalSince1970
+            let previousRevision = Self.lockScreenFrameRevision(in: store)
+            let config = store.loadConfig()
+            try applyLaunchAtLogin(config)
+            try replaceRunningAgent(config: config)
+            guard lockScreenFrameReadinessWaiter(startedAt, previousRevision) else {
+                throw TerminalWallpaperControllerError.lockScreenFrameNotReady
+            }
+        }
         try lockScreenCoordinator.activate()
     }
 
@@ -377,6 +406,14 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
             object: nil,
             userInfo: nil
         )
+    }
+
+    private func replaceRunningAgent(config: TerminalWallpaperConfig) throws {
+        guard store.terminateAgent(timeout: 2) else {
+            throw TerminalWallpaperControllerError.unavailable("The previous Terminal Wallpaper helper did not stop for its update.")
+        }
+        try launchAgent()
+        try send(.start, config: config)
     }
 
     private func launchAgent() throws {

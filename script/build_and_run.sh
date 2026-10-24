@@ -6,7 +6,7 @@ PROCESS_NAME="WallpaperControlApp"
 APP_NAME="AuraFlow"
 BUNDLE_ID="com.andrijvergeles.auraflow"
 APP_VERSION="1.3.4"
-APP_BUILD="13"
+APP_BUILD="14"
 MIN_SYSTEM_VERSION="13.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

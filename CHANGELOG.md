@@ -2,6 +2,9 @@
 
 ## 1.3.4
 
+- Repair system fallback Lock Screen routes after lid/display changes without restarting WallpaperAgent, and preserve terminal publications while the display list is empty.
+- Replace outdated terminal helpers when the new app is opened, while deferring replacement during a locked or paused session.
+
 - Preserve video, terminal, and web Lock Screen surfaces through lid sleep and wake; serialize system presentation changes and retain fallback frames until replacements are ready.
 
 - Recover terminal wallpaper surfaces after sleep, display wake, session changes, and Spaces transitions without restarting the command or clearing manual pause.

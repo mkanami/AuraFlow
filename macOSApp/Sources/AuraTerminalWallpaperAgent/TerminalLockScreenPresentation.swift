@@ -69,6 +69,8 @@ final class TerminalLockScreenPresentation {
     private let sessionIsLocked: () -> Bool?
     private let uptime: () -> TimeInterval
     private let startScreenSaver: () -> Int32?
+    private let routeRecovery: () throws -> Bool
+    private var lastRouteCheck: TimeInterval = -.infinity
     private let presentationPreparer: ((Bool, Bool) async throws -> Void)?
     var onLockStateChange: ((Bool) -> Void)?
 
@@ -76,12 +78,22 @@ final class TerminalLockScreenPresentation {
         sessionIsLocked: @escaping () -> Bool? = { LockScreenSession.currentIsLocked() },
         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         startScreenSaver: (() -> Int32?)? = nil,
-        presentationPreparer: ((Bool, Bool) async throws -> Void)? = nil
+        presentationPreparer: ((Bool, Bool) async throws -> Void)? = nil,
+        routeRecovery: (() throws -> Bool)? = nil
     ) {
         self.sessionIsLocked = sessionIsLocked
         self.uptime = uptime
         self.startScreenSaver = startScreenSaver ?? { Self.startFunction?() }
         self.presentationPreparer = presentationPreparer
+        let store = TerminalWallpaperRuntimeStore()
+        let recovery = ScreenSaverRouteRecovery(journalURL: store.appSupportURL.appendingPathComponent("screen-saver-wallpaper-store-backup.json"))
+        self.routeRecovery = routeRecovery ?? {
+            // Injected presentation tests must never touch the live store.
+            guard presentationPreparer == nil else { return false }
+            return try recovery.recoverIfNeeded {
+                store.lockScreenPlaybackEnabled && store.loadPID() == Int(getpid())
+            }
+        }
     }
 
     func start() {
@@ -173,6 +185,17 @@ final class TerminalLockScreenPresentation {
 
     func pollSession() {
         guard started else { return }
+        if uptime() - lastRouteCheck >= 1 {
+            lastRouteCheck = uptime()
+            do {
+                if try routeRecovery() {
+                    logger.notice("Restored Aura Lock Screen selection after system route drift")
+                    prepare(reloadRoute: true, restartSaverAfterPreparation: transition.locked)
+                }
+            } catch {
+                logger.error("Lock Screen route recovery deferred: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         if systemRecoveryPending, sessionIsLocked() != nil {
             recoverAfterSystemChange()
             return
@@ -250,6 +273,7 @@ final class TerminalLockScreenPresentation {
         _ request: LockScreenPresentationQueue<PresentationSurface>.Request,
         previous: PresentationSurface?
     ) async throws -> PresentationSurface {
+        _ = try routeRecovery()
         #if canImport(Wallpaper)
         if #available(macOS 26, *) {
             guard !NSScreen.screens.isEmpty else { throw PresentationError.noDisplays }

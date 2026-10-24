@@ -258,3 +258,90 @@ private final class TerminalSaverStoreFixture {
     #expect((restored["Desktop"] as? NSDictionary)?.isEqual(latestDesktop) == true)
     #expect(!FileManager.default.fileExists(atPath: fixture.journalURL.path))
 }
+
+@Test func terminalSaverRepairsRestoredSystemDefaultWhileKeepingDesktopAndOriginalBackup() throws {
+    let fixture = try TerminalSaverStoreFixture()
+    defer { fixture.cleanup() }
+    let desktop = try fixture.mode(provider: WallpaperPlatformConstants.imageProviderID, config: ["source": "user-desktop"])
+    let fallback = try fixture.mode(provider: WallpaperPlatformConstants.screenSaverProviderID,
+        config: ["module": ["relative": "file:///System/Library/ExtensionKit/Extensions/Ventura.appex/"]])
+    try fixture.save([
+        "AllSpacesAndDisplays": ["Type": "individual", "Desktop": desktop, "Idle": fallback],
+        "SystemDefault": ["Type": "individual", "Desktop": desktop, "Idle": fallback],
+        "Spaces": ["space": ["Default": ["Type": "individual", "Desktop": desktop, "Idle": fallback]]],
+    ])
+    let coordinator = fixture.coordinator()
+    try coordinator.activate()
+    let backup = try Data(contentsOf: fixture.journalURL)
+    var drifted = try fixture.load()
+    var system = drifted["SystemDefault"] as! [String: Any]
+    system["Idle"] = fallback
+    drifted["SystemDefault"] = system
+    var spaces = drifted["Spaces"] as! [String: Any]
+    var space = spaces["space"] as! [String: Any]
+    var spaceDefault = space["Default"] as! [String: Any]
+    spaceDefault["Idle"] = fallback
+    space["Default"] = spaceDefault
+    spaces["space"] = space
+    drifted["Spaces"] = spaces
+    try fixture.save(drifted)
+
+    let recovery = ScreenSaverRouteRecovery(storeURL: fixture.storeURL, journalURL: fixture.journalURL, saverURL: fixture.saverURL)
+    #expect(try recovery.recoverIfNeeded())
+    let recovered = try fixture.load()
+    let newSystem = recovered["SystemDefault"] as! [String: Any]
+    #expect(fixture.provider(newSystem["Idle"]) == WallpaperPlatformConstants.screenSaverProviderID)
+    let all = recovered["AllSpacesAndDisplays"] as! [String: Any]
+    let desiredContent = (all["Idle"] as! [String: Any])["Content"]
+    #expect(((newSystem["Idle"] as? [String: Any])?["Content"] as? NSDictionary)?.isEqual(desiredContent) == true)
+    #expect((newSystem["Desktop"] as? NSDictionary)?.isEqual(desktop) == true)
+    let newSpaces = recovered["Spaces"] as! [String: Any]
+    let newSpace = newSpaces["space"] as! [String: Any]
+    let newDefault = newSpace["Default"] as! [String: Any]
+    #expect(((newDefault["Idle"] as? [String: Any])?["Content"] as? NSDictionary)?.isEqual(desiredContent) == true)
+    #expect(try Data(contentsOf: fixture.journalURL) == backup)
+    #expect(fixture.stopCount == 1 && fixture.startCount == 1)
+    #expect(try !recovery.recoverIfNeeded())
+    try coordinator.restoreIfOwned()
+    #expect((try fixture.load()["SystemDefault"] as? NSDictionary)?.isEqual(system) == true)
+}
+
+@Test func saverRouteRecoveryNeverOverwritesExplicitChoicesOrRecreatesRemovedOwnership() throws {
+    let fixture = try TerminalSaverStoreFixture()
+    defer { fixture.cleanup() }
+    let desktop = try fixture.mode(provider: WallpaperPlatformConstants.imageProviderID)
+    try fixture.save([
+        "AllSpacesAndDisplays": ["Desktop": desktop],
+        "SystemDefault": ["Desktop": desktop],
+    ])
+    try fixture.coordinator().activate()
+    var changed = try fixture.load()
+    var system = changed["SystemDefault"] as! [String: Any]
+    system["Idle"] = try fixture.mode(provider: "user-explicit-choice")
+    changed["SystemDefault"] = system
+    try fixture.save(changed)
+    let recovery = ScreenSaverRouteRecovery(storeURL: fixture.storeURL, journalURL: fixture.journalURL, saverURL: fixture.saverURL)
+    let before = try Data(contentsOf: fixture.storeURL)
+    #expect(try !recovery.recoverIfNeeded())
+    #expect(try Data(contentsOf: fixture.storeURL) == before)
+    try FileManager.default.removeItem(at: fixture.journalURL)
+    #expect(try !recovery.recoverIfNeeded())
+    #expect(try !recovery.recoverIfNeeded(shouldProceed: { false }))
+}
+
+@Test func saverRouteRecoveryRejectsAnOffTransitionDuringItsRead() throws {
+    let fixture = try TerminalSaverStoreFixture()
+    defer { fixture.cleanup() }
+    let desktop = try fixture.mode(provider: WallpaperPlatformConstants.imageProviderID)
+    try fixture.save(["AllSpacesAndDisplays": ["Desktop": desktop], "SystemDefault": ["Desktop": desktop]])
+    try fixture.coordinator().activate()
+    var changed = try fixture.load()
+    changed["SystemDefault"] = ["Desktop": desktop]
+    try fixture.save(changed)
+    let before = try Data(contentsOf: fixture.storeURL)
+    let recovery = ScreenSaverRouteRecovery(storeURL: fixture.storeURL, journalURL: fixture.journalURL, saverURL: fixture.saverURL)
+    var checks = 0
+    #expect(try !recovery.recoverIfNeeded { checks += 1; return checks == 1 })
+    #expect(checks == 2)
+    #expect(try Data(contentsOf: fixture.storeURL) == before)
+}

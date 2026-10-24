@@ -1123,26 +1123,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func promoteModernLockScreenForCurrentSession() {
-        guard !isTerminating,
-              lockScreenOnlyMode,
+        guard !isTerminating, isConfirmedLockScreenSession(),
               config.show_on_lock_screen == true,
-              lockScreenPlatform.requiresLockScreenSessionPromotion
-        else {
-            return
-        }
-        let platformExecutor = lockScreenPlatformExecutor
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                _ = try await platformExecutor
-                    .activateLockScreenForCurrentSession()
-            } catch {
-                self.writeHealth(
-                    reason:
-                        "lock-session-promotion-failed: "
-                        + error.localizedDescription
-                )
-            }
+              !manualPaused, !store.isPaused(),
+              lockScreenPlatform.requiresLockScreenSessionPromotion else { return }
+        do {
+            _ = try lockScreenPlatform.activateLockScreenForCurrentSession()
+        } catch {
+            writeHealth(reason: "lock-session-promotion-failed: " + error.localizedDescription)
         }
     }
 
@@ -1227,6 +1215,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         // the current session intent before .wake can enqueue an idle repair
         // and hide the prepared secure surface.
         reconcileSystemSessionState()
+        // Waking an already locked session is not a new sessionLocked event.
+        // Reassert the selected source even when CGSession never transitioned.
+        promoteModernLockScreenForCurrentSession()
         if lockScreenOnlyMode {
             // A display-sleep lock can reset SystemWallpaperURL while the
             // password surface is waking. Reassert the dedicated Aerial
@@ -1814,6 +1805,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
 
+                self.promoteModernLockScreenForCurrentSession()
                 self.nativeLockScreenBridge.showForLockTransition { [weak self] shown in
                     Task { @MainActor [weak self] in
                         guard let self,
@@ -2019,6 +2011,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildWindows() {
+        guard !NSScreen.screens.isEmpty else { return }
         let existingPlayer = player
         for window in windows {
             window.orderOut(nil)
@@ -2480,6 +2473,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // SystemWallpaperURL may be reset after the wake notification has
+        // already completed. Keep checking the locked session as well.
+        if !sleeping { promoteModernLockScreenForCurrentSession() }
         repairModernLockScreenIfNeeded()
         rearmModernLockScreenForNextSession()
 

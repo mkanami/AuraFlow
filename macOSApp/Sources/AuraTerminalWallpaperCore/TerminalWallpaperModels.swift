@@ -339,6 +339,8 @@ public struct TerminalWallpaperHealth: Codable, Equatable, Sendable {
     public var renderedFrames: Int
     public var lastError: String?
     public var updatedAt: Double
+    public var agentPID: Int?
+    public var executableFingerprint: String?
 
     public init(
         available: Bool = false,
@@ -352,7 +354,9 @@ public struct TerminalWallpaperHealth: Codable, Equatable, Sendable {
         frames: Int = 0,
         renderedFrames: Int = 0,
         lastError: String? = nil,
-        updatedAt: Double = Date().timeIntervalSince1970
+        updatedAt: Double = Date().timeIntervalSince1970,
+        agentPID: Int? = nil,
+        executableFingerprint: String? = nil
     ) {
         self.schemaVersion = TerminalWallpaperConfig.currentSchemaVersion
         self.available = available
@@ -367,6 +371,8 @@ public struct TerminalWallpaperHealth: Codable, Equatable, Sendable {
         self.renderedFrames = renderedFrames
         self.lastError = lastError
         self.updatedAt = updatedAt
+        self.agentPID = agentPID
+        self.executableFingerprint = executableFingerprint
     }
 
     enum CodingKeys: String, CodingKey {
@@ -383,6 +389,8 @@ public struct TerminalWallpaperHealth: Codable, Equatable, Sendable {
         case renderedFrames = "rendered_frames"
         case lastError = "last_error"
         case updatedAt = "updated_at"
+        case agentPID = "agent_pid"
+        case executableFingerprint = "executable_fingerprint"
     }
 }
 

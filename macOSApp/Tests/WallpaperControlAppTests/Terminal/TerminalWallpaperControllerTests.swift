@@ -336,3 +336,47 @@ func terminalRemovalFailureKeepsExistingRendererAndFrame(terminate: Bool) throws
     #expect(coordinator.activations == 0)
     #expect(task.isRunning)
 }
+
+@Test func terminalNewAppReplacesAnOldHelperInsteadOfSendingItAnotherRestartCommand() throws {
+    let fixture = try TerminalControllerFixture("helper-upgrade")
+    defer { fixture.cleanup() }
+    let coordinator = MockTerminalLockScreenCoordinator()
+    var needsReplacement = false
+    let controller = try NativeTerminalWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }, lockScreenVideoIsActive: { false }, lockScreenCoordinator: coordinator,
+        lockScreenFrameReadinessWaiter: { _, _ in true }, runningAgentNeedsReplacement: { needsReplacement },
+        sessionIsLocked: { false })
+    let config = TerminalWallpaperConfig(command: .init(executable: "/bin/echo", arguments: ["same configuration"]))
+    _ = try controller.start(config: config)
+    let original = try #require(fixture.store.loadPID())
+    needsReplacement = true
+    try controller.reconcileLockScreenIfRunning()
+    let replacement = try #require(fixture.store.loadPID())
+    #expect(replacement != original)
+    #expect(!fixture.store.processIsAlive(pid: original))
+    #expect(fixture.store.processIsAlive(pid: replacement))
+    #expect(fixture.store.loadConfig() == config.normalized())
+    #expect(fixture.store.loadCommand()?.action == .start)
+    needsReplacement = false
+    try controller.reconcileLockScreenIfRunning()
+    #expect(fixture.store.loadPID() == replacement)
+}
+
+@Test(arguments: [false, true])
+func terminalHelperUpgradeDoesNotDropTheSurfaceOfALockedOrPausedSession(paused: Bool) throws {
+    let fixture = try TerminalControllerFixture("covered-upgrade")
+    defer { fixture.cleanup() }
+    var needsReplacement = false
+    let controller = try NativeTerminalWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }, lockScreenVideoIsActive: { false },
+        lockScreenCoordinator: MockTerminalLockScreenCoordinator(), lockScreenFrameReadinessWaiter: { _, _ in true },
+        runningAgentNeedsReplacement: { needsReplacement }, sessionIsLocked: { !paused })
+    _ = try controller.start(config: .init(command: .init(executable: "/bin/echo")))
+    let original = try #require(fixture.store.loadPID())
+    try fixture.store.setPlaybackPaused(paused)
+    needsReplacement = true
+    try controller.reconcileLockScreenIfRunning()
+    #expect(fixture.store.loadPID() == original)
+    #expect(fixture.store.processIsAlive(pid: original))
+    #expect(fixture.store.isPlaybackPaused == paused)
+}

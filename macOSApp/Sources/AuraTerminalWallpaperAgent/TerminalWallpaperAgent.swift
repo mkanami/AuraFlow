@@ -1,6 +1,7 @@
 import AppKit
 import AuraTerminalRendering
 import AuraTerminalWallpaperCore
+import AuraWallpaperCore
 import Foundation
 import Metal
 import OSLog
@@ -28,6 +29,10 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var snapshotRequestInFlight = false
     private let session = TerminalPTYSession()
     private var windows: [TerminalWallpaperWindow] = []
+    private var retainedLockScreenWindows: [TerminalWallpaperWindow] = []
+    private var displayRecoveryPending = false
+    private let screensProvider: () -> [NSScreen]
+    private let executableFingerprint = RuntimeExecutableFingerprint.digest(at: URL(fileURLWithPath: CommandLine.arguments[0]))
     private var latestSnapshot: TerminalGridSnapshot?
     private var commandTimer: Timer?
     private var healthTimer: Timer?
@@ -47,11 +52,13 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var terminating = false
     private var publishedSharedFrameDescriptor: TerminalSharedFrameDescriptor?
 
-    init(configurationURL: URL, managesLockScreenPresentation: Bool = true) {
+    init(configurationURL: URL, managesLockScreenPresentation: Bool = true,
+         screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens }) {
         let supportURL = configurationURL.deletingLastPathComponent()
         store = TerminalWallpaperRuntimeStore(appSupportURL: supportURL)
         framePublisher = TerminalLockScreenFramePublisher(store: store)
         self.managesLockScreenPresentation = managesLockScreenPresentation
+        self.screensProvider = screensProvider
         config = store.loadConfig()
         fullscreenPausePolicy.manuallyPaused = store.isPlaybackPaused
         super.init()
@@ -80,6 +87,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             self?.pollCommand()
         }
         healthTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            if let self, self.displayRecoveryPending, !self.screensProvider().isEmpty { self.screensChanged() }
             self?.writeHealth()
         }
         writeHealth()
@@ -104,12 +112,19 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         framePublisher.revoke()
         for window in windows { window.orderOut(nil) }
         windows.removeAll()
+        retainedLockScreenWindows.removeAll()
         store.removePID()
         store.removeHealth()
     }
 
     @objc private func screensChanged() {
         guard !terminating else { return }
+        guard !screensProvider().isEmpty else {
+            displayRecoveryPending = true
+            logger.notice("Preserving Lock Screen frames while displays are unavailable")
+            return
+        }
+        displayRecoveryPending = false
         if config.render.columns == nil || config.render.rows == nil {
             if session.childPID != nil {
                 rebuildRuntime(restartChild: false)
@@ -399,23 +414,29 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildWindows() {
+        let availableScreens = screensProvider()
+        guard !availableScreens.isEmpty else {
+            displayRecoveryPending = true
+            return
+        }
+        guard let metalDevice else {
+            lastError = "Metal is unavailable on this Mac."
+            return
+        }
+        displayRecoveryPending = false
+        displayGeneration &+= 1
         framePublisher.beginDesktopGeneration()
-        store.removeSharedFrameDescriptor()
-        publishedSharedFrameDescriptor = nil
+        // The saver may still be reading this IOSurface. Keep its owner and
+        // descriptor alive until a replacement GPU frame has completed.
+        if retainedLockScreenWindows.isEmpty { retainedLockScreenWindows = windows }
         for window in windows {
             window.onLockScreenFrame = nil
             window.onSharedFrame = nil
             window.orderOut(nil)
         }
         windows.removeAll()
-        guard let metalDevice else {
-            lastError = "Metal is unavailable on this Mac."
-            framePublisher.revoke()
-            return
-        }
-        let screens = config.behavior.allDisplays ? NSScreen.screens : Array(NSScreen.screens.prefix(1))
+        let screens = config.behavior.allDisplays ? availableScreens : Array(availableScreens.prefix(1))
         windows = screens.map { TerminalWallpaperWindow(screen: $0, device: metalDevice) }
-        if windows.isEmpty { framePublisher.revoke() }
         if let firstWindow = windows.first {
             let generation = displayGeneration
             firstWindow.onLockScreenFrame = { [weak self] bytes, width, height in
@@ -440,6 +461,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     do {
                         try self.store.saveSharedFrameDescriptor(descriptor)
                         self.publishedSharedFrameDescriptor = descriptor
+                        self.retainedLockScreenWindows.removeAll()
                     } catch {
                         self.logger.error("Could not publish terminal preview surface: \(error.localizedDescription, privacy: .public)")
                         return
@@ -609,7 +631,8 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func logicalGeometry() -> (columns: Int, rows: Int) {
-        let screen = NSScreen.main ?? NSScreen.screens.first
+        let screen = screensProvider().first
+        if screen == nil, let parserSize { return parserSize }
         let cellMetrics = TerminalFontMetrics.cellMetrics(for: config.render)
         return TerminalRenderGeometry.viewportGrid(
             configuration: config.render,
@@ -645,7 +668,9 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             rows: geometry.rows,
             frames: frames,
             renderedFrames: renderedFrames,
-            lastError: lastError
+            lastError: lastError,
+            agentPID: Int(getpid()),
+            executableFingerprint: executableFingerprint
         )
         try? store.saveHealth(health)
     }

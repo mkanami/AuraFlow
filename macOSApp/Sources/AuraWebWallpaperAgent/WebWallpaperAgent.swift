@@ -116,7 +116,7 @@ final class WebWallpaperAgent: NSObject, NSApplicationDelegate {
         publish()
     }
     private func rebuild() {
-        guard let config else { return }
+        guard let config, !NSScreen.screens.isEmpty else { return }
         renderEpoch = UUID(); let epoch = renderEpoch
         for view in views.values { view.unload() }
         for window in windows.values { window.orderOut(nil); window.close() }
@@ -266,6 +266,8 @@ final class WebLockPresentation {
         var ids: [UInt32] = []
         var presentations: [AnyObject] = []
     }
+    private let routeRecovery = ScreenSaverRouteRecovery(journalURL: WebWallpaperRuntime.root.appendingPathComponent("screen-saver-wallpaper-store-backup.json"))
+    private var lastRouteCheck: TimeInterval = -.infinity
     private var locked = false
     private var lockIntentUntil: TimeInterval = 0
     private var recoveryPending = false
@@ -304,6 +306,12 @@ final class WebLockPresentation {
     }
 
     func pollRecovery() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastRouteCheck >= 1 {
+            lastRouteCheck = now
+            do { if try recoverRoute() { recoveryPending = true } }
+            catch { onError?("Lock Screen route recovery deferred: \(error.localizedDescription)") }
+        }
         guard recoveryPending || retryAt.map({ ProcessInfo.processInfo.systemUptime >= $0 }) == true,
               let actual = LockScreenSession.currentIsLocked() else { return }
         if !actual, locked, ProcessInfo.processInfo.systemUptime < lockIntentUntil { return }
@@ -332,7 +340,15 @@ final class WebLockPresentation {
         return unsafeBitCast(symbol, to: (@convention(c) () -> Int32).self)
     }()
 
+    private func recoverRoute() throws -> Bool {
+        try routeRecovery.recoverIfNeeded {
+            !FileManager.default.fileExists(atPath: WebWallpaperRuntime.url("stop").path)
+                && WebWallpaperRuntime.agentPID == getpid()
+                && (try? String(contentsOf: WebWallpaperRuntime.url("route-active"))) == WebWallpaperRuntime.status?.generation
+        }
+    }
     private func prepare(_ request: LockScreenPresentationQueue<Surface>.Request, previous: Surface?) async throws -> Surface {
+        _ = try recoverRoute()
         #if canImport(Wallpaper)
         if #available(macOS 26, *) {
             guard !NSScreen.screens.isEmpty else { throw CocoaError(.fileReadUnknown) }

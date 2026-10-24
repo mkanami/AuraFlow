@@ -72,6 +72,14 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
     }
 
     func activate() throws {
+        try routeRecovery.withExclusiveAccess { try activateLocked() }
+    }
+
+    private var routeRecovery: ScreenSaverRouteRecovery {
+        ScreenSaverRouteRecovery(storeURL: storeURL, journalURL: journalURL, saverURL: saverURL)
+    }
+
+    private func activateLocked() throws {
         let existingJournal = try loadJournal()
         // Validate the store before interrupting WallpaperAgent, but do not
         // return early when our saver is already selected. Like the regular
@@ -107,6 +115,11 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
     }
 
     private func restoreIfOwned(preferCurrentDesktop: Bool) throws {
+        guard FileManager.default.fileExists(atPath: journalURL.path) else { return }
+        try routeRecovery.withExclusiveAccess { try restoreLocked(preferCurrentDesktop: preferCurrentDesktop) }
+    }
+
+    private func restoreLocked(preferCurrentDesktop: Bool) throws {
         guard let journal = try loadJournal() else { return }
         guard try restorePlan(from: readStore(), journal: journal, preferCurrentDesktop: preferCurrentDesktop) != nil else {
             try FileManager.default.removeItem(at: journalURL)

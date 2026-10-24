@@ -291,6 +291,89 @@ struct TerminalPresentationRecoveryTests {
         #expect(try String(contentsOf: root.appendingPathComponent("launches")) == "x")
     }
 
+    @Test(arguments: [false, true]) @MainActor
+    func terminalRouteDriftRebindsPresentationWithoutAnotherSessionEvent(locked: Bool) async {
+        var sessionLocked = false
+        var drifted = false
+        var repairs = 0
+        var starts = 0
+        var preparations: [(Bool, Bool)] = []
+        let presentation = TerminalLockScreenPresentation(sessionIsLocked: { sessionLocked },
+            startScreenSaver: { starts += 1; return 0 },
+            presentationPreparer: { preparations.append(($0, $1)) },
+            routeRecovery: {
+                guard drifted else { return false }
+                drifted = false
+                repairs += 1
+                return true
+            })
+        defer { presentation.stop() }
+        presentation.start()
+        for _ in 0..<20 { await Task.yield() }
+        if locked {
+            sessionLocked = true
+            presentation.handleLockNotification(true)
+            for _ in 0..<20 { await Task.yield() }
+        }
+        let previousStarts = starts
+        drifted = true
+        presentation.pollSession()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(repairs == 1)
+        #expect(preparations.last?.0 == locked)
+        #expect(preparations.last?.1 == true)
+        #expect(starts == previousStarts + (locked ? 1 : 0))
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func terminalDisplayDisappearancePreservesLeaseAndSurfaceUntilReplacementCompletes(staticCommand: Bool) async throws {
+        _ = NSApplication.shared
+        let actualScreens = NSScreen.screens
+        try #require(!actualScreens.isEmpty)
+        var screens = actualScreens
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraLidFrame-\(UUID())")
+        let store = TerminalWallpaperRuntimeStore(appSupportURL: root, launchAgentURL: root.appendingPathComponent("launch.plist"))
+        let command = staticCommand ? "printf 'retained still'" : "while :; do printf '\\033[Hretained live'; sleep 0.05; done"
+        let config = TerminalWallpaperConfig(command: .init(executable: "/bin/sh", arguments: ["-c", command]),
+            render: .init(pixelMode: .fixed, fixedWidth: 320, fixedHeight: 240, columns: 30, rows: 4),
+            behavior: .init(allDisplays: false, pauseOnFullscreen: false))
+        try store.saveConfig(config)
+        let delegate = TerminalWallpaperAgentDelegate(configurationURL: store.configURL,
+            managesLockScreenPresentation: false, screensProvider: { screens })
+        defer {
+            delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+            try? FileManager.default.removeItem(at: root)
+        }
+        delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        let deadline = Date().addingTimeInterval(5)
+        while store.loadSharedFrameDescriptor() == nil || store.loadLockScreenHeartbeat() == nil {
+            try #require(Date() < deadline)
+            pumpPresentationRecoveryAppKit()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let surface = try #require(store.loadSharedFrameDescriptor())
+        let child = store.loadHealth()?.childPID
+        screens = []
+        NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+        #expect(store.loadSharedFrameDescriptor() == surface)
+        #expect(store.loadLockScreenHeartbeat()?.pid == Int(getpid()))
+        #expect(FileManager.default.fileExists(atPath: store.lockScreenFrameURL.path))
+        screens = actualScreens
+        NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        // No new GPU callback has run yet. The old cross-process source must
+        // still be published and retained, including for a completed command.
+        #expect(store.loadSharedFrameDescriptor() == surface)
+        let replacementDeadline = Date().addingTimeInterval(5)
+        while store.loadSharedFrameDescriptor() == surface {
+            try #require(Date() < replacementDeadline)
+            pumpPresentationRecoveryAppKit()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(store.loadLockScreenHeartbeat()?.pid == Int(getpid()))
+        if !staticCommand { #expect(store.loadHealth()?.childPID == child) }
+    }
+
 }
 
 @MainActor private func pumpPresentationRecoveryAppKit() {
