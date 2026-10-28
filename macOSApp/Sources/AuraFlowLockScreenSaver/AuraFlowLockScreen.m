@@ -61,6 +61,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 @property(nonatomic, strong, nullable) AVPlayerLayer *playerLayer;
 @property(nonatomic, strong, nullable) AVPlayerLooper *playerLooper;
 @property(nonatomic, copy, nullable) NSString *configurationSignature;
+@property(nonatomic) CFTimeInterval configurationCheckedAt;
 @property(nonatomic, copy) NSString *scaleMode;
 @property(nonatomic) float playbackRate;
 @property(nonatomic) BOOL observingReadyForDisplay;
@@ -172,8 +173,11 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     [self syncRuntimePauseState];
     [self syncTerminalFrame];
     [self syncWebFrame];
-    if (hadLiveSource && !self.terminalModeActive && !self.webModeActive) {
-        // A route can expire after the initial video setup was skipped.
+    if (!self.terminalModeActive && !self.webModeActive &&
+        (hadLiveSource || CACurrentMediaTime() - self.configurationCheckedAt >= 1)) {
+        // A route can expire after the initial video setup was skipped. Keep
+        // checking while idle so a helper starting after login can take over,
+        // and a removed video or changed user wallpaper cannot leave a stale view.
         [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
         [self syncRuntimePauseState];
         if (!self.runtimePaused) [self.player playImmediatelyAtRate:self.playbackRate];
@@ -200,6 +204,15 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 - (void)setFrameSize:(NSSize)newSize {
     [super setFrameSize:newSize];
     [self layoutVideoLayers];
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (self.fallbackLayer != nil && !self.terminalModeActive && !self.webModeActive) {
+        // Construction has no window yet; resolve this display's wallpaper
+        // again once macOS attaches the saver to its secure surface.
+        [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
+    }
 }
 
 - (BOOL)hasConfigureSheet {
@@ -244,7 +257,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 }
 
 - (BOOL)terminalAgentIsAlive {
-    NSURL *auraRoot = [[[self terminalRuntimeURLForFile:@"unused"] URLByDeletingLastPathComponent] URLByDeletingLastPathComponent];
+    NSURL *auraRoot = [self applicationSupportURL];
     NSDictionary *config = [self JSONDictionaryAtURL:[auraRoot URLByAppendingPathComponent:@"config.json"]];
     if ([config[@"show_on_lock_screen"] isEqual:@NO]) return NO;
     NSDictionary *heartbeat = [self JSONDictionaryAtURL:
@@ -259,13 +272,22 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     // macOS can App Nap an idle/static TUI helper while the session is locked.
     // Its last frame is still valid as long as that helper process lives;
     // requiring a fresh timer tick made the Lock Screen turn blank after 6 s.
-    return kill(pid.intValue, 0) == 0 || errno == EPERM;
+    return [self terminalProcessIsAlive:pid.intValue];
+}
+
+- (BOOL)terminalProcessIsAlive:(pid_t)pid {
+    if (kill(pid, 0) != 0 && errno != EPERM) return NO;
+    // A persisted heartbeat survives reboot, and its PID may now belong to an
+    // unrelated process. Such a lease must never hide the user's wallpaper.
+    char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    return proc_pidpath(pid, path, sizeof(path)) > 0 &&
+        [[NSString stringWithUTF8String:path].lastPathComponent isEqualToString:@"AuraTerminalWallpaperAgent"];
 }
 
 // Web owns a separate route/lease. Never borrow terminal publications or the
 // ordinary video fallback configuration for an imported HTML wallpaper.
 - (void)syncWebFrame {
-    NSURL *auraRoot = [[[self terminalRuntimeURLForFile:@"unused"] URLByDeletingLastPathComponent] URLByDeletingLastPathComponent];
+    NSURL *auraRoot = [self applicationSupportURL];
     NSURL *root = [auraRoot URLByAppendingPathComponent:@"wallpaper-engine/runtime" isDirectory:YES];
     NSDictionary *status = [self JSONDictionaryAtURL:[root URLByAppendingPathComponent:@"status.json"]];
     NSString *route = [NSString stringWithContentsOfURL:[root URLByAppendingPathComponent:@"route-active"] encoding:NSUTF8StringEncoding error:nil];
@@ -408,6 +430,117 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     }
 }
 
+- (NSURL *)applicationSupportURL {
+    // All routes must use the account's real home, including when the saver
+    // host supplies a container HOME after login or automatic locking.
+    return [[[self terminalRuntimeURLForFile:@"unused"] URLByDeletingLastPathComponent] URLByDeletingLastPathComponent];
+}
+
+- (nullable NSURL *)currentDesktopImageURL {
+    NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
+    return screen == nil ? nil : [NSWorkspace.sharedWorkspace desktopImageURLForScreen:screen];
+}
+
+- (NSURL *)wallpaperStoreURL {
+    return [[[self applicationSupportURL] URLByDeletingLastPathComponent]
+        URLByAppendingPathComponent:@"com.apple.wallpaper/Store/Index.plist"];
+}
+
+- (nullable NSURL *)extensionResourcesURLForProvider:(NSString *)provider {
+    NSString *prefix = @"com.apple.wallpaper.choice.";
+    if (![provider hasPrefix:prefix]) return nil;
+    NSString *identifier = [@"com.apple.wallpaper.extension." stringByAppendingString:[provider substringFromIndex:prefix.length]];
+    static NSDictionary<NSString *, NSURL *> *resourceURLs;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableDictionary *found = [NSMutableDictionary dictionary];
+        NSURL *extensions = [NSURL fileURLWithPath:@"/System/Library/ExtensionKit/Extensions" isDirectory:YES];
+        NSArray<NSURL *> *urls = [[NSFileManager defaultManager] contentsOfDirectoryAtURL:extensions
+            includingPropertiesForKeys:nil options:NSDirectoryEnumerationSkipsHiddenFiles error:nil];
+        for (NSURL *url in urls) {
+            if (![url.pathExtension isEqualToString:@"appex"]) continue;
+            NSBundle *bundle = [NSBundle bundleWithURL:url];
+            if ([bundle.bundleIdentifier hasPrefix:@"com.apple.wallpaper.extension."] && bundle.resourceURL != nil) {
+                found[bundle.bundleIdentifier] = bundle.resourceURL;
+            }
+        }
+        resourceURLs = found.copy;
+    });
+    return resourceURLs[identifier];
+}
+
+- (nullable NSURL *)nativeDesktopWallpaperURL {
+    // NSWorkspace can report DefaultDesktop.heic for a selected procedural
+    // wallpaper (for example Sequoia). Its provider's thumbnail represents
+    // the actual user selection, without trying to run another native provider.
+    NSDictionary *store = [NSDictionary dictionaryWithContentsOfURL:[self wallpaperStoreURL]];
+    NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
+    NSNumber *number = screen.deviceDescription[@"NSScreenNumber"];
+    CFUUIDRef uuid = number == nil ? NULL : CGDisplayCreateUUIDFromDisplayID(number.unsignedIntValue);
+    NSString *displayKey = uuid == NULL ? @"" : CFBridgingRelease(CFUUIDCreateString(NULL, uuid));
+    if (uuid != NULL) CFRelease(uuid);
+    NSDictionary *displays = store[@"Displays"];
+    NSDictionary *route = [displays isKindOfClass:NSDictionary.class] ? displays[displayKey] : nil;
+    route = route ?: store[@"AllSpacesAndDisplays"] ?: store[@"SystemDefault"];
+    if (![route isKindOfClass:NSDictionary.class]) return nil;
+    NSDictionary *mode = route[@"Desktop"] ?: route[@"Linked"];
+    if (![mode isKindOfClass:NSDictionary.class]) return nil;
+    NSDictionary *content = mode[@"Content"];
+    if (![content isKindOfClass:NSDictionary.class]) return nil;
+    NSArray *choices = content[@"Choices"];
+    if (![choices isKindOfClass:NSArray.class]) return nil;
+    for (NSDictionary *choice in choices) {
+        if (![choice isKindOfClass:NSDictionary.class]) continue;
+        NSString *provider = choice[@"Provider"];
+        if (![provider isKindOfClass:NSString.class]) continue;
+        NSURL *resources = [self extensionResourcesURLForProvider:provider];
+        if (resources == nil) continue;
+        NSURL *thumbnail = [self existingURLForConfiguredValue:@"thumbnail.heic" relativeTo:resources];
+        if (thumbnail != nil) return thumbnail;
+    }
+    return nil;
+}
+
+- (nullable NSURL *)userWallpaperURL {
+    NSURL *root = [self applicationSupportURL];
+    NSMutableArray<NSURL *> *candidates = [NSMutableArray array];
+    NSURL *current = [self currentDesktopImageURL];
+    NSURL *native = current == nil || [current.lastPathComponent isEqualToString:@"DefaultDesktop.heic"] ||
+        [current.pathExtension isEqualToString:@"madesktop"] ? [self nativeDesktopWallpaperURL] : nil;
+    if (native != nil) [candidates addObject:native];
+    if (current != nil) [candidates addObject:current];
+    NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
+    NSNumber *number = screen.deviceDescription[@"NSScreenNumber"];
+    CGDirectDisplayID display = number.unsignedIntValue;
+    NSString *displayKey = number == nil ? @"" : [NSString stringWithFormat:@"display-%u-%u-%u",
+        CGDisplayVendorNumber(display), CGDisplayModelNumber(display), CGDisplaySerialNumber(display)];
+    for (NSString *name in @[@"lock_screen_desktop_backup.json", @"wallpaper_backup_original.json", @"wallpaper_backup.json"]) {
+        NSDictionary *backup = [self JSONDictionaryAtURL:[root URLByAppendingPathComponent:name]];
+        NSURL *matching = [self existingURLForConfiguredValue:backup[displayKey] relativeTo:root];
+        if (matching != nil) [candidates addObject:matching];
+        for (NSString *key in [backup.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+            NSURL *url = [self existingURLForConfiguredValue:backup[key] relativeTo:root];
+            if (url != nil) [candidates addObject:url];
+        }
+    }
+    [candidates addObject:[NSURL fileURLWithPath:@"/System/Library/CoreServices/DefaultDesktop.heic"]];
+    NSString *managedFrame = [root URLByAppendingPathComponent:@"last_frame.png"].URLByStandardizingPath.path;
+    NSString *terminalFrame = [self terminalRuntimeURLForFile:@"lock-screen-frame.png"].URLByStandardizingPath.path;
+    for (NSURL *url in candidates) {
+        if (!url.isFileURL || [url.URLByStandardizingPath.path isEqualToString:managedFrame] ||
+            [url.URLByStandardizingPath.path isEqualToString:terminalFrame]) continue;
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+        if (source == NULL) continue;
+        CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+        CFRelease(source);
+        if (image != NULL) {
+            CGImageRelease(image);
+            return url;
+        }
+    }
+    return nil;
+}
+
 - (NSDictionary<NSString *, NSString *> *)resolvedConfiguration {
     NSBundle *bundle = [NSBundle bundleForClass:self.class];
     NSURL *resourcesURL = bundle.resourceURL;
@@ -422,10 +555,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         [self existingURLForConfiguredValue:bundleConfig[@"fallback_frame_file"]
                                   relativeTo:resourcesURL];
 
-    NSURL *applicationSupportURL =
-        [NSURL fileURLWithPath:[NSHomeDirectory()
-            stringByAppendingPathComponent:@"Library/Application Support/AuraFlow"]
-                   isDirectory:YES];
+    NSURL *applicationSupportURL = [self applicationSupportURL];
     NSURL *runtimeConfigURL =
         [applicationSupportURL URLByAppendingPathComponent:@"config.json"];
     NSDictionary *runtimeConfig = [self JSONDictionaryAtURL:runtimeConfigURL];
@@ -484,9 +614,18 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 
     NSURL *runtimeFallbackURL =
         [applicationSupportURL URLByAppendingPathComponent:@"last_frame.png"];
-    if ([[NSFileManager defaultManager] isReadableFileAtPath:runtimeFallbackURL.path]) {
+    // A cached Aura frame is only a fallback for its configured media. After
+    // reboot with autostart disabled, an orphaned terminal/web saver must show
+    // the user's wallpaper instead of an old video frame or an empty black layer.
+    if (runtimeVideoURL != nil && [[NSFileManager defaultManager] isReadableFileAtPath:runtimeFallbackURL.path]) {
         fallbackURL = runtimeFallbackURL;
     }
+    if ([runtimeConfig[@"show_on_lock_screen"] isEqual:@NO]) {
+        videoURL = nil;
+        fallbackURL = nil;
+    }
+    if (fallbackURL == nil) fallbackURL = [self userWallpaperURL];
+    if (videoURL == nil) scaleMode = @"fill";
 
     return @{
         @"video_path" : videoURL.path ?: @"",
@@ -497,9 +636,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 }
 
 - (BOOL)runtimePauseMarkerExists {
-    NSString *applicationSupportPath =
-        [NSHomeDirectory() stringByAppendingPathComponent:
-            @"Library/Application Support/AuraFlow"];
+    NSString *applicationSupportPath = [self applicationSupportURL].path;
     NSString *pauseMarkerPath =
         [applicationSupportPath stringByAppendingPathComponent:
             @"wallpaper_daemon.paused"];
@@ -644,6 +781,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 
 - (void)applyResolvedConfiguration:(NSDictionary<NSString *, NSString *> *)configuration
                              force:(BOOL)force {
+    self.configurationCheckedAt = CACurrentMediaTime();
     float requestedPlaybackRate = [configuration[@"playback_rate"] floatValue];
     if (requestedPlaybackRate < 0.1 || requestedPlaybackRate > 4.0) {
         requestedPlaybackRate = 1.0;
@@ -727,15 +865,14 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 
 - (void)setFallbackImageAtPath:(NSString *)path {
     self.fallbackLayer.hidden = NO;
-    if (path.length == 0) {
-        return;
-    }
-
-    NSImage *image = [[NSImage alloc] initWithContentsOfFile:path];
+    NSImage *image = path.length == 0 ? nil : [[NSImage alloc] initWithContentsOfFile:path];
     CGImageRef CGImage = [image CGImageForProposedRect:NULL context:nil hints:nil];
-    if (CGImage != NULL) {
-        self.fallbackLayer.contents = (__bridge id)CGImage;
+    if (CGImage == NULL) {
+        NSURL *userWallpaper = [self userWallpaperURL];
+        image = userWallpaper == nil ? nil : [[NSImage alloc] initWithContentsOfURL:userWallpaper];
+        CGImage = [image CGImageForProposedRect:NULL context:nil hints:nil];
     }
+    self.fallbackLayer.contents = (__bridge id)CGImage;
 }
 
 - (void)applyScaleMode {

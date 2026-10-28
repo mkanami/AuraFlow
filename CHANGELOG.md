@@ -2,6 +2,7 @@
 
 ## 1.3.4
 
+- Show the user's wallpaper when a saved Lock Screen saver has no running Aura source after reboot, and resolve media settings and pause markers from the user's actual home directory.
 - Repair system fallback Lock Screen routes after lid/display changes without restarting WallpaperAgent, and preserve terminal publications while the display list is empty.
 - Replace outdated terminal helpers when the new app is opened, while deferring replacement during a locked or paused session.
 
