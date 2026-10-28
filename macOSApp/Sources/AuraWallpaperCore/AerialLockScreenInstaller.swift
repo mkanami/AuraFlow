@@ -2443,6 +2443,44 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         }
     }
 
+    /// A login/crash recovery must release the native route without deleting
+    /// its media or install journal: a delayed autostart can still rearm it.
+    @discardableResult
+    public func suspendInactiveSession(shouldProceed: () -> Bool) throws -> Bool {
+        try withMutationCoordinator {
+            try withCrossProcessLock {
+                guard shouldProceed(), let marker = loadMarker(), marker.completed == true else { return false }
+                let original = try Data(contentsOf: wallpaperStoreURL)
+                var userStore = original
+                if wallpaperStoreTransaction.wallpaperStoreHasManagedDesktop(original, managedAssetID: marker.assetID) {
+                    // Older shared installs and a lock promotion interrupted
+                    // by shutdown can own Desktop as well as Idle. Recover the
+                    // exact saved providers before releasing the native slot.
+                    userStore = try wallpaperStoreTransaction.captureLatestUserWallpaperStoreData(
+                        from: original,
+                        fallbackData: Data(contentsOf: wallpaperStoreBackupURL),
+                        managedAssetID: marker.assetID
+                    )
+                }
+                let plan = try wallpaperStoreTransaction.lockOnlyRemovalStorePlan(
+                    from: userStore, managedAssetID: marker.assetID, preserveUnmanagedIdle: true
+                )
+                // Serialization can change bytes even when no route changed.
+                let before = try PropertyListSerialization.propertyList(from: original, format: nil) as? NSDictionary
+                let after = try PropertyListSerialization.propertyList(from: plan.storeData, format: nil) as? NSDictionary
+                let storeChanged = before != after
+                guard storeChanged || systemWallpaperURLMatches(assetID: marker.assetID),
+                      shouldProceed(), (try? Data(contentsOf: wallpaperStoreURL)) == original else { return false }
+                if storeChanged { try plan.storeData.write(to: wallpaperStoreURL, options: .atomic) }
+                guard applyLockOnlySystemWallpaperURLUpdate(plan.systemWallpaperURLUpdate) else {
+                    throw AerialLockScreenInstallerError.wallpaperStoreUpdateFailed
+                }
+                try? fileManager.removeItem(at: lockSessionStoreBackupURL)
+                return true
+            }
+        }
+    }
+
     /// Restores the user's Desktop/Idle wallpaper route after a temporary
     /// shared Aerial promotion used for the secure Lock Screen.
     @discardableResult

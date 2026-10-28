@@ -123,6 +123,7 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
         guard let journal = try loadJournal() else { return }
         guard try restorePlan(from: readStore(), journal: journal, preferCurrentDesktop: preferCurrentDesktop) != nil else {
             try FileManager.default.removeItem(at: journalURL)
+            try? FileManager.default.removeItem(at: journalURL.appendingPathExtension("suspended"))
             return
         }
         try withStoppedWallpaperAgent {
@@ -133,6 +134,7 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
             }
         }
         try FileManager.default.removeItem(at: journalURL)
+        try? FileManager.default.removeItem(at: journalURL.appendingPathExtension("suspended"))
     }
 
     private func activationPlan(

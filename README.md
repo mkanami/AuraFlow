@@ -84,6 +84,11 @@ wallpaper, even when a different source is selected in the preview. Without an
 installed wallpaper, it updates the selected preview. The default is **Fill**;
 Lock Screen playback is enabled by default. Scale is unavailable for web projects.
 
+When launch at login is disabled or playback fails to start, AuraFlow restores
+the user's macOS wallpaper for the Desktop and Lock Screen. A separate recovery
+helper checks at login and periodically while signed in; it does not start
+wallpaper playback. Saved wallpaper choices remain available for the next Start.
+
 ## Wallpaper Catalog
 
 The catalog uses lightweight media for previews and downloads the original file

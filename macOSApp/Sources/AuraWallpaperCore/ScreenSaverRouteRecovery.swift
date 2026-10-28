@@ -10,6 +10,12 @@ public final class ScreenSaverRouteRecovery {
         let idle: Data?
     }
     private struct Journal: Decodable { let routes: [SavedRoute] }
+    private struct SuspendedRoute: Codable {
+        let path: String
+        let auraIdle: Data
+        let fallbackIdle: Data
+    }
+    private var suspensionURL: URL { journalURL.appendingPathExtension("suspended") }
     private let storeURL: URL
     private let journalURL: URL
     private let saverURL: URL
@@ -41,6 +47,32 @@ public final class ScreenSaverRouteRecovery {
 
     private func recoverLocked(shouldProceed: () -> Bool) throws -> Bool {
         guard shouldProceed(), FileManager.default.fileExists(atPath: journalURL.path) else { return false }
+        if FileManager.default.fileExists(atPath: suspensionURL.path) {
+            let original = try Data(contentsOf: storeURL)
+            let suspended = try JSONDecoder().decode([SuspendedRoute].self, from: Data(contentsOf: suspensionURL))
+            guard let root = try PropertyListSerialization.propertyList(from: original, format: nil) as? [String: Any] else { return false }
+            var changed = false
+            let resumed = mapRoutes(root) { path, route in
+                guard route["Linked"] == nil, let saved = suspended.first(where: { $0.path == path }),
+                      let fallback = try? PropertyListSerialization.propertyList(from: saved.fallbackIdle, format: nil),
+                      self.sameChoice(route["Idle"], fallback),
+                      let aura = try? PropertyListSerialization.propertyList(from: saved.auraIdle, format: nil)
+                else { return route }
+                var updated = route
+                updated["Idle"] = aura
+                changed = true
+                return updated
+            }
+            guard shouldProceed(), (try? Data(contentsOf: storeURL)) == original else { return false }
+            if changed {
+                try PropertyListSerialization.data(fromPropertyList: resumed, format: .binary, options: 0)
+                    .write(to: storeURL, options: .atomic)
+            }
+            try FileManager.default.removeItem(at: suspensionURL)
+            // A manual change made while Aura was inactive must not be treated
+            // as drift and undone by the ordinary repair path in this pass.
+            return changed
+        }
         let journalData = try Data(contentsOf: journalURL)
         let original = try Data(contentsOf: storeURL)
         guard let updated = try repairedStore(original, journalData: journalData) else { return false }
@@ -50,6 +82,47 @@ public final class ScreenSaverRouteRecovery {
               (try? Data(contentsOf: storeURL)) == original else { return false }
         try updated.write(to: storeURL, options: .atomic)
         return true
+    }
+
+    /// Restores each display/Space's actual Desktop provider while no Aura
+    /// runtime owns the saver. Retain the install journal so a delayed login
+    /// helper can resume its route without taking a new backup of our fallback.
+    @discardableResult
+    public func suspendIfNeeded(shouldProceed: () -> Bool) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: journalURL.path) else { return false }
+        return try withExclusiveAccess {
+            guard shouldProceed(), FileManager.default.fileExists(atPath: journalURL.path) else { return false }
+            let original = try Data(contentsOf: storeURL)
+            guard let root = try PropertyListSerialization.propertyList(from: original, format: nil) as? [String: Any] else { return false }
+            var fallbackDesktop: Any?
+            _ = mapRoutes(root) { _, route in
+                if fallbackDesktop == nil { fallbackDesktop = route["Desktop"] ?? route["Linked"] }
+                return route
+            }
+            var suspended = (try? Data(contentsOf: suspensionURL)).flatMap {
+                try? JSONDecoder().decode([SuspendedRoute].self, from: $0)
+            } ?? []
+            var changed = false
+            let updated = mapRoutes(root) { path, route in
+                guard route["Linked"] == nil, self.isAura(route["Idle"]),
+                      let idle = route["Idle"], let desktop = route["Desktop"] ?? fallbackDesktop,
+                      let auraData = try? PropertyListSerialization.data(fromPropertyList: idle, format: .binary, options: 0),
+                      let fallbackData = try? PropertyListSerialization.data(fromPropertyList: desktop, format: .binary, options: 0)
+                else { return route }
+                suspended.removeAll { $0.path == path }
+                suspended.append(SuspendedRoute(path: path, auraIdle: auraData, fallbackIdle: fallbackData))
+                changed = true
+                var result = route
+                result["Idle"] = desktop
+                return result
+            }
+            guard changed, shouldProceed(), (try? Data(contentsOf: storeURL)) == original else { return false }
+            try JSONEncoder().encode(suspended).write(to: suspensionURL, options: .atomic)
+            guard shouldProceed(), (try? Data(contentsOf: storeURL)) == original else { return false }
+            try PropertyListSerialization.data(fromPropertyList: updated, format: .binary, options: 0)
+                .write(to: storeURL, options: .atomic)
+            return true
+        }
     }
 
     public func repairedStore(_ data: Data, journalData: Data) throws -> Data? {

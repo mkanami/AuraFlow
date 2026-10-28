@@ -417,6 +417,67 @@ private struct AerialLockScreenFixture {
     }
 }
 
+@Test func nativeSessionRecoveryRestoresUserRoutesAndKeepsAutostartGeneration() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    let userRoot = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.storeURL), format: nil) as? [String: Any])
+    let userGlobal = try #require(userRoot["AllSpacesAndDisplays"] as? [String: Any])
+    try await fixture.installer.installForDesktopAgent(videoURL: fixture.videoURL)
+    let original = try Data(contentsOf: fixture.storeURL)
+    let asset = try Data(contentsOf: fixture.assetURL)
+    #expect(try fixture.installer.suspendInactiveSession(shouldProceed: { false }) == false)
+    #expect(try Data(contentsOf: fixture.storeURL) == original)
+    #expect(try fixture.installer.suspendInactiveSession(shouldProceed: { true }))
+    let root = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.storeURL), format: nil) as? [String: Any])
+    let global = try #require(root["AllSpacesAndDisplays"] as? [String: Any])
+    #expect((global["Idle"] as? NSDictionary) == (userGlobal["Idle"] as? NSDictionary))
+    #expect(try Data(contentsOf: fixture.assetURL) == asset)
+    #expect(fixture.installer.isInstalled)
+    #expect(!fixture.installer.installationConfirmed)
+    #expect(try fixture.installer.suspendInactiveSession(shouldProceed: { true }) == false)
+    _ = try await fixture.installer.rearmForNextLock(videoURL: fixture.videoURL)
+    #expect(fixture.installer.installationConfirmed)
+}
+
+@Test func nativeSessionRecoveryPreservesExplicitUserIdleChanges() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    var root = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.storeURL), format: nil) as? [String: Any])
+    var global = try #require(root["AllSpacesAndDisplays"] as? [String: Any])
+    let userIdle = AerialLockScreenFixture.makeMode(provider: "user-selected-provider", configuration: [:])
+    global["Idle"] = userIdle; root["AllSpacesAndDisplays"] = global
+    try PropertyListSerialization.data(fromPropertyList: root, format: .binary, options: 0).write(to: fixture.storeURL)
+    _ = try fixture.installer.suspendInactiveSession(shouldProceed: { true })
+    let updated = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.storeURL), format: nil) as? [String: Any])
+    let updatedGlobal = try #require(updated["AllSpacesAndDisplays"] as? [String: Any])
+    #expect((updatedGlobal["Idle"] as? NSDictionary) == userIdle as NSDictionary)
+}
+
+@Test func sessionRecoveryHandlesOlderSharedNativeInstallsAndInterruptedLockPromotion() async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    let original = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.storeURL), format: nil) as? [String: Any])
+    let originalGlobal = try #require(original["AllSpacesAndDisplays"] as? [String: Any])
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+    #expect(try fixture.installer.suspendInactiveSession(shouldProceed: { true }))
+    let restored = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.storeURL), format: nil) as? [String: Any])
+    let global = try #require(restored["AllSpacesAndDisplays"] as? [String: Any])
+    let restoredDesktop = try #require(global["Desktop"] as? [String: Any])
+    let originalDesktop = try #require(originalGlobal["Desktop"] as? [String: Any])
+    let restoredContent = try #require(restoredDesktop["Content"] as? [String: Any])
+    let originalContent = try #require(originalDesktop["Content"] as? [String: Any])
+    let restoredChoice = try #require((restoredContent["Choices"] as? [[String: Any]])?.first)
+    let originalChoice = try #require((originalContent["Choices"] as? [[String: Any]])?.first)
+    #expect(restoredChoice["Provider"] as? String == originalChoice["Provider"] as? String)
+    #expect(restoredChoice["Configuration"] as? Data == originalChoice["Configuration"] as? Data)
+    // Recovery normalizes the original image's missing Files descriptor so
+    // WallpaperAgent can still load it after a restart.
+    #expect((restoredChoice["Files"] as? [[String: String]])?.first?["relative"] == "file:///original.jpg")
+    #expect(fixture.installer.isInstalled)
+    #expect(!fixture.installer.installationConfirmed)
+}
+
 private enum AerialTestMediaError: Error {
     case writerCouldNotAddInput
     case writerCouldNotStart

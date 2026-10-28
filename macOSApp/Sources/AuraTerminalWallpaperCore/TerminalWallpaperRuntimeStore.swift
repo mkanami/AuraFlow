@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum TerminalWallpaperRuntimeNotifications {
@@ -56,6 +57,10 @@ public struct TerminalLockScreenHeartbeat: Codable, Equatable, Sendable {
 }
 
 public final class TerminalWallpaperRuntimeStore: Sendable {
+    private struct ProcessIdentity: Codable {
+        let pid: Int32
+        let startTimeMicros: UInt64
+    }
     public let appSupportURL: URL
     private let launchAgentURL: URL
 
@@ -78,6 +83,7 @@ public final class TerminalWallpaperRuntimeStore: Sendable {
     public var healthURL: URL { appSupportURL.appendingPathComponent("health.json") }
     public var pauseURL: URL { appSupportURL.appendingPathComponent("paused") }
     public var pidURL: URL { appSupportURL.appendingPathComponent("agent.pid") }
+    private var identityURL: URL { appSupportURL.appendingPathComponent("agent-identity.json") }
     public var lockScreenFrameURL: URL { appSupportURL.appendingPathComponent("lock-screen-frame.png") }
     public var lockScreenHeartbeatURL: URL { appSupportURL.appendingPathComponent("lock-screen-heartbeat.json") }
     public var sharedFrameDescriptorURL: URL { appSupportURL.appendingPathComponent("shared-frame.json") }
@@ -185,16 +191,40 @@ public final class TerminalWallpaperRuntimeStore: Sendable {
 
     public func savePID(_ pid: Int32 = getpid()) throws {
         try ensureDirectories()
+        guard let start = Self.processStartTime(pid) else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        try JSONEncoder().encode(ProcessIdentity(pid: pid, startTimeMicros: start))
+            .write(to: identityURL, options: .atomic)
         try "\(pid)\n".write(to: pidURL, atomically: true, encoding: .utf8)
     }
 
     public func removePID() {
         try? FileManager.default.removeItem(at: pidURL)
+        try? FileManager.default.removeItem(at: identityURL)
     }
 
     public func processIsAlive(pid: Int?) -> Bool {
         guard let pid, pid > 0 else { return false }
-        return kill(pid_t(pid), 0) == 0
+        guard kill(pid_t(pid), 0) == 0 || errno == EPERM else { return false }
+        if let data = try? Data(contentsOf: identityURL) {
+            guard let identity = try? JSONDecoder().decode(ProcessIdentity.self, from: data),
+                  identity.pid == pid,
+                  let actual = Self.processStartTime(pid_t(pid)) else { return false }
+            return identity.startTimeMicros == actual
+        }
+        // Compatibility with older helpers: existence alone is not ownership.
+        // A reboot can reuse the persisted PID for an unrelated application.
+        var path = [CChar](repeating: 0, count: 4096)
+        return proc_pidpath(pid_t(pid), &path, UInt32(path.count)) > 0 &&
+            URL(fileURLWithPath: String(cString: path)).lastPathComponent == "AuraTerminalWallpaperAgent"
+    }
+
+    private static func processStartTime(_ pid: pid_t) -> UInt64? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
     }
 
     public var isPlaybackPaused: Bool { FileManager.default.fileExists(atPath: pauseURL.path) }

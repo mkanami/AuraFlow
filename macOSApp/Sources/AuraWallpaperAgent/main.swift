@@ -2779,9 +2779,18 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-MainActor.assumeIsolated {
-    let app = NSApplication.shared
-    let delegate = WallpaperAgentDelegate()
-    app.delegate = delegate
-    app.run()
+if CommandLine.arguments.contains("--recover-wallpaper-session") {
+    do {
+        _ = try WallpaperSessionRecovery().reconcile()
+    } catch {
+        fputs("AuraFlow session recovery deferred: \(error.localizedDescription)\n", stderr)
+        exit(1)
+    }
+} else {
+    MainActor.assumeIsolated {
+        let app = NSApplication.shared
+        let delegate = WallpaperAgentDelegate()
+        app.delegate = delegate
+        app.run()
+    }
 }

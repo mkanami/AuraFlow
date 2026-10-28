@@ -512,6 +512,14 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         if helperResolution.didUpdateInstalledCopy {
             try restartRunningAgentAfterHelperUpdate()
         }
+        if helperURL == nil,
+           store.appSupportURL.standardizedFileURL == WallpaperRuntimeStore.defaultAppSupportURL().standardizedFileURL {
+            do {
+                try WallpaperSessionRecoveryRegistration.install(helperURL: helperResolution.url)
+            } catch {
+                lockScreenLifecycleLogger.error("Could not register wallpaper session recovery: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         recoverInterruptedWallpaperRemovalIfNeeded()
     }
 

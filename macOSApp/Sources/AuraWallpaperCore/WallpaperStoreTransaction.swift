@@ -296,7 +296,8 @@ internal final class WallpaperStoreTransaction {
 
     func lockOnlyRemovalStorePlan(
         from currentStoreData: Data,
-        managedAssetID: String
+        managedAssetID: String,
+        preserveUnmanagedIdle: Bool = false
     ) throws -> LockOnlyRemovalStorePlan {
         guard let root = try propertyListDictionary(from: currentStoreData)
         else {
@@ -380,6 +381,10 @@ internal final class WallpaperStoreTransaction {
                 }
                 updated["Type"] = "linked"
             default:
+                if preserveUnmanagedIdle {
+                    guard let idle = container["Idle"] as? [String: Any],
+                          modeIsManaged(idle, assetID: managedAssetID) else { return container }
+                }
                 // Desktop is the source of truth. Do not normalize, replace,
                 // or timestamp it; copy it only into the ordinary Idle route.
                 updated["Idle"] = route.mode
