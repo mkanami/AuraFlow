@@ -226,5 +226,5 @@ private final class LoginVideo: WallpaperControlling, @unchecked Sendable {
     #expect(args.contains(store.configURL.path))
     _ = try manager.setEnabled(false)
     #expect(!store.launchAgentPlistExists() && store.loadConfig().autostart == false)
-    #expect(commands.contains { $0.first == "bootstrap" })
+    #expect(commands.allSatisfy { $0.first == "print" })
 }

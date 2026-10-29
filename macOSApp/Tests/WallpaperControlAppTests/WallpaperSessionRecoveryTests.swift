@@ -46,14 +46,32 @@ private final class SessionRecoveryFixture {
         try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: index), format: nil) as? [String: Any])
     }
 
-    func recovery() -> WallpaperSessionRecovery {
+    func recovery(sessionIdentifier: String? = LockScreenSession.currentIdentifier()) -> WallpaperSessionRecovery {
         WallpaperSessionRecovery(store: store, wallpaperStoreURL: index,
             runtimeIsLive: { self.live }, sessionIsLocked: { self.locked },
             wait: { _ in self.waits += 1; self.onWait?() },
             requestAutostart: { self.startRequests += 1; self.onStart?() },
             suspendNative: { proceed in self.nativeCalls += 1; #expect(proceed()); return false },
-            refresh: { commit in self.refreshes += 1; try commit() })
+            refresh: { commit in self.refreshes += 1; try commit() },
+            sessionIdentifier: { sessionIdentifier })
     }
+}
+
+@Test func loginCheckboxOnlyAffectsRecoveryInTheNextSession() throws {
+    let f = try SessionRecoveryFixture()
+    let desktop = f.mode("user-provider")
+    try f.save(["SystemDefault": ["Desktop": desktop, "Idle": desktop]])
+    let source = f.root.appendingPathComponent("source.mp4")
+    try Data("video".utf8).write(to: source)
+    try f.store.saveConfig(.init(video_path: source.path, playback_speed: 1, autostart: true,
+        autostart_deferred_session_id: "boot-A:session-A"))
+    #expect(try f.recovery(sessionIdentifier: "boot-A:session-A").reconcile() == .notNeeded)
+    #expect(f.startRequests == 0)
+    #expect(f.waits == 0)
+    f.onStart = { [weak f] in f?.live = true }
+    #expect(try f.recovery(sessionIdentifier: "boot-B:session-A").reconcile() == .runtimeActive)
+    #expect(f.startRequests == 1)
+    #expect(f.refreshes == 0)
 }
 
 @Test(arguments: ["terminal-wallpaper", "wallpaper-engine/runtime"])

@@ -13,6 +13,13 @@ internal final class AerialProviderController {
     internal static func refreshWallpaperProcesses(
         shouldProceed: () -> Bool
     ) throws {
+        try refreshWallpaperProcesses(shouldProceed: shouldProceed, run: runProcess)
+    }
+
+    internal static func refreshWallpaperProcesses(
+        shouldProceed: () -> Bool,
+        run: (String, [String]) -> Void
+    ) throws {
         for (executable, arguments) in [
             (
                 "/usr/bin/pkill",
@@ -23,22 +30,11 @@ internal final class AerialProviderController {
                 "/usr/bin/killall",
                 [WallpaperPlatformConstants.wallpaperAgentProcessName]
             ),
-            ("/usr/bin/killall", [WallpaperPlatformConstants.dockProcessName]),
         ] {
             guard shouldProceed() else {
                 throw AerialLockScreenOperationAbort.sessionChanged
             }
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: executable)
-            process.arguments = arguments
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
-            do {
-                try process.run()
-                process.waitUntilExit()
-            } catch {
-                continue
-            }
+            run(executable, arguments)
         }
     }
 

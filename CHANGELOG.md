@@ -2,6 +2,8 @@
 
 ## 1.3.4
 
+- Keep Dock running during wallpaper recovery, prevent isolated runtime stores from changing the user's Desktop, and require a dedicated session for the full interactive test suite.
+- Make Launch at Login affect only future logins: retain current playback when toggled, keep manual Start available while disabled, and prevent same-session recovery/GUI reopening from applying the new future preference immediately.
 - Wait for the native Locked presentation to commit before starting its screen saver; cover all four session regressions with decoded-video tests and an isolated regression-proof runner.
 - Prevent stale shield notifications and delayed native presentation recovery from starting the screen saver on an unlocked Mac and repeatedly locking the session.
 - Preserve the Desktop player while the Mac is locked and send native presentation requests only after the lock is confirmed.

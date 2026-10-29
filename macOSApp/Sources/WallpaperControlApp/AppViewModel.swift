@@ -4598,14 +4598,8 @@ final class AppViewModel: ObservableObject {
         if status.autostart_plist_exists == false {
             return "Launch at Login is enabled, but its LaunchAgent plist is missing."
         }
-        if status.autostart_service_loaded == false {
-            return "Launch at Login is enabled, but the AuraFlow LaunchAgent is not loaded."
-        }
-        if status.autostart_service_running == false,
-           !status.running, status.pid == nil,
-           !(status.lock_screen_only == true && status.health?.available == true) {
-            return "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
-        }
+        // A saved future-login registration need not be loaded or running in
+        // this session. Playback health is separate from this preference.
         return nil
     }
 
@@ -5678,6 +5672,7 @@ final class AppViewModel: ObservableObject {
 
         let autostart = status.config.autostart ?? status.autostart ?? false
         guard autostart else { return }
+        guard !status.config.isAutostartDeferred(in: LockScreenSession.currentIdentifier()) else { return }
         guard !status.running else { return }
         // launchd can have started the helper before it publishes its PID.
         // Let that startup finish instead of reloading its decoder through

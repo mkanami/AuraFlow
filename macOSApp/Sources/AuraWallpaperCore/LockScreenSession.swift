@@ -1,8 +1,24 @@
 import CoreGraphics
 import Foundation
+import Darwin
 
 /// An unavailable WindowServer session is unknown, never an unlock signal.
 public enum LockScreenSession {
+    private static let bootIdentifier: String? = {
+        var size = 0
+        guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("kern.bootsessionuuid", &buffer, &size, nil, 0) == 0 else { return nil }
+        return String(cString: buffer)
+    }()
+
+    public static func currentIdentifier() -> String? {
+        let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+        guard let bootIdentifier,
+              let auditID = session?["kCGSSessionAuditIDKey"] as? NSNumber else { return nil }
+        return bootIdentifier + ":" + auditID.stringValue
+    }
+
     public static func currentIsLocked() -> Bool? {
         isLocked(in: CGSessionCopyCurrentDictionary() as? [String: Any])
     }

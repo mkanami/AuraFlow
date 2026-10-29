@@ -1575,6 +1575,31 @@ func runtimeNativeBridgeCancellationKeepsSecureRoute(reason: String) throws {
     #expect(plist.contains(fixture.store.configURL.path))
 }
 
+@Test func nativeStartAndReapplyWorkWithLoginDisabledAndCheckboxPreservesLivePID() async throws {
+    let fixture = try NativeRuntimeFixture("login-independent-playback")
+    defer { fixture.cleanup() }
+    try fixture.store.saveConfig(.init(video_path: fixture.videoURL.path, playback_speed: 1,
+        autostart: false, show_on_lock_screen: false))
+    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: RecordingLockScreenSaverInstaller())
+    let started = try await controller.start(videoURL: fixture.videoURL, speed: 1)
+    #expect(started.running)
+    #expect(started.config.autostart == false)
+    #expect(!fixture.store.launchAgentPlistExists())
+    let pid = try #require(started.pid)
+    let enabled = try controller.setAutostart(true)
+    #expect(enabled.running)
+    #expect(enabled.pid == pid)
+    let disabled = try controller.setAutostart(false)
+    #expect(disabled.running)
+    #expect(disabled.pid == pid)
+    #expect(!fixture.store.launchAgentPlistExists())
+    let reapplied = try await controller.start(videoURL: fixture.videoURL, speed: 1)
+    #expect(reapplied.running)
+    #expect(reapplied.config.autostart == false)
+    #expect(!fixture.store.launchAgentPlistExists())
+}
+
 @Test func unchangedLaunchAgentDoesNotRestartLoadedService() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("AuraFlowLaunchAgentNoOp-\(UUID().uuidString)")

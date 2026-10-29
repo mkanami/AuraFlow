@@ -12,6 +12,7 @@ public final class WallpaperSessionRecovery {
     private let sessionIsLocked: () -> Bool?
     private let wait: (TimeInterval) -> Void
     private let requestAutostart: () -> Void
+    private let sessionIdentifier: () -> String?
     private let suspendNative: (() -> Bool) throws -> Bool
     private let refresh: (() throws -> Void) throws -> Void
 
@@ -23,7 +24,8 @@ public final class WallpaperSessionRecovery {
         wait: @escaping (TimeInterval) -> Void = Thread.sleep,
         requestAutostart: (() -> Void)? = nil,
         suspendNative: ((() -> Bool) throws -> Bool)? = nil,
-        refresh: ((() throws -> Void) throws -> Void)? = nil
+        refresh: ((() throws -> Void) throws -> Void)? = nil,
+        sessionIdentifier: @escaping () -> String? = { LockScreenSession.currentIdentifier() }
     ) {
         self.store = store
         self.wallpaperStoreURL = wallpaperStoreURL
@@ -31,6 +33,7 @@ public final class WallpaperSessionRecovery {
         self.runtimeIsLive = live
         self.sessionIsLocked = sessionIsLocked
         self.wait = wait
+        self.sessionIdentifier = sessionIdentifier
         self.requestAutostart = requestAutostart ?? {
             let runtime = store.appSupportURL.appendingPathComponent("Runtime")
             let helper = runtime.appendingPathComponent("AuraWallpaperAgent")
@@ -64,6 +67,7 @@ public final class WallpaperSessionRecovery {
     public func reconcile(autostartGracePeriod: TimeInterval = 10, installationGracePeriod: TimeInterval = 5) throws -> Result {
         let config = store.loadConfig()
         let hasMediaAutostart = config.autostart == true
+            && !config.isAutostartDeferred(in: sessionIdentifier())
             && store.effectiveLockScreenSourceURL(for: config).map { FileManager.default.fileExists(atPath: $0.path) } == true
         guard hasManagedInstallation || hasMediaAutostart else { return .notNeeded }
         guard !runtimeIsLive() else { return .runtimeActive }
@@ -117,7 +121,8 @@ public final class WallpaperSessionRecovery {
     }
 
     private var autostartRequested: Bool {
-        if store.loadConfig().autostart == true { return true }
+        let config = store.loadConfig()
+        if config.autostart == true, !config.isAutostartDeferred(in: sessionIdentifier()) { return true }
         let url = store.appSupportURL.appendingPathComponent("terminal-wallpaper/config.json")
         guard let data = try? Data(contentsOf: url),
               let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

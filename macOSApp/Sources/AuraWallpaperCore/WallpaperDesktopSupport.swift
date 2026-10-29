@@ -690,7 +690,7 @@ public enum WallpaperDesktopSupport {
         // On recent macOS versions WallpaperAgent may report the restored URL
         // while Dock still presents the cached AuraFlow fallback in the active
         // Space. Briefly select an equivalent URL and switch back using only
-        // NSWorkspace, then restart Dock's desktop presenter.
+        // NSWorkspace. Dock owns the user's panel and must stay running.
         forceRefreshCurrentScreens(
             wallpapers: wallpapers,
             fallbackPath: path,
@@ -705,7 +705,6 @@ public enum WallpaperDesktopSupport {
         guard repairWallpaperStoreForRestore(imagePath: path) else {
             return .failed
         }
-        refreshDesktopPresentation()
         Thread.sleep(forTimeInterval: 0.2)
         guard currentScreensMatch(path: path),
               wallpaperStoreHasNoManagedDesktopReferences(),
@@ -762,7 +761,6 @@ public enum WallpaperDesktopSupport {
         ) else {
             return false
         }
-        refreshDesktopPresentation()
         Thread.sleep(forTimeInterval: 0.2)
         return wallpaperStoreImageDescriptorsAreValid()
             && wallpaperStoreHasNoManagedDesktopReferences()
@@ -1494,20 +1492,6 @@ public enum WallpaperDesktopSupport {
             } catch {
                 continue
             }
-        }
-    }
-
-    private static func refreshDesktopPresentation() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-        process.arguments = ["Dock"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return
         }
     }
 

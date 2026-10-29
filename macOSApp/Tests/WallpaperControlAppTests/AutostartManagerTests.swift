@@ -6,6 +6,54 @@ private enum AutostartTestFailure: Error {
     case unexpectedError(Error)
 }
 
+@Test func checkboxRegistrationIsDeferredUntilNextLogin() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("LoginDeferred-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    var calls: [[String]] = []
+    let store = WallpaperRuntimeStore(appSupportURL: root, launchAgentURL: root.appendingPathComponent("login.plist"),
+        launchctlRunner: { arguments in
+            calls.append(arguments)
+            return LaunchctlResult(succeeded: arguments.first != "print", output: "not loaded")
+        })
+    try store.ensureDirectories()
+    let source = root.appendingPathComponent("source.mp4")
+    try Data("video".utf8).write(to: source)
+    try store.saveConfig(.init(video_path: source.path, playback_speed: 1))
+    let helper = root.appendingPathComponent("helper")
+    let manager = AutostartManager(store: store, helperURL: helper, sessionIdentifier: { "boot-A:login-A" })
+    _ = try manager.setEnabled(true)
+    calls.removeAll()
+    try manager.migrateExistingLaunchAgentIfNeeded()
+    #expect(calls.isEmpty)
+    #expect(store.loadConfig().isAutostartDeferred(in: "boot-A:login-A"))
+    #expect(store.loadConfig().isAutostartDeferred(in: nil))
+    #expect(!store.loadConfig().isAutostartDeferred(in: "boot-A:login-B"))
+    #expect(!store.loadConfig().isAutostartDeferred(in: "boot-B:login-A"))
+    try AutostartManager(store: store, helperURL: helper, sessionIdentifier: { "boot-B:login-A" })
+        .migrateExistingLaunchAgentIfNeeded()
+    #expect(calls.contains { $0.first == "bootstrap" })
+}
+
+@Test func enablingLoginRegistrationDoesNotStartStoppedWallpaper() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("AutostartFutureOnly-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    var calls: [[String]] = []
+    let store = WallpaperRuntimeStore(appSupportURL: root, launchAgentURL: root.appendingPathComponent("login.plist"),
+        launchctlRunner: { arguments in
+            calls.append(arguments)
+            return LaunchctlResult(succeeded: arguments.first != "print", output: "not loaded")
+        })
+    try store.ensureDirectories()
+    let source = root.appendingPathComponent("video.mp4")
+    try Data("video".utf8).write(to: source)
+    try store.saveConfig(.init(video_path: source.path, playback_speed: 1, autostart: false))
+    _ = try AutostartManager(store: store, helperURL: root.appendingPathComponent("helper")).setEnabled(true)
+    #expect(store.launchAgentPlistExists())
+    #expect(store.loadConfig().autostart == true)
+    #expect(store.loadPID() == nil)
+    #expect(calls.allSatisfy { $0.first == "print" })
+}
+
 @Test func loginPreferenceSurvivesWaitingAndMissingLaunchServices() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("AutostartIntent-\(UUID())")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -92,22 +140,11 @@ private func makeConfigDirectoryUnavailable(_ appSupportURL: URL) {
 
     let appSupportURL = root.appendingPathComponent("Support", isDirectory: true)
     let launchAgentURL = root.appendingPathComponent("LaunchAgents/agent.plist")
-    var bootstrapFailed = false
+    var registrationFailed = false
     let store = WallpaperRuntimeStore(
         appSupportURL: appSupportURL,
         launchAgentURL: launchAgentURL,
-        launchctlRunner: { arguments in
-            if arguments.first == "bootstrap" {
-                bootstrapFailed = true
-                makeConfigDirectoryUnavailable(appSupportURL)
-                return LaunchctlResult(
-                    succeeded: false,
-                    output: "bootstrap denied",
-                    terminationStatus: 1
-                )
-            }
-            return LaunchctlResult(succeeded: true)
-        }
+        launchctlRunner: { _ in LaunchctlResult(succeeded: true) }
     )
     try store.ensureDirectories()
     let videoURL = root.appendingPathComponent("wallpaper.mp4")
@@ -122,7 +159,12 @@ private func makeConfigDirectoryUnavailable(_ appSupportURL: URL) {
 
     let manager = AutostartManager(
         store: store,
-        helperURL: root.appendingPathComponent("AuraWallpaperAgent")
+        helperURL: root.appendingPathComponent("AuraWallpaperAgent"),
+        registrationUpdater: { _ in
+            registrationFailed = true
+            makeConfigDirectoryUnavailable(appSupportURL)
+            throw WallpaperRuntimeError.unavailable("registration denied")
+        }
     )
 
     do {
@@ -137,12 +179,12 @@ private func makeConfigDirectoryUnavailable(_ appSupportURL: URL) {
             Issue.record("Expected a configuration rollback failure")
             return
         }
-        #expect(bootstrapFailed)
+        #expect(registrationFailed)
         #expect(operation == .enable)
-        #expect(primaryError.localizedDescription.contains("bootstrap denied"))
+        #expect(primaryError.localizedDescription.contains("registration denied"))
         #expect(!rollbackError.localizedDescription.isEmpty)
         #expect(error.localizedDescription.contains("rollback failed"))
-        #expect(error.localizedDescription.contains("bootstrap denied"))
+        #expect(error.localizedDescription.contains("registration denied"))
     } catch {
         throw AutostartTestFailure.unexpectedError(error)
     }
@@ -155,22 +197,11 @@ private func makeConfigDirectoryUnavailable(_ appSupportURL: URL) {
 
     let appSupportURL = root.appendingPathComponent("Support", isDirectory: true)
     let launchAgentURL = root.appendingPathComponent("LaunchAgents/agent.plist")
-    var bootoutFailed = false
+    var registrationFailed = false
     let store = WallpaperRuntimeStore(
         appSupportURL: appSupportURL,
         launchAgentURL: launchAgentURL,
-        launchctlRunner: { arguments in
-            if arguments.first == "bootout" {
-                bootoutFailed = true
-                makeConfigDirectoryUnavailable(appSupportURL)
-                return LaunchctlResult(
-                    succeeded: false,
-                    output: "bootout denied",
-                    terminationStatus: 1
-                )
-            }
-            return LaunchctlResult(succeeded: true)
-        }
+        launchctlRunner: { _ in LaunchctlResult(succeeded: true) }
     )
     try store.ensureDirectories()
     let videoURL = root.appendingPathComponent("wallpaper.mp4")
@@ -185,7 +216,12 @@ private func makeConfigDirectoryUnavailable(_ appSupportURL: URL) {
 
     let manager = AutostartManager(
         store: store,
-        helperURL: root.appendingPathComponent("AuraWallpaperAgent")
+        helperURL: root.appendingPathComponent("AuraWallpaperAgent"),
+        registrationUpdater: { _ in
+            registrationFailed = true
+            makeConfigDirectoryUnavailable(appSupportURL)
+            throw WallpaperRuntimeError.unavailable("registration denied")
+        }
     )
 
     do {
@@ -200,12 +236,12 @@ private func makeConfigDirectoryUnavailable(_ appSupportURL: URL) {
             Issue.record("Expected a configuration rollback failure")
             return
         }
-        #expect(bootoutFailed)
+        #expect(registrationFailed)
         #expect(operation == .disable)
-        #expect(primaryError.localizedDescription.contains("bootout denied"))
+        #expect(primaryError.localizedDescription.contains("registration denied"))
         #expect(!rollbackError.localizedDescription.isEmpty)
         #expect(error.localizedDescription.contains("rollback failed"))
-        #expect(error.localizedDescription.contains("bootout denied"))
+        #expect(error.localizedDescription.contains("registration denied"))
     } catch {
         throw AutostartTestFailure.unexpectedError(error)
     }

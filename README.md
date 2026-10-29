@@ -205,14 +205,20 @@ Requirements:
 Run the test suite:
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+AURAFLOW_DEDICATED_TEST_SESSION=1 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   ./scripts/test_macos_app.sh
 ```
 
+Run the full AppKit suite in CI or a dedicated macOS login session: it opens
+real windows. On an active desktop, use focused noninteractive tests instead.
+
 The [wallpaper session regression tests](docs/wallpaper-session-regressions.md)
 cover unwanted locks, animation after login and unlock, and native Lock Screen
-readiness. `python3 scripts/verify_session_regressions.py` verifies that each
-test rejects its corresponding bug in an isolated temporary package.
+readiness. In a dedicated test session, run
+`AURAFLOW_DEDICATED_TEST_SESSION=1 python3 scripts/verify_session_regressions.py`
+to verify that each test rejects its corresponding bug in a temporary package.
+`python3 scripts/verify_session_regressions.py --core-only` checks Dock safety
+without opening windows or running real system actions.
 
 Real WebKit integration tests require an unlocked interactive macOS session.
 They validate Canvas/WebGL snapshots and property/network behavior without

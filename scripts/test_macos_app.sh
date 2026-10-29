@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The full suite opens AppKit windows and changes the test host's activation
+# policy. Never start it implicitly on someone's active desktop.
+if [[ "${CI:-}" != "true" && "${CI:-}" != "1" && "${AURAFLOW_DEDICATED_TEST_SESSION:-0}" != "1" ]]; then
+  echo "Run the full macOS suite in CI or a dedicated macOS test session (AURAFLOW_DEDICATED_TEST_SESSION=1). Use a focused noninteractive test filter on an active desktop." >&2
+  exit 2
+fi
+
 TASK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TASK_SWIFT="$(xcrun --find swift)"
 TASK_SDK="$(xcrun --sdk macosx --show-sdk-path)"

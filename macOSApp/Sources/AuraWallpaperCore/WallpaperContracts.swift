@@ -6,6 +6,7 @@ public struct ControlConfig: Codable, Equatable, Sendable {
     public var playback_speed: Double
     public var volume: Double?
     public var autostart: Bool?
+    public var autostart_deferred_session_id: String?
     public var blend_interpolation: Bool?
     public var pause_on_fullscreen: Bool?
     public var show_on_lock_screen: Bool?
@@ -19,16 +20,25 @@ public struct ControlConfig: Codable, Equatable, Sendable {
         blend_interpolation: Bool? = false,
         pause_on_fullscreen: Bool? = true,
         show_on_lock_screen: Bool? = true,
-        scale_mode: String? = WallpaperScaleMode.fill.rawValue
+        scale_mode: String? = WallpaperScaleMode.fill.rawValue,
+        autostart_deferred_session_id: String? = nil
     ) {
         self.video_path = video_path
         self.playback_speed = playback_speed
         self.volume = volume
         self.autostart = autostart
+        self.autostart_deferred_session_id = autostart_deferred_session_id
         self.blend_interpolation = blend_interpolation
         self.pause_on_fullscreen = pause_on_fullscreen
         self.show_on_lock_screen = show_on_lock_screen
         self.scale_mode = scale_mode
+    }
+
+    /// A checkbox edit applies at the next login, not a later recovery tick
+    /// or GUI reopen in this same session. Unknown identity must not start it.
+    public func isAutostartDeferred(in sessionIdentifier: String?) -> Bool {
+        guard let deferred = autostart_deferred_session_id else { return false }
+        return sessionIdentifier == nil || deferred == sessionIdentifier
     }
 
     public static let defaultConfig = ControlConfig(

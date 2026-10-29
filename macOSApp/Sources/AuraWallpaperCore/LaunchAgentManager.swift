@@ -79,6 +79,21 @@ public final class LaunchAgentManager {
         launchAgentStatus().enabled
     }
 
+    /// launchd reads this registration at the next login. Do not load,
+    /// unload, or replace the process serving this session's wallpaper.
+    public func registerLaunchAtLogin(helperPath: String, nativeBridgePath: String? = nil) throws {
+        try store.ensureDirectories()
+        let arguments = launchAgentProgramArguments(helperPath: helperPath,
+            configPath: store.configURL.path, nativeBridgePath: nativeBridgePath)
+        let data = try launchAgentPlistData(programArguments: arguments)
+        try launchAgentFileWriter(data, launchAgentURL)
+    }
+
+    public func removeLaunchAtLogin() throws {
+        do { try launchAgentFileRemover(launchAgentURL) }
+        catch CocoaError.fileNoSuchFile { return }
+    }
+
     public func enableLaunchAgent(
         helperPath: String,
         nativeBridgePath: String? = nil,

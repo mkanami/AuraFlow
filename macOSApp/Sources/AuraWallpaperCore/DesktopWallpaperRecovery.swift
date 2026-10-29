@@ -8,39 +8,51 @@ import Foundation
 public final class DesktopWallpaperRecovery {
     private let appSupportURL: URL
     private let stillFrameService: StillFrameService
+    private let applyDesktop: (String) -> Bool
+    private let restoreDesktop: (String) -> WallpaperRestoreStatus
+    private let repairDesktop: () -> Bool
+    private var ownsSystemDesktop: Bool {
+        appSupportURL == WallpaperRuntimeStore.defaultAppSupportURL().standardizedFileURL
+    }
 
     public init(
         appSupportURL: URL,
-        stillFrameService: StillFrameService? = nil
+        stillFrameService: StillFrameService? = nil,
+        applyDesktop: @escaping (String) -> Bool = { WallpaperDesktopPlatform.applyToAllDesktops(imagePath: $0) },
+        restoreDesktop: @escaping (String) -> WallpaperRestoreStatus = { WallpaperDesktopPlatform.restoreFromBackupFilesResult(appSupportPath: $0) },
+        repairDesktop: @escaping () -> Bool = { WallpaperDesktopPlatform.repairCurrentDesktopWallpaperIfNeeded() }
     ) {
         self.appSupportURL = appSupportURL.standardizedFileURL
         self.stillFrameService = stillFrameService
             ?? StillFrameService(appSupportURL: appSupportURL)
+        self.applyDesktop = applyDesktop
+        self.restoreDesktop = restoreDesktop
+        self.repairDesktop = repairDesktop
     }
 
     @discardableResult
     public func applyStillWallpaper(from videoPath: String) -> String? {
-        guard !videoPath.isEmpty else { return nil }
+        guard ownsSystemDesktop, !videoPath.isEmpty else { return nil }
         let videoURL = URL(fileURLWithPath: videoPath)
         guard FileManager.default.fileExists(atPath: videoURL.path),
               let frameURL = try? stillFrameService.captureStillFrame(from: videoURL)
         else {
             return nil
         }
-        guard WallpaperDesktopPlatform.applyToAllDesktops(imagePath: frameURL.path) else {
+        guard applyDesktop(frameURL.path) else {
             return nil
         }
         return frameURL.path
     }
 
     public func restoreWallpaperBackup() -> WallpaperRestoreStatus {
-        WallpaperDesktopPlatform.restoreFromBackupFilesResult(
-            appSupportPath: appSupportURL.path
-        )
+        guard ownsSystemDesktop else { return .notNeeded }
+        return restoreDesktop(appSupportURL.path)
     }
 
     @discardableResult
     public func repairCurrentDesktopWallpaperIfNeeded() -> Bool {
-        WallpaperDesktopPlatform.repairCurrentDesktopWallpaperIfNeeded()
+        guard ownsSystemDesktop else { return false }
+        return repairDesktop()
     }
 }

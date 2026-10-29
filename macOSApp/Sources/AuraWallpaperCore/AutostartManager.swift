@@ -24,27 +24,33 @@ public enum AutostartManagerError: LocalizedError {
 
 /// Coordinates persisted autostart configuration with the user's LaunchAgent.
 ///
-/// The config is written only after validation and is restored when launchctl
-/// rejects the requested state. This keeps the UI from reporting a state that
-/// the system did not actually accept.
+/// Registration changes apply to future logins. Runtime migration/launching
+/// is a separate operation and must never be triggered by the checkbox.
 public final class AutostartManager {
     private let store: WallpaperRuntimeStore
     private let helperURL: URL
     private let nativeBridgeURL: URL?
+    private let sessionIdentifier: () -> String?
+    private let registrationUpdater: ((Bool) throws -> Void)?
 
     public init(
         store: WallpaperRuntimeStore,
         helperURL: URL,
-        nativeBridgeURL: URL? = nil
+        nativeBridgeURL: URL? = nil,
+        sessionIdentifier: @escaping () -> String? = { LockScreenSession.currentIdentifier() },
+        registrationUpdater: ((Bool) throws -> Void)? = nil
     ) {
         self.store = store
         self.helperURL = helperURL.standardizedFileURL
         self.nativeBridgeURL = nativeBridgeURL?.standardizedFileURL
+        self.sessionIdentifier = sessionIdentifier
+        self.registrationUpdater = registrationUpdater
     }
 
     public func migrateExistingLaunchAgentIfNeeded() throws {
         let config = store.loadConfig()
         guard config.autostart == true,
+              !config.isAutostartDeferred(in: sessionIdentifier()),
               let source = store.effectiveLockScreenSourceURL(for: config),
               FileManager.default.fileExists(atPath: source.path)
         else {
@@ -73,13 +79,11 @@ public final class AutostartManager {
             }
 
             config.autostart = true
+            config.autostart_deferred_session_id = sessionIdentifier() ?? "unknown-login-session"
             config = store.normalized(config)
             try store.saveConfig(config)
             do {
-                try store.enableLaunchAgent(
-                    helperPath: helperURL.path,
-                    nativeBridgePath: nativeBridgeURL?.path
-                )
+                try updateRegistration(true)
             } catch let primaryError {
                 do {
                     try store.saveConfig(previousConfig)
@@ -94,10 +98,11 @@ public final class AutostartManager {
             }
         } else {
             config.autostart = false
+            config.autostart_deferred_session_id = nil
             config = store.normalized(config)
             try store.saveConfig(config)
             do {
-                try store.disableLaunchAgent()
+                try updateRegistration(false)
             } catch let primaryError {
                 do {
                     try store.saveConfig(previousConfig)
@@ -113,5 +118,14 @@ public final class AutostartManager {
         }
 
         return store.status()
+    }
+
+    private func updateRegistration(_ enabled: Bool) throws {
+        if let registrationUpdater { try registrationUpdater(enabled); return }
+        if enabled {
+            try store.registerLaunchAtLogin(helperPath: helperURL.path, nativeBridgePath: nativeBridgeURL?.path)
+        } else {
+            try store.removeLaunchAtLogin()
+        }
     }
 }

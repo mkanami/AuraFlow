@@ -11,11 +11,18 @@ private final class WallpaperSessionFixture {
     let store: WallpaperRuntimeStore
     var locked = false
     var agent: WallpaperAgentDelegate?
+    let launchctlCalls: SessionLaunchctlCalls
 
     init() throws {
         _ = NSApplication.shared
         root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraSessionRegression-\(UUID())")
-        store = WallpaperRuntimeStore(appSupportURL: root, launchAgentURL: root.appendingPathComponent("login.plist"))
+        let calls = SessionLaunchctlCalls()
+        launchctlCalls = calls
+        store = WallpaperRuntimeStore(appSupportURL: root, launchAgentURL: root.appendingPathComponent("login.plist"),
+            launchctlRunner: { arguments in
+                calls.values.append(arguments)
+                return LaunchctlResult(succeeded: arguments.first != "print", output: "not loaded")
+            })
         try store.ensureDirectories()
     }
 
@@ -49,8 +56,40 @@ private final class WallpaperSessionFixture {
     }
 }
 
+private final class SessionLaunchctlCalls { var values: [[String]] = [] }
+
 @Suite(.serialized)
 struct WallpaperSessionRegressionTests {
+    @Test @MainActor
+    func issue5LoginCheckboxDoesNotStopRestartOrPauseCurrentWallpaper() async throws {
+        let fixture = try WallpaperSessionFixture()
+        defer { fixture.cleanup() }
+        let agent = try await fixture.start()
+        try await requireAdvancingWallpaper(agent)
+        let originalPlayer = try #require(agent.player)
+        let originalPID = fixture.store.loadPID()
+        let command = fixture.store.loadCommand()
+        fixture.store.markLockScreenAgentReady(true)
+        try Data("existing login registration".utf8).write(to: fixture.store.launchAgentURL)
+        let manager = AutostartManager(store: fixture.store, helperURL: fixture.root.appendingPathComponent("helper"))
+        let disabled = try manager.setEnabled(false)
+        try #require(fixture.launchctlCalls.values.allSatisfy { $0.first == "print" },
+            "The login checkbox must not bootout, bootstrap, kickstart, or signal current playback")
+        #expect(disabled.config.autostart == false)
+        #expect(!fixture.store.launchAgentPlistExists())
+        try await requireAdvancingWallpaper(agent)
+        let enabled = try manager.setEnabled(true)
+        #expect(enabled.config.autostart == true)
+        #expect(fixture.store.launchAgentPlistExists())
+        #expect(fixture.launchctlCalls.values.allSatisfy { $0.first == "print" })
+        #expect(fixture.store.loadPID() == originalPID)
+        #expect(agent.player === originalPlayer)
+        #expect(fixture.store.loadCommand() == command)
+        #expect(fixture.store.isLockScreenAgentReady())
+        #expect(!fixture.store.isPaused())
+        try await requireAdvancingWallpaper(agent)
+    }
+
     @Test @MainActor
     func issue2LoginStartsDecodedAnimationInsteadOfLeavingCachedStillFrame() async throws {
         let fixture = try WallpaperSessionFixture()

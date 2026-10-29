@@ -596,6 +596,14 @@ public final class WallpaperRuntimeStore {
         try launchAgentManager().disableLaunchAgent()
     }
 
+    public func registerLaunchAtLogin(helperPath: String, nativeBridgePath: String? = nil) throws {
+        try launchAgentManager().registerLaunchAtLogin(helperPath: helperPath, nativeBridgePath: nativeBridgePath)
+    }
+
+    public func removeLaunchAtLogin() throws {
+        try launchAgentManager().removeLaunchAtLogin()
+    }
+
     @discardableResult
     public func terminateDaemon(
         timeout: TimeInterval = 1.0,

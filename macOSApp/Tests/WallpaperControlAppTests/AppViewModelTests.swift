@@ -2287,7 +2287,7 @@ private func pngData(for image: CGImage) -> Data {
 }
 
 @MainActor
-@Test func autostartWarningIsShownWhenLaunchAgentIsNotLoaded() async throws {
+@Test func futureLoginRegistrationDoesNotRequireLoadedService() async throws {
     let controller = MockNativeWallpaperController()
     controller.statusConfigAutostart = true
     controller.statusAutostart = false
@@ -2299,14 +2299,32 @@ private func pngData(for image: CGImage) -> Data {
     await viewModel.loadStatus()
 
     #expect(viewModel.autostartEnabled == true)
-    #expect(
-        viewModel.alertMessage
-            == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not loaded."
-    )
+    #expect(viewModel.alertMessage == nil)
+}
+
+@MainActor @Test
+func reopeningGUIAfterCheckingFutureLoginDoesNotStartStoppedWallpaper() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("FutureLoginGUI-\(UUID())")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let controller = MockNativeWallpaperController()
+    controller.configuredVideoURL = root.appendingPathComponent("source.mp4")
+    try Data("video".utf8).write(to: controller.configuredVideoURL!)
+    controller.statusConfigAutostart = true
+    controller.statusAutostartDeferredSessionID = LockScreenSession.currentIdentifier() ?? "unknown-login-session"
+    controller.statusAutostartPlistExists = true
+    controller.statusAutostartServiceLoaded = false
+    let model = AppViewModel(controller: controller, appSupportDirectoryURL: root,
+        previewStateURL: root.appendingPathComponent("preview.json"))
+    await model.loadStatus()
+    #expect(model.autostartEnabled)
+    #expect(controller.startCallCount == 0)
+    #expect(!model.isRunning)
+    #expect(model.alertMessage == nil)
 }
 
 @MainActor
-@Test func autostartWarningIsShownWhenLaunchAgentIsNotRunning() async throws {
+@Test func futureLoginRegistrationDoesNotRequireRunningService() async throws {
     let controller = MockNativeWallpaperController()
     controller.statusConfigAutostart = true
     controller.statusAutostart = false
@@ -2317,10 +2335,7 @@ private func pngData(for image: CGImage) -> Data {
 
     await viewModel.loadStatus()
 
-    #expect(
-        viewModel.alertMessage
-            == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
-    )
+    #expect(viewModel.alertMessage == nil)
 }
 
 @MainActor
@@ -2335,7 +2350,7 @@ private func pngData(for image: CGImage) -> Data {
     let controller = MockNativeWallpaperController()
     controller.statusConfigAutostart = true
     controller.statusAutostart = false
-    controller.statusAutostartPlistExists = true
+    controller.statusAutostartPlistExists = false
     controller.statusAutostartServiceLoaded = true
     controller.statusAutostartServiceRunning = false
     let viewModel = AppViewModel(
@@ -2349,7 +2364,7 @@ private func pngData(for image: CGImage) -> Data {
     for _ in 0..<40 {
         if !viewModel.isBusy,
            viewModel.alertMessage ==
-                "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
+                "Launch at Login is enabled, but its LaunchAgent plist is missing."
         {
             break
         }
@@ -2358,11 +2373,11 @@ private func pngData(for image: CGImage) -> Data {
 
     #expect(
         viewModel.alertMessage
-            == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
+            == "Launch at Login is enabled, but its LaunchAgent plist is missing."
     )
     #expect(
         viewModel.statusMessage
-            == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
+            == "Launch at Login is enabled, but its LaunchAgent plist is missing."
     )
 }
 
@@ -2377,7 +2392,9 @@ private func pngData(for image: CGImage) -> Data {
     let viewModel = AppViewModel(controller: controller)
     await viewModel.loadStatus()
     #expect(viewModel.autostartEnabled)
-    #expect(viewModel.alertMessage?.contains("not running") == true)
+    #expect(viewModel.alertMessage == nil)
+    // A prior app version may have left this transient message visible.
+    viewModel.alertMessage = "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
     viewModel.statusMessage = viewModel.alertMessage
 
     controller.statusAutostart = true
@@ -2629,6 +2646,7 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
     var lockScreenPlaybackRequests: [Bool] = []
     var statusLockScreenOnly = false
     var statusConfigAutostart: Bool? = false
+    var statusAutostartDeferredSessionID: String?
     var statusAutostart: Bool? = false
     var statusAutostartPlistExists: Bool?
     var statusAutostartServiceLoaded: Bool?
@@ -2777,7 +2795,10 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
     }
 
     func setAutostart(_ enabled: Bool) throws -> ControlStatus {
-        try status()
+        statusConfigAutostart = enabled
+        statusAutostart = enabled
+        statusAutostartDeferredSessionID = enabled ? (LockScreenSession.currentIdentifier() ?? "unknown-login-session") : nil
+        return try status()
     }
 
     func metrics() throws -> DaemonMetrics {
@@ -2796,7 +2817,8 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
                 playback_speed: 1.0,
                 volume: 0.0,
                 autostart: statusConfigAutostart,
-                show_on_lock_screen: statusShowOnLockScreen
+                show_on_lock_screen: statusShowOnLockScreen,
+                autostart_deferred_session_id: statusAutostartDeferredSessionID
             ),
             pid: running ? 1234 : nil,
             autostart: statusAutostart,
