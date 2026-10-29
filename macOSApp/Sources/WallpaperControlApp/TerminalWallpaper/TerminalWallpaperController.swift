@@ -85,6 +85,8 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     private let lockScreenFrameReadinessWaiter: (TimeInterval, String?) -> Bool
     private let runningAgentNeedsReplacement: () -> Bool
     private let sessionIsLocked: () -> Bool?
+    private let applicationStore: WallpaperRuntimeStore?
+    private let autostartManager: AutostartManager?
     // Preview speed updates use a separate controller instance. Serialize them
     // with Start/Remove so a stale slider event cannot restore an old command.
     private static let runtimeMutationLock = NSRecursiveLock()
@@ -103,6 +105,17 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         self.store = store
         let resolvedHelper = try Self.resolveHelperURL(explicitURL: helperURL)
         self.helperURL = resolvedHelper
+        if store.appSupportURL.lastPathComponent == "terminal-wallpaper" {
+            let applicationStore = WallpaperRuntimeStore(appSupportURL: store.appSupportURL.deletingLastPathComponent(),
+                launchAgentURL: store.launchAgentFileURL.deletingLastPathComponent().appendingPathComponent("com.andrijvergeles.auraflow.plist"))
+            self.applicationStore = applicationStore
+            self.autostartManager = AutostartManager(store: applicationStore,
+                helperURL: applicationStore.appSupportURL.appendingPathComponent("Runtime/AuraWallpaperAgent"),
+                terminalHelperURL: resolvedHelper)
+        } else {
+            self.applicationStore = nil
+            self.autostartManager = nil
+        }
         self.sessionIsLocked = sessionIsLocked
         self.runningAgentNeedsReplacement = runningAgentNeedsReplacement ?? {
             guard resolvedHelper.lastPathComponent == "AuraTerminalWallpaperAgent",
@@ -134,13 +147,20 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     }
 
     func status() throws -> TerminalWallpaperStatus {
-        store.status()
+        var status = store.status()
+        if let applicationStore, applicationStore.loadConfig().login_wallpaper_runtime != nil {
+            status.config.behavior.launchAtLogin = WallpaperLoginSelection.enabled(in: applicationStore)
+        }
+        return status
     }
 
     func start(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
         lockScreenOperationLock.lock()
         defer { lockScreenOperationLock.unlock() }
-        let normalized = try validated(config)
+        var normalized = try validated(config)
+        if let applicationStore, FileManager.default.fileExists(atPath: applicationStore.configURL.path) {
+            normalized.behavior.launchAtLogin = WallpaperLoginSelection.enabled(in: applicationStore)
+        }
         try ensureCanStart()
         let wasRunning = store.processIsAlive(pid: store.loadPID())
         let startedAt = Date().timeIntervalSince1970
@@ -166,6 +186,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
                 }
                 try lockScreenCoordinator.activate()
             }
+            try autostartManager?.selectRuntime(.terminal)
         } catch {
             if !wasRunning { try? lockScreenCoordinator.restore() }
             throw error
@@ -209,6 +230,9 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         store.removeHealth()
         store.removeSharedFrameDescriptor()
         store.removeLockScreenPublication()
+        if let applicationStore, WallpaperLoginSelection.runtime(in: applicationStore) == .terminal {
+            try autostartManager?.selectRuntime(.removed)
+        }
         return store.status()
     }
 
@@ -311,7 +335,9 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         normalized.behavior.launchAtLogin = enabled
         do {
             try store.saveConfig(normalized)
-            if enabled { try store.enableLaunchAgent(helperPath: helperURL.path) }
+            if let autostartManager {
+                _ = try autostartManager.setEnabled(enabled, runtime: .terminal)
+            } else if enabled { try store.enableLaunchAgent(helperPath: helperURL.path) }
             else { try store.removeLoginLaunchAgent() }
             if running { try send(.update, config: normalized) }
             return store.status()
@@ -466,7 +492,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         return "\(fileNumber):\(size):\(modifiedAt.timeIntervalSince1970)"
     }
 
-    private static func resolveHelperURL(explicitURL: URL?) throws -> URL {
+    static func resolveHelperURL(explicitURL: URL?) throws -> URL {
         if let explicitURL {
             guard FileManager.default.isExecutableFile(atPath: explicitURL.path) else {
                 throw TerminalWallpaperControllerError.unavailable(
@@ -481,7 +507,9 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         }
         let bundleCandidate = bundledHelperURL(in: Bundle.main.bundleURL)
         if FileManager.default.isExecutableFile(atPath: bundleCandidate.path) {
-            return bundleCandidate
+            return try installLoginHelperBundle(from: Bundle.main.bundleURL
+                .appendingPathComponent("Contents/Helpers/AuraTerminalWallpaperAgent.app"),
+                runtimeDirectory: WallpaperRuntimeStore.defaultAppSupportURL().appendingPathComponent("Runtime"))
         }
         let sibling = URL(fileURLWithPath: CommandLine.arguments[0])
             .deletingLastPathComponent()
@@ -498,5 +526,23 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         appURL.appendingPathComponent(
             "Contents/Helpers/AuraTerminalWallpaperAgent.app/Contents/MacOS/AuraTerminalWallpaperAgent"
         )
+    }
+
+    static func installLoginHelperBundle(from source: URL, runtimeDirectory: URL) throws -> URL {
+        let target = runtimeDirectory.appendingPathComponent("AuraTerminalWallpaperAgent.app")
+        let relative = "Contents/MacOS/AuraTerminalWallpaperAgent"
+        let executable = target.appendingPathComponent(relative)
+        if let sourceDigest = RuntimeExecutableFingerprint.digest(at: source.appendingPathComponent(relative)),
+           sourceDigest == RuntimeExecutableFingerprint.digest(at: executable) { return executable }
+        try FileManager.default.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
+        let staging = runtimeDirectory.appendingPathComponent(".terminal-login-\(UUID()).app")
+        try FileManager.default.copyItem(at: source, to: staging)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        if FileManager.default.fileExists(atPath: target.path) {
+            _ = try FileManager.default.replaceItemAt(target, withItemAt: staging)
+        } else {
+            try FileManager.default.moveItem(at: staging, to: target)
+        }
+        return executable
     }
 }

@@ -1,10 +1,7 @@
 import Foundation
 
-/// Owns the system Desktop side of the legacy wallpaper fallback.
-///
-/// Runtime persistence and LaunchAgent orchestration stay in their respective
-/// components. This object is the only runtime-layer entry point that applies
-/// a generated still frame or restores the user's Desktop backup.
+/// Restores the user's Desktop backup. Generated frames are retained inside
+/// Aura's rendering surfaces and are never installed as system wallpaper.
 public final class DesktopWallpaperRecovery {
     private let appSupportURL: URL
     private let stillFrameService: StillFrameService
@@ -32,17 +29,10 @@ public final class DesktopWallpaperRecovery {
 
     @discardableResult
     public func applyStillWallpaper(from videoPath: String) -> String? {
-        guard ownsSystemDesktop, !videoPath.isEmpty else { return nil }
-        let videoURL = URL(fileURLWithPath: videoPath)
-        guard FileManager.default.fileExists(atPath: videoURL.path),
-              let frameURL = try? stillFrameService.captureStillFrame(from: videoURL)
-        else {
-            return nil
-        }
-        guard applyDesktop(frameURL.path) else {
-            return nil
-        }
-        return frameURL.path
+        // Cached frames belong to Aura's own windows and the screen saver.
+        // Persisting one as the user's system Desktop survives a stopped or
+        // failed runtime and disguises a failed login as a frozen wallpaper.
+        return nil
     }
 
     public func restoreWallpaperBackup() -> WallpaperRestoreStatus {

@@ -305,6 +305,8 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
     private let lockScreenPlatform: LockScreenPlatformOperating
     private let nativeLockScreenBridge: NativeLockScreenBridging
+    private let presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)?
+    private let screensProvider: () -> [NSScreen]
     private let lockScreenRepairGate = LockScreenRepairGate()
     private let lockScreenPlatformExecutor: LockScreenPlatformExecutor
     private let rearmGuard = WallpaperAgentRearmGuard()
@@ -312,6 +314,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var config: ControlConfig
     private(set) var windows: [NSWindow] = []
     private(set) var playerLayers: [AVPlayerLayer] = []
+    private var firstFrameObservers: [NSKeyValueObservation] = []
     private var fallbackImage: CGImage?
     private(set) var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
@@ -380,12 +383,16 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         store: WallpaperRuntimeStore,
         lockScreenPlatform: LockScreenPlatformOperating? = nil,
         nativeLockScreenBridge: NativeLockScreenBridging? = nil,
+        presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)? = nil,
+        screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens },
         observesSystemEvents: Bool = true,
         sessionIsLocked: @escaping () -> Bool? = { agentSystemSessionIsLocked() }
     ) {
         self.store = store
         self.observesSystemEvents = observesSystemEvents
         self.sessionIsLocked = sessionIsLocked
+        self.presentWindow = presentWindow
+        self.screensProvider = screensProvider
         let nativeBridgeURL = Self.nativeBridgeURLFromArguments()
         let platform = lockScreenPlatform ?? LockScreenPlatformFactory.makeAgentPlatform(
             nativeBridgeURL: nativeBridgeURL
@@ -432,6 +439,12 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         lastCommandID = previousCommand?.id
         lastCommandOperationID = previousCommand?.operationID
         config = store.loadConfig()
+        guard lockScreenOnlyMode || (!config.video_path.isEmpty && FileManager.default.fileExists(atPath: config.video_path)) else {
+            terminationHealthReason = "missing-video"
+            isTerminating = true
+            NSApp.terminate(nil)
+            return
+        }
         lockScreenState = LockScreenStateMachine(isEnabled: config.show_on_lock_screen ?? false)
         // Claim the runtime before any startup cleanup. This lets the same
         // ownership check protect the legacy fallback path below when an old
@@ -468,6 +481,11 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             store.markPaused(false)
         }
         if observesSystemEvents { installSignalHandlers() }
+        if systemSessionIsLocked() == false {
+            // A shutdown can interrupt the normal unlock restoration. Keep
+            // the user's Desktop as the base before presenting Aura again.
+            restoreDesktopStoreAfterSessionSynchronously()
+        }
         if !lockScreenOnlyMode {
             rebuildPlayback(from: config, keepPaused: false)
         } else {
@@ -2036,13 +2054,15 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildWindows() {
-        guard !NSScreen.screens.isEmpty else { return }
+        let screens = screensProvider()
+        guard !screens.isEmpty else { return }
         let existingPlayer = player
         for window in windows {
             window.orderOut(nil)
         }
         windows.removeAll()
         playerLayers.removeAll()
+        firstFrameObservers.removeAll()
 
         guard existingPlayer != nil || fallbackImage != nil else { return }
         let behavior: NSWindow.CollectionBehavior = [
@@ -2052,7 +2072,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             .fullScreenAuxiliary
         ]
 
-        for screen in NSScreen.screens {
+        for screen in screens {
             let window = NSWindow(
                 contentRect: screen.frame,
                 styleMask: [.borderless],
@@ -2087,6 +2107,14 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 playerLayer.videoGravity = videoGravity(for: config.scale_mode)
                 content.layer?.addSublayer(playerLayer)
                 playerLayers.append(playerLayer)
+                firstFrameObservers.append(playerLayer.observe(\.isReadyForDisplay, options: [.new]) { [weak self, weak window] layer, _ in
+                    guard layer.isReadyForDisplay else { return }
+                    Task { @MainActor [weak self, weak window] in
+                        guard let self, let window, !self.isTerminating,
+                              self.windows.contains(where: { $0 === window }) else { return }
+                        self.present(window, as: self.lockScreenState.presentationMode)
+                    }
+                })
             }
             window.contentView = content
 
@@ -2109,6 +2137,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
         windows.removeAll()
         playerLayers.removeAll()
+        firstFrameObservers.removeAll()
         player = nil
         lastPlaybackProgressUptime = nil
         consecutiveStallPolls = 0
@@ -2119,6 +2148,16 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             guard forceOrder || !window.isVisible else { continue }
             present(window, as: lockScreenState.presentationMode)
         }
+    }
+
+    private func reconcileDesktopWindows() {
+        guard !isTerminating, !lockScreenOnlyMode, !sleeping,
+              windows.isEmpty, !screensProvider().isEmpty,
+              player != nil || fallbackImage != nil else { return }
+        // Login can start the decoder before AppKit has a display list. A
+        // missed display notification must not leave a healthy, advancing
+        // player invisible for the rest of the session.
+        rebuildWindows()
     }
 
     private func handleLockScreenEvent(
@@ -2177,6 +2216,10 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         _ window: NSWindow,
         as mode: WallpaperPresentationMode
     ) {
+        if let index = windows.firstIndex(where: { $0 === window }),
+           playerLayers.indices.contains(index), !playerLayers[index].isReadyForDisplay {
+            return
+        }
         // macOS renders the secure surface through its Aerial/legacy route.
         // In shared Start, leave the already-visible Aura Desktop window at
         // its existing desktop level underneath that surface. Ordering it out
@@ -2193,6 +2236,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
         window.level = windowLevel(for: mode)
+        if let presentWindow { presentWindow(window, mode); return }
         switch mode {
         case .desktop:
             window.orderBack(nil)
@@ -2235,8 +2279,6 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let image: NSImage?
         if WallpaperMediaKind.forURL(videoURL).isStaticImage {
             image = NSImage(contentsOf: videoURL)
-        } else if let frameURL = try? store.ensureCurrentStillFrame(from: videoURL) {
-            image = NSImage(contentsOf: frameURL)
         } else {
             image = nil
         }
@@ -2490,6 +2532,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         // not repair or rearm the independent Lock Screen provider while the
         // session is paused: those operations can restart playback even when
         // the Desktop player is already frozen.
+        reconcileDesktopWindows()
         if manualPaused || store.isPaused() {
             manualPaused = true
             lastPlaybackProgressUptime = nil

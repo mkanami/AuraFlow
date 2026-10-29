@@ -44,7 +44,8 @@ if [[ -x "$XCODE_DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift
 fi
 
 pkill -x "$PROCESS_NAME" >/dev/null 2>&1 || true
-pkill -x "$TERMINAL_HELPER_NAME" >/dev/null 2>&1 || true
+# Runtime controllers replace changed helpers after preserving their surfaces.
+# Rebuilding the GUI must not terminate an unchanged live Terminal wallpaper.
 
 pushd "$SWIFT_DIR" >/dev/null
 "$SWIFT_BIN" build "${SWIFT_ARGS[@]}"

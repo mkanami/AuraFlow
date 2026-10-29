@@ -12,8 +12,13 @@ private final class WallpaperSessionFixture {
     var locked = false
     var agent: WallpaperAgentDelegate?
     let launchctlCalls: SessionLaunchctlCalls
+    let presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)?
+    let screensProvider: () -> [NSScreen]
 
-    init() throws {
+    init(presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)? = nil,
+         screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens }) throws {
+        self.presentWindow = presentWindow
+        self.screensProvider = screensProvider
         _ = NSApplication.shared
         root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraSessionRegression-\(UUID())")
         let calls = SessionLaunchctlCalls()
@@ -37,6 +42,8 @@ private final class WallpaperSessionFixture {
         _ = try store.ensureCurrentStillFrame(from: movie)
         if stalePauseCommand { try store.saveCommand(.init(operationID: 10, action: .pause, config: config)) }
         let agent = WallpaperAgentDelegate(store: store, lockScreenPlatform: UnsupportedAdapter(),
+            presentWindow: presentWindow,
+            screensProvider: screensProvider,
             observesSystemEvents: false, sessionIsLocked: { [weak self] in self?.locked })
         self.agent = agent
         agent.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
@@ -53,6 +60,67 @@ private final class WallpaperSessionFixture {
     func setLocked(_ value: Bool) {
         locked = value
         agent?.handleSessionNotification(expectedLocked: value)
+    }
+}
+
+// These cases use real decoded frames, but intercept every window ordering
+// operation. The fixture never presents its wallpaper on the user's Desktop.
+@Suite(.serialized)
+struct HiddenLoginPlaybackTests {
+    @Test @MainActor
+    func loginBeforeDisplaysAreReadyRecoversAWindowWithoutRestartingTheDecoder() async throws {
+        var displaysAvailable = false
+        let fixture = try WallpaperSessionFixture(presentWindow: { _, _ in },
+            screensProvider: { displaysAvailable ? NSScreen.screens : [] })
+        defer { fixture.cleanup() }
+        let agent = try await fixture.start()
+        let player = try #require(agent.player)
+        #expect(agent.windows.isEmpty)
+        displaysAvailable = true
+        agent.samplePlaybackHealth()
+        try await requireAdvancingWallpaper(agent)
+        #expect(agent.player === player)
+        #expect(!agent.windows.isEmpty && agent.windows.allSatisfy { !$0.isVisible })
+    }
+
+    @Test @MainActor
+    func loginPreferenceChangesFutureJobsWhileDecodedPlaybackContinues() async throws {
+        let fixture = try WallpaperSessionFixture(presentWindow: { _, _ in })
+        defer { fixture.cleanup() }
+        let agent = try await fixture.start()
+        try await requireAdvancingWallpaper(agent)
+        let player = agent.player
+        let pid = fixture.store.loadPID()
+        let command = fixture.store.loadCommand()
+        let manager = AutostartManager(store: fixture.store, helperURL: fixture.root.appendingPathComponent("helper"))
+        for enabled in [false, true] {
+            _ = try manager.setEnabled(enabled)
+            try await requireAdvancingWallpaper(agent)
+            #expect(agent.player === player)
+            #expect(fixture.store.loadPID() == pid && fixture.store.loadCommand() == command)
+            #expect(agent.windows.allSatisfy { !$0.isVisible })
+            #expect(fixture.launchctlCalls.values.allSatisfy { $0.first == "print" })
+        }
+    }
+
+    @Test @MainActor
+    func loginDecodesMotionBeforePresentingAndNeverUsesACachedDesktopStill() async throws {
+        var presentations = 0
+        let fixture = try WallpaperSessionFixture(presentWindow: { _, _ in presentations += 1 })
+        defer { fixture.cleanup() }
+        let agent = try await fixture.start(stalePauseCommand: true)
+        #expect(presentations == 0)
+        #expect(agent.windows.allSatisfy { !$0.isVisible })
+        #expect(agent.windows.allSatisfy { $0.contentView?.layer?.contents == nil })
+        try await requireAdvancingWallpaper(agent)
+        #expect(presentations > 0)
+        #expect(agent.windows.allSatisfy { !$0.isVisible })
+        let player = agent.player
+        fixture.setLocked(true)
+        fixture.setLocked(false)
+        try await requireAdvancingWallpaper(agent)
+        #expect(agent.player === player)
+        #expect(agent.windows.allSatisfy { !$0.isVisible })
     }
 }
 

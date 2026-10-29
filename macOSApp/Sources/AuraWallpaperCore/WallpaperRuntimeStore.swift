@@ -180,6 +180,22 @@ public final class WallpaperRuntimeStore {
     public var lockScreenAgentStartedURL: URL { fileStore.lockScreenAgentStartedURL }
     public var launchAgentURL: URL { fileStore.launchAgentURL }
 
+    public func startTerminalLoginJob() throws {
+        let service = "gui/\(getuid())/\(WallpaperLoginSelection.terminalLabel)"
+        let existing = launchctlRunner(["print", service])
+        let arguments: [String]
+        if existing.succeeded {
+            if existing.output.split(whereSeparator: \.isNewline).contains(where: {
+                $0.trimmingCharacters(in: .whitespaces) == "state = running"
+            }) { return }
+            arguments = ["kickstart", service]
+        } else {
+            arguments = ["bootstrap", "gui/\(getuid())", WallpaperLoginSelection.terminalLaunchAgentURL(in: self).path]
+        }
+        let result = launchctlRunner(arguments)
+        guard result.succeeded else { throw WallpaperRuntimeError.unavailable(result.output) }
+    }
+
     public func ensureDirectories() throws {
         try fileStore.ensureDirectories()
     }
@@ -419,7 +435,14 @@ public final class WallpaperRuntimeStore {
         let paused = isPaused()
         let lockScreenOnly = isLockScreenOnlyMode()
         let health = healthForStatus(processStatus: processStatus, paused: paused)
-        let launchAgent = launchAgentStatus()
+        let launchAgent: LaunchAgentStatus
+        if config.login_wallpaper_runtime == .terminal {
+            launchAgent = LaunchAgentManager.status(from: launchctlRunner([
+                "print", "gui/\(getuid())/\(WallpaperLoginSelection.terminalLabel)"
+            ]), plistExists: FileManager.default.fileExists(atPath: WallpaperLoginSelection.terminalLaunchAgentURL(in: self).path))
+        } else {
+            launchAgent = launchAgentStatus()
+        }
         return ControlStatus(
             running: owned && !paused && !lockScreenOnly,
             config: config,

@@ -66,9 +66,9 @@ public final class WallpaperSessionRecovery {
     @discardableResult
     public func reconcile(autostartGracePeriod: TimeInterval = 10, installationGracePeriod: TimeInterval = 5) throws -> Result {
         let config = store.loadConfig()
-        let hasMediaAutostart = config.autostart == true
+        let hasMediaAutostart = WallpaperLoginSelection.enabled(in: store)
             && !config.isAutostartDeferred(in: sessionIdentifier())
-            && store.effectiveLockScreenSourceURL(for: config).map { FileManager.default.fileExists(atPath: $0.path) } == true
+            && WallpaperLoginSelection.hasSource(in: store, runtime: WallpaperLoginSelection.runtime(in: store))
         guard hasManagedInstallation || hasMediaAutostart else { return .notNeeded }
         guard !runtimeIsLive() else { return .runtimeActive }
         guard sessionIsLocked() != nil else { return .deferred }
@@ -122,12 +122,9 @@ public final class WallpaperSessionRecovery {
 
     private var autostartRequested: Bool {
         let config = store.loadConfig()
-        if config.autostart == true, !config.isAutostartDeferred(in: sessionIdentifier()) { return true }
-        let url = store.appSupportURL.appendingPathComponent("terminal-wallpaper/config.json")
-        guard let data = try? Data(contentsOf: url),
-              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let behavior = config["behavior"] as? [String: Any] else { return false }
-        return behavior["launchAtLogin"] as? Bool == true
+        return WallpaperLoginSelection.enabled(in: store)
+            && !config.isAutostartDeferred(in: sessionIdentifier())
+            && config.login_wallpaper_runtime != .removed
     }
 
     private func suspendRoutes() throws -> Bool {
@@ -150,8 +147,8 @@ public final class WallpaperSessionRecovery {
         if store.daemonProcessStatus.isOwned,
            let source = store.effectiveLockScreenSourceURL(for: store.loadConfig()),
            FileManager.default.fileExists(atPath: source.path) { return true }
+        if WallpaperLoginSelection.terminalRuntimeIsLive(in: store) { return true }
         for (path, name) in [
-            ("terminal-wallpaper/agent.pid", "AuraTerminalWallpaperAgent"),
             ("wallpaper-engine/runtime/agent.pid", "AuraWebWallpaperAgent"),
         ] {
             guard let text = try? String(contentsOf: store.appSupportURL.appendingPathComponent(path)),

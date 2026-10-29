@@ -1,12 +1,17 @@
 import AVFoundation
 import Foundation
 
+public enum WallpaperLoginRuntime: String, Codable, Sendable {
+    case video, terminal, removed
+}
+
 public struct ControlConfig: Codable, Equatable, Sendable {
     public var video_path: String
     public var playback_speed: Double
     public var volume: Double?
     public var autostart: Bool?
     public var autostart_deferred_session_id: String?
+    public var login_wallpaper_runtime: WallpaperLoginRuntime?
     public var blend_interpolation: Bool?
     public var pause_on_fullscreen: Bool?
     public var show_on_lock_screen: Bool?
@@ -21,13 +26,15 @@ public struct ControlConfig: Codable, Equatable, Sendable {
         pause_on_fullscreen: Bool? = true,
         show_on_lock_screen: Bool? = true,
         scale_mode: String? = WallpaperScaleMode.fill.rawValue,
-        autostart_deferred_session_id: String? = nil
+        autostart_deferred_session_id: String? = nil,
+        login_wallpaper_runtime: WallpaperLoginRuntime? = nil
     ) {
         self.video_path = video_path
         self.playback_speed = playback_speed
         self.volume = volume
         self.autostart = autostart
         self.autostart_deferred_session_id = autostart_deferred_session_id
+        self.login_wallpaper_runtime = login_wallpaper_runtime
         self.blend_interpolation = blend_interpolation
         self.pause_on_fullscreen = pause_on_fullscreen
         self.show_on_lock_screen = show_on_lock_screen

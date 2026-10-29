@@ -40,6 +40,10 @@ public final class LaunchAgentManager {
     public func launchAgentStatus() -> LaunchAgentStatus {
         let plistExists = launchAgentPlistExists()
         let result = launchctlRunner(["print", serviceName])
+        return Self.status(from: result, plistExists: plistExists)
+    }
+
+    static func status(from result: LaunchctlResult, plistExists: Bool) -> LaunchAgentStatus {
         let serviceLoaded = result.succeeded
         let pidPrefix = "pid = "
         let servicePID = result.output.split(whereSeparator: \.isNewline).compactMap { line -> Int? in

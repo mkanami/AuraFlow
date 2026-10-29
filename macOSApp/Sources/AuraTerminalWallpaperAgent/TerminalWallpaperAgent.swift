@@ -66,6 +66,9 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        // Saved commands belong to the previous process. In particular an old
+        // Stop or Update must not kill or overwrite this fresh login session.
+        lastCommandID = store.loadCommand()?.id
         framePublisher.revoke()
         store.removeSharedFrameDescriptor()
         logger.info("Terminal Wallpaper agent started")

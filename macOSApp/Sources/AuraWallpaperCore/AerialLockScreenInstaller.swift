@@ -461,23 +461,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             || reusablePreviouslyManagedAssetID() != nil
     }
 
-    /// Re-applies the managed still frame immediately before a real lock.
-    ///
-    /// macOS can restore the user's ordinary Desktop picture while the
-    /// previous Lock Screen session is being dismissed. The wallpaper store
-    /// still points at AuraFlow in that case, but loginwindow can briefly use
-    /// the restored Desktop surface for the next lock. Refreshing the current
-    /// Desktop surfaces for every session keeps repeated locks consistent.
+    /// Compatibility entry point. Cached frames must not replace the user's
+    /// Desktop; secure presentation uses the installed live provider instead.
     @discardableResult
     public func applyCurrentDesktopFallback() -> Bool {
-        mutationCoordinator.withExclusiveNonThrowing {
-            guard let stillFrameURL = currentStillFrameURL() else {
-                return false
-            }
-            return WallpaperDesktopSupport.applyToAllDesktops(
-                imagePath: stillFrameURL.path
-            )
-        }
+        false
     }
 
     public func install(videoURL: URL) async throws {

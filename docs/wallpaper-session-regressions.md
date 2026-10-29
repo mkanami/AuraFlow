@@ -42,3 +42,13 @@ Video regression proof opens real test windows and requires a dedicated login se
 `incompleteIsolatedGenerationRecoversWithoutRepeatingProviderRestarts` reproduces an unfinished install with stale Aura Desktop routes and a current user default. Temporary stores and recording provider actions cover Apply, health repair, and unlock rearm for both isolated Start and Lock-only. Recovery must retain the intended mode and media settings, restore the user's routes, finish the journal, and make subsequent health repairs no-ops.
 
 The complete suite remains available through `scripts/test_macos_app.sh` in CI or with `AURAFLOW_DEDICATED_TEST_SESSION=1` in a dedicated macOS login session. It opens real AppKit windows and must not be run on an active user's desktop. Focused `DockRefreshRegressionTests` runs replace system actions with recording closures and do not open windows or restart any process.
+
+Login restoration also covers both rendering engines:
+
+Run the focused checks with `python3 scripts/test_login_restoration.py`.
+
+- `LoginRestorationRegressionTests.swift` uses temporary configurations and recording launchctl operations to exercise a new login, legacy migration, one selected future login job, independent current playback, disabled startup, and bounded fallback after failure. The common `autostart` preference and `login_wallpaper_runtime` select the applied engine; preview drafts do not change that selection.
+- `HiddenLoginPlaybackTests` decodes changing video pixels through the actual Desktop agent and checks late display enumeration, first-frame presentation, stale-command suppression, checkbox independence, and lock/unlock continuity. All window ordering is intercepted, so its test wallpaper never appears on the user's Desktop.
+- `TerminalLoginRestorationTests` runs a real PTY/parser without display windows or secure presentation. Its startup must ignore old Stop/Restart/Update commands and keep publishing fresh frames. It also verifies that the copied login helper survives removal of the original application path, and that applying Terminal inherits the common login preference without a later checkbox edit restarting the current helper.
+
+These focused login tests do not reboot or lock the Mac. A physical reboot remains a separate end-to-end verification on the installed application.

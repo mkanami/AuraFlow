@@ -490,7 +490,10 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         self.autostartManager = AutostartManager(
             store: store,
             helperURL: helperResolution.url,
-            nativeBridgeURL: configuredNativeBridgeURL
+            nativeBridgeURL: configuredNativeBridgeURL,
+            terminalHelperURL: helperURL == nil && store.appSupportURL.standardizedFileURL == WallpaperRuntimeStore.defaultAppSupportURL().standardizedFileURL
+                && WallpaperLoginSelection.runtime(in: store) == .terminal
+                ? try NativeTerminalWallpaperController.resolveHelperURL(explicitURL: nil) : nil
         )
         self.recoveryCoordinator = WallpaperRecoveryCoordinator(store: store)
         self.nextRuntimeOperationID =
@@ -909,6 +912,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         // running lock-only agent or any persistent runtime state. A failed
         // file selection must leave the previous working configuration intact.
         var nextConfig = previousConfig
+        nextConfig.autostart = WallpaperLoginSelection.enabled(in: store)
+        nextConfig.login_wallpaper_runtime = .video
         if let videoURL {
             nextConfig.video_path = videoURL.path
         }
@@ -993,6 +998,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                     "macOS did not confirm the Desktop and Lock Screen wallpaper configuration."
                 )
             }
+            try autostartManager.selectRuntime(.video)
             return store.status()
         } catch {
             let rollbackFailures = await rollbackStart(
@@ -1241,7 +1247,9 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         // Settings after Remove does not silently invert the toggle.
         _ = try updateConfig { config in
             config.video_path = ""
+            config.login_wallpaper_runtime = .removed
         }
+        try autostartManager.selectRuntime(.removed)
         if !removingLockScreenOnly, restoreStatus != .failed {
             store.removeManagedFallback()
         }
@@ -1328,6 +1336,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
         let config = try updateConfig { config in
             config.show_on_lock_screen = true
+            config.login_wallpaper_runtime = .video
         }
         if daemonProcessManager.isRunning,
            (!store.isLockScreenOnlyAgent() || !requiresDedicatedLockScreenAgent) {
@@ -1370,6 +1379,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         // background; blocking the Lock button here made a successful install
         // look frozen for 6–8 seconds and duplicated the provider's own
         // bounded health check.
+        try autostartManager.selectRuntime(.video)
         return store.status()
     }
 
