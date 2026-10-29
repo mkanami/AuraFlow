@@ -3,7 +3,8 @@ import Darwin
 
 /// Repairs a system fallback that replaced one of Aura's split Idle routes.
 /// A remaining Aura route and the installation journal are both required;
-/// unrelated user choices and every Desktop route are left intact.
+/// unrelated user choices are left intact. A confirmed lock may temporarily
+/// expose the same live saver through Desktop, which loginwindow resolves.
 public final class ScreenSaverRouteRecovery {
     private struct SavedRoute: Decodable {
         let path: String
@@ -15,7 +16,12 @@ public final class ScreenSaverRouteRecovery {
         let auraIdle: Data
         let fallbackIdle: Data
     }
+    private struct LockSessionRoute: Codable {
+        let path: String
+        let desktop: Data?
+    }
     private var suspensionURL: URL { journalURL.appendingPathExtension("suspended") }
+    private var lockSessionURL: URL { journalURL.appendingPathExtension("lock-session") }
     private let storeURL: URL
     private let journalURL: URL
     private let saverURL: URL
@@ -84,6 +90,90 @@ public final class ScreenSaverRouteRecovery {
         return true
     }
 
+    /// loginwindow requests Desktop content even when the selected Idle saver
+    /// is Aura. Publish the already warm live provider for this lock only;
+    /// journal each complete user descriptor before the first store write.
+    @discardableResult
+    public func activateDesktopForLockSession(shouldProceed: () -> Bool) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: journalURL.path) else { return false }
+        return try withExclusiveAccess {
+            guard shouldProceed(), FileManager.default.fileExists(atPath: journalURL.path) else { return false }
+            let original = try Data(contentsOf: storeURL)
+            guard let root = try PropertyListSerialization.propertyList(from: original, format: nil) as? [String: Any] else { return false }
+            var saved = FileManager.default.fileExists(atPath: lockSessionURL.path)
+                ? try JSONDecoder().decode([LockSessionRoute].self, from: Data(contentsOf: lockSessionURL)) : []
+            var hasUserDesktop = saved.contains { item in
+                item.desktop.flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) }
+                    .map(self.isUserDesktop) == true
+            }
+            _ = mapRoutes(root) { _, route in
+                if let desktop = route["Desktop"] ?? route["Linked"], self.isUserDesktop(desktop) { hasUserDesktop = true }
+                return route
+            }
+            guard hasUserDesktop else { return false }
+            var changed = false
+            let updated = mapRoutes(root) { path, route in
+                guard route["Linked"] == nil, self.isAura(route["Idle"]), !self.isAura(route["Desktop"]),
+                      route["Desktop"] == nil || self.isUserDesktop(route["Desktop"]!) else { return route }
+                let desktop = route["Desktop"].flatMap {
+                    try? PropertyListSerialization.data(fromPropertyList: $0, format: .binary, options: 0)
+                }
+                saved.removeAll { $0.path == path }
+                saved.append(LockSessionRoute(path: path, desktop: desktop))
+                var result = route
+                result["Desktop"] = route["Idle"]
+                changed = true
+                return result
+            }
+            guard changed, shouldProceed(), (try? Data(contentsOf: storeURL)) == original else { return false }
+            try JSONEncoder().encode(saved).write(to: lockSessionURL, options: .atomic)
+            guard shouldProceed(), (try? Data(contentsOf: storeURL)) == original else { return false }
+            try PropertyListSerialization.data(fromPropertyList: updated, format: .binary, options: 0)
+                .write(to: storeURL, options: .atomic)
+            return true
+        }
+    }
+
+    /// Used on unlock, Stop and a later login, including when the previous
+    /// helper was killed or the machine powered off during a lock.
+    @discardableResult
+    public func restoreDesktopAfterLockSession(shouldProceed: () -> Bool = { true }) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: lockSessionURL.path) else { return false }
+        return try withExclusiveAccess { try restoreLockSessionLocked(shouldProceed: shouldProceed) }
+    }
+
+    private func restoreLockSessionLocked(shouldProceed: () -> Bool) throws -> Bool {
+        guard shouldProceed(), FileManager.default.fileExists(atPath: lockSessionURL.path) else { return false }
+        let saved = try JSONDecoder().decode([LockSessionRoute].self, from: Data(contentsOf: lockSessionURL))
+        var desktops: [String: Any] = [:]
+        for item in saved {
+            if let data = item.desktop {
+                let desktop = try PropertyListSerialization.propertyList(from: data, format: nil)
+                guard isUserDesktop(desktop) else { throw CocoaError(.fileReadCorruptFile) }
+                desktops[item.path] = desktop
+            }
+        }
+        let original = try Data(contentsOf: storeURL)
+        guard let root = try PropertyListSerialization.propertyList(from: original, format: nil) as? [String: Any] else { return false }
+        var changed = false
+        let updated = mapRoutes(root) { path, route in
+            guard self.isAura(route["Desktop"]), let item = saved.first(where: { $0.path == path }) else { return route }
+            var result = route
+            if let desktop = desktops[item.path] {
+                result["Desktop"] = desktop
+            } else { result.removeValue(forKey: "Desktop") }
+            changed = true
+            return result
+        }
+        guard shouldProceed(), (try? Data(contentsOf: storeURL)) == original else { return false }
+        if changed {
+            try PropertyListSerialization.data(fromPropertyList: updated, format: .binary, options: 0)
+                .write(to: storeURL, options: .atomic)
+        }
+        try FileManager.default.removeItem(at: lockSessionURL)
+        return changed
+    }
+
     /// Restores each display/Space's actual Desktop provider while no Aura
     /// runtime owns the saver. Retain the install journal so a delayed login
     /// helper can resume its route without taking a new backup of our fallback.
@@ -92,6 +182,7 @@ public final class ScreenSaverRouteRecovery {
         guard FileManager.default.fileExists(atPath: journalURL.path) else { return false }
         return try withExclusiveAccess {
             guard shouldProceed(), FileManager.default.fileExists(atPath: journalURL.path) else { return false }
+            let restoredDesktop = try restoreLockSessionLocked(shouldProceed: shouldProceed)
             let original = try Data(contentsOf: storeURL)
             guard let root = try PropertyListSerialization.propertyList(from: original, format: nil) as? [String: Any] else { return false }
             var fallbackDesktop: Any?
@@ -120,7 +211,7 @@ public final class ScreenSaverRouteRecovery {
                 result["Idle"] = desktop
                 return result
             }
-            guard changed, shouldProceed(), (try? Data(contentsOf: storeURL)) == original else { return false }
+            guard changed, shouldProceed(), (try? Data(contentsOf: storeURL)) == original else { return restoredDesktop }
             try JSONEncoder().encode(suspended).write(to: suspensionURL, options: .atomic)
             guard shouldProceed(), (try? Data(contentsOf: storeURL)) == original else { return false }
             try PropertyListSerialization.data(fromPropertyList: updated, format: .binary, options: 0)

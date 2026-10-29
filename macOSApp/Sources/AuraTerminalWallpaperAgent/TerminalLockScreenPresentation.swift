@@ -4,9 +4,6 @@ import AuraWallpaperCore
 import CoreGraphics
 import Darwin
 import OSLog
-#if canImport(Wallpaper)
-@preconcurrency import Wallpaper
-#endif
 
 /// A session notification alone is not proof of a lock (launch and fast user
 /// switching emit them too). Only the WindowServer session state may start
@@ -36,9 +33,10 @@ final class TerminalLockScreenPresentation {
     private var systemRecoveryPending = false
     private var restartSaverWhenReady = false
     private struct PresentationSurface {
-        var displays: [AnyObject] = []
+        var displays: [TerminalNativeDisplayLease] = []
         var displayIDs: [UInt32] = []
         var presentations: [AnyObject] = []
+        var hosts: [TerminalNativeWallpaperSurfaceHost] = []
     }
     private lazy var presentationQueue: LockScreenPresentationQueue<PresentationSurface> = {
         let queue = LockScreenPresentationQueue<PresentationSurface> { [weak self] request, previous in
@@ -70,8 +68,12 @@ final class TerminalLockScreenPresentation {
     private let uptime: () -> TimeInterval
     private let startScreenSaver: () -> Int32?
     private let routeRecovery: () throws -> Bool
+    private let restoreUserDesktop: () throws -> Void
     private var lastRouteCheck: TimeInterval = -.infinity
     private let presentationPreparer: ((Bool, Bool) async throws -> Void)?
+    private let nativeDriver: (any TerminalLockScreenNativeDriving)?
+    private let displaysProvider: @MainActor () -> [TerminalLockScreenDisplay]
+    private let orderNativeWindow: @MainActor (NSWindow) -> Void
     var onLockStateChange: ((Bool) -> Void)?
 
     init(
@@ -79,20 +81,43 @@ final class TerminalLockScreenPresentation {
         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         startScreenSaver: (() -> Int32?)? = nil,
         presentationPreparer: ((Bool, Bool) async throws -> Void)? = nil,
-        routeRecovery: (() throws -> Bool)? = nil
+        routeRecovery: (() throws -> Bool)? = nil,
+        restoreUserDesktop: (() throws -> Void)? = nil,
+        nativeDriver: (any TerminalLockScreenNativeDriving)? = nil,
+        displaysProvider: @escaping @MainActor () -> [TerminalLockScreenDisplay] = { TerminalLockScreenDisplay.current() },
+        orderNativeWindow: @escaping @MainActor (NSWindow) -> Void = { $0.orderFrontRegardless() },
+        runtimeStore: TerminalWallpaperRuntimeStore = TerminalWallpaperRuntimeStore(),
+        routeCoordinator: ScreenSaverRouteRecovery? = nil
     ) {
         self.sessionIsLocked = sessionIsLocked
         self.uptime = uptime
         self.startScreenSaver = startScreenSaver ?? { Self.startFunction?() }
         self.presentationPreparer = presentationPreparer
-        let store = TerminalWallpaperRuntimeStore()
-        let recovery = ScreenSaverRouteRecovery(journalURL: store.appSupportURL.appendingPathComponent("screen-saver-wallpaper-store-backup.json"))
+        self.nativeDriver = nativeDriver ?? terminalLockScreenNativeDriver()
+        let hasNativePresentation = self.nativeDriver != nil
+        self.displaysProvider = displaysProvider
+        self.orderNativeWindow = orderNativeWindow
+        let store = runtimeStore
+        let recovery = routeCoordinator ?? ScreenSaverRouteRecovery(journalURL: store.appSupportURL.appendingPathComponent("screen-saver-wallpaper-store-backup.json"))
         self.routeRecovery = routeRecovery ?? {
             // Injected presentation tests must never touch the live store.
             guard presentationPreparer == nil else { return false }
-            return try recovery.recoverIfNeeded {
+            let ownsSource = {
                 store.lockScreenPlaybackEnabled && store.loadPID() == Int(getpid())
             }
+            guard ownsSource() else { return false }
+            var changed = false
+            if sessionIsLocked() == false {
+                changed = try recovery.restoreDesktopAfterLockSession { ownsSource() && sessionIsLocked() == false }
+            }
+            if try recovery.recoverIfNeeded(shouldProceed: ownsSource) { changed = true }
+            if hasNativePresentation, sessionIsLocked() == true,
+               try recovery.activateDesktopForLockSession(shouldProceed: { ownsSource() && sessionIsLocked() == true }) { changed = true }
+            return changed
+        }
+        self.restoreUserDesktop = restoreUserDesktop ?? {
+            guard presentationPreparer == nil, routeRecovery == nil, store.loadPID() == Int(getpid()) else { return }
+            _ = try recovery.restoreDesktopAfterLockSession()
         }
     }
 
@@ -176,9 +201,12 @@ final class TerminalLockScreenPresentation {
         screenObserver = nil
         retryAt = nil
         saverStartNeedsRetry = false
+        presentationQueue.surface?.hosts.forEach { $0.close() }
         presentationQueue.stop()
         systemRecoveryPending = false
         restartSaverWhenReady = false
+        do { try restoreUserDesktop() }
+        catch { logger.error("User Desktop restoration deferred: \(error.localizedDescription, privacy: .public)") }
         if let activity { ProcessInfo.processInfo.endActivity(activity) }
         activity = nil
     }
@@ -275,32 +303,34 @@ final class TerminalLockScreenPresentation {
         previous: PresentationSurface?
     ) async throws -> PresentationSurface {
         _ = try routeRecovery()
-        #if canImport(Wallpaper)
-        if #available(macOS 26, *) {
-            guard !NSScreen.screens.isEmpty else { throw PresentationError.noDisplays }
+        if let nativeDriver {
+            let screens = displaysProvider()
+            guard !screens.isEmpty else { throw PresentationError.noDisplays }
             var next = PresentationSurface()
-            for screen in NSScreen.screens {
-                guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
-                let display: WallpaperDisplayAssertion
+            for screen in screens {
+                let display: TerminalNativeDisplayLease
+                let host: TerminalNativeWallpaperSurfaceHost
                 if !request.reloadRoute,
-                   let previous, let index = previous.displayIDs.firstIndex(of: id.uint32Value),
-                   let warm = previous.displays[index] as? WallpaperDisplayAssertion {
-                    display = warm
+                   let previous, let index = previous.displayIDs.firstIndex(of: screen.id) {
+                    display = previous.displays[index]
+                    host = previous.hosts[index]
                 } else {
-                    display = try await self.makeDisplay(id.uint32Value)
+                    display = try await nativeDriver.makeDisplay(screen.id)
+                    guard !Task.isCancelled, presentationQueue.isCurrent(request.id) else { throw CancellationError() }
+                    host = TerminalNativeWallpaperSurfaceHost(layer: display.layer, frame: screen.frame, orderWindow: orderNativeWindow)
                 }
                 guard !Task.isCancelled, presentationQueue.isCurrent(request.id) else { throw CancellationError() }
-                let presentation = try await Self.presentation(for: DisplayBox(display), locked: request.locked)
+                let presentation = try await nativeDriver.makePresentation(for: display, locked: request.locked)
                 guard !Task.isCancelled, presentationQueue.isCurrent(request.id) else { throw CancellationError() }
                 next.displays.append(display)
-                next.displayIDs.append(id.uint32Value)
-                next.presentations.append(presentation.value)
+                next.displayIDs.append(screen.id)
+                next.presentations.append(presentation)
+                next.hosts.append(host)
             }
             guard !next.displays.isEmpty else { throw PresentationError.noDisplays }
-            self.logger.notice("Terminal native presentation ready: locked=\(request.locked), displays=\(next.displays.count)")
+            self.logger.notice("Terminal native presentation ready: locked=\(request.locked), displays=\(next.displays.count), hostedLayers=\(next.hosts.count)")
             return next
         }
-        #endif
         return PresentationSurface()
     }
 
@@ -328,25 +358,4 @@ final class TerminalLockScreenPresentation {
         return unsafeBitCast(symbol, to: (@convention(c) () -> Int32).self)
     }()
 
-    #if canImport(Wallpaper)
-    // Use the exported allocator, not a devirtualized hidden initializer.
-    @_optimize(none)
-    private func makeDisplay(_ id: UInt32) async throws -> WallpaperDisplayAssertion {
-        try await WallpaperDisplayAssertion(displayID: id, attributes: .screenSaver)
-    }
-    private final class DisplayBox: @unchecked Sendable {
-        let value: WallpaperDisplayAssertion
-        init(_ value: WallpaperDisplayAssertion) { self.value = value }
-    }
-    private final class PresentationBox: @unchecked Sendable {
-        let value: WallpaperPresentationModeAssertion
-        init(_ value: WallpaperPresentationModeAssertion) { self.value = value }
-    }
-    private nonisolated static func presentation(for display: DisplayBox, locked: Bool) async throws -> PresentationBox {
-        if locked {
-            return PresentationBox(try await WallpaperPresentationModeAssertion.takeLockedAssertion(displayAssertion: display.value))
-        }
-        return PresentationBox(try await WallpaperPresentationModeAssertion.takeIdleAssertion(displayAssertion: display.value))
-    }
-    #endif
 }

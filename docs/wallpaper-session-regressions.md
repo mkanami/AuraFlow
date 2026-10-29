@@ -62,3 +62,10 @@ User wallpaper ownership is covered by the same focused runner:
 - `terminalLockStartsAuraOnlyAfterItsLockedPresentationIsReady` holds the asynchronous Locked assertion and requires zero saver starts until readiness, followed by one start. Existing notification tests also require confirmation from WindowServer before treating the session as locked.
 
 The focused runner skips `terminalDesktopRecoversExistingStaticWindow` and `terminalDisplayDisappearancePreservesLease`, which open real Desktop windows. They remain part of the complete suite for a dedicated session. Store and Screen Saver tests use temporary files and recording system operations.
+
+Terminal's secure handoff has two additional suites in the focused runner:
+
+- `TerminalNativeSurfaceHostingTests` runs the production presentation path with only opaque native assertion calls replaced. Every display's remote layer must be attached to a transparent host before the saver starts. Window ordering is intercepted. Arbitrary display arrangements, delayed display enumeration, failed replacement, unlock and Stop are covered; failed replacements retain the prior host, and late completions cannot start a saver after unlock.
+- `TerminalLockScreenRouteTests` verifies the temporary live provider required by loginwindow's Desktop request. Complete user descriptors are saved before the lock-session store write and restored after unlock or interrupted login; manual user changes survive, cancellation cannot commit a promotion, and a corrupt snapshot cannot clear the Desktop to a system default. The combined native handoff test verifies route selection before both the Locked assertion and saver entry point, plus restoration on unlock and Stop.
+
+Only a confirmed locked session with the owning Terminal helper and enabled Lock Screen playback may publish this temporary Desktop route. Its separate session journal is also consumed by source-failure recovery. The normal unlocked Desktop retains the user's native wallpaper choice underneath Aura's player; no still frame is installed as wallpaper.

@@ -116,6 +116,7 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
     }
 
     private func restoreIfOwned(preferCurrentDesktop: Bool) throws {
+        try routeRecovery.restoreDesktopAfterLockSession()
         guard FileManager.default.fileExists(atPath: journalURL.path) else { return }
         try routeRecovery.withExclusiveAccess { try restoreLocked(preferCurrentDesktop: preferCurrentDesktop) }
     }

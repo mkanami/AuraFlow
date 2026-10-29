@@ -8,6 +8,7 @@ public final class WallpaperSessionRecovery {
 
     private let store: WallpaperRuntimeStore
     private let wallpaperStoreURL: URL
+    private let screenSaverURL: URL
     private let runtimeIsLive: () -> Bool
     private let sessionIsLocked: () -> Bool?
     private let wait: (TimeInterval) -> Void
@@ -25,10 +26,12 @@ public final class WallpaperSessionRecovery {
         requestAutostart: (() -> Void)? = nil,
         suspendNative: ((() -> Bool) throws -> Bool)? = nil,
         refresh: ((() throws -> Void) throws -> Void)? = nil,
-        sessionIdentifier: @escaping () -> String? = { LockScreenSession.currentIdentifier() }
+        sessionIdentifier: @escaping () -> String? = { LockScreenSession.currentIdentifier() },
+        screenSaverURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Screen Savers/AuraFlowLockScreen.saver")
     ) {
         self.store = store
         self.wallpaperStoreURL = wallpaperStoreURL
+        self.screenSaverURL = screenSaverURL
         let live = runtimeIsLive ?? { Self.runtimeIsLive(in: store) }
         self.runtimeIsLive = live
         self.sessionIsLocked = sessionIsLocked
@@ -134,7 +137,7 @@ public final class WallpaperSessionRecovery {
         do { changed = try suspendNative { self.canRestore } }
         catch { firstError = error }
         for journal in saverJournals {
-            let recovery = ScreenSaverRouteRecovery(storeURL: wallpaperStoreURL, journalURL: journal)
+            let recovery = ScreenSaverRouteRecovery(storeURL: wallpaperStoreURL, journalURL: journal, saverURL: screenSaverURL)
             do {
                 if try recovery.suspendIfNeeded(shouldProceed: { self.canRestore }) { changed = true }
             } catch { firstError = firstError ?? error }
