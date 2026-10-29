@@ -3796,6 +3796,65 @@ func repeatedNativeStartRemoveStartAcceptsDesktopUsageTimestampUpdates(lockOnly:
     #expect(completedMarker["completed"] as? Bool == true)
 }
 
+// A process interruption can leave an isolated Start journal unfinished while
+// WallpaperAgent still has Aura in Desktop. Retrying only Idle cannot validate
+// that mixed store and used to restart the provider on every health check.
+@Test(arguments: ["apply", "repair", "rearm"], [false, true])
+func incompleteIsolatedGenerationRecoversWithoutRepeatingProviderRestarts(entry: String, lockOnly: Bool) async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    try await fixture.installer.install(videoURL: fixture.videoURL)
+    var liveRoot = try readWallpaperStore(fixture.storeURL)
+    let userRoot = replaceTestDesktopModes(in: liveRoot,
+        provider: "com.apple.wallpaper.choice.user-current")
+    try writeWallpaperStore(userRoot,
+        to: fixture.stateURL.appendingPathComponent("Index.latest-user.plist"))
+    // Match the observed mixed state: a real user default plus stale managed
+    // Desktop routes on the aggregate, Spaces, and Displays.
+    liveRoot["SystemDefault"] = userRoot["SystemDefault"]
+    try writeWallpaperStore(liveRoot, to: fixture.storeURL)
+    let expectedDesktopRoutes = testDesktopRouteData(in: userRoot)
+    let markerURL = fixture.stateURL.appendingPathComponent("installation.json")
+    var marker = try #require(JSONSerialization.jsonObject(
+        with: Data(contentsOf: markerURL)) as? [String: Any])
+    marker["completed"] = false
+    marker["desktopIncluded"] = false
+    marker["lockScreenOnly"] = lockOnly
+    marker["desiredMode"] = lockOnly ? "lockOnly" : "desktopAgentIsolated"
+    marker["playbackSpeed"] = 1.5
+    marker["scaleMode"] = "fit"
+    marker["state"] = "preparing"
+    try JSONSerialization.data(withJSONObject: marker).write(to: markerURL, options: .atomic)
+
+    switch entry {
+    case "apply":
+        if lockOnly {
+            try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+        } else {
+            try await fixture.installer.installForDesktopAgent(videoURL: fixture.videoURL)
+        }
+    case "repair":
+        _ = try await fixture.installer.repair(videoURL: fixture.videoURL, shouldProceed: { true })
+    default:
+        _ = try await fixture.installer.rearmForNextLock(videoURL: fixture.videoURL)
+    }
+    #expect(fixture.installer.installationConfirmed)
+    #expect(fixture.installer.requiresLockScreenSessionPromotion)
+    #expect(fixture.installer.isLockScreenOnlyInstallation == lockOnly)
+    #expect(testDesktopRouteData(in: try readWallpaperStore(fixture.storeURL)) == expectedDesktopRoutes)
+    let completed = try #require(JSONSerialization.jsonObject(
+        with: Data(contentsOf: markerURL)) as? [String: Any])
+    #expect(completed["completed"] as? Bool == true)
+    #expect(completed["desiredMode"] as? String == (lockOnly ? "lockOnly" : "desktopAgentIsolated"))
+    #expect(completed["playbackSpeed"] as? Double == (entry == "apply" ? 1.0 : 1.5))
+    #expect(completed["scaleMode"] as? String == (entry == "apply" ? "fill" : "fit"))
+    let refreshes = fixture.refreshCounter.count
+    for _ in 0..<5 {
+        #expect(try await !fixture.installer.repair(videoURL: fixture.videoURL, shouldProceed: { true }))
+    }
+    #expect(fixture.refreshCounter.count == refreshes)
+}
+
 @Test func corruptModernLockScreenMarkerStillRestoresBackup() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

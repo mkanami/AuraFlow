@@ -258,10 +258,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
             && markerUsesDedicatedLockOnlyRuntime(marker)
     }
 
-    private var isDesktopAgentIsolatedInstallation: Bool {
+    // Recovery needs the journal's intended mode even when the original
+    // transaction was interrupted before it could advertise readiness.
+    private var desktopAgentIsolatedIntent: Bool {
         guard let marker = loadMarker() else { return false }
-        return marker.completed == true
-            && marker.lockScreenOnly == false
+        return marker.lockScreenOnly == false
             && marker.desktopIncluded == false
     }
 
@@ -993,9 +994,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
     ) async throws -> Bool {
         try await withMutationCoordinator {
             try await withCrossProcessLockAsync {
-                let dedicatedLockOnly = isLockScreenOnlyInstallation
+                let dedicatedLockOnly = loadMarker().map {
+                    markerUsesDedicatedLockOnlyRuntime($0)
+                } ?? false
                 let isolatedDesktopAgent =
-                    isDesktopAgentIsolatedInstallation
+                    desktopAgentIsolatedIntent
                 let settings = installedMediaSettings(for: videoURL)
                 return try await installLocked(
                     videoURL: videoURL,
@@ -1042,9 +1045,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                     }
                     return false
                 }
-                let dedicatedLockOnly = isLockScreenOnlyInstallation
+                let dedicatedLockOnly = loadMarker().map {
+                    markerUsesDedicatedLockOnlyRuntime($0)
+                } ?? false
                 let isolatedDesktopAgent =
-                    isDesktopAgentIsolatedInstallation
+                    desktopAgentIsolatedIntent
                 let settings = installedMediaSettings(for: videoURL)
                 return try await installLocked(
                     videoURL: videoURL,
@@ -1408,14 +1413,23 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         }
 
         // For a newly isolated route, the live Index is the sole source of
-        // truth for Desktop. When migrating an older shared Start marker, its
-        // live Desktop can still be Aura's Aerial route; merge the serialized
-        // latest-user journal with the original backup exactly once instead.
+        // truth for user Desktop routes. A shared migration or interrupted
+        // isolated install can leave Aura's own route in Desktop. Restore only
+        // managed routes from the user journal before validating the Idle
+        // installation; leaving them there makes every retry fail and restart
+        // the provider again.
         let updateBaseStoreData: Data
         if !scope.includesDesktop {
-            if let existingMarker,
-               existingMarker.completed == true,
-               markerStoreIncludesDesktop(existingMarker) {
+            let currentRoot = try wallpaperStoreTransaction
+                .propertyListDictionary(from: currentStoreDataForAttempt)
+            let hasManagedDesktop = currentRoot.map {
+                wallpaperStoreTransaction.wallpaperStoreContainsAuraInDesktop(
+                    $0, assetID: assetID)
+            } ?? false
+            let migratingSharedInstallation = existingMarker.map {
+                $0.completed == true && markerStoreIncludesDesktop($0)
+            } ?? false
+            if hasManagedDesktop || migratingSharedInstallation {
                 updateBaseStoreData = try wallpaperStoreTransaction
                     .captureLatestUserWallpaperStoreData(
                         from: currentStoreDataForAttempt,
@@ -3256,7 +3270,6 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
         for videoURL: URL
     ) -> (speed: Double, scaleMode: WallpaperScaleMode) {
         guard let marker = loadMarker(),
-              marker.completed == true,
               URL(fileURLWithPath: marker.videoPath).standardizedFileURL
                 == videoURL.standardizedFileURL
         else {
