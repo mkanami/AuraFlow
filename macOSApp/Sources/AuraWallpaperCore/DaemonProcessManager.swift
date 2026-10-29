@@ -144,12 +144,14 @@ public final class DaemonProcessManager {
     /// file and mutate the Lock Screen alongside the current agent.
     @discardableResult
     public func terminateOrphanedProcesses(
-        timeout: TimeInterval = 1.0
+        timeout: TimeInterval = 1.0,
+        minimumAge: TimeInterval = 5.0,
+        processIDs: [Int]? = nil,
+        protectedPIDs: Set<Int> = []
     ) -> [Int] {
-        let persistedPID = store.loadPID()
-        let orphanedPIDs = Self.runningProcessIDs()
+        let orphanedPIDs = (processIDs ?? Self.runningProcessIDs())
             .filter { pid in
-                pid != persistedPID
+                !protectedPIDs.contains(pid) && canCleanUpOrphan(pid, minimumAge: minimumAge)
                     && expectedExecutablePaths.contains(
                         Self.normalizedExecutablePath(
                             Self.processExecutablePath(for: pid) ?? ""
@@ -159,12 +161,22 @@ public final class DaemonProcessManager {
 
         var terminatedPIDs: [Int] = []
         for pid in orphanedPIDs {
-            guard terminateOrphanedProcess(pid, timeout: timeout) else {
+            guard terminateOrphanedProcess(pid, timeout: timeout, minimumAge: minimumAge) else {
                 continue
             }
             terminatedPIDs.append(pid)
         }
         return terminatedPIDs
+    }
+
+    private func canCleanUpOrphan(_ pid: Int, minimumAge: TimeInterval) -> Bool {
+        let recoveryPID = (try? String(contentsOf: store.sessionRecoveryPIDURL))
+            .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        guard pid != store.loadPID(), pid != recoveryPID,
+              let startedAt = Self.processStartTimeMicros(for: pid) else { return false }
+        // A launchd helper may not have published its PID yet. It is starting,
+        // not orphaned; leave time for the initial identity handshake.
+        return Date().timeIntervalSince1970 - Double(startedAt) / 1_000_000 >= minimumAge
     }
 
     public func isRunning(pid: Int?) -> Bool {
@@ -398,13 +410,15 @@ public final class DaemonProcessManager {
 
     private func terminateOrphanedProcess(
         _ pid: Int,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        minimumAge: TimeInterval
     ) -> Bool {
         // The executable path was resolved immediately before this call and
         // matched one of the exact AuraFlow helper paths. Re-check it before
         // every signal so PID reuse cannot turn cleanup into a foreign-process
         // kill.
-        guard let executablePath = Self.processExecutablePath(for: pid),
+        guard canCleanUpOrphan(pid, minimumAge: minimumAge),
+              let executablePath = Self.processExecutablePath(for: pid),
               expectedExecutablePaths.contains(
                   Self.normalizedExecutablePath(executablePath)
               )
@@ -416,7 +430,8 @@ public final class DaemonProcessManager {
         guard !Self.isProcessAlive(pid: pid)
             || Self.waitForExit(pid: pid, timeout: max(timeout, 0.2))
         else {
-            guard let currentPath = Self.processExecutablePath(for: pid),
+            guard canCleanUpOrphan(pid, minimumAge: minimumAge),
+                  let currentPath = Self.processExecutablePath(for: pid),
                   expectedExecutablePaths.contains(
                       Self.normalizedExecutablePath(currentPath)
                   )

@@ -43,8 +43,10 @@ public final class AutostartManager {
     }
 
     public func migrateExistingLaunchAgentIfNeeded() throws {
-        guard store.launchAgentPlistExists(),
-              store.loadConfig().autostart == true
+        let config = store.loadConfig()
+        guard config.autostart == true,
+              let source = store.effectiveLockScreenSourceURL(for: config),
+              FileManager.default.fileExists(atPath: source.path)
         else {
             return
         }

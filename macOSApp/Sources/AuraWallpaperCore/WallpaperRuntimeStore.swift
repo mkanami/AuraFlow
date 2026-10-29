@@ -59,15 +59,18 @@ public struct LaunchAgentStatus: Equatable, Sendable {
     public let plistExists: Bool
     public let serviceLoaded: Bool
     public let serviceRunning: Bool
+    public let pid: Int?
 
     public init(
         plistExists: Bool,
         serviceLoaded: Bool,
-        serviceRunning: Bool
+        serviceRunning: Bool,
+        pid: Int? = nil
     ) {
         self.plistExists = plistExists
         self.serviceLoaded = serviceLoaded
         self.serviceRunning = serviceRunning
+        self.pid = pid
     }
 
     public var enabled: Bool {
@@ -167,6 +170,7 @@ public final class WallpaperRuntimeStore {
     public var pidURL: URL { fileStore.pidURL }
     public var pausedURL: URL { fileStore.pausedURL }
     public var daemonIdentityURL: URL { fileStore.daemonIdentityURL }
+    public var sessionRecoveryPIDURL: URL { appSupportURL.appendingPathComponent("session-recovery.pid") }
     public var wallpaperRestorePendingURL: URL { fileStore.wallpaperRestorePendingURL }
     public var lastFrameURL: URL { fileStore.lastFrameURL }
     public var lastFrameSourceURL: URL { fileStore.lastFrameSourceURL }
@@ -420,7 +424,9 @@ public final class WallpaperRuntimeStore {
             running: owned && !paused && !lockScreenOnly,
             config: config,
             pid: owned && !lockScreenOnly ? pid : nil,
-            autostart: launchAgent.enabled,
+            // The saved preference is independent of a process that may
+            // still be starting after login. Service health has its own fields.
+            autostart: config.autostart ?? false,
             paused: paused,
             wallpaper_restored: wallpaperRestored,
             wallpaper_restore_status: wallpaperRestoreStatus,
@@ -576,11 +582,13 @@ public final class WallpaperRuntimeStore {
 
     public func enableLaunchAgent(
         helperPath: String,
-        nativeBridgePath: String? = nil
+        nativeBridgePath: String? = nil,
+        restartLoadedService: Bool = false
     ) throws {
         try launchAgentManager().enableLaunchAgent(
             helperPath: helperPath,
-            nativeBridgePath: nativeBridgePath
+            nativeBridgePath: nativeBridgePath,
+            restartLoadedService: restartLoadedService
         )
     }
 

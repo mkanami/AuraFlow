@@ -410,6 +410,14 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             "AuraFlow wallpaper agent is active"
         )
         NSApp.setActivationPolicy(.accessory)
+        // Commands belong to the process/session that received them. A saved
+        // reload or termination from before reboot must not replay over the
+        // fresh config, restart the decoder, or shut the new login helper down.
+        let previousCommand = store.loadCommand()
+        lastCommandID = previousCommand?.id
+        lastCommandOperationID = previousCommand?.operationID
+        config = store.loadConfig()
+        lockScreenState = LockScreenStateMachine(isEnabled: config.show_on_lock_screen ?? false)
         // Claim the runtime before any startup cleanup. This lets the same
         // ownership check protect the legacy fallback path below when an old
         // helper is terminating during LaunchAgent migration.
@@ -2210,7 +2218,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let image: NSImage?
         if WallpaperMediaKind.forURL(videoURL).isStaticImage {
             image = NSImage(contentsOf: videoURL)
-        } else if let frameURL = try? store.captureStillFrame(from: videoURL) {
+        } else if let frameURL = try? store.ensureCurrentStillFrame(from: videoURL) {
             image = NSImage(contentsOf: frameURL)
         } else {
             image = nil
@@ -2780,12 +2788,24 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 }
 
 if CommandLine.arguments.contains("--recover-wallpaper-session") {
-    do {
-        _ = try WallpaperSessionRecovery().reconcile()
-    } catch {
-        fputs("AuraFlow session recovery deferred: \(error.localizedDescription)\n", stderr)
-        exit(1)
-    }
+    let result: Int32 = {
+        let store = WallpaperRuntimeStore()
+        try? store.ensureDirectories()
+        try? String(getpid()).write(to: store.sessionRecoveryPIDURL, atomically: true, encoding: .utf8)
+        defer {
+            if (try? String(contentsOf: store.sessionRecoveryPIDURL)) == String(getpid()) {
+                try? FileManager.default.removeItem(at: store.sessionRecoveryPIDURL)
+            }
+        }
+        do {
+            _ = try WallpaperSessionRecovery(store: store).reconcile()
+            return 0
+        } catch {
+            fputs("AuraFlow session recovery deferred: \(error.localizedDescription)\n", stderr)
+            return 1
+        }
+    }()
+    if result != 0 { exit(result) }
 } else {
     MainActor.assumeIsolated {
         let app = NSApplication.shared

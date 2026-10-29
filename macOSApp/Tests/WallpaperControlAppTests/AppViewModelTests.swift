@@ -2298,7 +2298,7 @@ private func pngData(for image: CGImage) -> Data {
 
     await viewModel.loadStatus()
 
-    #expect(viewModel.autostartEnabled == false)
+    #expect(viewModel.autostartEnabled == true)
     #expect(
         viewModel.alertMessage
             == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not loaded."
@@ -2364,6 +2364,81 @@ private func pngData(for image: CGImage) -> Data {
         viewModel.statusMessage
             == "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
     )
+}
+
+@MainActor
+@Test func savedAutostartStaysCheckedWhileLoginServiceStartsAndClearsOldWarning() async throws {
+    let controller = MockNativeWallpaperController()
+    controller.statusConfigAutostart = true
+    controller.statusAutostart = false
+    controller.statusAutostartPlistExists = true
+    controller.statusAutostartServiceLoaded = true
+    controller.statusAutostartServiceRunning = false
+    let viewModel = AppViewModel(controller: controller)
+    await viewModel.loadStatus()
+    #expect(viewModel.autostartEnabled)
+    #expect(viewModel.alertMessage?.contains("not running") == true)
+    viewModel.statusMessage = viewModel.alertMessage
+
+    controller.statusAutostart = true
+    controller.statusAutostartServiceRunning = true
+    await viewModel.loadStatus()
+    #expect(viewModel.autostartEnabled)
+    #expect(viewModel.alertMessage == nil)
+    #expect(viewModel.statusMessage == nil)
+}
+
+@MainActor
+@Test func loginStartsFromSavedPreferenceEvenWhileServiceReportsNotRunning() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("AutostartPending-\(UUID())")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let video = root.appendingPathComponent("wallpaper.mp4")
+    try Data("fixture".utf8).write(to: video)
+    let controller = MockNativeWallpaperController()
+    controller.configuredVideoURL = video
+    controller.statusConfigAutostart = true
+    controller.statusAutostart = false
+    controller.statusAutostartPlistExists = true
+    controller.statusAutostartServiceLoaded = true
+    controller.statusAutostartServiceRunning = false
+    let viewModel = AppViewModel(controller: controller, appSupportDirectoryURL: root)
+    await viewModel.loadStatus()
+    #expect(controller.startCallCount == 1)
+    #expect(viewModel.autostartEnabled)
+    #expect(viewModel.isRunning)
+    #expect(viewModel.alertMessage == nil)
+}
+
+@MainActor
+@Test func savedAutostartIsVisibleBeforeControllerStatusArrives() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("AutostartInitial-\(UUID())")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var config = ControlConfig.defaultConfig
+    config.autostart = true
+    try JSONEncoder().encode(config).write(to: root.appendingPathComponent("config.json"))
+    let viewModel = AppViewModel(controller: MockNativeWallpaperController(), appSupportDirectoryURL: root)
+    #expect(viewModel.autostartEnabled)
+}
+
+@MainActor
+@Test(arguments: [true, false])
+func autostartDoesNotDuplicateStartingHelperOrConvertLockOnlyMode(serviceRunning: Bool) async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("AutostartHandoff-\(UUID())")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let video = root.appendingPathComponent("wallpaper.mp4")
+    try Data("fixture".utf8).write(to: video)
+    let controller = MockNativeWallpaperController()
+    controller.configuredVideoURL = video
+    controller.statusConfigAutostart = true
+    controller.statusAutostartServiceRunning = serviceRunning
+    controller.statusLockScreenOnly = !serviceRunning
+    let viewModel = AppViewModel(controller: controller, appSupportDirectoryURL: root)
+    await viewModel.loadStatus()
+    #expect(controller.startCallCount == 0)
+    #expect(viewModel.autostartEnabled)
 }
 
 @MainActor

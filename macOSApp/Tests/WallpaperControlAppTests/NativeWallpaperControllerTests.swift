@@ -1598,7 +1598,7 @@ func runtimeNativeBridgeCancellationKeepsSecureRoute(reason: String) throws {
     #expect(launchctlCalls == [["print", "gui/\(getuid())/com.andrijvergeles.auraflow"]])
 }
 
-@Test func waitingLaunchAgentIsRebootstrapped() async throws {
+@Test func waitingLaunchAgentStartsWithoutBeingUnloaded() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("AuraFlowLaunchAgentWaiting-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1624,8 +1624,7 @@ func runtimeNativeBridgeCancellationKeepsSecureRoute(reason: String) throws {
     #expect(
         launchctlCalls == [
             ["print", "gui/\(getuid())/com.andrijvergeles.auraflow"],
-            ["bootout", "gui/\(getuid())/com.andrijvergeles.auraflow"],
-            ["bootstrap", "gui/\(getuid())", store.launchAgentURL.path]
+            ["kickstart", "gui/\(getuid())/com.andrijvergeles.auraflow"]
         ]
     )
 }

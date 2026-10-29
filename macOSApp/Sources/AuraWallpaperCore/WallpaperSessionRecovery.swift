@@ -11,6 +11,7 @@ public final class WallpaperSessionRecovery {
     private let runtimeIsLive: () -> Bool
     private let sessionIsLocked: () -> Bool?
     private let wait: (TimeInterval) -> Void
+    private let requestAutostart: () -> Void
     private let suspendNative: (() -> Bool) throws -> Bool
     private let refresh: (() throws -> Void) throws -> Void
 
@@ -20,6 +21,7 @@ public final class WallpaperSessionRecovery {
         runtimeIsLive: (() -> Bool)? = nil,
         sessionIsLocked: @escaping () -> Bool? = { LockScreenSession.currentIsLocked() },
         wait: @escaping (TimeInterval) -> Void = Thread.sleep,
+        requestAutostart: (() -> Void)? = nil,
         suspendNative: ((() -> Bool) throws -> Bool)? = nil,
         refresh: ((() throws -> Void) throws -> Void)? = nil
     ) {
@@ -29,6 +31,17 @@ public final class WallpaperSessionRecovery {
         self.runtimeIsLive = live
         self.sessionIsLocked = sessionIsLocked
         self.wait = wait
+        self.requestAutostart = requestAutostart ?? {
+            let runtime = store.appSupportURL.appendingPathComponent("Runtime")
+            let helper = runtime.appendingPathComponent("AuraWallpaperAgent")
+            let bridge = runtime.appendingPathComponent("AuraWallpaperNativeBridge")
+            guard FileManager.default.isExecutableFile(atPath: helper.path) else { return }
+            // Recover a missing registration or wake a waiting launchd job
+            // before falling back. This path does not require the GUI to open.
+            try? AutostartManager(store: store, helperURL: helper,
+                nativeBridgeURL: FileManager.default.isExecutableFile(atPath: bridge.path) ? bridge : nil)
+                .migrateExistingLaunchAgentIfNeeded()
+        }
         self.suspendNative = suspendNative ?? { shouldProceed in
             let installer = AerialLockScreenInstaller(
                 wallpaperStoreURL: wallpaperStoreURL,
@@ -49,9 +62,12 @@ public final class WallpaperSessionRecovery {
 
     @discardableResult
     public func reconcile(autostartGracePeriod: TimeInterval = 10, installationGracePeriod: TimeInterval = 5) throws -> Result {
-        guard hasManagedInstallation else { return .notNeeded }
+        let config = store.loadConfig()
+        let hasMediaAutostart = config.autostart == true
+            && store.effectiveLockScreenSourceURL(for: config).map { FileManager.default.fileExists(atPath: $0.path) } == true
+        guard hasManagedInstallation || hasMediaAutostart else { return .notNeeded }
         guard !runtimeIsLive() else { return .runtimeActive }
-        guard sessionIsLocked() == false else { return .deferred }
+        guard sessionIsLocked() != nil else { return .deferred }
         // Lock-only installs commit their route before launching their helper.
         // A recovery tick in that small handoff must not invalidate Apply's
         // confirmation. Old journals after a reboot have no such grace lease.
@@ -62,6 +78,8 @@ public final class WallpaperSessionRecovery {
             return age >= 0 && age < installationGracePeriod
         }) { return .deferred }
         if autostartRequested {
+            requestAutostart()
+            if runtimeIsLive() { return .runtimeActive }
             // launchd may start this job before the selected playback helper.
             // Wait for it, while leaving the saved native installation intact.
             var remaining = max(0, autostartGracePeriod)

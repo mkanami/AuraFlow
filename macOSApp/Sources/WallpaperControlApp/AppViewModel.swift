@@ -431,6 +431,8 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         self.terminalLockScreenToggle = terminalLockScreenToggle ?? { enabled in
             try NativeTerminalWallpaperController(store: terminalStore).setShowOnLockScreen(enabled)
         }
+        let previousHelperPID = helperURL == nil
+            ? (store.launchAgentStatus().pid ?? store.loadPID()) : nil
         let helperResolution: RuntimeHelperResolution
         if let helperURL {
             helperResolution = RuntimeHelperResolution(
@@ -502,14 +504,18 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         (self.lockScreenPlatform as? LockScreenSaverInstalling)?
             .refreshInstalledCompatibilityComponentIfNeeded()
         migrateExistingLaunchAgentIfNeeded()
+        let loginJobPID = store.launchAgentStatus().pid
         let terminatedOrphanedPIDs = daemonProcessManager
-            .terminateOrphanedProcesses(timeout: 1.0)
+            .terminateOrphanedProcesses(timeout: 1.0, protectedPIDs: Set([loginJobPID].compactMap { $0 }))
         if !terminatedOrphanedPIDs.isEmpty {
             lockScreenLifecycleLogger.notice(
                 "Terminated orphaned AuraFlow wallpaper agents: \(terminatedOrphanedPIDs.map(String.init).joined(separator: ", "), privacy: .public)"
             )
         }
-        if helperResolution.didUpdateInstalledCopy {
+        if helperResolution.didUpdateInstalledCopy,
+           let previousHelperPID, previousHelperPID == store.loadPID() {
+            // A job just started by migration already uses the new binary.
+            // Restart only the helper that existed before the copy changed.
             try restartRunningAgentAfterHelperUpdate()
         }
         if helperURL == nil,
@@ -699,8 +705,10 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         else {
             return
         }
-        try launchAgentIfNeeded(lockScreenOnly: lockScreenOnlyAgent)
-        try send(runtimeWasPaused ? .pause : .reload, config: config)
+        store.markPaused(runtimeWasPaused)
+        try launchAgentIfNeeded(lockScreenOnly: lockScreenOnlyAgent, restartLoadedService: true)
+        // A fresh helper reads both values at startup. Sending Reload here
+        // would decode the same wallpaper a second time just after login.
     }
 
     private func recoverInterruptedWallpaperRemovalIfNeeded() {
@@ -735,7 +743,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         )
     }
 
-    private func launchAgentIfNeeded(lockScreenOnly: Bool = false) throws {
+    private func launchAgentIfNeeded(lockScreenOnly: Bool = false, restartLoadedService: Bool = false) throws {
         if daemonProcessManager.isRunning {
             return
         }
@@ -745,6 +753,14 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         if lockScreenOnly {
             store.markLockScreenAgentReady(false)
             store.markLockScreenAgentStarted(false)
+        }
+        if store.loadConfig().autostart == true {
+            store.markLockScreenOnlyAgent(lockScreenOnly)
+            // A login job may already be queued while its PID handshake is
+            // pending. Use that job instead of racing it with a manual child.
+            try store.enableLaunchAgent(helperPath: helperURL.path,
+                nativeBridgePath: nativeBridgeURL?.path, restartLoadedService: restartLoadedService)
+            return
         }
         let task = Process()
         task.executableURL = helperURL
@@ -2728,6 +2744,10 @@ final class AppViewModel: ObservableObject {
             transferCoordinator: catalogTransferCoordinator
         )
         self.appSupportDirectoryURL = resolvedAppSupportURL
+        if let data = try? Data(contentsOf: resolvedAppSupportURL.appendingPathComponent("config.json")),
+           let saved = try? JSONDecoder().decode(ControlConfig.self, from: data) {
+            autostartEnabled = saved.autostart ?? false
+        }
         if let controller {
             self.controller = controller
             self.controllerAvailable = true
@@ -2968,7 +2988,7 @@ final class AppViewModel: ObservableObject {
 
         do {
             let status = try await runAsync { try controller.status() }
-            apply(status: status)
+            apply(status: status, reportAutostartWarning: false)
             let needsNormalizationURL = configuredVideoNeedingCompatibilityNormalization(from: status)
             recordBridgeSuccess()
             await startFromAutostartIfNeeded(using: status)
@@ -4446,7 +4466,8 @@ final class AppViewModel: ObservableObject {
     private func apply(
         status: ControlStatus,
         refreshPreview: Bool = true,
-        backgroundUpdate: Bool = false
+        backgroundUpdate: Bool = false,
+        reportAutostartWarning: Bool = true
     ) {
         let hasConfiguredVideo = !status.config.video_path.isEmpty
         let paused = status.paused ?? false
@@ -4488,13 +4509,16 @@ final class AppViewModel: ObservableObject {
             to: lockScreenOnlyActive
         )
         Self.setIfChanged(&previewViewModel.playbackSpeed, to: status.config.playback_speed)
-        Self.setIfChanged(&autostartEnabled, to: status.autostart ?? status.config.autostart ?? false)
-        if let warning = autostartWarning(for: status) {
+        Self.setIfChanged(&autostartEnabled, to: status.config.autostart ?? status.autostart ?? false)
+        if reportAutostartWarning, let warning = autostartWarning(for: status) {
             if backgroundUpdate {
                 statusMessage = warning
             } else {
                 alertMessage = warning
             }
+        } else {
+            if alertMessage?.hasPrefix("Launch at Login is enabled, but ") == true { alertMessage = nil }
+            if statusMessage?.hasPrefix("Launch at Login is enabled, but ") == true { statusMessage = nil }
         }
         let blendChanged = blendInterpolationTask == nil
             && blendInterpolationEnabled != (status.config.blend_interpolation ?? false)
@@ -4565,7 +4589,6 @@ final class AppViewModel: ObservableObject {
 
     private func autostartWarning(for status: ControlStatus) -> String? {
         guard status.config.autostart == true,
-              status.autostart != true,
               status.autostart_plist_exists != nil
                 || status.autostart_service_loaded != nil
         else {
@@ -4578,10 +4601,12 @@ final class AppViewModel: ObservableObject {
         if status.autostart_service_loaded == false {
             return "Launch at Login is enabled, but the AuraFlow LaunchAgent is not loaded."
         }
-        if status.autostart_service_running == false {
+        if status.autostart_service_running == false,
+           !status.running, status.pid == nil,
+           !(status.lock_screen_only == true && status.health?.available == true) {
             return "Launch at Login is enabled, but the AuraFlow LaunchAgent is not running."
         }
-        return "Launch at Login is enabled, but the AuraFlow LaunchAgent is unavailable."
+        return nil
     }
 
     private func recoverPlaybackIfUnexpectedlyStopped() async {
@@ -5651,9 +5676,14 @@ final class AppViewModel: ObservableObject {
         guard !didAttemptAutostartOnLaunch else { return }
         didAttemptAutostartOnLaunch = true
 
-        let autostart = status.autostart ?? status.config.autostart ?? false
+        let autostart = status.config.autostart ?? status.autostart ?? false
         guard autostart else { return }
         guard !status.running else { return }
+        // launchd can have started the helper before it publishes its PID.
+        // Let that startup finish instead of reloading its decoder through
+        // Start. Dedicated Lock Screen playback must also keep its mode.
+        guard status.autostart_service_running != true,
+              status.lock_screen_only != true else { return }
         guard !status.config.video_path.isEmpty else { return }
 
         do {

@@ -41,6 +41,14 @@ public final class LaunchAgentManager {
         let plistExists = launchAgentPlistExists()
         let result = launchctlRunner(["print", serviceName])
         let serviceLoaded = result.succeeded
+        let pidPrefix = "pid = "
+        let servicePID = result.output.split(whereSeparator: \.isNewline).compactMap { line -> Int? in
+            let value = line.trimmingCharacters(in: .whitespaces)
+            guard value.hasPrefix(pidPrefix),
+                  let pid = Int(value.dropFirst(pidPrefix.count).trimmingCharacters(in: .whitespaces)),
+                  pid > 0 else { return nil }
+            return pid
+        }.first
         let serviceRunning = serviceLoaded
             && result.output
                 .split(whereSeparator: \.isNewline)
@@ -62,7 +70,8 @@ public final class LaunchAgentManager {
         return LaunchAgentStatus(
             plistExists: plistExists,
             serviceLoaded: serviceLoaded,
-            serviceRunning: serviceRunning
+            serviceRunning: serviceRunning,
+            pid: serviceLoaded ? servicePID : nil
         )
     }
 
@@ -72,7 +81,8 @@ public final class LaunchAgentManager {
 
     public func enableLaunchAgent(
         helperPath: String,
-        nativeBridgePath: String? = nil
+        nativeBridgePath: String? = nil,
+        restartLoadedService: Bool = false
     ) throws {
         try store.ensureDirectories()
         let expectedArguments = launchAgentProgramArguments(
@@ -94,13 +104,25 @@ public final class LaunchAgentManager {
         // An unchanged plist and a loaded service need no migration. This is
         // the common path during every normal GUI launch and avoids restarting
         // playback merely because the controller was reconstructed.
-        if currentPlistMatches,
-           currentLaunchAgent.enabled {
+        if currentPlistMatches, currentLaunchAgent.serviceLoaded {
+            if restartLoadedService || (!currentLaunchAgent.serviceRunning && !store.daemonProcessStatus.isOwned) {
+                // Wake a waiting login job without migrating its plist.
+                // An explicit helper update also replaces the previous job,
+                // even while launchd is still reaping that process.
+                let start = launchctlRunner(["kickstart"] + (restartLoadedService ? ["-k"] : []) + [serviceName])
+                guard start.succeeded else {
+                    throw WallpaperRuntimeError.unavailable(
+                        "Could not start the AuraFlow LaunchAgent: \(start.output)"
+                    )
+                }
+            }
             return
         }
 
         if !currentPlistMatches || currentLaunchAgent.serviceLoaded {
-            let previousPID = store.loadPID()
+            // A PID left on disk before reboot may now belong to another
+            // process. Only wait for the helper whose ownership is verified.
+            let previousPID = store.daemonProcessStatus.isOwned ? store.loadPID() : nil
             let bootout = launchctlRunner(["bootout", serviceName])
             guard bootout.succeeded || bootout.isServiceNotLoaded else {
                 throw WallpaperRuntimeError.unavailable(

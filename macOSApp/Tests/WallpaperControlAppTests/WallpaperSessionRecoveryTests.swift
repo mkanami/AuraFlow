@@ -13,6 +13,8 @@ private final class SessionRecoveryFixture {
     var onWait: (() -> Void)?
     var refreshes = 0
     var nativeCalls = 0
+    var startRequests = 0
+    var onStart: (() -> Void)?
 
     init(runtime: String = "terminal-wallpaper") throws {
         store = WallpaperRuntimeStore(appSupportURL: root.appendingPathComponent("AuraFlow"),
@@ -48,6 +50,7 @@ private final class SessionRecoveryFixture {
         WallpaperSessionRecovery(store: store, wallpaperStoreURL: index,
             runtimeIsLive: { self.live }, sessionIsLocked: { self.locked },
             wait: { _ in self.waits += 1; self.onWait?() },
+            requestAutostart: { self.startRequests += 1; self.onStart?() },
             suspendNative: { proceed in self.nativeCalls += 1; #expect(proceed()); return false },
             refresh: { commit in self.refreshes += 1; try commit() })
     }
@@ -92,6 +95,30 @@ func inactiveSessionRestoresEachUserProviderAcrossDisplaysAndSpaces(runtime: Str
     f.onWait = { [weak f] in f?.live = true }
     #expect(try f.recovery().reconcile() == .runtimeActive)
     #expect(f.waits == 1)
+    #expect(f.nativeCalls == 0)
+    #expect(f.refreshes == 0)
+}
+
+@Test func loginRecoveryStartsWaitingAutostartBeforeFallingBackWithoutGUI() throws {
+    let f = try SessionRecoveryFixture()
+    var config = f.store.loadConfig(); config.autostart = true
+    try f.store.saveConfig(config)
+    f.onStart = { [weak f] in f?.live = true }
+    #expect(try f.recovery().reconcile() == .runtimeActive)
+    #expect(f.startRequests == 1)
+    #expect(f.waits == 0)
+    #expect(f.nativeCalls == 0)
+    #expect(f.refreshes == 0)
+}
+
+@Test func enabledAutostartMayStartWhileLockedWithoutChangingSystemWallpaperRoutes() throws {
+    let f = try SessionRecoveryFixture()
+    var config = f.store.loadConfig(); config.autostart = true
+    try f.store.saveConfig(config)
+    f.locked = true
+    f.onStart = { [weak f] in f?.live = true }
+    #expect(try f.recovery().reconcile() == .runtimeActive)
+    #expect(f.startRequests == 1)
     #expect(f.nativeCalls == 0)
     #expect(f.refreshes == 0)
 }

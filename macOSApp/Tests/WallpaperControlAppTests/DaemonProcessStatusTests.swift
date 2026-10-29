@@ -85,6 +85,29 @@ private func stopStatusFixtureProcess(_ process: Process) {
     #expect(metrics.health?.reason == "identity-mismatch")
 }
 
+@Test func orphanCleanupPreservesLoginHandshakeRecoveryWorkerAndRuntimeOwner() throws {
+    let fixture = try makeDaemonStatusStore()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let process = try launchStatusFixtureProcess()
+    defer { stopStatusFixtureProcess(process) }
+    let pid = Int(process.processIdentifier)
+    let manager = DaemonProcessManager(store: fixture.store,
+        expectedExecutableURL: URL(fileURLWithPath: "/usr/bin/tail"))
+    // A newly started helper is allowed to finish publishing its identity.
+    #expect(manager.terminateOrphanedProcesses(minimumAge: 60, processIDs: [pid]).isEmpty)
+    #expect(process.isRunning)
+    // launchd's PID is protected even before that identity file exists.
+    #expect(manager.terminateOrphanedProcesses(minimumAge: 0, processIDs: [pid], protectedPIDs: [pid]).isEmpty)
+    try String(pid).write(to: fixture.store.sessionRecoveryPIDURL, atomically: true, encoding: .utf8)
+    #expect(manager.terminateOrphanedProcesses(minimumAge: 0, processIDs: [pid]).isEmpty)
+    try FileManager.default.removeItem(at: fixture.store.sessionRecoveryPIDURL)
+    try fixture.store.savePID(process.processIdentifier)
+    #expect(manager.terminateOrphanedProcesses(minimumAge: 0, processIDs: [pid]).isEmpty)
+    fixture.store.removePID()
+    // An actual unowned helper with the same executable is still cleaned up.
+    #expect(manager.terminateOrphanedProcesses(timeout: 0.2, minimumAge: 0, processIDs: [pid]) == [pid])
+}
+
 @Test func metricsExposeOwnedProcessResources() throws {
     let fixture = try makeDaemonStatusStore()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

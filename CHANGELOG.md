@@ -2,6 +2,8 @@
 
 ## 1.3.4
 
+- Preserve the Launch at Login checkbox while its helper starts, wake waiting login jobs immediately, and clear transient startup warnings after recovery. Reuse the prepared first frame and skip commands saved by a previous helper session.
+- Protect newly started login and recovery helpers during startup cleanup and application updates.
 - Restore the user's native wallpaper routes after login or a playback-helper failure, independently of launch-at-login; keep saved media and resume delayed video, terminal, and web helpers without replacing newer user choices.
 - Validate terminal helper process identity after reboot so a reused PID cannot falsely mark wallpaper playback as running.
 - Show the user's wallpaper when a saved Lock Screen saver has no running Aura source after reboot, and resolve media settings and pause markers from the user's actual home directory.
