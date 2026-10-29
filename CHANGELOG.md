@@ -2,6 +2,7 @@
 
 ## 1.3.4
 
+- Wait for the native Locked presentation to commit before starting its screen saver; cover all four session regressions with decoded-video tests and an isolated regression-proof runner.
 - Prevent stale shield notifications and delayed native presentation recovery from starting the screen saver on an unlocked Mac and repeatedly locking the session.
 - Preserve the Desktop player while the Mac is locked and send native presentation requests only after the lock is confirmed.
 - Preserve the Launch at Login checkbox while its helper starts, wake waiting login jobs immediately, and clear transient startup warnings after recovery. Reuse the prepared first frame and skip commands saved by a previous helper session.

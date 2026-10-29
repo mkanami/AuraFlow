@@ -298,8 +298,10 @@ private func agentSystemSessionIsLocked() -> Bool? {
 }
 
 @MainActor
-private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
-    private let store = WallpaperRuntimeStore()
+final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
+    private let store: WallpaperRuntimeStore
+    private let observesSystemEvents: Bool
+    private let sessionIsLocked: () -> Bool?
     private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
     private let lockScreenPlatform: LockScreenPlatformOperating
     private let nativeLockScreenBridge: NativeLockScreenWallpaperBridge
@@ -308,10 +310,10 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let rearmGuard = WallpaperAgentRearmGuard()
     private let lifecycleGuard = WallpaperAgentLifecycleGuard()
     private var config: ControlConfig
-    private var windows: [NSWindow] = []
-    private var playerLayers: [AVPlayerLayer] = []
+    private(set) var windows: [NSWindow] = []
+    private(set) var playerLayers: [AVPlayerLayer] = []
     private var fallbackImage: CGImage?
-    private var player: AVQueuePlayer?
+    private(set) var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     private var playbackTimeObserver: Any?
     private var commandTimer: Timer?
@@ -370,9 +372,21 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let fullscreenConfirmationSamples = 2
     private let stallRecoveryThreshold = 2
 
-    override init() {
+    override convenience init() {
+        self.init(store: WallpaperRuntimeStore())
+    }
+
+    init(
+        store: WallpaperRuntimeStore,
+        lockScreenPlatform: LockScreenPlatformOperating? = nil,
+        observesSystemEvents: Bool = true,
+        sessionIsLocked: @escaping () -> Bool? = { agentSystemSessionIsLocked() }
+    ) {
+        self.store = store
+        self.observesSystemEvents = observesSystemEvents
+        self.sessionIsLocked = sessionIsLocked
         let nativeBridgeURL = Self.nativeBridgeURLFromArguments()
-        let platform = LockScreenPlatformFactory.makeAgentPlatform(
+        let platform = lockScreenPlatform ?? LockScreenPlatformFactory.makeAgentPlatform(
             nativeBridgeURL: nativeBridgeURL
         )
         self.lockScreenPlatform = platform
@@ -452,13 +466,13 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if !persistedManualPause {
             store.markPaused(false)
         }
-        installSignalHandlers()
+        if observesSystemEvents { installSignalHandlers() }
         if !lockScreenOnlyMode {
             rebuildPlayback(from: config, keepPaused: false)
         } else {
             store.markLockScreenAgentReady(false)
         }
-        startTimers()
+        if observesSystemEvents { startTimers() }
         if lockScreenOnlyMode {
             // This marker only means that the agent process is initialized
             // and can accept lifecycle work. The separate ready marker is
@@ -804,7 +818,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func handleSessionNotification(expectedLocked: Bool) {
+    func handleSessionNotification(expectedLocked: Bool) {
         guard !isTerminating else { return }
         let actualLocked = systemSessionIsLocked()
         if expectedLocked {
@@ -839,7 +853,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func reconcileSystemSessionState() {
+    func reconcileSystemSessionState() {
         guard !isTerminating,
               let locked = systemSessionIsLocked()
         else {
@@ -1279,7 +1293,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         restoreDesktopStoreAfterSession()
     }
 
-    private func pollCommand() {
+    func pollCommand() {
         guard !isTerminating else { return }
         guard ownsRuntimeState() else {
             terminationHealthReason = "runtime-ownership-lost"
@@ -2441,7 +2455,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         try? store.saveHealth(health)
     }
 
-    private func samplePlaybackHealth() {
+    func samplePlaybackHealth() {
         reconcileSystemSessionState()
 
         guard ownsRuntimeState() else {
@@ -2776,7 +2790,7 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func systemSessionIsLocked() -> Bool? {
-        agentSystemSessionIsLocked()
+        sessionIsLocked()
     }
 
     private func videoGravity(for rawMode: String?) -> AVLayerVideoGravity {

@@ -30,28 +30,43 @@ final class NativeLockScreenWallpaperBridge {
     private var consecutivePresentationFailures = 0
     private let sessionIsLocked: () -> Bool?
     private let startScreenSaver: () -> Int32?
+    private let store: WallpaperRuntimeStore
+    private let hasDisplays: () -> Bool
+    private let surfacePreparer: ((LockScreenPresentationQueue<PresentationSurface>.Request, PresentationSurface?) async throws -> PresentationSurface)?
 
     init(
         sessionIsLocked: @escaping () -> Bool? = { LockScreenSession.currentIsLocked() },
-        startScreenSaver: (() -> Int32?)? = nil
+        startScreenSaver: (() -> Int32?)? = nil,
+        store: WallpaperRuntimeStore = WallpaperRuntimeStore(),
+        hasDisplays: @escaping () -> Bool = { !NSScreen.screens.isEmpty },
+        surfacePreparer: ((LockScreenPresentationQueue<PresentationSurface>.Request, PresentationSurface?) async throws -> PresentationSurface)? = nil
     ) {
         self.sessionIsLocked = sessionIsLocked
         self.startScreenSaver = startScreenSaver ?? { Self.startScreenSaverFunction?() }
+        self.store = store
+        self.hasDisplays = hasDisplays
+        self.surfacePreparer = surfacePreparer
     }
 
-    private struct PresentationSurface {
-        let display: WallpaperDisplayAssertion
-        let presentation: WallpaperPresentationModeAssertion
+    struct PresentationSurface {
+        let display: WallpaperDisplayAssertion?
+        let presentation: WallpaperPresentationModeAssertion?
         let window: NSWindow
+        let layer: CALayer
     }
     private lazy var presentationQueue: LockScreenPresentationQueue<PresentationSurface> = {
         let queue = LockScreenPresentationQueue<PresentationSurface> { [weak self] request, previous in
             guard let self else { throw CancellationError() }
             guard !request.locked || self.sessionIsLocked() == true else { throw CancellationError() }
+            if let surfacePreparer = self.surfacePreparer {
+                let surface = try await surfacePreparer(request, previous)
+                guard !request.locked || self.sessionIsLocked() == true else { throw CancellationError() }
+                return surface
+            }
             let display: WallpaperDisplayAssertion
             let window: NSWindow
-            if !request.reloadRoute, let previous {
-                display = previous.display
+            if !request.reloadRoute, let previous, let previousDisplay = previous.display {
+                display = previousDisplay
                 window = previous.window
             } else {
                 display = try await self.makeDisplayAssertion()
@@ -65,7 +80,7 @@ final class NativeLockScreenWallpaperBridge {
                 ? Self.takeLockedAssertion(displayAssertion: box)
                 : Self.takeIdleAssertion(displayAssertion: box)
             guard !request.locked || self.sessionIsLocked() == true else { throw CancellationError() }
-            return PresentationSurface(display: display, presentation: presentation.value, window: window)
+            return PresentationSurface(display: display, presentation: presentation.value, window: window, layer: display.layer)
         }
         queue.onApplied = { [weak self] request in
             guard let self, let surface = self.presentationQueue.surface else { return }
@@ -76,7 +91,7 @@ final class NativeLockScreenWallpaperBridge {
             self.lockedPresentationReady = request.locked
             self.consecutivePresentationFailures = 0
             if self.paused {
-                self.pauseLayer(surface.display.layer)
+                self.pauseLayer(surface.layer)
                 self.startPauseEnforcement()
             }
             if self.preparing { self.finishPreparation(succeeded: true) }
@@ -193,14 +208,16 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     var isReady: Bool {
-        displayAssertion != nil && window != nil
+        presentationQueue.surface != nil && window != nil
     }
+
+    var hasLockedPresentation: Bool { isReady && showing && lockedPresentationReady }
 
     func prepare(completion: @escaping (Bool, String?) -> Void) {
         // Stop persists its marker before the runtime command reaches this
         // process. Pick it up before creating a new assertion so a late
         // preparation cannot start the Lock Screen video again.
-        if WallpaperRuntimeStore().isPaused() {
+        if store.isPaused() {
             paused = true
         }
 
@@ -219,7 +236,7 @@ final class NativeLockScreenWallpaperBridge {
     /// Rebind while retaining the previous surface, and restart the saver only
     /// after the replacement locked assertion is ready.
     func recoverAfterSystemChange() {
-        guard isReady, WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false else { return }
+        guard isReady, store.loadConfig().show_on_lock_screen != false else { return }
         recoveryTask?.cancel()
         recoveryTask = Task { @MainActor [weak self] in
             // Delay the first rebind until WindowServer has restored its
@@ -231,9 +248,9 @@ final class NativeLockScreenWallpaperBridge {
                 do { try await Task.sleep(nanoseconds: delay) }
                 catch { return }
                 guard let self, !Task.isCancelled,
-                      WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false else { return }
+                      self.store.loadConfig().show_on_lock_screen != false else { return }
                 guard let locked = self.sessionIsLocked(),
-                      !NSScreen.screens.isEmpty else {
+                      self.hasDisplays() else {
                     attempts += 1
                     continue
                 }
@@ -312,13 +329,13 @@ final class NativeLockScreenWallpaperBridge {
             completion?(false, "Lock Screen presentation was cancelled by unlock.")
             return
         }
-        guard WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false else {
+        guard store.loadConfig().show_on_lock_screen != false else {
             completion?(false, "Lock Screen is disabled.")
             return
         }
         // Close the small Stop -> Lock race: the marker is committed before
         // the .pause command is delivered to the agent.
-        if WallpaperRuntimeStore().isPaused() {
+        if store.isPaused() {
             paused = true
         }
 
@@ -335,7 +352,7 @@ final class NativeLockScreenWallpaperBridge {
         if let completion {
             pendingShowCompletions.append(completion)
         }
-        guard displayAssertion != nil else {
+        guard isReady else {
             showing = false
             finishShowRequests(
                 succeeded: false,
@@ -343,11 +360,14 @@ final class NativeLockScreenWallpaperBridge {
             )
             return
         }
-        startSystemScreenSaverNow()
         // Keep the prewarmed layer hidden. Making it visible here creates a
         // three-frame transition: Aura, loginwindow's Desktop snapshot, then
         // the real Aura Lock Screen. loginwindow owns the secure surface and
         // presents the prepared screen-saver route itself.
+        // The warm display still carries an Idle assertion. Starting the
+        // saver before its Locked replacement commits can resolve the user's
+        // image or a blank first frame instead of the prepared Aura route.
+        restartSaverWhenReady = true
         presentationQueue.request(locked: true)
     }
 
@@ -440,7 +460,7 @@ final class NativeLockScreenWallpaperBridge {
             errorDescription: "Lock Screen presentation was cancelled by unlock."
         )
         window?.alphaValue = 0
-        guard displayAssertion != nil else { return }
+        guard isReady else { return }
         presentationQueue.request(locked: false)
     }
 

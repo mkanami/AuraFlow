@@ -209,6 +209,11 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   ./scripts/test_macos_app.sh
 ```
 
+The [wallpaper session regression tests](docs/wallpaper-session-regressions.md)
+cover unwanted locks, animation after login and unlock, and native Lock Screen
+readiness. `python3 scripts/verify_session_regressions.py` verifies that each
+test rejects its corresponding bug in an isolated temporary package.
+
 Real WebKit integration tests require an unlocked interactive macOS session.
 They validate Canvas/WebGL snapshots and property/network behavior without
 changing the system wallpaper or Screen Saver:
