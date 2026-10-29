@@ -182,8 +182,8 @@ int main(int argc, char **argv) {
         [orphaned animateOneFrame];
         if (![[orphaned valueForKey:@"configurationSignature"] containsString:desktopImageURL.path] ||
             fallback.hidden || fallback.contents == nil) return 18;
-        // Procedural system wallpapers can expose the generic default URL
-        // through NSWorkspace. Prefer the selected Desktop provider's image.
+        // A procedural provider's stock preview is not the user's selected
+        // appearance. Never substitute its light thumbnail for automatic/dark.
         NSURL *resources = [root URLByAppendingPathComponent:@"native-resources"];
         [[NSFileManager defaultManager] createDirectoryAtURL:resources withIntermediateDirectories:YES attributes:nil error:nil];
         NSURL *thumbnail = [resources URLByAppendingPathComponent:@"thumbnail.heic"];
@@ -193,7 +193,7 @@ int main(int argc, char **argv) {
         NSURL *indexURL = [root URLByAppendingPathComponent:@"Index.plist"];
         [@{@"AllSpacesAndDisplays":@{@"Desktop":mode, @"Idle":@{}}} writeToURL:indexURL atomically:YES];
         resolved = [orphaned resolvedConfiguration];
-        if (![resolved[@"fallback_path"] isEqualToString:thumbnail.path]) return 19;
+        if (![resolved[@"fallback_path"] isEqualToString:savedDesktop.path]) return 19;
         // A missing provider preview must still reach the saved user image.
         [[NSFileManager defaultManager] removeItemAtURL:thumbnail error:nil];
         resolved = [orphaned resolvedConfiguration];
@@ -201,6 +201,15 @@ int main(int argc, char **argv) {
         [@{@"AllSpacesAndDisplays":@{@"Desktop":@{@"Content":@"$null"}}} writeToURL:indexURL atomically:YES];
         resolved = [orphaned resolvedConfiguration];
         if (![resolved[@"fallback_path"] isEqualToString:savedDesktop.path]) return 21;
+        // No known user image: leave the native background visible, never
+        // manufacture a stock preview (or an opaque black substitute).
+        [[NSFileManager defaultManager] removeItemAtURL:[root URLByAppendingPathComponent:@"wallpaper_backup_original.json"] error:nil];
+        desktopImageURL = [NSURL fileURLWithPath:@"/System/Library/CoreServices/DefaultDesktop.heic"];
+        resolved = [orphaned resolvedConfiguration];
+        if ([resolved[@"fallback_path"] length] != 0) return 22;
+        [orphaned setValue:@0 forKey:@"configurationCheckedAt"];
+        [orphaned animateOneFrame];
+        if (fallback.contents != nil || CGColorGetAlpha(orphaned.layer.backgroundColor) != 0) return 23;
         [orphaned stopAnimation];
         return 0;
     }

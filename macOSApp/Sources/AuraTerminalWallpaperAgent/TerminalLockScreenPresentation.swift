@@ -22,6 +22,10 @@ struct TerminalLockTransition {
 /// provider does not itself ask loginwindow to present it after direct Lock.
 @MainActor
 final class TerminalLockScreenPresentation {
+    private final class SaverActivity {
+        var running = false
+        var hasRun = false
+    }
     private let logger = Logger(subsystem: "com.andrijvergeles.auraflow", category: "terminal-lock-screen")
     private var timer: Timer?
     private var started = false
@@ -32,6 +36,9 @@ final class TerminalLockScreenPresentation {
     private var saverStartNeedsRetry = false
     private var systemRecoveryPending = false
     private var restartSaverWhenReady = false
+    private let saverActivity = SaverActivity()
+    private var playbackActive = false
+    private var lastSaverCheck: TimeInterval = -.infinity
     private struct PresentationSurface {
         var displays: [TerminalNativeDisplayLease] = []
         var displayIDs: [UInt32] = []
@@ -65,6 +72,7 @@ final class TerminalLockScreenPresentation {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var screenObserver: NSObjectProtocol?
     private let sessionIsLocked: () -> Bool?
+    private let screenSaverIsRunning: () -> Bool?
     private let uptime: () -> TimeInterval
     private let startScreenSaver: () -> Int32?
     private let routeRecovery: () throws -> Bool
@@ -74,10 +82,13 @@ final class TerminalLockScreenPresentation {
     private let nativeDriver: (any TerminalLockScreenNativeDriving)?
     private let displaysProvider: @MainActor () -> [TerminalLockScreenDisplay]
     private let orderNativeWindow: @MainActor (NSWindow) -> Void
+    // Rendering/capture activity includes the OS saver before password lock.
+    // Only sessionIsLocked may authorize a system saver-start side effect.
     var onLockStateChange: ((Bool) -> Void)?
 
     init(
         sessionIsLocked: @escaping () -> Bool? = { LockScreenSession.currentIsLocked() },
+        screenSaverIsRunning: (() -> Bool?)? = nil,
         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         startScreenSaver: (() -> Int32?)? = nil,
         presentationPreparer: ((Bool, Bool) async throws -> Void)? = nil,
@@ -90,6 +101,10 @@ final class TerminalLockScreenPresentation {
         routeCoordinator: ScreenSaverRouteRecovery? = nil
     ) {
         self.sessionIsLocked = sessionIsLocked
+        self.screenSaverIsRunning = screenSaverIsRunning ?? {
+            guard presentationPreparer == nil, nativeDriver == nil, routeRecovery == nil else { return false }
+            return Self.runningFunction?()
+        }
         self.uptime = uptime
         self.startScreenSaver = startScreenSaver ?? { Self.startFunction?() }
         self.presentationPreparer = presentationPreparer
@@ -98,6 +113,7 @@ final class TerminalLockScreenPresentation {
         self.displaysProvider = displaysProvider
         self.orderNativeWindow = orderNativeWindow
         let store = runtimeStore
+        let saverActivity = self.saverActivity
         let recovery = routeCoordinator ?? ScreenSaverRouteRecovery(journalURL: store.appSupportURL.appendingPathComponent("screen-saver-wallpaper-store-backup.json"))
         self.routeRecovery = routeRecovery ?? {
             // Injected presentation tests must never touch the live store.
@@ -106,13 +122,16 @@ final class TerminalLockScreenPresentation {
                 store.lockScreenPlaybackEnabled && store.loadPID() == Int(getpid())
             }
             guard ownsSource() else { return false }
+            let needsDesktopHandoff = {
+                sessionIsLocked() == true && !saverActivity.running && !saverActivity.hasRun
+            }
             var changed = false
-            if sessionIsLocked() == false {
-                changed = try recovery.restoreDesktopAfterLockSession { ownsSource() && sessionIsLocked() == false }
+            if sessionIsLocked() != nil, !needsDesktopHandoff() {
+                changed = try recovery.restoreDesktopAfterLockSession { ownsSource() && sessionIsLocked() != nil && !needsDesktopHandoff() }
             }
             if try recovery.recoverIfNeeded(shouldProceed: ownsSource) { changed = true }
-            if hasNativePresentation, sessionIsLocked() == true,
-               try recovery.activateDesktopForLockSession(shouldProceed: { ownsSource() && sessionIsLocked() == true }) { changed = true }
+            if hasNativePresentation, needsDesktopHandoff(),
+               try recovery.activateDesktopForLockSession(shouldProceed: { ownsSource() && needsDesktopHandoff() }) { changed = true }
             return changed
         }
         self.restoreUserDesktop = restoreUserDesktop ?? {
@@ -129,9 +148,14 @@ final class TerminalLockScreenPresentation {
         retryAt = nil
         saverStartNeedsRetry = false
         systemRecoveryPending = false
+        saverActivity.running = false
+        saverActivity.hasRun = false
+        playbackActive = false
+        lastSaverCheck = -.infinity
         // Resolve the system entry point while the desktop is still visible,
         // rather than loading login.framework at the secure-screen boundary.
         _ = Self.startFunction
+        _ = Self.runningFunction
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep],
             reason: "Keep terminal frames and Lock Screen handoff alive"
@@ -143,6 +167,11 @@ final class TerminalLockScreenPresentation {
             Task { @MainActor [weak self] in self?.prepare(reloadRoute: true) }
         }
         let center = DistributedNotificationCenter.default()
+        for (name, running) in [("com.apple.screensaver.didstart", true), ("com.apple.screensaver.didstop", false)] {
+            sessionObservers.append(center.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.handleScreenSaverNotification(running) }
+            })
+        }
         for (name, locked) in [
             (Notification.Name("com.apple.screenIsLocked"), true),
             (Notification.Name("com.apple.screenIsUnlocked"), false),
@@ -184,6 +213,8 @@ final class TerminalLockScreenPresentation {
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.pollSession() }
         }
+        _ = refreshSaverActivity(force: true)
+        updatePlaybackActivity()
         prepare()
     }
 
@@ -213,34 +244,69 @@ final class TerminalLockScreenPresentation {
 
     func pollSession() {
         guard started else { return }
-        if uptime() - lastRouteCheck >= 1 {
-            lastRouteCheck = uptime()
-            do {
-                if try routeRecovery() {
-                    logger.notice("Restored Aura Lock Screen selection after system route drift")
-                    prepare(reloadRoute: true, restartSaverAfterPreparation: transition.locked)
-                }
-            } catch {
-                logger.error("Lock Screen route recovery deferred: \(error.localizedDescription, privacy: .public)")
-            }
-        }
         if systemRecoveryPending, sessionIsLocked() != nil {
             recoverAfterSystemChange()
             return
         }
+        reconcileSession()
+    }
+
+    /// Manual lock, OS idle saver, polling, and wake all converge here. Saver
+    /// activity is distinct from CGSession's secure lock during password grace.
+    private func reconcileSession(forceReload: Bool = false, forceSaverCheck: Bool = false) {
+        guard started else { return }
+        let saverChanged = refreshSaverActivity(force: forceSaverCheck)
         // Notifications can lead CGSession briefly, but must not override it
         // forever when an unlock notification is lost during sleep.
         if uptime() >= notificationExpiresAt { notifiedLockState = nil }
         let confirmed = sessionIsLocked()
         let retainConfirmedLock = transition.locked && notifiedLockState == true && uptime() < notificationExpiresAt
-        if let changed = transition.update(retainConfirmedLock ? true : confirmed) {
-            logger.notice("Terminal Lock Screen session locked=\(changed)")
-            onLockStateChange?(changed)
-            if !changed { saverStartNeedsRetry = false }
-            prepare(restartSaverAfterPreparation: changed)
-        } else if let retryAt, uptime() >= retryAt {
-            prepare(reloadRoute: true, restartSaverAfterPreparation: sessionIsLocked() == true)
+        let changed = transition.update(retainConfirmedLock ? true : confirmed)
+        if let changed { logger.notice("Terminal Lock Screen session locked=\(changed), systemSaver=\(self.saverActivity.running)") }
+        let activityChanged = updatePlaybackActivity()
+        if confirmed == false, !saverActivity.running { saverActivity.hasRun = false }
+        if !transition.locked || saverActivity.running || (saverChanged && !saverActivity.running) {
+            saverStartNeedsRetry = false
+            restartSaverWhenReady = false
         }
+        var reload = forceReload
+        if forceReload || saverChanged || changed != nil || uptime() - lastRouteCheck >= 1 {
+            lastRouteCheck = uptime()
+            do {
+                if try routeRecovery() {
+                    logger.notice("Reconciled Aura wallpaper routes for the current presentation")
+                    reload = true
+                }
+            } catch {
+                logger.error("Lock Screen route recovery deferred: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        let retry = retryAt.map { uptime() >= $0 } ?? false
+        if changed != nil || activityChanged || saverChanged || reload || retry {
+            let startNeeded = transition.locked && !saverActivity.running &&
+                (forceReload || (!saverActivity.hasRun && (changed == true || retry || saverStartNeedsRetry)))
+            prepare(reloadRoute: reload || retry, restartSaverAfterPreparation: startNeeded)
+        }
+    }
+
+    @discardableResult
+    private func refreshSaverActivity(force: Bool) -> Bool {
+        guard force || uptime() - lastSaverCheck >= 1 else { return false }
+        lastSaverCheck = uptime()
+        guard let running = screenSaverIsRunning() else { return false }
+        let changed = running != saverActivity.running
+        saverActivity.running = running
+        if running { saverActivity.hasRun = true }
+        return changed
+    }
+
+    @discardableResult
+    private func updatePlaybackActivity() -> Bool {
+        let active = transition.locked || saverActivity.running
+        guard active != playbackActive else { return false }
+        playbackActive = active
+        onLockStateChange?(active)
+        return true
     }
 
     func recoverAfterSystemChange() {
@@ -262,12 +328,17 @@ final class TerminalLockScreenPresentation {
         systemRecoveryPending = false
         notifiedLockState = nil
         logger.notice("Restoring terminal system presentation after wake or display change; locked=\(locked == true)")
-        if let changed = transition.update(locked) { onLockStateChange?(changed) }
-        if locked == false { saverStartNeedsRetry = false }
-        prepare(reloadRoute: true, restartSaverAfterPreparation: locked == true)
+        reconcileSession(forceReload: true, forceSaverCheck: true)
     }
 
     private var sessionObservers: [NSObjectProtocol] = []
+
+    func handleScreenSaverNotification(_ running: Bool) {
+        guard started else { return }
+        // The actual loginwindow state wins over late/stale notifications.
+        logger.notice("System screen saver notification running=\(running)")
+        reconcileSession(forceSaverCheck: true)
+    }
 
     func handleLockNotification(_ locked: Bool) {
         guard started else { return }
@@ -281,14 +352,7 @@ final class TerminalLockScreenPresentation {
         notifiedLockState = locked
         notificationExpiresAt = uptime() + 1
         guard !locked || sessionIsLocked() == true else { return }
-        guard let changed = transition.update(locked) else { return }
-        logger.notice("Terminal Lock Screen notification locked=\(changed)")
-        onLockStateChange?(changed)
-        if !changed { saverStartNeedsRetry = false }
-        // Lock changes presentation, not the selected saver route. Reuse the
-        // display assertions prepared on the desktop; rebuilding them here
-        // puts provider startup on the first-frame path.
-        prepare(restartSaverAfterPreparation: changed)
+        reconcileSession(forceSaverCheck: true)
     }
 
     private func prepare(reloadRoute: Bool = false, restartSaverAfterPreparation: Bool = false) {
@@ -341,6 +405,11 @@ final class TerminalLockScreenPresentation {
             saverStartNeedsRetry = true
             return
         }
+        _ = refreshSaverActivity(force: true)
+        if saverActivity.running {
+            saverStartNeedsRetry = false
+            return
+        }
         guard let result = startScreenSaver() else {
             logger.error("SACScreenSaverStartNow is unavailable")
             saverStartNeedsRetry = true
@@ -348,6 +417,7 @@ final class TerminalLockScreenPresentation {
         }
         logger.notice("Terminal system saver start result=\(result)")
         saverStartNeedsRetry = result != 0
+        if result == 0 { saverActivity.hasRun = true }
     }
 
     private enum PresentationError: Error { case noDisplays }
@@ -356,6 +426,12 @@ final class TerminalLockScreenPresentation {
         guard let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_NOW | RTLD_LOCAL),
               let symbol = dlsym(handle, "SACScreenSaverStartNow") else { return nil }
         return unsafeBitCast(symbol, to: (@convention(c) () -> Int32).self)
+    }()
+
+    private static let runningFunction: (@convention(c) () -> Bool)? = {
+        guard let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_NOW | RTLD_LOCAL),
+              let symbol = dlsym(handle, "SACScreenSaverIsRunning") else { return nil }
+        return unsafeBitCast(symbol, to: (@convention(c) () -> Bool).self)
     }()
 
 }

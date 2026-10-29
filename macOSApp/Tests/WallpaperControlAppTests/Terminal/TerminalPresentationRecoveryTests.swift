@@ -312,12 +312,14 @@ struct TerminalPresentationRecoveryTests {
 
     @Test(arguments: [false, true]) @MainActor
     func terminalRouteDriftRebindsPresentationWithoutAnotherSessionEvent(locked: Bool) async {
+        var now: TimeInterval = 100
         var sessionLocked = false
         var drifted = false
         var repairs = 0
         var starts = 0
         var preparations: [(Bool, Bool)] = []
         let presentation = TerminalLockScreenPresentation(sessionIsLocked: { sessionLocked },
+            uptime: { now },
             startScreenSaver: { starts += 1; return 0 },
             presentationPreparer: { preparations.append(($0, $1)) },
             routeRecovery: {
@@ -336,12 +338,13 @@ struct TerminalPresentationRecoveryTests {
         }
         let previousStarts = starts
         drifted = true
+        now += 1
         presentation.pollSession()
         for _ in 0..<20 { await Task.yield() }
         #expect(repairs == 1)
         #expect(preparations.last?.0 == locked)
         #expect(preparations.last?.1 == true)
-        #expect(starts == previousStarts + (locked ? 1 : 0))
+        #expect(starts == previousStarts, "A repaired route must not restart the saver repeatedly in the same lock session")
     }
 
     @Test(arguments: [false, true]) @MainActor

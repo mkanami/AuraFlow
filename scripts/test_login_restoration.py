@@ -23,6 +23,8 @@ names.extend(['HiddenLoginPlaybackTests', 'TerminalLoginRestorationTests',
 names.append('TerminalPresentationRecoveryTests')
 names.append('TerminalNativeSurfaceHostingTests')
 names.append('TerminalLockScreenRouteTests')
+names.append('TerminalAutomaticLockTests')
+names.append('lockScreenPresentsPublishedFrameBeforeAnimationStartsAndRestoresExpiredRoute')
 env = dict(os.environ)
 xcode = Path('/Applications/Xcode.app/Contents/Developer')
 if xcode.exists():

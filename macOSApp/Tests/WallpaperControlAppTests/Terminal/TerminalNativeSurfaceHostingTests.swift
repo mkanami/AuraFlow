@@ -38,8 +38,8 @@ private final class RecordingTerminalNativeDriver: TerminalLockScreenNativeDrivi
 
 @Suite(.serialized)
 struct TerminalNativeSurfaceHostingTests {
-    @Test @MainActor
-    func rebootedTerminalPromotesItsLiveRouteBeforeNativeLockAndRestoresUserChoicesOnUnlockAndStop() async throws {
+    @Test(arguments: [false, true]) @MainActor
+    func manualAndAutomaticLockUseTheSameLiveSourceAndRestoreUserChoices(automatic: Bool) async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraNativeHandoff-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -62,15 +62,17 @@ struct TerminalNativeSurfaceHostingTests {
             return root["SystemDefault"]!["Desktop"] as! NSDictionary
         }
         let driver = RecordingTerminalNativeDriver()
+        var saverRunning = false
         driver.onPresentation = { locked in
-            #expect((try? desktop().isEqual(locked ? aura : user)) == true, "The source must be selected before its system presentation is requested")
+            #expect((try? desktop().isEqual(locked && !saverRunning ? aura : user)) == true, "An existing system saver must keep the user's Desktop; a direct lock needs its source before starting")
         }
         var locked = false
         var starts = 0
-        let presentation = TerminalLockScreenPresentation(sessionIsLocked: { locked }, startScreenSaver: {
+        let presentation = TerminalLockScreenPresentation(sessionIsLocked: { locked }, screenSaverIsRunning: { saverRunning }, startScreenSaver: {
             #expect((try? desktop().isEqual(aura)) == true)
-            #expect(driver.layers.allSatisfy { $0.superlayer != nil })
+            #expect(driver.layers.last?.superlayer != nil, "The current display lease must be hosted; retired leases may already be released")
             starts += 1
+            saverRunning = true
             return 0
         }, nativeDriver: driver,
             displaysProvider: { [.init(id: 31, frame: NSRect(x: 0, y: 0, width: 800, height: 600))] },
@@ -80,18 +82,34 @@ struct TerminalNativeSurfaceHostingTests {
         presentation.start()
         await settleTerminalNativePresentation()
         #expect(starts == 0)
+        if automatic {
+            saverRunning = true
+            presentation.handleScreenSaverNotification(true)
+            await settleTerminalNativePresentation()
+            #expect(try desktop().isEqual(user))
+        }
         locked = true
         presentation.handleLockNotification(true)
         await settleTerminalNativePresentation()
-        #expect(starts == 1)
-        locked = false
-        presentation.handleLockNotification(false)
+        #expect(starts == (automatic ? 0 : 1))
+        presentation.handleScreenSaverNotification(true)
         await settleTerminalNativePresentation()
         #expect(try desktop().isEqual(user))
+        locked = false
+        saverRunning = false
+        presentation.handleLockNotification(false)
+        presentation.handleScreenSaverNotification(false)
+        await settleTerminalNativePresentation()
+        #expect(try desktop().isEqual(user))
+        if automatic {
+            saverRunning = true
+            presentation.handleScreenSaverNotification(true)
+            await settleTerminalNativePresentation()
+        }
         locked = true
         presentation.handleLockNotification(true)
         await settleTerminalNativePresentation()
-        #expect(starts == 2)
+        #expect(starts == (automatic ? 0 : 2))
         presentation.stop()
         #expect(try desktop().isEqual(user))
     }

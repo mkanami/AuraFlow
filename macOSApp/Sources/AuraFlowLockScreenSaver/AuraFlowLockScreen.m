@@ -441,73 +441,10 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     return screen == nil ? nil : [NSWorkspace.sharedWorkspace desktopImageURLForScreen:screen];
 }
 
-- (NSURL *)wallpaperStoreURL {
-    return [[[self applicationSupportURL] URLByDeletingLastPathComponent]
-        URLByAppendingPathComponent:@"com.apple.wallpaper/Store/Index.plist"];
-}
-
-- (nullable NSURL *)extensionResourcesURLForProvider:(NSString *)provider {
-    NSString *prefix = @"com.apple.wallpaper.choice.";
-    if (![provider hasPrefix:prefix]) return nil;
-    NSString *identifier = [@"com.apple.wallpaper.extension." stringByAppendingString:[provider substringFromIndex:prefix.length]];
-    static NSDictionary<NSString *, NSURL *> *resourceURLs;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        NSMutableDictionary *found = [NSMutableDictionary dictionary];
-        NSURL *extensions = [NSURL fileURLWithPath:@"/System/Library/ExtensionKit/Extensions" isDirectory:YES];
-        NSArray<NSURL *> *urls = [[NSFileManager defaultManager] contentsOfDirectoryAtURL:extensions
-            includingPropertiesForKeys:nil options:NSDirectoryEnumerationSkipsHiddenFiles error:nil];
-        for (NSURL *url in urls) {
-            if (![url.pathExtension isEqualToString:@"appex"]) continue;
-            NSBundle *bundle = [NSBundle bundleWithURL:url];
-            if ([bundle.bundleIdentifier hasPrefix:@"com.apple.wallpaper.extension."] && bundle.resourceURL != nil) {
-                found[bundle.bundleIdentifier] = bundle.resourceURL;
-            }
-        }
-        resourceURLs = found.copy;
-    });
-    return resourceURLs[identifier];
-}
-
-- (nullable NSURL *)nativeDesktopWallpaperURL {
-    // NSWorkspace can report DefaultDesktop.heic for a selected procedural
-    // wallpaper (for example Sequoia). Its provider's thumbnail represents
-    // the actual user selection, without trying to run another native provider.
-    NSDictionary *store = [NSDictionary dictionaryWithContentsOfURL:[self wallpaperStoreURL]];
-    NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
-    NSNumber *number = screen.deviceDescription[@"NSScreenNumber"];
-    CFUUIDRef uuid = number == nil ? NULL : CGDisplayCreateUUIDFromDisplayID(number.unsignedIntValue);
-    NSString *displayKey = uuid == NULL ? @"" : CFBridgingRelease(CFUUIDCreateString(NULL, uuid));
-    if (uuid != NULL) CFRelease(uuid);
-    NSDictionary *displays = store[@"Displays"];
-    NSDictionary *route = [displays isKindOfClass:NSDictionary.class] ? displays[displayKey] : nil;
-    route = route ?: store[@"AllSpacesAndDisplays"] ?: store[@"SystemDefault"];
-    if (![route isKindOfClass:NSDictionary.class]) return nil;
-    NSDictionary *mode = route[@"Desktop"] ?: route[@"Linked"];
-    if (![mode isKindOfClass:NSDictionary.class]) return nil;
-    NSDictionary *content = mode[@"Content"];
-    if (![content isKindOfClass:NSDictionary.class]) return nil;
-    NSArray *choices = content[@"Choices"];
-    if (![choices isKindOfClass:NSArray.class]) return nil;
-    for (NSDictionary *choice in choices) {
-        if (![choice isKindOfClass:NSDictionary.class]) continue;
-        NSString *provider = choice[@"Provider"];
-        if (![provider isKindOfClass:NSString.class]) continue;
-        NSURL *resources = [self extensionResourcesURLForProvider:provider];
-        if (resources == nil) continue;
-        NSURL *thumbnail = [self existingURLForConfiguredValue:@"thumbnail.heic" relativeTo:resources];
-        if (thumbnail != nil) return thumbnail;
-    }
-    return nil;
-}
-
 - (nullable NSURL *)userWallpaperURL {
     NSURL *root = [self applicationSupportURL];
     NSMutableArray<NSURL *> *candidates = [NSMutableArray array];
     NSURL *current = [self currentDesktopImageURL];
-    NSURL *native = current == nil || [current.lastPathComponent isEqualToString:@"DefaultDesktop.heic"] ||
-        [current.pathExtension isEqualToString:@"madesktop"] ? [self nativeDesktopWallpaperURL] : nil;
-    if (native != nil) [candidates addObject:native];
     if (current != nil) [candidates addObject:current];
     NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
     NSNumber *number = screen.deviceDescription[@"NSScreenNumber"];
@@ -523,11 +460,14 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
             if (url != nil) [candidates addObject:url];
         }
     }
-    [candidates addObject:[NSURL fileURLWithPath:@"/System/Library/CoreServices/DefaultDesktop.heic"]];
     NSString *managedFrame = [root URLByAppendingPathComponent:@"last_frame.png"].URLByStandardizingPath.path;
     NSString *terminalFrame = [self terminalRuntimeURLForFile:@"lock-screen-frame.png"].URLByStandardizingPath.path;
     for (NSURL *url in candidates) {
-        if (!url.isFileURL || [url.URLByStandardizingPath.path isEqualToString:managedFrame] ||
+        // Native provider previews do not preserve automatic/dark appearance.
+        // Their actual descriptors are restored by the session coordinator;
+        // this view may only paint an explicitly selected user image.
+        if (!url.isFileURL || [url.URLByStandardizingPath.path hasPrefix:@"/System/Library/CoreServices/DefaultDesktop."] ||
+            [url.URLByStandardizingPath.path isEqualToString:managedFrame] ||
             [url.URLByStandardizingPath.path isEqualToString:terminalFrame]) continue;
         CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
         if (source == NULL) continue;
@@ -873,6 +813,8 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         CGImage = [image CGImageForProposedRect:NULL context:nil hints:nil];
     }
     self.fallbackLayer.contents = (__bridge id)CGImage;
+    self.layer.backgroundColor = CGImage == NULL ? NSColor.clearColor.CGColor : NSColor.blackColor.CGColor;
+    self.fallbackLayer.backgroundColor = self.layer.backgroundColor;
 }
 
 - (void)applyScaleMode {

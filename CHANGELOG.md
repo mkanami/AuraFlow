@@ -2,6 +2,8 @@
 
 ## 1.3.4
 
+- Share one presentation reconciler between manual locks and the OS idle screen saver, including password grace, missing notifications, and wake. Publish Terminal frames as soon as the OS saver is active, and never repeatedly start an already-running saver during route repair.
+- Remove stock native-provider thumbnails and the generic DefaultDesktop image from saver fallbacks. Preserve the user's appearance choice and leave the native background visible when no recorded user image is available.
 - Present Terminal's live saver through the Desktop route requested by loginwindow only during a confirmed lock. Host every native display layer and restore complete user wallpaper descriptors after unlock, Stop, or an interrupted session, without restarting Dock or WallpaperAgent.
 - Restore only recorded user wallpaper and Screen Saver choices, preserving native automatic appearance settings. Never guess a system image or saver when a backup is unavailable; start Terminal's Lock Screen saver only after its confirmed Locked presentation is ready.
 - Recognize a running Terminal helper after its executable is atomically replaced, so opening an updated app loads the installed fixes instead of retaining the old process.
