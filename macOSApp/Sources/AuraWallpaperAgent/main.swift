@@ -909,14 +909,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// `shieldWindowRaised` is the last event delivered before loginwindow
-    /// resolves its first secure frame. Lock-only pre-presents only an already
-    /// prepared, validated generation here. Shared Start may queue this show
-    /// behind its startup preparation, but it still never mutates the system
-    /// store until CGSession confirms a real lock. Taking the locked Wallpaper
-    /// assertion does not initiate a screen lock.
+    /// Keep the idle surface prewarmed, but wait for WindowServer confirmation
+    /// before sending Show. Otherwise a cancelled early Show could still be
+    /// armed when the real lock arrives, suppressing its confirmed handoff.
     private func beginEarlyLockScreenHandoff(reason: String) {
-        guard !isTerminating, !earlyLockScreenHandoffArmed else { return }
+        guard !isTerminating, !earlyLockScreenHandoffArmed,
+              systemSessionIsLocked() == true else { return }
 
         if lockScreenOnlyMode {
             guard lockScreenPlatform.capabilities.supportsLockScreenOnly,
@@ -2497,8 +2495,12 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
         guard !manualPaused,
               !sleeping,
+              !sessionInactive,
               !autoPausedForFullscreen
         else {
+            // macOS can suspend decoding for Desktop layers hidden behind
+            // the secure Lock Screen. That is not a stalled visible player;
+            // keep it intact and resume/check progress after unlock.
             lastPlaybackProgressUptime = nil
             consecutiveStallPolls = 0
             writeHealth(reason: "ok")
