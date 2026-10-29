@@ -49,9 +49,9 @@ final class TerminalLockScreenPresentation {
             }
             return try await self.prepareNativePresentation(request, previous: previous)
         }
-        queue.onApplied = { [weak self] _ in
+        queue.onApplied = { [weak self] request in
             guard let self, self.started else { return }
-            if self.restartSaverWhenReady, self.sessionIsLocked() == true { self.startSaver() }
+            if request.locked, self.restartSaverWhenReady, self.sessionIsLocked() == true { self.startSaver() }
             self.restartSaverWhenReady = false
             if self.saverStartNeedsRetry { self.retryAt = self.uptime() + 5 }
         }
@@ -203,12 +203,13 @@ final class TerminalLockScreenPresentation {
         // Notifications can lead CGSession briefly, but must not override it
         // forever when an unlock notification is lost during sleep.
         if uptime() >= notificationExpiresAt { notifiedLockState = nil }
-        if let changed = transition.update(notifiedLockState ?? sessionIsLocked()) {
+        let confirmed = sessionIsLocked()
+        let retainConfirmedLock = transition.locked && notifiedLockState == true && uptime() < notificationExpiresAt
+        if let changed = transition.update(retainConfirmedLock ? true : confirmed) {
             logger.notice("Terminal Lock Screen session locked=\(changed)")
             onLockStateChange?(changed)
             if !changed { saverStartNeedsRetry = false }
-            if changed { startSaver() }
-            prepare()
+            prepare(restartSaverAfterPreparation: changed)
         } else if let retryAt, uptime() >= retryAt {
             prepare(reloadRoute: true, restartSaverAfterPreparation: sessionIsLocked() == true)
         }
@@ -251,15 +252,15 @@ final class TerminalLockScreenPresentation {
         }
         notifiedLockState = locked
         notificationExpiresAt = uptime() + 1
+        guard !locked || sessionIsLocked() == true else { return }
         guard let changed = transition.update(locked) else { return }
         logger.notice("Terminal Lock Screen notification locked=\(changed)")
         onLockStateChange?(changed)
         if !changed { saverStartNeedsRetry = false }
-        if changed { startSaver() }
         // Lock changes presentation, not the selected saver route. Reuse the
         // display assertions prepared on the desktop; rebuilding them here
         // puts provider startup on the first-frame path.
-        prepare()
+        prepare(restartSaverAfterPreparation: changed)
     }
 
     private func prepare(reloadRoute: Bool = false, restartSaverAfterPreparation: Bool = false) {

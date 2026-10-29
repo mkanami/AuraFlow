@@ -128,6 +128,22 @@ private final class TerminalSaverStoreFixture {
     #expect(fixture.provider(system["Idle"]) == WallpaperPlatformConstants.screenSaverProviderID)
 }
 
+@Test func savedDefaultPlaceholderCannotBecomeTheRestoredUserWallpaper() throws {
+    let fixture = try TerminalSaverStoreFixture()
+    defer { fixture.cleanup() }
+    let unresolved = try fixture.mode(provider: "default")
+    try fixture.save(["SystemDefault": ["Type": "linked", "Linked": unresolved]])
+    let coordinator = fixture.coordinator()
+    try coordinator.activate()
+    let selected = try Data(contentsOf: fixture.storeURL)
+    let stops = fixture.stopCount
+
+    #expect(throws: TerminalScreenSaverStoreCoordinator.StoreError.self) { try coordinator.restoreIfOwned() }
+    #expect(try Data(contentsOf: fixture.storeURL) == selected)
+    #expect(fixture.stopCount == stops)
+    #expect(FileManager.default.fileExists(atPath: fixture.journalURL.path))
+}
+
 @Test func terminalSaverSelectsEveryDisplayAndRestoresEachPreviousIdle() throws {
     let fixture = try TerminalSaverStoreFixture()
     defer { fixture.cleanup() }
@@ -344,4 +360,36 @@ private final class TerminalSaverStoreFixture {
     #expect(try !recovery.recoverIfNeeded { checks += 1; return checks == 1 })
     #expect(checks == 2)
     #expect(try Data(contentsOf: fixture.storeURL) == before)
+}
+
+@Test func newDisplayRemovalRestoresTheCurrentUserWallpaperInsteadOfASystemDefault() throws {
+    let fixture = try TerminalSaverStoreFixture()
+    defer { fixture.cleanup() }
+    var desktop = try fixture.mode(provider: "com.apple.wallpaper.choice.sequoia")
+    var content = desktop["Content"] as! [String: Any]
+    content["EncodedOptionValues"] = try PropertyListSerialization.data(fromPropertyList: ["values": ["appearance": "automatic"]], format: .binary, options: 0)
+    desktop["Content"] = content
+    try fixture.save(["SystemDefault": ["Desktop": desktop, "Idle": try fixture.mode(provider: "user-saver")]])
+    let coordinator = fixture.coordinator()
+    try coordinator.activate()
+    var active = try fixture.load()
+    let selected = active["SystemDefault"] as! [String: Any]
+    active["Displays"] = ["new-display": ["Desktop": desktop, "Idle": selected["Idle"]!]]
+    try fixture.save(active)
+    try coordinator.restoreIfOwned()
+    let displays = try #require(try fixture.load()["Displays"] as? [String: [String: Any]])
+    #expect((displays["new-display"]?["Idle"] as? NSDictionary)?.isEqual(desktop) == true)
+}
+
+@Test func unknownOriginalWallpaperNeverClearsTheRouteToAnArbitraryDefault() throws {
+    let fixture = try TerminalSaverStoreFixture()
+    defer { fixture.cleanup() }
+    let selected = try fixture.mode(provider: WallpaperPlatformConstants.screenSaverProviderID,
+        config: ["module": ["relative": URL(fileURLWithPath: fixture.saverURL.path, isDirectory: false).absoluteString]])
+    try fixture.save(["SystemDefault": ["Idle": selected]])
+    try Data("{\"routes\":[]}".utf8).write(to: fixture.journalURL)
+    let original = try Data(contentsOf: fixture.storeURL)
+    #expect(throws: (any Error).self) { try fixture.coordinator().restoreIfOwned() }
+    #expect(try Data(contentsOf: fixture.storeURL) == original)
+    #expect(fixture.stopCount == 0)
 }

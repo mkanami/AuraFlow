@@ -51,6 +51,32 @@ struct TerminalLoginRestorationTests {
         #expect(FileManager.default.isExecutableFile(atPath: installed.path))
         #expect(try String(contentsOf: installed).contains("exit 0"))
     }
+
+    @Test func terminalHelperUpdateRecognizesTheOldProcessAfterItsExecutableWasReplaced() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraUnlinkedHelper-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let executable = root.appendingPathComponent("AuraTerminalWallpaperAgent")
+        try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: executable.path)
+        let store = TerminalWallpaperRuntimeStore(appSupportURL: root.appendingPathComponent("terminal-wallpaper"),
+            launchAgentURL: root.appendingPathComponent("unused.plist"))
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = ["60"]
+        try process.run()
+        defer { if process.isRunning { process.terminate() }; process.waitUntilExit() }
+        try store.savePID(process.processIdentifier)
+        try store.saveHealth(.init(agentPID: Int(process.processIdentifier),
+            executableFingerprint: RuntimeExecutableFingerprint.digest(at: executable)))
+        #expect(!NativeTerminalWallpaperController.helperNeedsReplacement(in: store, expectedExecutable: executable))
+
+        let replacement = root.appendingPathComponent("updated-helper")
+        try FileManager.default.copyItem(atPath: "/usr/bin/true", toPath: replacement.path)
+        _ = try FileManager.default.replaceItemAt(executable, withItemAt: replacement)
+
+        #expect(process.isRunning && store.processIsAlive(pid: Int(process.processIdentifier)))
+        #expect(NativeTerminalWallpaperController.helperNeedsReplacement(in: store, expectedExecutable: executable))
+    }
 }
 
 private struct LoginTestLockCoordinator: TerminalLockScreenCoordinating {

@@ -15,6 +15,7 @@ enum LockScreenSaverInstallerError: LocalizedError {
     case componentSignatureInvalid(String)
     case preferenceUpdateFailed
     case installationRollbackFailed(String)
+    case userSelectionUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -28,6 +29,8 @@ enum LockScreenSaverInstallerError: LocalizedError {
             return "macOS did not accept AuraFlow as the active screen saver."
         case .installationRollbackFailed(let detail):
             return "AuraFlow could not restore the previous screen saver component: \(detail)"
+        case .userSelectionUnavailable:
+            return "The saved user screen saver selection is unavailable. No replacement was selected."
         }
     }
 }
@@ -211,17 +214,11 @@ struct ScreenSaverSelectionCoordinator {
             return
         }
 
-        let backup = (try? Data(contentsOf: backupURL))
-            .flatMap { try? JSONDecoder().decode(Backup.self, from: $0) }
-        let fallbackModule = ScreenSaverModulePreference(
-            moduleName: "Ventura",
-            path: WallpaperPlatformConstants.fallbackScreenSaverPath,
-            type: 0
-        )
-        let previousModule = backup?.module ?? fallbackModule
-        // If the backup is unavailable, preserve the setting currently held
-        // by macOS instead of inventing a five-minute timeout.
-        let previousIdleTime = backup?.idleTime ?? preferences.idleTime
+        guard let data = try? Data(contentsOf: backupURL),
+              let backup = try? JSONDecoder().decode(Backup.self, from: data)
+        else { throw LockScreenSaverInstallerError.userSelectionUnavailable }
+        let previousModule = backup.module
+        let previousIdleTime = backup.idleTime
         guard preferences.apply(
             module: previousModule,
             idleTime: previousIdleTime

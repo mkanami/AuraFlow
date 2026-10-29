@@ -39,7 +39,7 @@ private final class SystemTerminalLockScreenCoordinator: TerminalLockScreenCoord
             object: nil, userInfo: nil, deliverImmediately: true
         )
     }
-    func restore() throws { try installer.restoreAfterTerminal() }
+    func restore() throws { try installer.restoreAfterTerminal(preferCurrentDesktop: true) }
     func restoreUserWallpaper() throws { try installer.restoreAfterTerminal(preferCurrentDesktop: true) }
 }
 
@@ -118,14 +118,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         }
         self.sessionIsLocked = sessionIsLocked
         self.runningAgentNeedsReplacement = runningAgentNeedsReplacement ?? {
-            guard resolvedHelper.lastPathComponent == "AuraTerminalWallpaperAgent",
-                  let pid = store.loadPID(), store.processIsAlive(pid: pid),
-                  let expected = RuntimeExecutableFingerprint.digest(at: resolvedHelper) else { return false }
-            var path = [CChar](repeating: 0, count: 4096)
-            guard proc_pidpath(pid_t(pid), &path, UInt32(path.count)) > 0,
-                  URL(fileURLWithPath: String(cString: path)).lastPathComponent == "AuraTerminalWallpaperAgent" else { return false }
-            let health = store.loadHealth()
-            return health?.agentPID != pid || health?.executableFingerprint != expected
+            Self.helperNeedsReplacement(in: store, expectedExecutable: resolvedHelper)
         }
         self.videoRuntimeIsRunning = videoRuntimeIsRunning ?? {
             WallpaperRuntimeStore().status().running
@@ -144,6 +137,17 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
                 previousRevision: previousRevision
             )
         }
+    }
+
+    static func helperNeedsReplacement(in store: TerminalWallpaperRuntimeStore, expectedExecutable: URL) -> Bool {
+        guard expectedExecutable.lastPathComponent == "AuraTerminalWallpaperAgent",
+              let pid = store.loadPID(), store.processIsAlive(pid: pid),
+              let expected = RuntimeExecutableFingerprint.digest(at: expectedExecutable) else { return false }
+        // processIsAlive validates the saved PID and process start time.
+        // After an atomic helper update proc_pidpath can no longer resolve
+        // the old executable, even though that verified process is still live.
+        let health = store.loadHealth()
+        return health?.agentPID != pid || health?.executableFingerprint != expected
     }
 
     func status() throws -> TerminalWallpaperStatus {

@@ -96,7 +96,10 @@ public final class ScreenSaverRouteRecovery {
             guard let root = try PropertyListSerialization.propertyList(from: original, format: nil) as? [String: Any] else { return false }
             var fallbackDesktop: Any?
             _ = mapRoutes(root) { _, route in
-                if fallbackDesktop == nil { fallbackDesktop = route["Desktop"] ?? route["Linked"] }
+                if fallbackDesktop == nil,
+                   let desktop = route["Desktop"] ?? route["Linked"], self.isUserDesktop(desktop) {
+                    fallbackDesktop = desktop
+                }
                 return route
             }
             var suspended = (try? Data(contentsOf: suspensionURL)).flatMap {
@@ -106,6 +109,7 @@ public final class ScreenSaverRouteRecovery {
             let updated = mapRoutes(root) { path, route in
                 guard route["Linked"] == nil, self.isAura(route["Idle"]),
                       let idle = route["Idle"], let desktop = route["Desktop"] ?? fallbackDesktop,
+                      self.isUserDesktop(desktop),
                       let auraData = try? PropertyListSerialization.data(fromPropertyList: idle, format: .binary, options: 0),
                       let fallbackData = try? PropertyListSerialization.data(fromPropertyList: desktop, format: .binary, options: 0)
                 else { return route }
@@ -178,8 +182,14 @@ public final class ScreenSaverRouteRecovery {
         return url.standardizedFileURL.path == WallpaperPlatformConstants.fallbackScreenSaverPath
     }
     private func sameChoice(_ lhs: Any?, _ rhs: Any?) -> Bool {
-        guard let left = choice(lhs), let right = choice(rhs) else { return lhs == nil && rhs == nil }
+        guard let left = (lhs as? [String: Any])?["Content"] as? [String: Any],
+              let right = (rhs as? [String: Any])?["Content"] as? [String: Any]
+        else { return lhs == nil && rhs == nil }
         return (left as NSDictionary).isEqual(to: right)
+    }
+
+    private func isUserDesktop(_ mode: Any) -> Bool {
+        !isAura(mode) && WallpaperDesktopSupport.isUserWallpaperMode(mode)
     }
     private func mapRoutes(_ root: [String: Any], transform: (String, [String: Any]) -> [String: Any]) -> [String: Any] {
         var result = root

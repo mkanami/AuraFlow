@@ -243,11 +243,12 @@ struct TerminalPresentationRecoveryTests {
         presentation.pollSession()
         await fixture.settle()
         #expect(fixture.preparations.count == count)
-        #expect(fixture.transitions == [true])
+        #expect(fixture.transitions.isEmpty)
         #expect(fixture.starts == 0)
         fixture.locked = true
         presentation.pollSession()
         await fixture.settle()
+        #expect(fixture.transitions == [true])
         #expect(fixture.preparations.last?.locked == true)
         #expect(fixture.starts == 1)
     }
@@ -396,4 +397,26 @@ struct TerminalPresentationRecoveryTests {
 
 @MainActor private func pumpPresentationRecoveryAppKit() {
     RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+}
+
+@Test @MainActor
+func terminalLockStartsAuraOnlyAfterItsLockedPresentationIsReady() async {
+    var locked = false
+    var starts = 0
+    var held: CheckedContinuation<Void, Never>?
+    let presentation = TerminalLockScreenPresentation(sessionIsLocked: { locked },
+        startScreenSaver: { starts += 1; return 0 }, presentationPreparer: { isLocked, _ in
+            if isLocked { await withCheckedContinuation { held = $0 } }
+        })
+    defer { presentation.stop() }
+    presentation.start()
+    for _ in 0..<10 { await Task.yield() }
+    locked = true
+    presentation.handleLockNotification(true)
+    for _ in 0..<10 { await Task.yield() }
+    #expect(held != nil)
+    #expect(starts == 0, "Starting the saver against Idle can display the system wallpaper instead of Aura")
+    held?.resume()
+    for _ in 0..<10 { await Task.yield() }
+    #expect(starts == 1)
 }

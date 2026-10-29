@@ -2,6 +2,8 @@
 
 ## 1.3.4
 
+- Restore only recorded user wallpaper and Screen Saver choices, preserving native automatic appearance settings. Never guess a system image or saver when a backup is unavailable; start Terminal's Lock Screen saver only after its confirmed Locked presentation is ready.
+- Recognize a running Terminal helper after its executable is atomically replaced, so opening an updated app loads the installed fixes instead of retaining the old process.
 - Restore the last applied video or Terminal wallpaper at login using one application preference and one future login job. Keep Terminal's signed helper outside the original app path, ignore pre-reboot commands, and display video only after its first decoded frame without installing a cached still as system wallpaper.
 - Recover interrupted isolated Lock Screen installations from their intended mode and saved user routes, preventing failed health checks from repeatedly restarting the native wallpaper provider.
 - Handle confirmed Lock Screen shields immediately, including routes that need no promotion, and select Aura before binding its first secure frame instead of waiting for the two-second health poll.

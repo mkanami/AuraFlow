@@ -38,6 +38,7 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
         let type: String?
         let linked: Data?
         let idle: Data?
+        let desktop: Data?
     }
 
     private struct Journal: Codable {
@@ -156,7 +157,8 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
                     path: path,
                     type: result["Type"] as? String,
                     linked: optionalPlistData(result["Linked"]),
-                    idle: optionalPlistData(result["Idle"])
+                    idle: optionalPlistData(result["Idle"]),
+                    desktop: optionalPlistData(result["Desktop"])
                 ))
             }
             if let linked = result.removeValue(forKey: "Linked") {
@@ -173,10 +175,17 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
     private func restorePlan(from original: Data, journal: Journal, preferCurrentDesktop: Bool) throws -> Data? {
         var root = try dictionary(original)
         var changed = false
+        var missingUserSelection = false
+        let userDesktop = ["AllSpacesAndDisplays", "SystemDefault"].compactMap { key -> Any? in
+            let route = root[key] as? [String: Any]
+            guard let mode = route?["Desktop"] ?? route?["Linked"],
+                  WallpaperDesktopSupport.isUserWallpaperMode(mode) else { return nil }
+            return mode
+        }.first
         root = mapContainers(in: root) { path, container in
             guard isSelected(container["Idle"]), container["Linked"] == nil else { return container }
             var result = container
-            if preferCurrentDesktop, let desktop = result["Desktop"] {
+            if preferCurrentDesktop, let desktop = result["Desktop"], WallpaperDesktopSupport.isUserWallpaperMode(desktop) {
                 result["Idle"] = desktop
                 result["Type"] = "individual"
                 changed = true
@@ -184,25 +193,32 @@ final class TerminalScreenSaverStoreCoordinator: TerminalScreenSaverStoreCoordin
             }
             if let saved = journal.routes.first(where: { $0.path == path }) {
                 if let linked = propertyList(saved.linked) as? NSDictionary,
+                   WallpaperDesktopSupport.isUserWallpaperMode(linked),
                    let desktop = result["Desktop"] as? NSDictionary,
                    desktop.isEqual(linked) {
                     result["Linked"] = linked
                     result.removeValue(forKey: "Desktop")
                     result.removeValue(forKey: "Idle")
                     if let type = saved.type { result["Type"] = type }
-                } else if let idle = propertyList(saved.idle) {
+                    else { result.removeValue(forKey: "Type") }
+                } else if let idle = propertyList(saved.idle), WallpaperDesktopSupport.isUserWallpaperMode(idle) {
                     result["Idle"] = idle
+                } else if let desktop = [result["Desktop"], propertyList(saved.desktop), userDesktop]
+                    .compactMap({ $0 }).first(where: WallpaperDesktopSupport.isUserWallpaperMode) {
+                    result["Idle"] = desktop
                 } else {
-                    result.removeValue(forKey: "Idle")
+                    missingUserSelection = true
                 }
             } else {
-                // A display created during the session may inherit our Idle.
-                // Removing it lets the system's default selection take over.
-                result.removeValue(forKey: "Idle")
+                if let desktop = [result["Desktop"], userDesktop].compactMap({ $0 })
+                    .first(where: WallpaperDesktopSupport.isUserWallpaperMode) {
+                    result["Idle"] = desktop
+                } else { missingUserSelection = true }
             }
             changed = true
             return result
         }
+        guard !missingUserSelection else { throw StoreError.malformed }
         return changed ? try encodedPlist(root) : nil
     }
 

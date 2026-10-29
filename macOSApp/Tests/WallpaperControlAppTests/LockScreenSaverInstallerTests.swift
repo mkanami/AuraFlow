@@ -137,9 +137,9 @@ private struct ScreenSaverSelectionFixture {
 
     try fixture.coordinator.activate()
     try FileManager.default.removeItem(at: fixture.backupURL)
-    try fixture.coordinator.restoreIfNeeded()
+    #expect(throws: LockScreenSaverInstallerError.self) { try fixture.coordinator.restoreIfNeeded() }
 
-    #expect(fixture.preferences.selectedModule == fixture.previousModule)
+    #expect(fixture.preferences.selectedModule?.pointsTo(fixture.destinationURL) == true)
     #expect(fixture.preferences.idleTime == 0)
 }
 
@@ -288,4 +288,17 @@ private struct ScreenSaverSelectionFixture {
     try installer.restoreAfterTerminal()
     #expect(fixture.preferences.selectedModule == fixture.previousModule)
     #expect(installer.isInstalled)
+}
+
+@Test(arguments: [false, true])
+func missingOrCorruptSaverBackupNeverSelectsAnUnrequestedSystemSaver(corrupt: Bool) throws {
+    let fixture = try ScreenSaverSelectionFixture()
+    defer { fixture.cleanup() }
+    try fixture.coordinator.activate()
+    let selected = fixture.preferences.selectedModule
+    if corrupt { try Data("broken backup".utf8).write(to: fixture.backupURL) }
+    else { try FileManager.default.removeItem(at: fixture.backupURL) }
+    #expect(throws: (any Error).self) { try fixture.coordinator.restoreIfNeeded() }
+    #expect(fixture.preferences.selectedModule == selected)
+    #expect(fixture.preferences.idleTime == 0)
 }

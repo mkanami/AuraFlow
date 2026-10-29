@@ -135,18 +135,21 @@ internal final class WallpaperStoreTransaction {
 
         let fallbackDesktop = safeDesktopMode(from: root)
         let fallbackIdle = safeIdleMode(from: root)
+        var missingUserSelection = false
         root = mapWallpaperContainers(in: root) { container in
             var result = container
             if let desktop = result["Desktop"] as? [String: Any],
                modeReferencesAuraFlow(desktop) {
-                result["Desktop"] = fallbackDesktop
+                if let fallbackDesktop { result["Desktop"] = fallbackDesktop }
+                else { missingUserSelection = true }
             }
             if let desktop = result["Desktop"] as? [String: Any] {
                 result["Desktop"] = normalizeImageModeFiles(desktop)
             }
             if let idle = result["Idle"] as? [String: Any],
                modeReferencesAuraFlow(idle) {
-                result["Idle"] = fallbackIdle
+                if let fallbackIdle { result["Idle"] = fallbackIdle }
+                else { missingUserSelection = true }
             }
             if !validTopology.displayIDs.isEmpty,
                var displays = result["Displays"] as? [String: Any] {
@@ -156,6 +159,9 @@ internal final class WallpaperStoreTransaction {
                 result["Displays"] = displays
             }
             return result
+        }
+        guard !missingUserSelection else {
+            throw AerialLockScreenInstallerError.malformedWallpaperStore
         }
         return try PropertyListSerialization.data(
             fromPropertyList: root,
@@ -1429,7 +1435,14 @@ internal final class WallpaperStoreTransaction {
         // be journaled as one, otherwise Remove restores macOS's built-in
         // fallback (often Golden Gate) instead of the saved user image.
         return choices.allSatisfy {
-            ($0["Provider"] as? String) == "default"
+            if ($0["Provider"] as? String) == "default" { return true }
+            guard ($0["Provider"] as? String) == WallpaperPlatformConstants.imageProviderID else { return false }
+            let configuration = ($0["Configuration"] as? Data).flatMap { try? propertyListDictionary(from: $0) }
+            let configured = (configuration?["url"] as? [String: Any])?["relative"] as? String
+            let files = ($0["Files"] as? [[String: Any]])?.compactMap { $0["relative"] as? String } ?? []
+            return ([configured].compactMap { $0 } + files).contains {
+                URL(string: $0)?.path.hasPrefix("/System/Library/CoreServices/DefaultDesktop.") == true
+            }
         }
     }
 
@@ -1458,14 +1471,15 @@ internal final class WallpaperStoreTransaction {
 
     private func safeDesktopMode(
         from root: [String: Any]
-    ) -> [String: Any] {
-        if let mode = (root["SystemDefault"] as? [String: Any])?["Desktop"]
-            as? [String: Any],
-           !modeReferencesAuraFlow(mode) {
-            return mode
+    ) -> [String: Any]? {
+        for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+            let container = root[key] as? [String: Any]
+            for route in ["Desktop", "Linked"] {
+                if let mode = container?[route] as? [String: Any],
+                   WallpaperDesktopSupport.isUserWallpaperMode(mode) { return mode }
+            }
         }
-        let wallpaperPath = loadOriginalWallpaperPath()
-            ?? WallpaperPlatformConstants.fallbackDesktopImagePath
+        guard let wallpaperPath = loadOriginalWallpaperPath() else { return nil }
         return makeMode(
             provider: WallpaperPlatformConstants.imageProviderID,
             configuration: [
@@ -1481,24 +1495,14 @@ internal final class WallpaperStoreTransaction {
 
     private func safeIdleMode(
         from root: [String: Any]
-    ) -> [String: Any] {
-        if let mode = (root["SystemDefault"] as? [String: Any])?["Idle"]
-            as? [String: Any],
-           !modeReferencesAuraFlow(mode) {
-            return mode
+    ) -> [String: Any]? {
+        for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+            if let mode = (root[key] as? [String: Any])?["Idle"] as? [String: Any],
+               WallpaperDesktopSupport.isUserWallpaperMode(mode) { return mode }
         }
-        return makeMode(
-            provider: WallpaperPlatformConstants.screenSaverProviderID,
-            configuration: [
-                "module": [
-                    "relative":
-                        URL(fileURLWithPath:
-                            WallpaperPlatformConstants.fallbackScreenSaverPath
-                        ).absoluteString,
-                ],
-            ],
-            date: Date()
-        )
+        // Preserve the actual user wallpaper, including opaque automatic
+        // appearance options; never manufacture a system screen saver.
+        return safeDesktopMode(from: root)
     }
 
     private func makeMode(
@@ -1712,7 +1716,8 @@ internal final class WallpaperStoreTransaction {
     }
 
     private func loadOriginalWallpaperPath() -> String? {
-        let appSupport = WallpaperRuntimeStore.defaultAppSupportURL()
+        guard let latestUserWallpaperStoreURL else { return nil }
+        let appSupport = latestUserWallpaperStoreURL.deletingLastPathComponent().deletingLastPathComponent()
         for fileName in [
             "wallpaper_backup.json",
             "wallpaper_backup_original.json",
@@ -1727,6 +1732,7 @@ internal final class WallpaperStoreTransaction {
             if let path = dictionary.values.first(where: {
                 !$0.isEmpty
                     && !$0.lowercased().contains("last_frame")
+                    && !URL(fileURLWithPath: $0).standardizedFileURL.path.hasPrefix("/System/Library/CoreServices/DefaultDesktop.")
                     && fileManager.fileExists(atPath: $0)
             }) {
                 return path

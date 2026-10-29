@@ -667,8 +667,7 @@ public enum WallpaperDesktopSupport {
             let identifier = screenIdentifier(screen)
             guard let imagePath = wallpapers[identifier] ?? fallbackPath else { continue }
             let standardized = URL(fileURLWithPath: imagePath).standardized.path
-            guard FileManager.default.fileExists(atPath: standardized) else { continue }
-            let url = URL(fileURLWithPath: standardized)
+            guard let url = safeExistingImageURL(from: standardized) else { continue }
             if (try? workspace.setDesktopImageURL(url, for: screen, options: [:])) != nil {
                 appliedAny = true
                 if appliedPathForAllDesktops == nil {
@@ -781,13 +780,6 @@ public enum WallpaperDesktopSupport {
             }
         }
 
-        for screen in NSScreen.screens {
-            if let url = NSWorkspace.shared.desktopImageURL(for: screen),
-               let safeURL = safeExistingImageURL(from: url.path) {
-                return safeURL
-            }
-        }
-
         let storeURL = WallpaperPlatformConstants.wallpaperStoreURL(
             homeURL: fileManager.homeDirectoryForCurrentUser
         )
@@ -796,65 +788,72 @@ public enum WallpaperDesktopSupport {
                 from: data,
                 options: [],
                 format: nil
-           ),
-           let url = firstSafeImageURL(in: root) {
+           ) as? [String: Any],
+           let url = recordedUserDesktopImageURL(in: root) {
             return url
         }
 
-        let desktopPicturesURL = URL(
-            fileURLWithPath: "/System/Library/Desktop Pictures",
-            isDirectory: true
-        )
-        if let enumerator = fileManager.enumerator(
-            at: desktopPicturesURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) {
-            for case let url as URL in enumerator {
-                if let safeURL = safeExistingImageURL(from: url.path) {
-                    return safeURL
-                }
-            }
-        }
         return nil
     }
 
-    private static func firstSafeImageURL(in value: Any) -> URL? {
-        if let string = value as? String {
-            let path: String
-            if string.hasPrefix("file://"),
-               let url = URL(string: string),
-               url.isFileURL {
-                path = url.path
-            } else {
-                path = string
-            }
-            return safeExistingImageURL(from: path)
-        }
-        if let data = value as? Data,
-           let propertyList = try? PropertyListSerialization.propertyList(
-                from: data,
-                options: [],
-                format: nil
-           ) {
-            return firstSafeImageURL(in: propertyList)
-        }
-        if let dictionary = value as? [String: Any] {
-            for key in dictionary.keys.sorted() {
-                guard let nestedValue = dictionary[key] else { continue }
-                if let url = firstSafeImageURL(in: nestedValue) {
-                    return url
+    static func recordedUserDesktopImageURL(in root: [String: Any]) -> URL? {
+        var selected: URL?
+        _ = mapWallpaperStoreContainers(in: root) { container in
+            for key in ["Desktop", "Linked"] {
+                guard selected == nil, let mode = container[key] as? [String: Any],
+                      let content = mode["Content"] as? [String: Any],
+                      let choices = content["Choices"] as? [[String: Any]], choices.count == 1,
+                      let choice = choices.first,
+                      choice["Provider"] as? String == WallpaperPlatformConstants.imageProviderID,
+                      !containsManagedWallpaperReference(mode) else { continue }
+                let configuration = (choice["Configuration"] as? Data).flatMap {
+                    (try? PropertyListSerialization.propertyList(from: $0, format: nil)) as? [String: Any]
+                }
+                let configuredURL = (configuration?["url"] as? [String: Any])?["relative"] as? String
+                let files = choice["Files"] as? [[String: Any]]
+                let fileURL = files?.count == 1 ? files?.first?["relative"] as? String : nil
+                if let relative = configuredURL ?? fileURL {
+                    if let url = URL(string: relative), url.isFileURL {
+                        selected = safeExistingImageURL(from: url.path)
+                    } else if relative.hasPrefix("/") {
+                        selected = safeExistingImageURL(from: relative)
+                    }
                 }
             }
+            return container
         }
-        if let array = value as? [Any] {
-            for item in array {
-                if let url = firstSafeImageURL(in: item) {
-                    return url
-                }
+        return selected
+    }
+
+    static func hasManagedDesktopReferences(in root: [String: Any]) -> Bool {
+        var found = false
+        _ = mapWallpaperStoreContainers(in: root) { container in
+            for key in ["Desktop", "Linked"] {
+                if let mode = container[key], containsManagedWallpaperReference(mode) { found = true }
+            }
+            return container
+        }
+        return found
+    }
+
+    /// An original descriptor may be replayed verbatim. Empty/default
+    /// placeholders and Aura's own cached surfaces are not user selections.
+    public static func isUserWallpaperMode(_ value: Any) -> Bool {
+        guard let mode = value as? [String: Any], !containsManagedWallpaperReference(mode),
+              let content = mode["Content"] as? [String: Any],
+              let choices = content["Choices"] as? [[String: Any]], !choices.isEmpty else { return false }
+        return choices.allSatisfy { choice in
+            guard let provider = choice["Provider"] as? String, !provider.isEmpty, provider != "default" else { return false }
+            guard provider == WallpaperPlatformConstants.imageProviderID else { return true }
+            let configuration = (choice["Configuration"] as? Data).flatMap {
+                (try? PropertyListSerialization.propertyList(from: $0, format: nil)) as? [String: Any]
+            }
+            let configured = (configuration?["url"] as? [String: Any])?["relative"] as? String
+            let files = (choice["Files"] as? [[String: Any]])?.compactMap { $0["relative"] as? String } ?? []
+            return !([configured].compactMap { $0 } + files).contains {
+                URL(string: $0)?.path.hasPrefix("/System/Library/CoreServices/DefaultDesktop.") == true
             }
         }
-        return nil
     }
 
     private static func safeExistingImageURL(from path: String) -> URL? {
@@ -864,7 +863,8 @@ public enum WallpaperDesktopSupport {
             "heic", "heif", "jpg", "jpeg", "png", "tif", "tiff",
         ])
         guard imageExtensions.contains(url.pathExtension.lowercased()),
-              !lowered.contains("auraflow"),
+              !url.path.hasPrefix("/System/Library/CoreServices/DefaultDesktop."),
+              !isManagedWallpaperReferencePath(url.path),
               !lowered.contains("last_frame"),
               FileManager.default.fileExists(atPath: url.path)
         else {
@@ -1073,16 +1073,16 @@ public enum WallpaperDesktopSupport {
             imagePath: imagePath,
             date: Date()
         )
-        let fallbackIdleMode = screenSaverWallpaperStoreMode(date: Date())
         root = mapWallpaperStoreContainers(in: root) { container in
             var result = container
-            if result["Desktop"] != nil || result["Idle"] != nil {
+            if let desktop = result["Desktop"],
+               containsManagedWallpaperReference(desktop) || !imageDescriptorsAreValid(in: desktop) {
                 result["Desktop"] = desktopMode
                 result["Type"] = "individual"
             }
             if let idle = result["Idle"],
                containsManagedWallpaperReference(idle) {
-                result["Idle"] = fallbackIdleMode
+                result["Idle"] = result["Desktop"] ?? result["Linked"] ?? desktopMode
             }
             if !topology.displayIDs.isEmpty,
                var displays = result["Displays"] as? [String: Any] {
@@ -1122,7 +1122,8 @@ public enum WallpaperDesktopSupport {
         else {
             return false
         }
-        return !containsManagedWallpaperReference(root)
+        guard let root = root as? [String: Any] else { return false }
+        return !hasManagedDesktopReferences(in: root)
     }
 
     private static func modernLockScreenRecoveryStateExists() -> Bool {
@@ -1259,39 +1260,6 @@ public enum WallpaperDesktopSupport {
                 "Choices": [[
                     "Provider": WallpaperPlatformConstants.imageProviderID,
                     "Files": [encodedURL],
-                    "Configuration": configurationData,
-                ]],
-                "Shuffle": "$null",
-                "EncodedOptionValues": "$null",
-            ],
-        ]
-    }
-
-    private static func screenSaverWallpaperStoreMode(
-        date: Date
-    ) -> [String: Any] {
-        let configuration: [String: Any] = [
-            "module": [
-                "relative":
-                    URL(fileURLWithPath: WallpaperPlatformConstants.fallbackScreenSaverPath)
-                        .absoluteString,
-            ],
-        ]
-        let configurationData = (
-            try? PropertyListSerialization.data(
-                fromPropertyList: configuration,
-                format: .binary,
-                options: 0
-            )
-        ) ?? Data()
-        return [
-            "LastSet": date,
-            "LastUse": date,
-            "Content": [
-                "Choices": [[
-                    "Provider":
-                        WallpaperPlatformConstants.screenSaverProviderID,
-                    "Files": [],
                     "Configuration": configurationData,
                 ]],
                 "Shuffle": "$null",

@@ -26,9 +26,6 @@ public enum WallpaperPlatformConstants {
         "/System/Library/CoreServices/WallpaperAgent.app"
     public static let fallbackScreenSaverPath =
         "/System/Library/ExtensionKit/Extensions/Ventura.appex"
-    public static let fallbackDesktopImagePath =
-        "/System/Library/Desktop Pictures/Solid Colors/Stone.png"
-
     public static let wallpaperAgentProcessName = "WallpaperAgent"
     public static let aerialExtensionProcessName = "WallpaperAerialsExtension"
     public static let dockProcessName = "Dock"
