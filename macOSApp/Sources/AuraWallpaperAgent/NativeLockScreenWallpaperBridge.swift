@@ -3,6 +3,22 @@ import Darwin
 import Foundation
 import OSLog
 
+protocol NativeLockScreenBridging: AnyObject {
+    var isReady: Bool { get }
+    var onFailure: (@Sendable (String) -> Void)? { get set }
+    func prepare(completion: @escaping @Sendable (Bool) -> Void)
+    func showForLockTransition(completion: (@Sendable (Bool) -> Void)?)
+    func hideAfterUnlock()
+    func pause()
+    func resumeAfterPause()
+    func invalidatePreparation()
+    func shutdown()
+}
+
+extension NativeLockScreenBridging {
+    func showForLockTransition() { showForLockTransition(completion: nil) }
+}
+
 /// Client for the optional native bridge. The agent stays linkable and
 /// runnable on macOS 13–25 because it only speaks JSON-lines over pipes; the
 /// process that imports Apple's private Wallpaper framework is launched only
@@ -11,7 +27,7 @@ import OSLog
 /// serialized on `ioQueue`. Marking the boundary explicitly lets callbacks
 /// from Foundation's `@Sendable` handlers carry the client into that queue
 /// without pretending that the individual Foundation objects are Sendable.
-final class NativeLockScreenWallpaperBridge: @unchecked Sendable {
+final class NativeLockScreenWallpaperBridge: NativeLockScreenBridging, @unchecked Sendable {
     private enum State {
         case stopped
         case starting

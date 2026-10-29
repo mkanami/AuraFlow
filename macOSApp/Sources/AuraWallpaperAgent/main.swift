@@ -304,7 +304,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let sessionIsLocked: () -> Bool?
     private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
     private let lockScreenPlatform: LockScreenPlatformOperating
-    private let nativeLockScreenBridge: NativeLockScreenWallpaperBridge
+    private let nativeLockScreenBridge: NativeLockScreenBridging
     private let lockScreenRepairGate = LockScreenRepairGate()
     private let lockScreenPlatformExecutor: LockScreenPlatformExecutor
     private let rearmGuard = WallpaperAgentRearmGuard()
@@ -379,6 +379,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     init(
         store: WallpaperRuntimeStore,
         lockScreenPlatform: LockScreenPlatformOperating? = nil,
+        nativeLockScreenBridge: NativeLockScreenBridging? = nil,
         observesSystemEvents: Bool = true,
         sessionIsLocked: @escaping () -> Bool? = { agentSystemSessionIsLocked() }
     ) {
@@ -398,7 +399,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         self.lockScreenState = LockScreenStateMachine(
             isEnabled: self.config.show_on_lock_screen ?? false
         )
-        self.nativeLockScreenBridge = NativeLockScreenWallpaperBridge(
+        self.nativeLockScreenBridge = nativeLockScreenBridge ?? NativeLockScreenWallpaperBridge(
             executableURL: nativeBridgeURL
         )
         super.init()
@@ -766,7 +767,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         handleSessionNotification(expectedLocked: false)
     }
 
-    @objc private func lockShieldDidRaise(_ notification: Notification) {
+    @objc func lockShieldDidRaise(_ notification: Notification) {
         guard !isTerminating else { return }
         beginEarlyLockScreenHandoff(reason: "shield-raised")
         if isConfirmedLockScreenSession() {
@@ -871,15 +872,13 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     /// Lock-only route invisible. Poll briefly on Main Actor so the session
     /// confirmation and AppKit hand-off remain ordered, while keeping a
     /// bounded timeout for stale or unrelated shield notifications. Shared
-    /// Start needs the same confirmation window because its native bridge is
-    /// presented at the shield edge before the isolated Aerial route is
-    /// promoted for the confirmed session.
+    /// Start needs the same confirmation window so its source promotion and
+    /// native presentation can start as soon as the session is confirmed.
     private func scheduleLockConfirmation(reason: String) {
         guard !isTerminating else { return }
         if !lockScreenOnlyMode {
             guard config.show_on_lock_screen == true,
-                  lockScreenPlatform.capabilities.supportsSecureLockScreen,
-                  lockScreenPlatform.requiresLockScreenSessionPromotion
+                  lockScreenPlatform.capabilities.supportsSecureLockScreen
             else {
                 return
             }
@@ -930,6 +929,17 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminating, !earlyLockScreenHandoffArmed,
               systemSessionIsLocked() == true else { return }
 
+        if !lockScreenOnlyMode {
+            guard config.show_on_lock_screen == true,
+                  lockScreenPlatform.capabilities.supportsSecureLockScreen else { return }
+            // The shared source must be promoted before the native bridge
+            // binds its Locked assertion. Going straight to Show here can
+            // bind the old Desktop route and leave the secure surface black
+            // until the subsequent session notification repairs it.
+            applySystemSessionState(locked: true)
+            return
+        }
+
         if lockScreenOnlyMode {
             guard lockScreenPlatform.capabilities.supportsLockScreenOnly,
                   store.isLockScreenAgentReady(),
@@ -953,13 +963,6 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             lastLockScreenOnlyStatus = liveStatus
-        } else {
-            guard config.show_on_lock_screen == true,
-                  lockScreenPlatform.capabilities.supportsSecureLockScreen,
-                  lockScreenPlatform.requiresLockScreenSessionPromotion
-            else {
-                return
-            }
         }
 
         earlyLockScreenHandoffArmed = true

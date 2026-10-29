@@ -2,6 +2,7 @@
 
 ## 1.3.4
 
+- Handle confirmed Lock Screen shields immediately, including routes that need no promotion, and select Aura before binding its first secure frame instead of waiting for the two-second health poll.
 - Keep Dock running during wallpaper recovery, prevent isolated runtime stores from changing the user's Desktop, and require a dedicated session for the full interactive test suite.
 - Make Launch at Login affect only future logins: retain current playback when toggled, keep manual Start available while disabled, and prevent same-session recovery/GUI reopening from applying the new future preference immediately.
 - Wait for the native Locked presentation to commit before starting its screen saver; cover all four session regressions with decoded-video tests and an isolated regression-proof runner.

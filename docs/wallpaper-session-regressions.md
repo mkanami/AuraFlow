@@ -37,4 +37,6 @@ Video regression proof opens real test windows and requires a dedicated login se
 
 `DockRefreshRegressionTests` additionally requires all wallpaper refresh commands to leave Dock running. It verifies that isolated runtime stores cannot call the user's Desktop operations, while the canonical runtime can still use explicitly injected recovery operations.
 
+`LockScreenFirstFrameHandoffTests` uses recording platform/bridge implementations without starting the application or creating windows. It requires source promotion before native Show, confirms a shield whose WindowServer state arrives slightly later without waiting for the two-second health timer, coalesces duplicate events, and preserves the disabled/unknown/unlocked safeguards.
+
 The complete suite remains available through `scripts/test_macos_app.sh` in CI or with `AURAFLOW_DEDICATED_TEST_SESSION=1` in a dedicated macOS login session. It opens real AppKit windows and must not be run on an active user's desktop. Focused `DockRefreshRegressionTests` runs replace system actions with recording closures and do not open windows or restart any process.
