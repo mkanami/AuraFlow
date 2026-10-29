@@ -110,6 +110,16 @@ var targets: [Target] = [
 ]
 
 if canBuildNativeBridge {
+    targets.append(.testTarget(
+        name: "AuraWallpaperNativeBridgeTests",
+        dependencies: ["AuraWallpaperNativeBridge", "AuraWallpaperCore"],
+        path: "Tests/AuraWallpaperNativeBridgeTests",
+        swiftSettings: [.unsafeFlags(["-I\(privateWallpaperModulesDirectory)"])],
+        linkerSettings: [.unsafeFlags([
+            "-F\(privateFrameworksDirectory)",
+            "-framework", "Wallpaper", "-framework", "WallpaperTypes",
+        ])]
+    ))
     products.append(
         .executable(
             name: "AuraWallpaperNativeBridge",

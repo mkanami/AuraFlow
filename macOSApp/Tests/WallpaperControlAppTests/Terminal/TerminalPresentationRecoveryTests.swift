@@ -244,11 +244,29 @@ struct TerminalPresentationRecoveryTests {
         await fixture.settle()
         #expect(fixture.preparations.count == count)
         #expect(fixture.transitions == [true])
+        #expect(fixture.starts == 0)
         fixture.locked = true
         presentation.pollSession()
         await fixture.settle()
         #expect(fixture.preparations.last?.locked == true)
-        #expect(fixture.starts == 2)
+        #expect(fixture.starts == 1)
+    }
+
+    @Test(arguments: [false, nil] as [Bool?]) @MainActor
+    func terminalStaleLockNotificationsNeverStartSaverOnActiveOrUnknownSession(locked: Bool?) async {
+        let fixture = PresentationRecoveryFixture()
+        fixture.locked = locked
+        let presentation = fixture.presentation
+        defer { presentation.stop() }
+        presentation.start()
+        await fixture.settle()
+        for _ in 0..<100 {
+            presentation.handleLockNotification(true)
+            fixture.now += 5
+            presentation.pollSession()
+            await fixture.settle()
+        }
+        #expect(fixture.starts == 0)
     }
 
     @Test @MainActor func terminalDesktopRecoversExistingStaticWindowAfterSpaceAndWakeWithoutRerunningCommand() async throws {

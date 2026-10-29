@@ -306,6 +306,10 @@ final class TerminalLockScreenPresentation {
     private func startSaver() {
         // Only a lock transition or a confirmed locked recovery may start it.
         guard started, transition.locked else { return }
+        guard sessionIsLocked() == true else {
+            saverStartNeedsRetry = true
+            return
+        }
         guard let result = startScreenSaver() else {
             logger.error("SACScreenSaverStartNow is unavailable")
             saverStartNeedsRetry = true

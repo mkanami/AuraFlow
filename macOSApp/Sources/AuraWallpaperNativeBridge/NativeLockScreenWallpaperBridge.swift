@@ -28,6 +28,17 @@ final class NativeLockScreenWallpaperBridge {
     private var recoveryTask: Task<Void, Never>?
     private var restartSaverWhenReady = false
     private var consecutivePresentationFailures = 0
+    private let sessionIsLocked: () -> Bool?
+    private let startScreenSaver: () -> Int32?
+
+    init(
+        sessionIsLocked: @escaping () -> Bool? = { LockScreenSession.currentIsLocked() },
+        startScreenSaver: (() -> Int32?)? = nil
+    ) {
+        self.sessionIsLocked = sessionIsLocked
+        self.startScreenSaver = startScreenSaver ?? { Self.startScreenSaverFunction?() }
+    }
+
     private struct PresentationSurface {
         let display: WallpaperDisplayAssertion
         let presentation: WallpaperPresentationModeAssertion
@@ -36,6 +47,7 @@ final class NativeLockScreenWallpaperBridge {
     private lazy var presentationQueue: LockScreenPresentationQueue<PresentationSurface> = {
         let queue = LockScreenPresentationQueue<PresentationSurface> { [weak self] request, previous in
             guard let self else { throw CancellationError() }
+            guard !request.locked || self.sessionIsLocked() == true else { throw CancellationError() }
             let display: WallpaperDisplayAssertion
             let window: NSWindow
             if !request.reloadRoute, let previous {
@@ -47,9 +59,12 @@ final class NativeLockScreenWallpaperBridge {
                 window = self.makeWindow(for: display.layer)
             }
             let box = DisplayAssertionBox(display)
+            guard self.presentationQueue.isCurrent(request.id),
+                  !request.locked || self.sessionIsLocked() == true else { throw CancellationError() }
             let presentation = try await request.locked
                 ? Self.takeLockedAssertion(displayAssertion: box)
                 : Self.takeIdleAssertion(displayAssertion: box)
+            guard !request.locked || self.sessionIsLocked() == true else { throw CancellationError() }
             return PresentationSurface(display: display, presentation: presentation.value, window: window)
         }
         queue.onApplied = { [weak self] request in
@@ -73,6 +88,10 @@ final class NativeLockScreenWallpaperBridge {
         }
         queue.onFailure = { [weak self] _, error in
             guard let self else { return }
+            if error is CancellationError {
+                self.cancelUnconfirmedShow()
+                return
+            }
             Self.logger.error("Native presentation failed: \(error.localizedDescription, privacy: .public)")
             self.consecutivePresentationFailures += 1
             if self.isReady {
@@ -213,12 +232,16 @@ final class NativeLockScreenWallpaperBridge {
                 catch { return }
                 guard let self, !Task.isCancelled,
                       WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false else { return }
-                guard let locked = LockScreenSession.currentIsLocked(),
+                guard let locked = self.sessionIsLocked(),
                       !NSScreen.screens.isEmpty else {
                     attempts += 1
                     continue
                 }
-                if locked { self.showing = true }
+                self.showing = locked
+                if !locked {
+                    self.finishShowRequests(succeeded: false,
+                        errorDescription: "Lock Screen presentation was cancelled by unlock.")
+                }
                 self.lockedPresentationReady = false
                 self.restartSaverWhenReady = self.showing && locked
                 self.presentationQueue.request(locked: self.showing, reloadRoute: true)
@@ -281,6 +304,14 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     func showForLockTransition(completion: ((Bool, String?) -> Void)? = nil) {
+        // Shield notifications and queued IPC can outlive an unlock. Starting
+        // the saver on an active desktop locks the Mac, so only the current
+        // WindowServer state may authorize this operation.
+        guard sessionIsLocked() == true else {
+            cancelUnconfirmedShow()
+            completion?(false, "Lock Screen presentation was cancelled by unlock.")
+            return
+        }
         guard WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false else {
             completion?(false, "Lock Screen is disabled.")
             return
@@ -304,7 +335,6 @@ final class NativeLockScreenWallpaperBridge {
         if let completion {
             pendingShowCompletions.append(completion)
         }
-        startSystemScreenSaverNow()
         guard displayAssertion != nil else {
             showing = false
             finishShowRequests(
@@ -313,6 +343,7 @@ final class NativeLockScreenWallpaperBridge {
             )
             return
         }
+        startSystemScreenSaverNow()
         // Keep the prewarmed layer hidden. Making it visible here creates a
         // three-frame transition: Aura, loginwindow's Desktop snapshot, then
         // the real Aura Lock Screen. loginwindow owns the secure surface and
@@ -399,6 +430,8 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     func hideAfterUnlock() {
+        recoveryTask?.cancel()
+        recoveryTask = nil
         showing = false
         lockedPresentationReady = false
         restartSaverWhenReady = false
@@ -409,6 +442,18 @@ final class NativeLockScreenWallpaperBridge {
         window?.alphaValue = 0
         guard displayAssertion != nil else { return }
         presentationQueue.request(locked: false)
+    }
+
+    private func cancelUnconfirmedShow() {
+        if sessionIsLocked() == false {
+            hideAfterUnlock()
+        } else {
+            showing = false
+            lockedPresentationReady = false
+            restartSaverWhenReady = false
+            finishShowRequests(succeeded: false,
+                errorDescription: "Lock Screen presentation was cancelled by unlock.")
+        }
     }
 
     func shutdown() {
@@ -436,11 +481,13 @@ final class NativeLockScreenWallpaperBridge {
     }
 
     private func startSystemScreenSaverNow() {
-        guard let function = Self.startScreenSaverFunction else {
+        // Recheck at the side-effect boundary, including delayed wake/rebind
+        // completions. Cached `showing` state is never proof of a lock.
+        guard showing, sessionIsLocked() == true else { return }
+        guard let result = startScreenSaver() else {
             Self.logger.error("SACScreenSaverStartNow is unavailable")
             return
         }
-        let result = function()
         if result != 0 {
             Self.logger.error(
                 "SACScreenSaverStartNow failed: \(result, privacy: .public)"

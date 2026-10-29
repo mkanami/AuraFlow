@@ -330,7 +330,7 @@ final class WebLockPresentation {
     }
 
     private func startSaver() {
-        guard locked else { return }
+        guard locked, LockScreenSession.currentIsLocked() == true else { return }
         if Self.startFunction?() != 0 { retryAt = ProcessInfo.processInfo.systemUptime + 1 }
     }
 

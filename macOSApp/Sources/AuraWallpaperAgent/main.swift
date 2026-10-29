@@ -1596,7 +1596,9 @@ private final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func isConfirmedLockScreenSession() -> Bool {
-        sessionInactive || systemSessionIsLocked() == true
+        // A delayed unlock notification must not let cached state override
+        // WindowServer's explicit unlocked state.
+        systemSessionIsLocked() ?? sessionInactive
     }
 
     private func reconcileLockScreenLifecycle(
