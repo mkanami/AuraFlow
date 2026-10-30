@@ -2,6 +2,7 @@
 
 ## 1.3.4
 
+- Make repeated Lock Screen OFF/ON reuse the current live Terminal surface immediately, without PNG recapture or Remove/Start. Clear the former locked-capture state on OFF, reject stale surface owners, and use a command understood by helpers that are already running during an app update.
 - Keep Launch at Login completely separate from current Lock Screen playback: registration sends no renderer command, and only the Lock Screen toggle requests a fresh saver publication. Cover both login states across manual and automatic locks.
 - Share one presentation reconciler between manual locks and the OS idle screen saver, including password grace, missing notifications, and wake. Publish Terminal frames as soon as the OS saver is active, and never repeatedly start an already-running saver during route repair.
 - Remove stock native-provider thumbnails and the generic DefaultDesktop image from saver fallbacks. Preserve the user's appearance choice and leave the native background visible when no recorded user image is available.

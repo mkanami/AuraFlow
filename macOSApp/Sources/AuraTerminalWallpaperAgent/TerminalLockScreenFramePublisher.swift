@@ -125,12 +125,18 @@ final class TerminalLockScreenFramePublisher {
     }
 
     func refreshHeartbeat() {
-        guard FileManager.default.fileExists(atPath: store.lockScreenFrameURL.path),
-              store.loadLockScreenHeartbeat()?.pid == Int(getpid()) else { return }
+        guard store.lockScreenPlaybackEnabled else { return }
+        let pid = Int(getpid())
+        let hasRaster = FileManager.default.fileExists(atPath: store.lockScreenFrameURL.path)
+            && store.loadLockScreenHeartbeat()?.pid == pid
+        // A shared descriptor is published only after its GPU frame completes.
+        // Keep that live source usable while its optional PNG is being encoded.
+        guard hasRaster || store.loadSharedFrameDescriptor()?.agentPID == pid else { return }
         try? store.saveLockScreenHeartbeat(TerminalLockScreenHeartbeat(pid: Int(getpid())))
     }
 
     func revoke() {
+        lockScreenActive = false
         generation &+= 1
         lastPublishedAt = 0
         didPublishDesktopSeed = false

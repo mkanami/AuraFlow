@@ -1,6 +1,7 @@
 import AppKit
 import AuraTerminalWallpaperCore
 import AuraWallpaperCore
+import IOSurface
 import Testing
 @testable import AuraTerminalWallpaperAgent
 @testable import WallpaperControlApp
@@ -77,7 +78,7 @@ struct TerminalLoginLockIndependenceTests {
         shared.show_on_lock_screen = false
         try app.saveConfig(shared)
         try controller.setShowOnLockScreen(false)
-        #expect(store.loadCommand()?.action == .syncLockScreen && store.loadCommand()?.config == nil)
+        #expect(store.loadCommand()?.action == .update && store.loadCommand()?.config == nil)
         try await Task.sleep(for: .milliseconds(650))
         #expect(store.loadLockScreenHeartbeat() == nil)
         #expect(!FileManager.default.fileExists(atPath: store.lockScreenFrameURL.path))
@@ -85,9 +86,30 @@ struct TerminalLoginLockIndependenceTests {
         shared.show_on_lock_screen = true
         try app.saveConfig(shared)
         try controller.setShowOnLockScreen(true)
-        #expect(store.loadCommand()?.action == .syncLockScreen && store.loadCommand()?.config == nil)
+        #expect(store.loadCommand()?.action == .update && store.loadCommand()?.config == nil)
         try await Task.sleep(for: .milliseconds(650))
         #expect(publisher.needsDesktopSeed && coordinator.activations == 1)
         #expect(store.loadHealth()?.childPID == child && store.loadHealth()?.childRunning == true)
+        // Once its live GPU source is ready, rapid OFF/ON must not need new
+        // PTY output or a PNG, and the latest preference must win polling.
+        let surface = try #require(IOSurfaceCreate([kIOSurfaceWidth: 2, kIOSurfaceHeight: 2,
+            kIOSurfaceBytesPerElement: 4, kIOSurfaceBytesPerRow: 8] as CFDictionary))
+        let descriptor = TerminalSharedFrameDescriptor(surfaceID: IOSurfaceGetID(surface), width: 2, height: 2, agentPID: Int(getpid()))
+        try store.saveSharedFrameDescriptor(descriptor)
+        for _ in 0..<3 {
+            shared.show_on_lock_screen = false
+            try app.saveConfig(shared)
+            try controller.setShowOnLockScreen(false)
+            #expect(store.loadLockScreenHeartbeat() == nil)
+            shared.show_on_lock_screen = true
+            try app.saveConfig(shared)
+            try controller.setShowOnLockScreen(true)
+            #expect(store.loadLockScreenHeartbeat()?.pid == Int(getpid()))
+            try await Task.sleep(for: .milliseconds(650))
+            #expect(store.loadLockScreenHeartbeat()?.pid == Int(getpid()))
+            #expect(store.loadSharedFrameDescriptor() == descriptor)
+            #expect(store.loadHealth()?.childPID == child && store.loadHealth()?.childRunning == true)
+        }
+        withExtendedLifetime(surface) {}
     }
 }

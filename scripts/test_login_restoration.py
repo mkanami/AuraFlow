@@ -25,6 +25,20 @@ names.append('TerminalNativeSurfaceHostingTests')
 names.append('TerminalLockScreenRouteTests')
 names.append('TerminalAutomaticLockTests')
 names.append('TerminalLoginLockIndependenceTests')
+names.append('TerminalLockScreenToggleTests')
+names.extend(['terminalLockScreenPublisherWritesOnlyWhileLocked',
+              'terminalLockScreenPublisherThrottlesDesktopSeedAndRestartsGeneration',
+              'terminalFallbackFramePacingUsesCaptureStartNotEncodingCompletion',
+              'terminalDesktopSeedSettlesPartialStartupWithoutContinuousBackgroundEncoding'])
+names.extend(['lockScreenPlaybackToggleStaysResponsiveAndLatestChoiceWins',
+              'failedLockScreenPlaybackToggleRestoresConfirmedState',
+              'disablingLockScreenRestoresUserRouteAndKeepsDesktopPlayback',
+              'disablingLockScreenStopsOnlyDedicatedAgentAndRemembersSelection',
+              'reenablingLockScreenAfterDisableReusesSelection',
+              'reenablingRunningWallpaperExplicitlyRearmsLockScreen',
+              'enablingLockScreenWithoutDesktopStartsDedicatedRuntime',
+              'lockScreenCheckboxRoutesToRunningTerminalInsteadOfSavedVideo',
+              'lockScreenCheckboxRestoresFlagWhenTerminalCannotPrepareFrame'])
 names.extend(['terminalLockScreenOffOnPreservesDesktopProcessAndRefreshesFrame',
               'terminalLockScreenDoesNotActivateWithoutFreshFrame'])
 names.append('lockScreenPresentsPublishedFrameBeforeAnimationStartsAndRestoresExpiredRoute')

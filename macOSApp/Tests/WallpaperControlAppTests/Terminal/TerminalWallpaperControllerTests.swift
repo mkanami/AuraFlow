@@ -310,7 +310,7 @@ func terminalRemovalFailureKeepsExistingRendererAndFrame(terminate: Bool) throws
     #expect(coordinator.restorations == 1)
     #expect(fixture.store.processIsAlive(pid: pid))
     #expect(fixture.store.loadPID() == pid)
-    #expect(fixture.store.loadCommand()?.action == .syncLockScreen)
+    #expect(fixture.store.loadCommand()?.action == .update)
     #expect(fixture.store.loadCommand()?.config == nil)
     try controller.reconcileLockScreenIfRunning()
     #expect(coordinator.activations == 1)

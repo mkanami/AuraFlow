@@ -114,6 +114,38 @@ struct TerminalNativeSurfaceHostingTests {
         #expect(starts == (automatic ? 0 : 2))
         presentation.stop()
         #expect(try desktop().isEqual(user))
+        // The checkbox must work repeatedly with the same presenter, without
+        // Remove/Start. Each cycle must also tolerate stale session events
+        // and a missing lock notification after wake.
+        for cycle in 0..<3 {
+            try JSONSerialization.data(withJSONObject: ["show_on_lock_screen": false, "autostart": loginEnabled])
+                .write(to: root.appendingPathComponent("config.json"))
+            presentation.stop()
+            presentation.handleLockNotification(true)
+            presentation.recoverAfterSystemChange()
+            #expect(driver.layers.allSatisfy { $0.superlayer == nil })
+            #expect(try desktop().isEqual(user))
+            locked = false
+            saverRunning = false
+            try JSONSerialization.data(withJSONObject: ["show_on_lock_screen": true, "autostart": loginEnabled])
+                .write(to: root.appendingPathComponent("config.json"))
+            presentation.start()
+            await settleTerminalNativePresentation()
+            let startsBeforeLock = starts
+            if automatic {
+                saverRunning = true
+                presentation.handleScreenSaverNotification(true)
+                await settleTerminalNativePresentation()
+            }
+            locked = true
+            if cycle == 1 { presentation.recoverAfterSystemChange() }
+            else { presentation.pollSession() }
+            await settleTerminalNativePresentation()
+            #expect(starts == startsBeforeLock + (automatic ? 0 : 1))
+            #expect(driver.layers.last?.superlayer != nil)
+            presentation.stop()
+            #expect(try desktop().isEqual(user))
+        }
     }
 
     @Test @MainActor

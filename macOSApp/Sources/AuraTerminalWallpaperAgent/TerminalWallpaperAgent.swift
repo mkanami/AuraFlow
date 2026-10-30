@@ -195,7 +195,8 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         // Ordinary settings and compatibility login metadata must not revoke
         // or reseed the current saver publication. Only its own toggle asks
         // for an explicit fresh Lock Screen seed.
-        syncLockScreenPlaybackPolicy(forceSeed: command.action == .syncLockScreen)
+        let lockScreenSync = command.action == .syncLockScreen || (command.action == .update && command.config == nil)
+        syncLockScreenPlaybackPolicy(forceSeed: lockScreenSync)
         if let commandConfig = command.config {
             let oldFPS = config.render.maxFPS
             config = commandConfig.normalized()
@@ -544,6 +545,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 applyLatestSnapshot()
                 windows.first?.requestLockScreenSeedCapture(refresh: true)
             }
+            framePublisher.refreshHeartbeat()
         } else {
             MainActor.assumeIsolated { lockScreenPresentation?.stop() }
             lockScreenIsLocked = false

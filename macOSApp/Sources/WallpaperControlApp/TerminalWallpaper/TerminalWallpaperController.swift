@@ -3,6 +3,7 @@ import AuraWallpaperCore
 import Foundation
 import Darwin
 import AuraWallpaperEngineCore
+import IOSurface
 
 protocol TerminalWallpaperControlling: Sendable {
     func reconcileLockScreenIfRunning() throws
@@ -401,15 +402,34 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         guard store.processIsAlive(pid: store.loadPID()) else { return }
         let startedAt = Date().timeIntervalSince1970
         let previousRevision = Self.lockScreenFrameRevision(in: store)
-        try send(.syncLockScreen)
+        // Update without a Terminal preset is understood by older running
+        // helpers too. A new enum value would be silently ignored until the
+        // helper could safely be replaced after unlock/resume.
+        try send(.update)
         if enabled {
-            guard lockScreenFrameReadinessWaiter(startedAt, previousRevision) else {
+            if let pid = store.loadPID(), Self.hasReadySharedFrame(in: store, pid: pid) {
+                // OFF only hides this source; the desktop's completed GPU
+                // surface remains owned by the same live helper. Reuse it
+                // immediately instead of waiting for another PNG readback.
+                try store.saveLockScreenHeartbeat(.init(pid: pid))
+            } else if !lockScreenFrameReadinessWaiter(startedAt, previousRevision) {
                 throw TerminalWallpaperControllerError.lockScreenFrameNotReady
             }
             try lockScreenCoordinator.activate()
         } else {
+            store.removeLockScreenPublication()
             try lockScreenCoordinator.restoreUserWallpaper()
         }
+    }
+
+    private static func hasReadySharedFrame(in store: TerminalWallpaperRuntimeStore, pid: Int) -> Bool {
+        guard store.processIsAlive(pid: pid),
+              let health = store.loadHealth(), health.agentPID == pid,
+              health.available, health.running, health.lastError == nil,
+              let descriptor = store.loadSharedFrameDescriptor(), descriptor.agentPID == pid,
+              descriptor.width > 0, descriptor.height > 0,
+              let surface = IOSurfaceLookup(descriptor.surfaceID) else { return false }
+        return IOSurfaceGetWidth(surface) == descriptor.width && IOSurfaceGetHeight(surface) == descriptor.height
     }
 
     private func validated(_ config: TerminalWallpaperConfig) throws -> TerminalWallpaperConfig {
