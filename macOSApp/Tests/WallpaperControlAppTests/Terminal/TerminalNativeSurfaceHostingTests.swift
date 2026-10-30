@@ -38,15 +38,17 @@ private final class RecordingTerminalNativeDriver: TerminalLockScreenNativeDrivi
 
 @Suite(.serialized)
 struct TerminalNativeSurfaceHostingTests {
-    @Test(arguments: [false, true]) @MainActor
-    func manualAndAutomaticLockUseTheSameLiveSourceAndRestoreUserChoices(automatic: Bool) async throws {
+    @Test(arguments: [false, true], [false, true]) @MainActor
+    func manualAndAutomaticLockUseTheSameLiveSourceAndRestoreUserChoices(automatic: Bool, loginEnabled: Bool) async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraNativeHandoff-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         let store = TerminalWallpaperRuntimeStore(appSupportURL: root.appendingPathComponent("terminal-wallpaper"),
             launchAgentURL: root.appendingPathComponent("unused.plist"))
         try store.savePID(getpid())
-        try Data("{\"show_on_lock_screen\":true}".utf8).write(to: root.appendingPathComponent("config.json"))
+        try JSONSerialization.data(withJSONObject: ["show_on_lock_screen": true, "autostart": loginEnabled])
+            .write(to: root.appendingPathComponent("config.json"))
+        try store.saveConfig(.init(command: .init(executable: "/bin/echo"), behavior: .init(launchAtLogin: loginEnabled)))
         let index = root.appendingPathComponent("Index.plist")
         let journal = store.appSupportURL.appendingPathComponent("screen-saver-wallpaper-store-backup.json")
         try Data("{\"routes\":[]}".utf8).write(to: journal)

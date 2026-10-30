@@ -2,6 +2,7 @@
 
 ## 1.3.4
 
+- Keep Launch at Login completely separate from current Lock Screen playback: registration sends no renderer command, and only the Lock Screen toggle requests a fresh saver publication. Cover both login states across manual and automatic locks.
 - Share one presentation reconciler between manual locks and the OS idle screen saver, including password grace, missing notifications, and wake. Publish Terminal frames as soon as the OS saver is active, and never repeatedly start an already-running saver during route repair.
 - Remove stock native-provider thumbnails and the generic DefaultDesktop image from saver fallbacks. Preserve the user's appearance choice and leave the native background visible when no recorded user image is available.
 - Present Terminal's live saver through the Desktop route requested by loginwindow only during a confirmed lock. Host every native display layer and restore complete user wallpaper descriptors after unlock, Stop, or an interrupted session, without restarting Dock or WallpaperAgent.

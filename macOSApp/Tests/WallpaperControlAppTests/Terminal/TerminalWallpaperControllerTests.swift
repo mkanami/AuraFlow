@@ -287,7 +287,8 @@ func terminalRemovalFailureKeepsExistingRendererAndFrame(terminate: Bool) throws
     let coordinator = MockTerminalLockScreenCoordinator()
     let sharedConfig = fixture.root.appendingPathComponent("config.json")
     func setEnabled(_ enabled: Bool) throws {
-        try JSONSerialization.data(withJSONObject: ["show_on_lock_screen": enabled]).write(to: sharedConfig, options: .atomic)
+        try JSONSerialization.data(withJSONObject: ["video_path": "", "playback_speed": 1,
+            "show_on_lock_screen": enabled]).write(to: sharedConfig, options: .atomic)
     }
     try setEnabled(false)
     var readinessChecks = 0
@@ -309,7 +310,8 @@ func terminalRemovalFailureKeepsExistingRendererAndFrame(terminate: Bool) throws
     #expect(coordinator.restorations == 1)
     #expect(fixture.store.processIsAlive(pid: pid))
     #expect(fixture.store.loadPID() == pid)
-    #expect(fixture.store.loadCommand()?.action == .update)
+    #expect(fixture.store.loadCommand()?.action == .syncLockScreen)
+    #expect(fixture.store.loadCommand()?.config == nil)
     try controller.reconcileLockScreenIfRunning()
     #expect(coordinator.activations == 1)
     try setEnabled(true)

@@ -343,7 +343,8 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
                 _ = try autostartManager.setEnabled(enabled, runtime: .terminal)
             } else if enabled { try store.enableLaunchAgent(helperPath: helperURL.path) }
             else { try store.removeLoginLaunchAgent() }
-            if running { try send(.update, config: normalized) }
+            // This preference changes future registration only. In particular,
+            // do not send a renderer update that could reseed its saver frame.
             return store.status()
         } catch {
             try? store.saveConfig(previous)
@@ -400,7 +401,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         guard store.processIsAlive(pid: store.loadPID()) else { return }
         let startedAt = Date().timeIntervalSince1970
         let previousRevision = Self.lockScreenFrameRevision(in: store)
-        try send(.update, config: store.loadConfig())
+        try send(.syncLockScreen)
         if enabled {
             guard lockScreenFrameReadinessWaiter(startedAt, previousRevision) else {
                 throw TerminalWallpaperControllerError.lockScreenFrameNotReady
@@ -429,7 +430,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         return normalized
     }
 
-    private func send(_ action: TerminalWallpaperCommandAction, config: TerminalWallpaperConfig) throws {
+    private func send(_ action: TerminalWallpaperCommandAction, config: TerminalWallpaperConfig? = nil) throws {
         try store.saveCommand(TerminalWallpaperRuntimeCommand(action: action, config: config))
         DistributedNotificationCenter.default().post(
             name: TerminalWallpaperRuntimeNotifications.commandDidChange,

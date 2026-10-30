@@ -178,7 +178,7 @@ private final class LoginVideo: WallpaperControlling, @unchecked Sendable {
     let plist = try #require(try PropertyListSerialization.propertyList(from: Data(contentsOf: launch), format: nil) as? [String: Any])
     #expect(plist["RunAtLoad"] as? Bool == true)
     #expect(plist["ProgramArguments"] as? [String] == ["/usr/bin/true", "--config", store.configURL.path])
-    #expect(store.loadCommand()?.action == .update)
+    #expect(store.loadCommand() == nil, "A future-login preference must not issue a current playback command")
     let disabled = try controller.setLaunchAtLogin(false, config: draft)
     #expect(disabled.config == applied && disabled.pid == enabled.pid && disabled.paused)
     #expect(!FileManager.default.fileExists(atPath: launch.path))

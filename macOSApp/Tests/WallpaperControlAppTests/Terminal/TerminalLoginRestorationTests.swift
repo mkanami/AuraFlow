@@ -7,7 +7,7 @@ import Testing
 
 @Suite(.serialized)
 struct TerminalLoginRestorationTests {
-    @Test(arguments: [TerminalWallpaperCommandAction.update, .restart, .stop]) @MainActor
+    @Test(arguments: [TerminalWallpaperCommandAction.update, .restart, .stop, .syncLockScreen]) @MainActor
     func newLoginRunsSavedCommandInsteadOfReplayingPreviousProcessCommands(staleAction: TerminalWallpaperCommandAction) async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraTerminalLogin-\(UUID())")

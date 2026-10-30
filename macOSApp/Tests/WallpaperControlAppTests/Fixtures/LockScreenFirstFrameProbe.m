@@ -117,6 +117,16 @@ int main(int argc, char **argv) {
         [[NSJSONSerialization dataWithJSONObject:@{@"show_on_lock_screen":@YES} options:0 error:nil] writeToURL:configURL atomically:YES];
         [saver animateOneFrame];
         if (![[saver valueForKey:@"terminalModeActive"] boolValue] || frame.hidden) return 8;
+        // Rendering depends only on the Lock Screen preference, in every
+        // combination with the independent future-login preference.
+        for (NSNumber *login in @[@NO, @YES]) {
+            for (NSNumber *show in @[@NO, @YES]) {
+                [[NSJSONSerialization dataWithJSONObject:@{@"autostart":login, @"show_on_lock_screen":show}
+                    options:0 error:nil] writeToURL:configURL atomically:YES];
+                [saver animateOneFrame];
+                if ([[saver valueForKey:@"terminalModeActive"] boolValue] != show.boolValue || frame.hidden == show.boolValue) return 24;
+            }
+        }
         // An expired route must still restore the normal wallpaper lazily.
         [[NSFileManager defaultManager] removeItemAtURL:heartbeat error:nil];
         [saver animateOneFrame];

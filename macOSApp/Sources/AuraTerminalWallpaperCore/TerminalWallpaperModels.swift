@@ -295,6 +295,7 @@ public enum TerminalWallpaperCommandAction: String, Codable, Sendable {
     case stop
     case restart
     case update
+    case syncLockScreen = "sync_lock_screen"
     case resize
     case terminate
 }

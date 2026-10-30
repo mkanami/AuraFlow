@@ -53,10 +53,11 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var publishedSharedFrameDescriptor: TerminalSharedFrameDescriptor?
 
     init(configurationURL: URL, managesLockScreenPresentation: Bool = true,
-         screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens }) {
+         screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens },
+         framePublisher: TerminalLockScreenFramePublisher? = nil) {
         let supportURL = configurationURL.deletingLastPathComponent()
         store = TerminalWallpaperRuntimeStore(appSupportURL: supportURL)
-        framePublisher = TerminalLockScreenFramePublisher(store: store)
+        self.framePublisher = framePublisher ?? TerminalLockScreenFramePublisher(store: store)
         self.managesLockScreenPresentation = managesLockScreenPresentation
         self.screensProvider = screensProvider
         config = store.loadConfig()
@@ -191,7 +192,10 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         else { return }
         lastCommandID = command.id
         let previousConfiguration = config
-        syncLockScreenPlaybackPolicy(forceSeed: command.action == .update)
+        // Ordinary settings and compatibility login metadata must not revoke
+        // or reseed the current saver publication. Only its own toggle asks
+        // for an explicit fresh Lock Screen seed.
+        syncLockScreenPlaybackPolicy(forceSeed: command.action == .syncLockScreen)
         if let commandConfig = command.config {
             let oldFPS = config.render.maxFPS
             config = commandConfig.normalized()
@@ -225,7 +229,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     rebuildRuntime(preserveWindows: true)
                 }
             }
-        case .pause, .resume:
+        case .pause, .resume, .syncLockScreen:
             // Read the latest persisted intent, including when a newer Update
             // supersedes a Pause notification. Never recreate the PTY here.
             break
