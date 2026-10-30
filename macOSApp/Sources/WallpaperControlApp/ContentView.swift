@@ -774,7 +774,7 @@ struct SettingsPopupCard: View {
             .help("Automatically starts the configured wallpaper when you sign in to your Mac.")
 
             Toggle(isOn: Binding(
-                get: { viewModel.pauseOnFullscreenEnabled },
+                get: { viewModel.settingsPauseOnFullscreenEnabled },
                 set: { newValue in viewModel.togglePauseOnFullscreen(newValue) }
             )) {
                 Label("Auto-Pause on Fullscreen Apps", systemImage: "display")

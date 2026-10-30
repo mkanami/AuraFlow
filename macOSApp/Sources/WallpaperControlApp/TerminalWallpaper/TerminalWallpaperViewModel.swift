@@ -106,6 +106,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     @Published var pauseOnFullscreen: Bool
     @Published var launchAtLogin: Bool
     @Published private(set) var pendingLaunchAtLogin: Bool?
+    @Published private(set) var pendingPauseOnFullscreen: Bool?
     @Published private(set) var selectedCatalogItemID: String?
     @Published private(set) var catalogItems: [TerminalWallpaperCatalogItem]
     @Published private(set) var catalogSearch = ""
@@ -871,6 +872,39 @@ final class TerminalWallpaperViewModel: ObservableObject {
 
     var controlsLaunchAtLogin: Bool {
         pendingLaunchAtLogin ?? status.config.behavior.launchAtLogin
+    }
+
+    var controlsPauseOnFullscreen: Bool {
+        if let pendingPauseOnFullscreen { return pendingPauseOnFullscreen }
+        if !status.running, previewSelectionStore?.kind == .terminal,
+           let preview = previewSelectionStore?.terminalConfiguration {
+            return preview.behavior.pauseOnFullscreen
+        }
+        return status.config.behavior.pauseOnFullscreen
+    }
+
+    func setPauseOnFullscreen(_ enabled: Bool) {
+        guard !isBusy else { return }
+        let controller = controller
+        var config = status.running ? status.config : makeConfig()
+        config.behavior.pauseOnFullscreen = enabled
+        let updated = config
+        pendingPauseOnFullscreen = enabled
+        perform(successMessage: enabled ? "Auto-pause on fullscreen enabled." : "Auto-pause on fullscreen disabled.",
+                onCompletion: { [weak self] succeeded in
+                    guard let self else { return }
+                    if succeeded, !self.status.running, let store = self.previewSelectionStore, store.kind == .terminal {
+                        var preview = store.terminalConfiguration ?? updated
+                        preview.behavior.pauseOnFullscreen = enabled
+                        store.selectTerminal(preview)
+                    }
+                    self.pendingPauseOnFullscreen = nil
+                }) {
+            do { return try controller.setPauseOnFullscreen(enabled, config: updated) }
+            catch {
+                throw TerminalWallpaperControllerError.unavailable("Failed to update fullscreen policy: \(error.localizedDescription)")
+            }
+        }
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {

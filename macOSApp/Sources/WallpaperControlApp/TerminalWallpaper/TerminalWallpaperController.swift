@@ -18,6 +18,7 @@ protocol TerminalWallpaperControlling: Sendable {
     func updateScaleMode(_ mode: TerminalScaleMode) throws -> TerminalWallpaperStatus
     func resize(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
     func setLaunchAtLogin(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
+    func setPauseOnFullscreen(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
 }
 
 protocol TerminalLockScreenCoordinating: Sendable {
@@ -45,6 +46,9 @@ private final class SystemTerminalLockScreenCoordinator: TerminalLockScreenCoord
 }
 
 extension TerminalWallpaperControlling {
+    func setPauseOnFullscreen(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
+        throw TerminalWallpaperControllerError.unavailable("Fullscreen pause controls are unavailable.")
+    }
     func ensureCanStart() throws {}
     func reconcileLockScreenIfRunning() throws {}
     func setPlaybackPaused(_ paused: Bool) throws -> TerminalWallpaperStatus {
@@ -360,6 +364,23 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
             try store.enableLaunchAgent(helperPath: helperURL.path)
         } else if store.launchAgentEnabled() {
             store.disableLaunchAgent()
+        }
+    }
+
+    func setPauseOnFullscreen(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
+        let running = store.processIsAlive(pid: store.loadPID())
+        let previous = store.loadConfig()
+        var updated = (running ? previous : config).normalized()
+        updated.behavior.pauseOnFullscreen = enabled
+        do {
+            try store.saveConfig(updated)
+            if running { try send(.update, config: updated) }
+            return store.status()
+        } catch {
+            try? store.saveConfig(previous)
+            throw error
         }
     }
 

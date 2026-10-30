@@ -494,7 +494,9 @@ struct TerminalWallpaperSettingsView: View {
     private var behaviorSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle("Render on all displays", isOn: $viewModel.allDisplays)
-            Toggle("Pause when another app is fullscreen", isOn: $viewModel.pauseOnFullscreen)
+            Toggle("Pause when another app is fullscreen", isOn: Binding(
+                get: { viewModel.controlsPauseOnFullscreen }, set: { viewModel.setPauseOnFullscreen($0) }))
+                .disabled(viewModel.isBusy)
         }
     }
 

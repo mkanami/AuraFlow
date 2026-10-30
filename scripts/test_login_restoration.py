@@ -26,6 +26,8 @@ names.append('TerminalLockScreenRouteTests')
 names.append('TerminalAutomaticLockTests')
 names.append('TerminalLoginLockIndependenceTests')
 names.append('TerminalLockScreenToggleTests')
+names.append('TerminalFullscreenRuntimeTests')
+names.extend(['terminalFullscreenPause', 'terminalManualPauseSurvivesFullscreenAndLockTransitions'])
 names.extend(['terminalLockScreenPublisherWritesOnlyWhileLocked',
               'terminalLockScreenPublisherThrottlesDesktopSeedAndRestartsGeneration',
               'terminalFallbackFramePacingUsesCaptureStartNotEncodingCompletion',

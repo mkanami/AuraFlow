@@ -2606,7 +2606,17 @@ final class AppViewModel: ObservableObject {
     }
 
     var canTogglePauseOnFullscreen: Bool {
-        isControllerAvailable && !isBusy
+        guard !isBusy, !isLifecycleBusy else { return false }
+        switch scaleControlTarget {
+        case .terminal: return terminalScaleModel?.isBusy == false
+        case .video: return isControllerAvailable
+        case .unsupported: return false
+        }
+    }
+
+    var settingsPauseOnFullscreenEnabled: Bool {
+        if case .terminal = scaleControlTarget { return terminalScaleModel?.controlsPauseOnFullscreen ?? false }
+        return pauseOnFullscreenEnabled
     }
 
     var canToggleShowOnLockScreen: Bool {
@@ -2671,7 +2681,11 @@ final class AppViewModel: ObservableObject {
             if case .terminal = scaleControlTarget {
                 loginError = message.hasPrefix("Failed to update launch at login:")
             } else { loginError = false }
-            guard playbackError || scaleError || loginError else { return }
+            let fullscreenError: Bool
+            if case .terminal = scaleControlTarget {
+                fullscreenError = message.hasPrefix("Failed to update fullscreen policy:")
+            } else { fullscreenError = false }
+            guard playbackError || scaleError || loginError || fullscreenError else { return }
             alertMessage = message
         }.store(in: &terminalScaleSubscriptions)
         objectWillChange.send()
@@ -3973,16 +3987,17 @@ final class AppViewModel: ObservableObject {
     func cancelBlendInterpolation() { blendInterpolationTask?.cancel() }
 
     func togglePauseOnFullscreen(_ enabled: Bool) {
-        guard !isBusy else {
-            pauseOnFullscreenEnabled = !enabled
+        guard canTogglePauseOnFullscreen else { return }
+        if case .terminal = scaleControlTarget {
+            terminalScaleModel?.setPauseOnFullscreen(enabled)
             return
         }
 
         let previous = pauseOnFullscreenEnabled
         pauseOnFullscreenEnabled = enabled
         guard let controller else { return }
+        isBusy = true
         Task {
-            isBusy = true
             defer { isBusy = false }
             do {
                 let status = try await runAsync { try controller.setPauseOnFullscreen(enabled) }

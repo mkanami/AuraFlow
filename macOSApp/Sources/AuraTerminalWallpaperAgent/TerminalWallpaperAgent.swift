@@ -39,6 +39,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var frameTimer: Timer?
     private var fullscreenTimer: Timer?
     private var fullscreenPausePolicy = TerminalFullscreenPausePolicy()
+    private let fullscreenApplicationIsActive: () -> Bool
     private var lockScreenIsLocked = false
     private var lockScreenPlaybackEnabled = false
     private var outputPublication = TerminalOutputPublicationState()
@@ -54,12 +55,14 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     init(configurationURL: URL, managesLockScreenPresentation: Bool = true,
          screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens },
-         framePublisher: TerminalLockScreenFramePublisher? = nil) {
+         framePublisher: TerminalLockScreenFramePublisher? = nil,
+         fullscreenApplicationIsActive: (() -> Bool)? = nil) {
         let supportURL = configurationURL.deletingLastPathComponent()
         store = TerminalWallpaperRuntimeStore(appSupportURL: supportURL)
         self.framePublisher = framePublisher ?? TerminalLockScreenFramePublisher(store: store)
         self.managesLockScreenPresentation = managesLockScreenPresentation
         self.screensProvider = screensProvider
+        self.fullscreenApplicationIsActive = fullscreenApplicationIsActive ?? { Self.detectFullscreenApplication() }
         config = store.loadConfig()
         fullscreenPausePolicy.manuallyPaused = store.isPlaybackPaused
         super.init()
@@ -214,6 +217,9 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             previousWithoutRate.nativeSpeed = config.nativeSpeed
             previousWithoutRate.render.scaleMode = config.render.scaleMode
             previousWithoutRate.behavior.launchAtLogin = config.behavior.launchAtLogin
+            // This setting is applied by the pause policy below; keep the
+            // existing PTY, parser, windows and Lock Screen publication.
+            previousWithoutRate.behavior.pauseOnFullscreen = config.behavior.pauseOnFullscreen
             if previousWithoutRate != config {
                 rebuildRuntime(restartChild: previousConfiguration.command != config.command)
             } else if previousConfiguration.render.scaleMode != config.render.scaleMode {
@@ -560,7 +566,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let screenLocked = lockScreenIsLocked
         let enabled = config.behavior.pauseOnFullscreen
         let foregroundIsFullscreen = enabled && !screenLocked
-            ? Self.detectFullscreenApplication()
+            ? fullscreenApplicationIsActive()
             : false
         guard let paused = fullscreenPausePolicy.update(
             enabled: enabled,

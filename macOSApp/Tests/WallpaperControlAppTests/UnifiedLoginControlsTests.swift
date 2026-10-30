@@ -8,13 +8,25 @@ private final class LoginTerminal: TerminalWallpaperControlling, @unchecked Send
     private let lock = NSLock()
     private var value: TerminalWallpaperStatus
     private var requests: [TerminalWallpaperConfig] = []
+    private var pauseRequests: [TerminalWallpaperConfig] = []
     var fail = false
-    init(running: Bool) {
+    init(running: Bool, pauseOnFullscreen: Bool = true) {
         value = .init(running: running, pid: running ? 123 : nil,
             config: .init(command: .init(executable: "/bin/echo", arguments: ["installed"]),
-                          render: .init(columns: 80, rows: 24, fontSize: 14)))
+                          render: .init(columns: 80, rows: 24, fontSize: 14),
+                          behavior: .init(pauseOnFullscreen: pauseOnFullscreen)))
     }
     var loginRequests: [TerminalWallpaperConfig] { lock.withLock { requests } }
+    var fullscreenRequests: [TerminalWallpaperConfig] { lock.withLock { pauseRequests } }
+    func setPauseOnFullscreen(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
+        try lock.withLock {
+            pauseRequests.append(config)
+            if fail { throw TerminalWallpaperControllerError.unavailable("fullscreen setting failed") }
+            value.config = config
+            value.config.behavior.pauseOnFullscreen = enabled
+            return value
+        }
+    }
     func status() throws -> TerminalWallpaperStatus { lock.withLock { value } }
     func setLaunchAtLogin(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
         try lock.withLock {
@@ -37,6 +49,7 @@ private final class LoginVideo: WallpaperControlling, @unchecked Sendable {
     private let lock = NSLock()
     private var value: ControlStatus
     private var requests: [Bool] = []
+    private var pauseRequests: [Bool] = []
     var fail = false
     init(root: URL, running: Bool = false, paused: Bool = false, lockOnly: Bool = false, image: Bool = false) {
         value = .init(running: running,
@@ -45,6 +58,7 @@ private final class LoginVideo: WallpaperControlling, @unchecked Sendable {
             paused: paused, lock_screen_only: lockOnly)
     }
     var loginRequests: [Bool] { lock.withLock { requests } }
+    var fullscreenRequests: [Bool] { lock.withLock { pauseRequests } }
     func status() throws -> ControlStatus { lock.withLock { value } }
     func setAutostart(_ enabled: Bool) throws -> ControlStatus {
         try lock.withLock {
@@ -62,7 +76,14 @@ private final class LoginVideo: WallpaperControlling, @unchecked Sendable {
     func stop() throws -> ControlStatus { fatalError() }
     func setSpeed(_ speed: Double) async throws -> ControlStatus { fatalError() }
     func setInterpolation(_ enabled: Bool) throws -> ControlStatus { fatalError() }
-    func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus { fatalError() }
+    func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus {
+        try lock.withLock {
+            pauseRequests.append(enabled)
+            if fail { throw NativeWallpaperControllerError.unavailable("fullscreen setting failed") }
+            value.config.pause_on_fullscreen = enabled
+            return value
+        }
+    }
     func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus { fatalError() }
     func syncLockScreenSaver() async throws {}
     func beginLockScreenPreview() throws -> ControlStatus { fatalError() }
@@ -74,6 +95,74 @@ private final class LoginVideo: WallpaperControlling, @unchecked Sendable {
     let deadline = Date().addingTimeInterval(3)
     while !predicate(), Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
     #expect(predicate())
+}
+
+@Test @MainActor func unifiedFullscreenUsesRunningTerminalWithoutApplyingAnotherPreviewOrDraft() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let selection = WallpaperPreviewSelectionStore(selectionURL: root.appendingPathComponent("selection.json"))
+    selection.selectTerminal(.init(command: .init(executable: "/bin/echo", arguments: ["another preview"])))
+    let controller = LoginTerminal(running: true, pauseOnFullscreen: false)
+    let terminal = TerminalWallpaperViewModel(controller: controller, previewSelectionStore: selection)
+    terminal.fontSize = 42
+    let original = try controller.status().config
+    let video = LoginVideo(root: root)
+    let app = AppViewModel(controller: video, appSupportDirectoryURL: root, previewSelectionStore: selection)
+    app.connectTerminalScaleControls(terminal)
+    await app.loadStatus()
+    #expect(!app.settingsPauseOnFullscreenEnabled)
+    app.togglePauseOnFullscreen(true)
+    try await awaitLogin { !terminal.isBusy && !app.isBusy }
+    var expected = original
+    expected.behavior.pauseOnFullscreen = true
+    #expect(controller.fullscreenRequests == [expected])
+    #expect(video.fullscreenRequests.isEmpty)
+    #expect(try controller.status().config == expected)
+    #expect(terminal.fontSize == 42 && terminal.argumentsText == "another preview")
+    controller.fail = true
+    app.togglePauseOnFullscreen(false)
+    try await awaitLogin { !terminal.isBusy && !app.isBusy }
+    #expect(app.settingsPauseOnFullscreenEnabled)
+    #expect(app.alertMessage?.contains("fullscreen setting failed") == true)
+}
+
+@Test @MainActor func unifiedFullscreenStillControlsAppliedVideoWithATerminalPreview() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let selection = WallpaperPreviewSelectionStore(selectionURL: root.appendingPathComponent("selection.json"))
+    selection.selectTerminal(.init(command: .init(executable: "/bin/echo")))
+    let controller = LoginTerminal(running: false)
+    let terminal = TerminalWallpaperViewModel(controller: controller, previewSelectionStore: selection)
+    let video = LoginVideo(root: root, running: true)
+    let app = AppViewModel(controller: video, appSupportDirectoryURL: root, previewSelectionStore: selection)
+    app.connectTerminalScaleControls(terminal)
+    await app.loadStatus()
+    app.togglePauseOnFullscreen(false)
+    try await awaitLogin { !app.isBusy && video.fullscreenRequests.count == 1 }
+    #expect(!app.settingsPauseOnFullscreenEnabled)
+    #expect(video.fullscreenRequests == [false] && controller.fullscreenRequests.isEmpty)
+    #expect(selection.kind == .terminal)
+}
+
+@Test @MainActor func unifiedFullscreenSavesAnInactiveTerminalPreviewWithoutStartingIt() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let selection = WallpaperPreviewSelectionStore(selectionURL: root.appendingPathComponent("selection.json"))
+    selection.selectTerminal(.init(command: .init(executable: "/bin/echo", arguments: ["preview"]),
+        behavior: .init(pauseOnFullscreen: false)))
+    let controller = LoginTerminal(running: false)
+    let terminal = TerminalWallpaperViewModel(controller: controller, previewSelectionStore: selection)
+    let video = LoginVideo(root: root)
+    let app = AppViewModel(controller: video, appSupportDirectoryURL: root, previewSelectionStore: selection)
+    app.connectTerminalScaleControls(terminal)
+    #expect(!app.settingsPauseOnFullscreenEnabled)
+    app.togglePauseOnFullscreen(true)
+    try await awaitLogin { !terminal.isBusy }
+    let saved = WallpaperPreviewSelectionStore(selectionURL: root.appendingPathComponent("selection.json"))
+    #expect(saved.terminalConfiguration?.behavior.pauseOnFullscreen == true)
+    #expect(saved.terminalConfiguration?.command.arguments == ["preview"])
+    #expect(!terminal.status.running && controller.fullscreenRequests.count == 1)
+    #expect(video.fullscreenRequests.isEmpty)
 }
 
 @Test @MainActor func unifiedLoginUsesInstalledTerminalAndPreservesDifferentPreviewAndDrafts() async throws {
