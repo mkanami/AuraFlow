@@ -8,9 +8,12 @@ from typing import BinaryIO
 from .. import AuraFlowError
 from ..player import Player, WallpaperSession, player_options
 from ..settings import Settings
+from ..streams import VideoFormat
 
 
-def command(media: Path, settings: Settings, ipc_path: Path) -> list[str]:
+def command(
+    media: Path, settings: Settings, ipc_path: Path, raw: VideoFormat | None = None
+) -> list[str]:
     # ALL discovers outputs through Wayland; no saved connector names or display IDs.
     # mpvpaper loads options before AND after mpv initialization. Reapplying
     # input-ipc-client would create competing readers on the same inherited FD.
@@ -21,13 +24,16 @@ def command(media: Path, settings: Settings, ipc_path: Path) -> list[str]:
     options = " ".join(
         [
             *player_options(settings, None),
+            *(raw.options() if raw else []),
             f'--input-ipc-server="{path}"',
         ]
     )
     return ["mpvpaper", "-o", options, "ALL", str(media)]
 
 
-def bridge_command(media: Path, settings: Settings, ipc_fd: int) -> list[str]:
+def bridge_command(
+    media: Path, settings: Settings, ipc_fd: int, raw: VideoFormat | None = None
+) -> list[str]:
     return [
         sys.executable,
         "-m",
@@ -35,9 +41,19 @@ def bridge_command(media: Path, settings: Settings, ipc_fd: int) -> list[str]:
         str(ipc_fd),
         json.dumps({"scale": settings.scale, "speed": settings.speed}),
         str(media),
+        *([json.dumps({"width": raw.width, "height": raw.height, "fps": raw.fps})] if raw else []),
     ]
 
 
-def start(media: Path, settings: Settings, log: BinaryIO) -> WallpaperSession:
-    player = Player(lambda fd: bridge_command(media, settings, fd), log)
+def start(media: Path, settings: Settings, log: BinaryIO, source=None) -> WallpaperSession:
+    reader = source.attach() if source else None
+    try:
+        player = Player(
+            lambda fd: bridge_command(media, settings, fd, source.format if source else None),
+            log,
+            stdin=reader,
+        )
+    finally:
+        if reader:
+            reader.close()
     return WallpaperSession("wayland", media, [player], lambda: None)

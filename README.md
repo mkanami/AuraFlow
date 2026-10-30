@@ -26,7 +26,8 @@
 </p>
 
 The initial **Linux port** is developed separately in [`linuxApp/`](linuxApp/README.md),
-with a Qt interface and X11 / Wayland playback backends. See its README for
+with a Qt interface, wallpaper catalog, terminal wallpapers, and X11 / Wayland
+playback backends. See its README for
 installation, supported desktop sessions, and current feature limits.
 
 ## Highlights

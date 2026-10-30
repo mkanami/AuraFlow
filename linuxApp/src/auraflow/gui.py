@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QObject,
-    QRunnable,
     QSignalBlocker,
     QSize,
     Qt,
     QThreadPool,
     QTimer,
     QUrl,
-    Signal,
 )
 from PySide6.QtGui import QAction, QCloseEvent, QIcon, QMovie, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -47,29 +43,10 @@ from .desktop import DesktopIntegration
 from .paths import AppPaths
 from .service import Client
 from .settings import MEDIA_EXTENSIONS, SettingsStore
+from .terminal_config import TerminalConfig
+from .ui_tasks import Task
 
 ICON = Path(__file__).parent / "assets/icon.png"
-
-
-class TaskSignals(QObject):
-    succeeded = Signal(object)
-    failed = Signal(str)
-    finished = Signal()
-
-
-class Task(QRunnable):
-    def __init__(self, function: Callable):
-        super().__init__()
-        self.function = function
-        self.signals = TaskSignals()
-
-    def run(self):
-        try:
-            self.signals.succeeded.emit(self.function())
-        except Exception as exc:
-            self.signals.failed.emit(str(exc))
-        finally:
-            self.signals.finished.emit()
 
 
 class Preview(QStackedWidget):
@@ -141,6 +118,18 @@ class Preview(QStackedWidget):
         if not self.original.isNull():
             self._draw_image(self.original)
 
+    def terminal_selection(self, config):
+        self.player.stop()
+        if self.movie:
+            self.movie.stop()
+            self.movie = None
+        self.original = QPixmap()
+        self.kind = "terminal"
+        self.empty.setText(
+            f"Terminal wallpaper\n{config.label}\n\nOpen Terminal Wallpapers to preview."
+        )
+        self.setCurrentWidget(self.empty)
+
     def set_speed(self, speed: float):
         self.playback_speed = speed
         self.player.setPlaybackRate(speed)
@@ -198,6 +187,9 @@ class MainWindow(QMainWindow):
         self.current_task: Task | None = None
         self.playback: dict = {"running": False, "paused": False}
         self.selected: Path | None = None
+        self.terminal_config: TerminalConfig | None = None
+        self.catalog_dialog = None
+        self.terminal_dialog = None
         self.setWindowTitle("AuraFlow")
         self.setWindowIcon(QIcon(str(ICON)))
         self.resize(1080, 730)
@@ -248,6 +240,12 @@ class MainWindow(QMainWindow):
         self.open_button = QPushButton("＋  Add wallpaper…")
         self.open_button.clicked.connect(self._open_file)
         library_layout.addWidget(self.open_button)
+        self.catalog_button = QPushButton("Wallpaper Catalog")
+        self.catalog_button.clicked.connect(self._open_catalog)
+        library_layout.addWidget(self.catalog_button)
+        self.terminal_button = QPushButton("Terminal Wallpapers")
+        self.terminal_button.clicked.connect(self._open_terminal)
+        library_layout.addWidget(self.terminal_button)
         hint = QLabel("Local videos, GIFs, and images.\nYou can also drop a file here.")
         hint.setObjectName("muted")
         hint.setWordWrap(True)
@@ -382,7 +380,9 @@ class MainWindow(QMainWindow):
             self.library.addItem(item)
             if settings.selected == media:
                 self.library.setCurrentItem(item)
-        if settings.selected and Path(settings.selected).is_file():
+        if settings.selected_kind == "terminal" and settings.terminal:
+            self._terminal_selected(TerminalConfig.parse(settings.terminal))
+        elif settings.selected and Path(settings.selected).is_file():
             self._preview_file(Path(settings.selected))
         self._update_buttons()
 
@@ -406,13 +406,42 @@ class MainWindow(QMainWindow):
 
     def _preview_file(self, path: Path):
         self.selected = path
+        self.terminal_config = None
         self.filename.setText(path.name)
         self.filename.setToolTip(str(path))
         self.preview.open(path)
 
     def _start(self):
-        if self.selected:
+        if self.terminal_config:
+            self._command("terminal-start", config=self.terminal_config.to_dict())
+        elif self.selected:
             self._command("start", media=str(self.selected))
+
+    def _open_catalog(self):
+        from .catalog_ui import CatalogDialog
+
+        if self.catalog_dialog is None:
+            self.catalog_dialog = CatalogDialog(self.paths, Preview, self)
+            self.catalog_dialog.selected.connect(self._select_file)
+        self.catalog_dialog.show()
+        self.catalog_dialog.raise_()
+
+    def _open_terminal(self):
+        from .terminal_ui import TerminalDialog
+
+        if self.terminal_dialog is None:
+            self.terminal_dialog = TerminalDialog(self.paths, self)
+            self.terminal_dialog.selected.connect(self._terminal_selected)
+        self.terminal_dialog.show()
+        self.terminal_dialog.raise_()
+
+    def _terminal_selected(self, config):
+        self.selected = None
+        self.terminal_config = config
+        self.filename.setText(config.label)
+        self.filename.setToolTip("Terminal wallpaper")
+        self.preview.terminal_selection(config)
+        self._update_buttons()
 
     def _pause(self):
         self._command("resume" if self.playback.get("paused") else "pause")
@@ -462,7 +491,7 @@ class MainWindow(QMainWindow):
         self.tray_pause.setText(self.pause_button.text())
         if status.get("running"):
             state = "Paused" if status.get("paused") else "Playing"
-            name = Path(status["media"]).name
+            name = status.get("label") or Path(status["media"]).name
             self.status_label.setText(f"{state} · {name} · {status['backend']}")
         else:
             self.status_label.setText(
@@ -478,14 +507,18 @@ class MainWindow(QMainWindow):
         self._update_buttons()
 
     def _update_buttons(self):
-        self.start_button.setEnabled(self.selected is not None and not self.busy)
+        self.start_button.setEnabled(
+            (self.selected is not None or self.terminal_config is not None) and not self.busy
+        )
         self.pause_button.setEnabled(bool(self.playback.get("running")) and not self.busy)
         self.remove_button.setEnabled(not self.busy)
         self.scale.setEnabled(not self.busy)
-        self.speed.setEnabled(not self.busy)
+        self.speed.setEnabled(not self.busy and self.playback.get("speed_supported", True))
         self.backend.setEnabled(not self.busy)
         self.library.setEnabled(not self.busy)
         self.open_button.setEnabled(not self.busy)
+        self.catalog_button.setEnabled(not self.busy)
+        self.terminal_button.setEnabled(not self.busy)
         if hasattr(self, "tray_pause"):
             self.tray_pause.setEnabled(bool(self.playback.get("running")) and not self.busy)
 
@@ -539,6 +572,9 @@ class MainWindow(QMainWindow):
         self.quitting = True
         self.preview.player.stop()
         self.tray.hide()
+        for dialog in (self.catalog_dialog, self.terminal_dialog):
+            if dialog:
+                dialog.close()
         QApplication.instance().quit()
 
     def closeEvent(self, event: QCloseEvent):
@@ -578,7 +614,8 @@ QPushButton#primary { background: #5bd4c5; border-color: #5bd4c5;
                       color: #102321; font-weight: 650; }
 QPushButton#primary:hover { background: #80e4d8; }
 QPushButton#primary:disabled { background: #2a5e5d; color: #81a5a3; border-color: #2a5e5d; }
-QComboBox, QDoubleSpinBox { background: #1d2938; border: 1px solid #35445a; border-radius: 5px;
+QComboBox, QDoubleSpinBox, QSpinBox, QLineEdit {
+                          background: #1d2938; border: 1px solid #35445a; border-radius: 5px;
                           padding: 6px 9px; min-height: 20px; }
 QFrame#preferences { border: 1px solid #293444; border-radius: 9px; }
 QStackedWidget { background: #080c12; border: 1px solid #293444; border-radius: 9px; }

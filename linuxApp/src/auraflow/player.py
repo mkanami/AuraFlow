@@ -34,6 +34,7 @@ def player_options(settings: Settings, ipc_fd: int | None) -> list[str]:
         "--osc=no",
         "--osd-level=0",
         "--input-default-bindings=no",
+        "--input-terminal=no",
         "--input-vo-keyboard=no",
         "--input-cursor=no",
         "--input-media-keys=no",
@@ -49,7 +50,7 @@ def player_options(settings: Settings, ipc_fd: int | None) -> list[str]:
 class Player:
     """One owned player with a private inherited socket; closing it ends playback."""
 
-    def __init__(self, command: Callable[[int], list[str]], log: BinaryIO):
+    def __init__(self, command: Callable[[int], list[str]], log: BinaryIO, stdin=None):
         self.connection, child = socket.socketpair()
         self.buffer = bytearray()
         self.request_id = 0
@@ -57,7 +58,7 @@ class Player:
         try:
             self.process = subprocess.Popen(
                 command(child.fileno()),
-                stdin=subprocess.DEVNULL,
+                stdin=stdin if stdin is not None else subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=log,
                 pass_fds=(child.fileno(),),

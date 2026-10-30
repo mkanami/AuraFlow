@@ -58,6 +58,29 @@ def test_login_restore_requires_registration_and_does_not_restart_active_playbac
     assert calls == []
 
 
+def test_login_restores_applied_terminal_snapshot_instead_of_new_preview(paths, store, monkeypatch):
+    from auraflow.terminal_config import TerminalConfig
+
+    active = TerminalConfig.from_preset("cmatrix")
+    preview = TerminalConfig.from_preset("pipes")
+    store.update(
+        terminal=preview.to_dict(),
+        selected_kind="terminal",
+        restore_kind="terminal",
+        restore_terminal=active.to_dict(),
+    )
+    DesktopIntegration(paths).set_autostart(True)
+    calls = []
+
+    def request(_self, action, **values):
+        calls.append((action, values))
+        return {"running": False}
+
+    monkeypatch.setattr(Client, "request", request)
+    assert main(["restore"]) == 0
+    assert calls == [("status", {}), ("terminal-start", {"config": active.to_dict()})]
+
+
 @pytest.mark.parametrize("payload", [b"[]\n", b"broken\n", b"x" * (MAX_MESSAGE + 1) + b"\n"])
 def test_protocol_rejects_invalid_or_oversized_messages(payload):
     sender, receiver = socket.socketpair()

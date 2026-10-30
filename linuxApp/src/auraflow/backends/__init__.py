@@ -55,6 +55,15 @@ def start_session(media: Path, settings: Settings, log: BinaryIO) -> WallpaperSe
     return start(media, settings, log)
 
 
+def start_stream(source, settings: Settings, log: BinaryIO) -> WallpaperSession:
+    backend = detect_backend(settings.backend)
+    if backend == "x11":
+        from .x11 import start
+    else:
+        from .wayland import start
+    return start(Path("-"), settings, log, source=source)
+
+
 def diagnostics(requested: str = "auto") -> dict[str, object]:
     result: dict[str, object] = {
         "platform": sys.platform,

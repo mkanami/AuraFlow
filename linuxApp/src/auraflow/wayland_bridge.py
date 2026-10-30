@@ -17,9 +17,12 @@ from . import AuraFlowError
 from .backends.wayland import command
 from .paths import AppPaths, private_directory
 from .settings import Settings
+from .streams import VideoFormat
 
 
-def run(parent: socket.socket, media: Path, settings: Settings) -> None:
+def run(
+    parent: socket.socket, media: Path, settings: Settings, raw: VideoFormat | None = None
+) -> None:
     runtime = private_directory(AppPaths.discover().runtime)
     endpoint = runtime / f"mp-{secrets.token_hex(3)}.sock"
     if len(os.fsencode(endpoint)) > 107:
@@ -32,7 +35,10 @@ def run(parent: socket.socket, media: Path, settings: Settings) -> None:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    process = subprocess.Popen(command(media, settings, endpoint), stdin=subprocess.DEVNULL)
+    # Raw terminal frames arrive on stdin from the owning producer.
+    process = subprocess.Popen(
+        command(media, settings, endpoint, raw), stdin=None if raw else subprocess.DEVNULL
+    )
     try:
         with socket.socket(socket.AF_UNIX) as child:
             child.settimeout(1)
@@ -70,7 +76,8 @@ def run(parent: socket.socket, media: Path, settings: Settings) -> None:
 def main() -> int:
     try:
         with socket.socket(fileno=int(sys.argv[1])) as parent:
-            run(parent, Path(sys.argv[3]), Settings.parse(json.loads(sys.argv[2])))
+            raw = VideoFormat(**json.loads(sys.argv[4])) if len(sys.argv) > 4 else None
+            run(parent, Path(sys.argv[3]), Settings.parse(json.loads(sys.argv[2])), raw)
         return 0
     except (AuraFlowError, OSError) as exc:
         print(f"AuraFlow Wayland: {exc}", file=sys.stderr)

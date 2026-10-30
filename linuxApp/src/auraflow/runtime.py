@@ -8,13 +8,21 @@ from . import AuraFlowError
 from .backends import start_session
 from .player import WallpaperSession, scale_properties
 from .settings import BACKENDS, SCALES, SettingsStore, validate_media, validate_speed
+from .terminal_config import TerminalConfig
 
 
 class Controller:
-    def __init__(self, store: SettingsStore, log: BinaryIO, factory=start_session):
+    def __init__(
+        self, store: SettingsStore, log: BinaryIO, factory=start_session, terminal_factory=None
+    ):
         self.store = store
         self.log = log
         self.factory = factory
+        if terminal_factory is None:
+            from .terminal import TerminalSession
+
+            terminal_factory = TerminalSession
+        self.terminal_factory = terminal_factory
         self.session: WallpaperSession | None = None
         self.paused = False
         self.error: str | None = None
@@ -31,12 +39,21 @@ class Controller:
             "scale": settings.scale,
             "speed": settings.speed,
             "error": self.error,
+            "kind": getattr(self.session, "kind", "media") if self.session else None,
+            "label": getattr(self.session, "label", None),
+            "speed_supported": getattr(self.session, "speed_supported", True),
         }
 
     def execute(self, request: dict[str, object]) -> dict[str, object]:
         action = request.get("action")
         if action == "start":
-            self._start(request)
+            settings = self.store.load()
+            if not request.get("media") and settings.selected_kind == "terminal":
+                self._start_terminal({**request, "config": settings.terminal})
+            else:
+                self._start(request)
+        elif action == "terminal-start":
+            self._start_terminal(request)
         elif action in ("pause", "resume"):
             if self.session:
                 paused = action == "pause"
@@ -50,7 +67,7 @@ class Controller:
                     raise
                 self.paused = paused
         elif action == "remove":
-            self.store.update(restore=None)
+            self.store.update(restore=None, restore_terminal=None, restore_kind="media")
             self.close()
             self.error = None
         elif action in ("scale", "speed"):
@@ -77,7 +94,13 @@ class Controller:
             candidate.wait_ready()
             recent = [str(media), *(item for item in settings.recent if item != str(media))][:50]
             self.store.update(
-                selected=str(media), restore=str(media), recent=recent, backend=backend
+                selected=str(media),
+                restore=str(media),
+                recent=recent,
+                backend=backend,
+                selected_kind="media",
+                restore_kind="media",
+                restore_terminal=None,
             )
         except BaseException:
             candidate.close()
@@ -85,6 +108,32 @@ class Controller:
         previous, self.session = self.session, candidate
         self.paused = False
         self.error = None
+        if previous:
+            previous.close()
+
+    def _start_terminal(self, request: dict[str, object]) -> None:
+        settings = self.store.load()
+        config = TerminalConfig.parse(request.get("config"))
+        backend = request.get("backend", settings.backend)
+        if backend not in BACKENDS:
+            raise AuraFlowError("Choose auto, x11, or wayland as the backend.")
+        candidate = self.terminal_factory(config, replace(settings, backend=backend), self.log)
+        try:
+            candidate.wait_ready()
+            applied = getattr(candidate, "config", config)
+            self.store.update(
+                selected_kind="terminal",
+                terminal=applied.to_dict(),
+                restore=None,
+                restore_kind="terminal",
+                restore_terminal=applied.to_dict(),
+                backend=backend,
+            )
+        except BaseException:
+            candidate.close()
+            raise
+        previous, self.session = self.session, candidate
+        self.paused, self.error = False, None
         if previous:
             previous.close()
 
@@ -97,6 +146,11 @@ class Controller:
             previous = scale_properties(settings.scale)
         else:
             value = validate_speed(value)
+            if self.session and not getattr(self.session, "speed_supported", True):
+                raise AuraFlowError(
+                    "This terminal program has no live speed control. "
+                    "Edit its command before Start."
+                )
             properties, previous = {"speed": value}, {"speed": settings.speed}
         try:
             if self.session:

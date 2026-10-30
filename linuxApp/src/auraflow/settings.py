@@ -64,6 +64,10 @@ class Settings:
     scale: str = "fill"
     speed: float = 1.0
     backend: str = "auto"
+    selected_kind: str = "media"
+    restore_kind: str = "media"
+    terminal: dict | None = None
+    restore_terminal: dict | None = None
 
     @classmethod
     def parse(cls, raw: object) -> Settings:
@@ -80,6 +84,17 @@ class Settings:
         scale, backend = raw.get("scale", "fill"), raw.get("backend", "auto")
         if scale not in SCALES or backend not in BACKENDS:
             raise AuraFlowError("Invalid scale or backend in settings.")
+        from .terminal_config import TerminalConfig
+
+        for key in ("selected_kind", "restore_kind"):
+            if raw.get(key, "media") not in ("media", "terminal"):
+                raise AuraFlowError("Invalid wallpaper kind in settings.")
+        terminal_values = {}
+        for key in ("terminal", "restore_terminal"):
+            value = raw.get(key)
+            terminal_values[key] = (
+                TerminalConfig.parse(value).to_dict() if value is not None else None
+            )
         return cls(
             selected=raw.get("selected"),
             restore=raw.get("restore"),
@@ -87,6 +102,9 @@ class Settings:
             scale=scale,
             speed=validate_speed(raw.get("speed", 1.0)),
             backend=backend,
+            selected_kind=raw.get("selected_kind", "media"),
+            restore_kind=raw.get("restore_kind", "media"),
+            **terminal_values,
         )
 
 
@@ -127,4 +145,7 @@ class SettingsStore:
         # A selection is a preview; only a successful Start changes restore.
         settings = self.load()
         recent = [media, *(item for item in settings.recent if item != media)][:50]
-        return self.update(selected=media, recent=recent)
+        return self.update(selected=media, recent=recent, selected_kind="media")
+
+    def select_terminal(self, config) -> Settings:
+        return self.update(terminal=config.to_dict(), selected_kind="terminal")

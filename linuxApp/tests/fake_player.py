@@ -26,6 +26,8 @@ properties = {
     "pause": False,
     "speed": 1.0,
 }
+if sys.argv[1] == "-o" and "--demuxer=rawvideo" in options:
+    properties["frame-sample"] = os.read(0, 12).hex()
 for line in stream:
     request = json.loads(line)
     command = request["command"]

@@ -7,6 +7,7 @@ from typing import BinaryIO
 from .. import AuraFlowError
 from ..player import Player, WallpaperSession, player_options
 from ..settings import Settings
+from ..streams import VideoFormat
 
 
 class DesktopSurfaces:
@@ -103,7 +104,9 @@ class DesktopSurfaces:
         self.display.close()
 
 
-def command(media: Path, settings: Settings, ipc_fd: int, window_id: int) -> list[str]:
+def command(
+    media: Path, settings: Settings, ipc_fd: int, window_id: int, raw: VideoFormat | None = None
+) -> list[str]:
     return [
         "mpv",
         *player_options(settings, ipc_fd),
@@ -113,17 +116,31 @@ def command(media: Path, settings: Settings, ipc_fd: int, window_id: int) -> lis
         "--force-window=yes",
         "--auto-window-resize=no",
         "--border=no",
+        *(raw.options() if raw else []),
         "--",
         str(media),
     ]
 
 
-def start(media: Path, settings: Settings, log: BinaryIO) -> WallpaperSession:
+def start(media: Path, settings: Settings, log: BinaryIO, source=None) -> WallpaperSession:
     surfaces = DesktopSurfaces()
     players: list[Player] = []
     try:
         for window in surfaces.windows:
-            players.append(Player(lambda fd, wid=window.id: command(media, settings, fd, wid), log))
+            reader = source.attach() if source else None
+            try:
+                players.append(
+                    Player(
+                        lambda fd, wid=window.id: command(
+                            media, settings, fd, wid, source.format if source else None
+                        ),
+                        log,
+                        stdin=reader,
+                    )
+                )
+            finally:
+                if reader:
+                    reader.close()
     except BaseException:
         for player in players:
             player.close()

@@ -106,12 +106,12 @@ class Client:
         except OSError as exc:
             if exc.errno not in (errno.ENOENT, errno.ECONNREFUSED):
                 raise AuraFlowError(f"Cannot contact AuraFlow: {exc}") from exc
-        if action == "start":
+        if action in ("start", "terminal-start"):
             self._launch()
             return self._request(request)
         # No process is needed to change future preferences or remove a saved wallpaper.
         if action == "remove":
-            self.store.update(restore=None)
+            self.store.update(restore=None, restore_terminal=None, restore_kind="media")
         elif action in ("scale", "speed"):
             self.store.update(**{action: values.get("value")})
         elif action not in ("pause", "resume", "shutdown", "status"):

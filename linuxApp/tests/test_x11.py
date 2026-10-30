@@ -64,3 +64,30 @@ def test_real_x11_playback_pause_scaling_and_cleanup_preserve_root_wallpaper(tmp
     after = None if after is None else (after.property_type, after.format, list(after.value))
     assert before == after
     connection.close()
+
+
+def test_real_x11_terminal_uses_shared_native_surfaces_and_cleans_up(tmp_path):
+    import sys
+
+    from auraflow.terminal import TerminalSession
+    from auraflow.terminal_config import TerminalConfig
+
+    config = TerminalConfig(
+        argv=(sys.executable, "-u", "-c", 'print("X11 terminal wallpaper")'), columns=40, rows=10
+    )
+    with (tmp_path / "terminal.log").open("ab") as log:
+        session = TerminalSession(config, Settings(backend="x11"), log)
+        try:
+            session.wait_ready()
+            assert session.alive()
+            session.set_properties({"pause": True})
+            assert session.producer.paused
+            session.set_properties({"keepaspect": True, "panscan": 0.0})
+            for player in session.players:
+                params = player.command("get_property", "video-params")
+                assert params["w"] == session.producer.format.width
+            session.set_properties({"pause": False})
+        finally:
+            session.close()
+        assert not session.producer.thread.is_alive()
+        assert not session.alive()

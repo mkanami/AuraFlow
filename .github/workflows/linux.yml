@@ -33,7 +33,7 @@ jobs:
       - name: Install Linux runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y mpv xvfb xauth libegl1 libopengl0 libgl1-mesa-dri libxcb-cursor0 libxkbcommon-x11-0
+          sudo apt-get install -y mpv xvfb xauth fontconfig fonts-dejavu-core cmatrix libegl1 libopengl0 libgl1-mesa-dri libxcb-cursor0 libxkbcommon-x11-0
       - name: Install the port
         run: python -m pip install -e '.[gui,dev]'
       - name: Lint
