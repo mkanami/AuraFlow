@@ -25,6 +25,10 @@
   <img src="docs/aura-ui-glass.png" width="900" alt="AuraFlow wallpaper preview and controls" />
 </p>
 
+The initial **Linux port** is developed separately in [`linuxApp/`](linuxApp/README.md),
+with a Qt interface and X11 / Wayland playback backends. See its README for
+installation, supported desktop sessions, and current feature limits.
+
 ## Highlights
 
 <table>
