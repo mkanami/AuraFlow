@@ -143,9 +143,12 @@ available when the network or provider is unavailable.
 
 Availability depends on the provider. Browser verification / HTTP 403 responses
 are reported without replacing the current wallpaper or fabricating media links.
-At the time this adapter was added, direct Dareful API requests returned HTTP 403;
-its parsing is covered by fixtures. MoeWalls and MotionBGS listings, original
-links, and preview decoding were checked against live responses.
+An initial Dareful probe using the incomplete `User-Agent: Mozilla/5.0` received
+HTTP 403. The same URL returns HTTP 200 with AuraFlow's actual client header;
+the adapter was verified to load 30 live entries and resolve original/preview
+video links. This response depends on the request header and is not evidence of
+a general API outage. MoeWalls and MotionBGS listings, original links, and preview
+decoding were also checked against live responses.
 
 ```sh
 auraflow catalog sources
