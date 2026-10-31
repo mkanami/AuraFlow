@@ -528,7 +528,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         firstWindow.requestLockScreenSeedCapture()
     }
 
-    private func lockScreenStateChanged(_ locked: Bool) {
+    func lockScreenStateChanged(_ locked: Bool) {
         guard lockScreenPlaybackEnabled, store.lockScreenPlaybackEnabled else { return }
         lockScreenIsLocked = locked
         framePublisher.setLockScreenActive(locked)
@@ -605,44 +605,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static func detectFullscreenApplication() -> Bool {
-        guard let frontmost = NSWorkspace.shared.frontmostApplication,
-              frontmost.activationPolicy == .regular,
-              let windows = CGWindowListCopyWindowInfo(
-                [.optionOnScreenOnly, .excludeDesktopElements],
-                kCGNullWindowID
-              ) as? [[String: Any]] else {
-            return false
-        }
-        let displays = NSScreen.screens.compactMap { screen -> CGRect? in
-            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
-                return nil
-            }
-            return CGDisplayBounds(CGDirectDisplayID(number.uint32Value))
-        }
-        let tolerance: CGFloat = 3
-        for window in windows {
-            guard let ownerPID = window[kCGWindowOwnerPID as String] as? pid_t,
-                  ownerPID == frontmost.processIdentifier,
-                  let layer = window[kCGWindowLayer as String] as? Int,
-                  layer == 0,
-                  let alpha = window[kCGWindowAlpha as String] as? NSNumber,
-                  alpha.doubleValue > 0,
-                  let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
-                  let x = bounds["X"], let y = bounds["Y"],
-                  let width = bounds["Width"], let height = bounds["Height"] else {
-                continue
-            }
-            let rect = CGRect(x: x, y: y, width: width, height: height)
-            if displays.contains(where: { display in
-                abs(rect.minX - display.minX) <= tolerance
-                    && abs(rect.minY - display.minY) <= tolerance
-                    && abs(rect.maxX - display.maxX) <= tolerance
-                    && abs(rect.maxY - display.maxY) <= tolerance
-            }) {
-                return true
-            }
-        }
-        return false
+        MainActor.assumeIsolated { FullscreenApplicationDetector.currentIsFullscreen() }
     }
 
     private func logicalGeometry() -> (columns: Int, rows: Int) {

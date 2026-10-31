@@ -27,8 +27,8 @@ private func terminalChildIsStopped(_ pid: Int) -> Bool {
 
 @Suite(.serialized)
 struct TerminalFullscreenRuntimeTests {
-    @Test @MainActor
-    func fullscreenSettingPausesAndResumesTheSameRealPTYWithoutReapplyingWallpaper() async throws {
+    @Test(arguments: [false, true]) @MainActor
+    func fullscreenSettingPausesAndResumesTheSameRealPTYWithoutReapplyingWallpaper(maximized: Bool) async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraFullscreen-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -40,11 +40,17 @@ struct TerminalFullscreenRuntimeTests {
             "printf x >> launches; n=0; while :; do printf '\\033[Hframe %s' \"$n\"; n=$((n+1)); sleep 0.05; done"], workingDirectory: root.path),
             render: .init(columns: 20, rows: 4, maxFPS: 15), behavior: .init(pauseOnFullscreen: false))
         try store.saveConfig(config)
-        var fullscreen = true
+        let display = FullscreenApplicationDetector.Display(bounds: CGRect(x: 0, y: 0, width: 1600, height: 1000),
+            visibleBounds: CGRect(x: 0, y: 32, width: 1600, height: 910))
+        var foregroundFrame = maximized ? CGRect(x: 0, y: 32, width: 1591, height: 910) : display.bounds
         var now: TimeInterval = 100
         let publisher = TerminalLockScreenFramePublisher(store: store, clock: { now })
         let agent = TerminalWallpaperAgentDelegate(configurationURL: store.configURL, managesLockScreenPresentation: false,
-            screensProvider: { [] }, framePublisher: publisher, fullscreenApplicationIsActive: { fullscreen })
+            screensProvider: { [] }, framePublisher: publisher, fullscreenApplicationIsActive: {
+                let window: [String: Any] = [kCGWindowOwnerPID as String: 42, kCGWindowLayer as String: 0,
+                    kCGWindowAlpha as String: 1, kCGWindowBounds as String: foregroundFrame.dictionaryRepresentation]
+                return FullscreenApplicationDetector.isFullscreen(frontmostPID: 42, windowInfo: [window], displays: [display])
+            })
         agent.applicationDidFinishLaunching(.init(name: NSApplication.didFinishLaunchingNotification))
         defer { agent.applicationWillTerminate(.init(name: NSApplication.willTerminateNotification)) }
         let child = try #require(store.loadHealth()?.childPID)
@@ -60,13 +66,19 @@ struct TerminalFullscreenRuntimeTests {
         _ = try controller.setPauseOnFullscreen(true, config: draft)
         try await awaitTerminalFullscreen { terminalChildIsStopped(child) }
         #expect(!store.isPlaybackPaused, "Automatic pause must not become an explicit Stop")
+        // Both manual lock and the automatic saver activate the same capture
+        // callback. A covering foreground window must not freeze live Aura.
+        agent.lockScreenStateChanged(true)
+        try await awaitTerminalFullscreen { !terminalChildIsStopped(child) }
+        agent.lockScreenStateChanged(false)
+        try await awaitTerminalFullscreen { terminalChildIsStopped(child) }
         _ = try controller.setPauseOnFullscreen(false, config: draft)
         try await awaitTerminalFullscreen { !terminalChildIsStopped(child) }
         let previousFrames = store.loadHealth()?.frames ?? 0
         try await awaitTerminalFullscreen { (store.loadHealth()?.frames ?? 0) > previousFrames }
         _ = try controller.setPauseOnFullscreen(true, config: draft)
         try await awaitTerminalFullscreen { terminalChildIsStopped(child) }
-        fullscreen = false
+        foregroundFrame = CGRect(x: 100, y: 100, width: 1000, height: 700)
         try await awaitTerminalFullscreen { !terminalChildIsStopped(child) }
         _ = try controller.setPlaybackPaused(true)
         try await awaitTerminalFullscreen { terminalChildIsStopped(child) }

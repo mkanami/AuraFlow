@@ -27,6 +27,7 @@ names.append('TerminalAutomaticLockTests')
 names.append('TerminalLoginLockIndependenceTests')
 names.append('TerminalLockScreenToggleTests')
 names.append('TerminalFullscreenRuntimeTests')
+names.append('FullscreenApplicationDetectorTests')
 names.extend(['terminalDeferred', 'terminalNewAppReplacesAnOldHelperInsteadOfSendingItAnotherRestartCommand',
               'terminalHelperUpgradeDoesNotDropTheSurfaceOfALockedOrPausedSession',
               'terminalStatusPollingPublishesOnlyActualChanges',

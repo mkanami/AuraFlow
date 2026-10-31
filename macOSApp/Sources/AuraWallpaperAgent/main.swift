@@ -2402,52 +2402,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static func detectFullscreenApplication() -> Bool {
-        guard let frontmost = NSWorkspace.shared.frontmostApplication,
-              frontmost.activationPolicy == .regular
-        else {
-            return false
-        }
-        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-        guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
-            return false
-        }
-        let displayBounds: [CGRect] = NSScreen.screens.compactMap { screen in
-            guard let screenNumber = screen.deviceDescription[
-                NSDeviceDescriptionKey("NSScreenNumber")
-            ] as? NSNumber else {
-                return nil
-            }
-            return CGDisplayBounds(CGDirectDisplayID(screenNumber.uint32Value))
-        }
-        let tolerance: CGFloat = 3
-
-        for window in list {
-            guard let ownerPID = window[kCGWindowOwnerPID as String] as? pid_t,
-                  ownerPID == frontmost.processIdentifier,
-                  let layer = window[kCGWindowLayer as String] as? Int,
-                  layer == 0,
-                  let alpha = window[kCGWindowAlpha as String] as? NSNumber,
-                  alpha.doubleValue > 0,
-                  let boundsDict = window[kCGWindowBounds as String] as? [String: CGFloat],
-                  let x = boundsDict["X"],
-                  let y = boundsDict["Y"],
-                  let width = boundsDict["Width"],
-                  let height = boundsDict["Height"]
-            else {
-                continue
-            }
-
-            let bounds = CGRect(x: x, y: y, width: width, height: height)
-            for display in displayBounds {
-                if abs(bounds.minX - display.minX) <= tolerance,
-                   abs(bounds.minY - display.minY) <= tolerance,
-                   abs(bounds.maxX - display.maxX) <= tolerance,
-                   abs(bounds.maxY - display.maxY) <= tolerance {
-                    return true
-                }
-            }
-        }
-        return false
+        MainActor.assumeIsolated { FullscreenApplicationDetector.currentIsFullscreen() }
     }
 
     private func writeHealth(reason: String) {

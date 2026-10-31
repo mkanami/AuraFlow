@@ -2,6 +2,7 @@
 
 ## 1.3.4
 
+- Auto-pause video and Terminal wallpapers behind maximized foreground windows as well as native fullscreen apps. Share one detector using each display's working area, including Dock/menu-bar insets, resize borders, and mixed display arrangements; resume the existing Terminal process for the Lock Screen and when the covering window shrinks.
 - Receive Terminal lock-shield signals through Darwin notifications and briefly confirm early signals against WindowServer before the fallback poll. Reuse the warm live display across the secure edge, cancel pending confirmation on unlock/Stop, and avoid a duplicate synchronous saver-status query before showing the prepared source. Manual and automatic locks share this path.
 - Keep the current Terminal secure presentation when WallpaperAgent flushes a saved native route during lock. Repair the store without recreating the live display layer each second; retain pending acquisition and retry failed or wake-triggered replacements for both manual and automatic locks.
 - Retain the live Terminal provider for the entire confirmed Lock Screen session. A system saver-start notification must not restore the user's Desktop provider underneath loginwindow before unlock; manual and automatic locks share this rule. Add bounded saver lifecycle diagnostics for verifying actual raster/Metal presentation.

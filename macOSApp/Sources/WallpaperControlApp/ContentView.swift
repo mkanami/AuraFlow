@@ -781,6 +781,7 @@ struct SettingsPopupCard: View {
             }
             .toggleStyle(.switch)
             .disabled(!viewModel.canTogglePauseOnFullscreen)
+            .help("Pause wallpaper when the foreground app is fullscreen or fills a display's working area. Resume when it no longer covers the desktop.")
 
             Toggle(isOn: Binding(
                 get: { viewModel.showOnLockScreenEnabled },
