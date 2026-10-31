@@ -302,6 +302,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let store: WallpaperRuntimeStore
     private let observesSystemEvents: Bool
     private let sessionIsLocked: () -> Bool?
+    private let fullscreenApplicationIsActive: @MainActor () -> Bool
     private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
     private let lockScreenPlatform: LockScreenPlatformOperating
     private let nativeLockScreenBridge: NativeLockScreenBridging
@@ -340,7 +341,6 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var autoPausedForFullscreen = false
     private var fullscreenAppDetected = false
     private var consecutiveFullscreenSamples = 0
-    private var consecutiveWindowedSamples = 0
     private var lastSpaceChangeUptime = -Double.infinity
     private var signalSources: [DispatchSourceSignal] = []
     private var lockScreenState: LockScreenStateMachine
@@ -386,11 +386,13 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)? = nil,
         screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens },
         observesSystemEvents: Bool = true,
-        sessionIsLocked: @escaping () -> Bool? = { agentSystemSessionIsLocked() }
+        sessionIsLocked: @escaping () -> Bool? = { agentSystemSessionIsLocked() },
+        fullscreenApplicationIsActive: (@MainActor () -> Bool)? = nil
     ) {
         self.store = store
         self.observesSystemEvents = observesSystemEvents
         self.sessionIsLocked = sessionIsLocked
+        self.fullscreenApplicationIsActive = fullscreenApplicationIsActive ?? Self.detectFullscreenApplication
         self.presentWindow = presentWindow
         self.screensProvider = screensProvider
         let nativeBridgeURL = Self.nativeBridgeURLFromArguments()
@@ -670,12 +672,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             }
         }
         healthTimer?.tolerance = 0.30
-        fullscreenTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.applyFullscreenPolicy()
-            }
-        }
-        fullscreenTimer?.tolerance = 0.15
+        startFullscreenMonitoring()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(screensChanged),
@@ -739,7 +736,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         writeHealth(reason: "screen-change")
     }
 
-    @objc private func activeSpaceDidChange() {
+    @objc func activeSpaceDidChange() {
         guard !isTerminating else { return }
         if lockScreenOnlyMode {
             requestLockScreenLifecycle(
@@ -750,7 +747,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
         lastSpaceChangeUptime = ProcessInfo.processInfo.systemUptime
         consecutiveFullscreenSamples = 0
-        consecutiveWindowedSamples = 0
+        applyFullscreenPolicy()
         showWindows(forceOrder: true)
         let generation = transitionGeneration
 
@@ -764,6 +761,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             else {
                 return
             }
+            self.applyFullscreenPolicy()
             self.showWindows(forceOrder: true)
         }
     }
@@ -2331,12 +2329,30 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         applyFullscreenPolicy()
     }
 
+    private var fullscreenPollingInterval: TimeInterval {
+        autoPausedForFullscreen && !manualPaused ? 0.2 : 1
+    }
+
+    func startFullscreenMonitoring() {
+        fullscreenTimer?.invalidate()
+        let timer = Timer(timeInterval: fullscreenPollingInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.applyFullscreenPolicy() }
+        }
+        timer.tolerance = fullscreenPollingInterval * 0.1
+        fullscreenTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
     private func applyFullscreenPolicy() {
-        guard !lockScreenOnlyMode else { return }
+        guard !isTerminating, !lockScreenOnlyMode else { return }
+        defer {
+            if let fullscreenTimer, fullscreenTimer.timeInterval != fullscreenPollingInterval {
+                startFullscreenMonitoring()
+            }
+        }
         if WallpaperMediaKind.forURL(URL(fileURLWithPath: config.video_path)).isStaticImage {
             fullscreenAppDetected = false
             consecutiveFullscreenSamples = 0
-            consecutiveWindowedSamples = 0
             writeHealth(reason: "ok")
             return
         }
@@ -2344,7 +2360,6 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if lockScreenState.presentationMode == .lockScreen {
             fullscreenAppDetected = false
             consecutiveFullscreenSamples = 0
-            consecutiveWindowedSamples = 0
             if autoPausedForFullscreen {
                 autoPausedForFullscreen = false
             }
@@ -2356,7 +2371,6 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard shouldPauseForFullscreen else {
             fullscreenAppDetected = false
             consecutiveFullscreenSamples = 0
-            consecutiveWindowedSamples = 0
             if autoPausedForFullscreen {
                 autoPausedForFullscreen = false
                 applyPlaybackRate()
@@ -2365,22 +2379,15 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
 
         let uptime = ProcessInfo.processInfo.systemUptime
-        guard uptime - lastSpaceChangeUptime >= spaceTransitionGracePeriod else {
-            return
-        }
+        let canEnterPause = uptime - lastSpaceChangeUptime >= spaceTransitionGracePeriod
 
-        fullscreenAppDetected = Self.detectFullscreenApplication()
+        fullscreenAppDetected = fullscreenApplicationIsActive()
         if fullscreenAppDetected {
-            consecutiveFullscreenSamples = min(
+            consecutiveFullscreenSamples = canEnterPause ? min(
                 consecutiveFullscreenSamples + 1,
                 fullscreenConfirmationSamples
-            )
-            consecutiveWindowedSamples = 0
+            ) : 0
         } else {
-            consecutiveWindowedSamples = min(
-                consecutiveWindowedSamples + 1,
-                fullscreenConfirmationSamples
-            )
             consecutiveFullscreenSamples = 0
         }
 
@@ -2388,9 +2395,9 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             fullscreenAppDetected &&
             consecutiveFullscreenSamples >= fullscreenConfirmationSamples &&
             !manualPaused
-        let shouldResume =
-            !fullscreenAppDetected &&
-            consecutiveWindowedSamples >= fullscreenConfirmationSamples
+        // Spaces grace protects entering pause only. Once the Desktop is
+        // exposed, waiting for another windowed sample leaves a visible still.
+        let shouldResume = !fullscreenAppDetected
 
         if shouldAutoPause && !autoPausedForFullscreen {
             autoPausedForFullscreen = true

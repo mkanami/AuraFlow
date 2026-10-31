@@ -1,6 +1,15 @@
 @testable import AuraTerminalWallpaperAgent
 import Testing
 
+@Test func terminalFullscreenResumesOnFirstUncoveredSampleWithoutClearingManualStop() {
+    var policy = TerminalFullscreenPausePolicy()
+    policy.manuallyPaused = true
+    _ = policy.update(enabled: true, screenLocked: false, foregroundIsFullscreen: true)
+    #expect(policy.update(enabled: true, screenLocked: false, foregroundIsFullscreen: true) == true)
+    #expect(policy.update(enabled: true, screenLocked: false, foregroundIsFullscreen: false) == false)
+    #expect(!policy.isPaused && policy.playbackIsPaused)
+}
+
 @Test func terminalFullscreenPauseDebouncesAndResumesForLockScreen() {
     var policy = TerminalFullscreenPausePolicy()
 
@@ -14,8 +23,8 @@ import Testing
 
     #expect(policy.update(enabled: true, screenLocked: false, foregroundIsFullscreen: true) == nil)
     #expect(policy.update(enabled: true, screenLocked: false, foregroundIsFullscreen: true) == true)
-    #expect(policy.update(enabled: true, screenLocked: false, foregroundIsFullscreen: false) == nil)
     #expect(policy.update(enabled: true, screenLocked: false, foregroundIsFullscreen: false) == false)
+    #expect(policy.update(enabled: true, screenLocked: false, foregroundIsFullscreen: false) == nil)
 }
 
 @Test func terminalFullscreenPauseCanBeDisabledWithoutLosingPauseState() {

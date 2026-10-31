@@ -87,9 +87,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         framePublisher.configure(maxFPS: config.render.maxFPS)
         rebuildRuntime()
         startFrameTimer()
-        fullscreenTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.updateFullscreenPausePolicy()
-        }
+        startFullscreenMonitoring()
         commandTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.pollCommand()
         }
@@ -182,6 +180,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func restoreDesktopPresentation() {
         guard !terminating else { return }
+        updateFullscreenPausePolicy()
         // WindowServer can detach desktop windows during sleep, session and
         // Spaces transitions. Restore the existing surfaces without restarting
         // the command (which may have completed successfully) or losing pause.
@@ -561,8 +560,27 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var fullscreenPollingInterval: TimeInterval {
+        fullscreenPausePolicy.isPaused && !fullscreenPausePolicy.manuallyPaused ? 0.2 : 1
+    }
+
+    private func startFullscreenMonitoring() {
+        fullscreenTimer?.invalidate()
+        let timer = Timer(timeInterval: fullscreenPollingInterval, repeats: true) { [weak self] _ in
+            self?.updateFullscreenPausePolicy()
+        }
+        timer.tolerance = fullscreenPollingInterval * 0.1
+        fullscreenTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
     private func updateFullscreenPausePolicy() {
         guard !terminating else { return }
+        defer {
+            if let fullscreenTimer, fullscreenTimer.timeInterval != fullscreenPollingInterval {
+                startFullscreenMonitoring()
+            }
+        }
         let screenLocked = lockScreenIsLocked
         let enabled = config.behavior.pauseOnFullscreen
         let foregroundIsFullscreen = enabled && !screenLocked

@@ -14,11 +14,14 @@ private final class WallpaperSessionFixture {
     let launchctlCalls: SessionLaunchctlCalls
     let presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)?
     let screensProvider: () -> [NSScreen]
+    let fullscreenApplicationIsActive: @MainActor () -> Bool
 
     init(presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)? = nil,
-         screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens }) throws {
+         screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens },
+         fullscreenApplicationIsActive: @escaping @MainActor () -> Bool = { false }) throws {
         self.presentWindow = presentWindow
         self.screensProvider = screensProvider
+        self.fullscreenApplicationIsActive = fullscreenApplicationIsActive
         _ = NSApplication.shared
         root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraSessionRegression-\(UUID())")
         let calls = SessionLaunchctlCalls()
@@ -31,11 +34,11 @@ private final class WallpaperSessionFixture {
         try store.ensureDirectories()
     }
 
-    func start(stalePauseCommand: Bool = false) async throws -> WallpaperAgentDelegate {
+    func start(stalePauseCommand: Bool = false, pauseOnFullscreen: Bool = false) async throws -> WallpaperAgentDelegate {
         let movie = root.appendingPathComponent("animated.mp4")
         try await makeSessionRegressionMovie(movie)
         let config = ControlConfig(video_path: movie.path, playback_speed: 1, autostart: true,
-            pause_on_fullscreen: false, show_on_lock_screen: true)
+            pause_on_fullscreen: pauseOnFullscreen, show_on_lock_screen: true)
         try store.saveConfig(config)
         // Both files really survive a process/OS restart. The cached first
         // frame must not become the final presentation or replay an old Pause.
@@ -44,7 +47,8 @@ private final class WallpaperSessionFixture {
         let agent = WallpaperAgentDelegate(store: store, lockScreenPlatform: UnsupportedAdapter(),
             presentWindow: presentWindow,
             screensProvider: screensProvider,
-            observesSystemEvents: false, sessionIsLocked: { [weak self] in self?.locked })
+            observesSystemEvents: false, sessionIsLocked: { [weak self] in self?.locked },
+            fullscreenApplicationIsActive: fullscreenApplicationIsActive)
         self.agent = agent
         agent.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         agent.pollCommand()
@@ -125,6 +129,47 @@ struct HiddenLoginPlaybackTests {
 }
 
 private final class SessionLaunchctlCalls { var values: [[String]] = [] }
+
+@Suite(.serialized)
+struct FullscreenResumeRegressionTests {
+    @Test(arguments: [false, true]) @MainActor
+    func videoResumesPromptlyWhenTheCoveringWindowLeaves(spaceChanged: Bool) async throws {
+        var coveringWindow = true
+        let fixture = try WallpaperSessionFixture(presentWindow: { _, _ in },
+            fullscreenApplicationIsActive: { coveringWindow })
+        defer { fixture.cleanup() }
+        let agent = try await fixture.start(pauseOnFullscreen: true)
+        let player = try #require(agent.player)
+        agent.startFullscreenMonitoring()
+        try await requireAdvancingWallpaper(agent)
+        let pauseDeadline = Date().addingTimeInterval(4)
+        while player.rate > 0 {
+            try #require(Date() < pauseDeadline, "A covering window must still auto-pause playback")
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        if spaceChanged {
+            agent.activeSpaceDidChange()
+            #expect(player.rate == 0, "A Space change must keep playback paused while the Desktop remains covered")
+        }
+        coveringWindow = false
+        if spaceChanged { agent.activeSpaceDidChange() }
+        let resumeDeadline = Date().addingTimeInterval(0.75)
+        while player.rate == 0 {
+            try #require(Date() < resumeDeadline, "An exposed Desktop must not wait for two slow fullscreen polls or the Spaces pause grace period")
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(agent.player === player)
+        #expect(agent.windows.allSatisfy { !$0.isVisible })
+        try await requireAdvancingWallpaper(agent)
+
+        fixture.store.markPaused(true)
+        try fixture.store.saveCommand(.init(action: .pause, config: fixture.store.loadConfig()))
+        agent.pollCommand()
+        agent.activeSpaceDidChange()
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(player.rate == 0 && fixture.store.isPaused(), "Visibility changes must preserve the user's explicit Stop")
+    }
+}
 
 @Suite(.serialized)
 struct WallpaperSessionRegressionTests {

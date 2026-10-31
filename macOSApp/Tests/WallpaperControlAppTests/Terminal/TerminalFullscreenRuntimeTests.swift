@@ -5,8 +5,8 @@ import Testing
 @testable import AuraTerminalWallpaperAgent
 @testable import WallpaperControlApp
 
-@MainActor private func awaitTerminalFullscreen(_ condition: () -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(5)
+@MainActor private func awaitTerminalFullscreen(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
     while !condition() {
         try #require(Date() < deadline)
         try await Task.sleep(for: .milliseconds(20))
@@ -75,7 +75,7 @@ struct TerminalFullscreenRuntimeTests {
         // A covering background window keeps the desktop covered, but hiding
         // it or moving it to another Space must release the automatic pause.
         coveringWindowIsOnscreen = false
-        try await awaitTerminalFullscreen { !terminalChildIsStopped(child) }
+        try await awaitTerminalFullscreen(timeout: 0.75) { !terminalChildIsStopped(child) }
         coveringWindowIsOnscreen = true
         try await awaitTerminalFullscreen { terminalChildIsStopped(child) }
         // Both manual lock and the automatic saver activate the same capture
@@ -91,7 +91,7 @@ struct TerminalFullscreenRuntimeTests {
         _ = try controller.setPauseOnFullscreen(true, config: draft)
         try await awaitTerminalFullscreen { terminalChildIsStopped(child) }
         coveringFrame = CGRect(x: 100, y: 100, width: 1000, height: 700)
-        try await awaitTerminalFullscreen { !terminalChildIsStopped(child) }
+        try await awaitTerminalFullscreen(timeout: 0.75) { !terminalChildIsStopped(child) }
         _ = try controller.setPlaybackPaused(true)
         try await awaitTerminalFullscreen { terminalChildIsStopped(child) }
         _ = try controller.setPauseOnFullscreen(false, config: draft)
