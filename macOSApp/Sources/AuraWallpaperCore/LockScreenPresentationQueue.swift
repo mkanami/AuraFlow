@@ -15,7 +15,7 @@ public final class LockScreenPresentationQueue<Surface> {
     public private(set) var surface: Surface?
     public var onApplied: ((Request) -> Void)?
     public var onFailure: ((Request, Error) -> Void)?
-    private let prepare: (Request, Surface?) async throws -> Surface
+    private let prepare: @MainActor (Request, Surface?) async throws -> Surface
     private var generation: UInt64 = 0
     private var routeRevision: UInt64 = 0
     private var preparedRouteRevision: UInt64 = 0
@@ -23,7 +23,7 @@ public final class LockScreenPresentationQueue<Surface> {
     private var task: Task<Void, Never>?
     private var workerID: UInt64 = 0
 
-    public init(prepare: @escaping (Request, Surface?) async throws -> Surface) {
+    public init(prepare: @escaping @MainActor (Request, Surface?) async throws -> Surface) {
         self.prepare = prepare
     }
 

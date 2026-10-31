@@ -48,6 +48,7 @@ def test_local_preview_does_not_contact_wallpaper_service(window, monkeypatch):
     assert window.selected == image.resolve()
     assert window.library.count() == 1
     assert not window.preview.original.isNull()
+    assert window.preview.player.audioOutput() is None
     assert window.start_button.isEnabled()
     assert window.store.load().restore is None
 

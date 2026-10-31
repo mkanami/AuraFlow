@@ -159,7 +159,8 @@ public final class WallpaperSessionRecovery {
                   kill(pid, 0) == 0 || errno == EPERM else { continue }
             var executable = [CChar](repeating: 0, count: 4096)
             if proc_pidpath(pid, &executable, UInt32(executable.count)) > 0,
-               URL(fileURLWithPath: String(cString: executable)).lastPathComponent == name { return true }
+               URL(fileURLWithPath: String(decoding: executable.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self))
+                .lastPathComponent == name { return true }
         }
         return false
     }

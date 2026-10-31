@@ -12,7 +12,7 @@ from PySide6.QtCore import (
     QUrl,
 )
 from PySide6.QtGui import QAction, QCloseEvent, QIcon, QMovie, QPixmap
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QApplication,
@@ -70,9 +70,8 @@ class Preview(QStackedWidget):
         for widget in (self.empty, self.image, self.video):
             self.addWidget(widget)
         self.player = QMediaPlayer(self)
-        self.audio = QAudioOutput(self)
-        self.audio.setMuted(True)
-        self.player.setAudioOutput(self.audio)
+        # No audio output keeps previews silent without initializing a sound
+        # device, which may be unavailable on headless Linux hosts.
         self.player.setVideoOutput(self.video)
         self.player.setLoops(QMediaPlayer.Loops.Infinite)
         self.player.errorOccurred.connect(self._error)

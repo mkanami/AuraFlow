@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   swift-test:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -95,8 +95,8 @@ jobs:
         run: |
           macos_major="$(sw_vers -productVersion | cut -d. -f1)"
           if [[ "$macos_major" =~ ^[0-9]+$ && "$macos_major" -ge 26 \
-                && -e /System/Library/PrivateFrameworks/Wallpaper.framework/Wallpaper \
-                && -e /System/Library/PrivateFrameworks/WallpaperTypes.framework/WallpaperTypes ]]; then
+                && -d /System/Library/PrivateFrameworks/Wallpaper.framework \
+                && -d /System/Library/PrivateFrameworks/WallpaperTypes.framework ]]; then
             swift build -c release --product AuraWallpaperNativeBridge
             test -x "$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge"
           else
@@ -142,7 +142,7 @@ jobs:
 
   deployment-target-macos13:
     name: Portable targets with macOS 13 deployment target
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       MACOSX_DEPLOYMENT_TARGET: "13.0"
     steps:
@@ -219,7 +219,7 @@ jobs:
 
   fallback-release-pre26-sdk:
     name: Fallback release with macOS SDK below 26
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     env:
       MACOSX_DEPLOYMENT_TARGET: "13.0"
@@ -410,8 +410,8 @@ jobs:
           swift build --target AuraWallpaperAgent "${strict_flags[@]}"
           macos_major="$(sw_vers -productVersion | cut -d. -f1)"
           if [[ "$macos_major" =~ ^[0-9]+$ && "$macos_major" -ge 26 \
-                && -e /System/Library/PrivateFrameworks/Wallpaper.framework/Wallpaper \
-                && -e /System/Library/PrivateFrameworks/WallpaperTypes.framework/WallpaperTypes ]]; then
+                && -d /System/Library/PrivateFrameworks/Wallpaper.framework \
+                && -d /System/Library/PrivateFrameworks/WallpaperTypes.framework ]]; then
             swift build --target AuraWallpaperNativeBridge "${strict_flags[@]}"
           else
             echo "Skipping strict native bridge build: macOS 26 and both private frameworks are required."
@@ -433,18 +433,19 @@ jobs:
           fi
           xcodebuild -version
 
-      - name: Build native bridge
+      - name: Build native bridge and test lock-session safety
         working-directory: macOSApp
         shell: bash
         run: |
           macos_major="$(sw_vers -productVersion | cut -d. -f1)"
           if [[ ! "$macos_major" =~ ^[0-9]+$ || "$macos_major" -lt 26 \
-                || ! -e /System/Library/PrivateFrameworks/Wallpaper.framework/Wallpaper \
-                || ! -e /System/Library/PrivateFrameworks/WallpaperTypes.framework/WallpaperTypes ]]; then
+                || ! -d /System/Library/PrivateFrameworks/Wallpaper.framework \
+                || ! -d /System/Library/PrivateFrameworks/WallpaperTypes.framework ]]; then
             echo "Skipping native bridge smoke: macOS 26 and both private frameworks are required."
             exit 0
           fi
           swift build -c release --product AuraWallpaperNativeBridge
+          swift test --no-parallel --filter 'NativeBridgeLockSafetyTests|NativeLockScreenSessionRegressionTests'
 
       - name: Run native bridge JSON protocol smoke test
         working-directory: macOSApp
@@ -452,8 +453,8 @@ jobs:
         run: |
           macos_major="$(sw_vers -productVersion | cut -d. -f1)"
           if [[ ! "$macos_major" =~ ^[0-9]+$ || "$macos_major" -lt 26 \
-                || ! -e /System/Library/PrivateFrameworks/Wallpaper.framework/Wallpaper \
-                || ! -e /System/Library/PrivateFrameworks/WallpaperTypes.framework/WallpaperTypes ]]; then
+                || ! -d /System/Library/PrivateFrameworks/Wallpaper.framework \
+                || ! -d /System/Library/PrivateFrameworks/WallpaperTypes.framework ]]; then
             echo "Skipping native bridge smoke: macOS 26 and both private frameworks are required."
             exit 0
           fi
@@ -471,7 +472,7 @@ jobs:
 
   live-catalog-smoke:
     if: github.event_name == 'workflow_dispatch' && inputs.run_live_catalog_smoke == true
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - name: Checkout

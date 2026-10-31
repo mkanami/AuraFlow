@@ -217,7 +217,8 @@ public final class TerminalWallpaperRuntimeStore: Sendable {
         // A reboot can reuse the persisted PID for an unrelated application.
         var path = [CChar](repeating: 0, count: 4096)
         return proc_pidpath(pid_t(pid), &path, UInt32(path.count)) > 0 &&
-            URL(fileURLWithPath: String(cString: path)).lastPathComponent == "AuraTerminalWallpaperAgent"
+            URL(fileURLWithPath: String(decoding: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self))
+                .lastPathComponent == "AuraTerminalWallpaperAgent"
     }
 
     private static func processStartTime(_ pid: pid_t) -> UInt64? {

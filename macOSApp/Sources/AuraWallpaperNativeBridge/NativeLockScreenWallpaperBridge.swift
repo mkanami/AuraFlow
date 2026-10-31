@@ -32,14 +32,14 @@ final class NativeLockScreenWallpaperBridge {
     private let startScreenSaver: () -> Int32?
     private let store: WallpaperRuntimeStore
     private let hasDisplays: () -> Bool
-    private let surfacePreparer: ((LockScreenPresentationQueue<PresentationSurface>.Request, PresentationSurface?) async throws -> PresentationSurface)?
+    private let surfacePreparer: (@MainActor (LockScreenPresentationQueue<PresentationSurface>.Request, PresentationSurface?) async throws -> PresentationSurface)?
 
     init(
         sessionIsLocked: @escaping () -> Bool? = { LockScreenSession.currentIsLocked() },
         startScreenSaver: (() -> Int32?)? = nil,
         store: WallpaperRuntimeStore = WallpaperRuntimeStore(),
         hasDisplays: @escaping () -> Bool = { !NSScreen.screens.isEmpty },
-        surfacePreparer: ((LockScreenPresentationQueue<PresentationSurface>.Request, PresentationSurface?) async throws -> PresentationSurface)? = nil
+        surfacePreparer: (@MainActor (LockScreenPresentationQueue<PresentationSurface>.Request, PresentationSurface?) async throws -> PresentationSurface)? = nil
     ) {
         self.sessionIsLocked = sessionIsLocked
         self.startScreenSaver = startScreenSaver ?? { Self.startScreenSaverFunction?() }
@@ -54,7 +54,9 @@ final class NativeLockScreenWallpaperBridge {
         let window: NSWindow
         let layer: CALayer
     }
-    private lazy var presentationQueue: LockScreenPresentationQueue<PresentationSurface> = {
+    private lazy var presentationQueue = makePresentationQueue()
+
+    private func makePresentationQueue() -> LockScreenPresentationQueue<PresentationSurface> {
         let queue = LockScreenPresentationQueue<PresentationSurface> { [weak self] request, previous in
             guard let self else { throw CancellationError() }
             guard !request.locked || self.sessionIsLocked() == true else { throw CancellationError() }
@@ -122,7 +124,7 @@ final class NativeLockScreenWallpaperBridge {
             self.finishShowRequests(succeeded: false, errorDescription: error.localizedDescription)
         }
         return queue
-    }()
+    }
 
     /// Performs a non-mutating startup probe. The bridge only reports itself
     /// as usable after dyld can load every framework it relies on and the

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the AuraWallpaperNativeBridge JSON-lines protocol."""
+"""Exercise the native bridge protocol in an unlocked CI session."""
 
 import json
 import os
@@ -89,15 +89,21 @@ def main() -> int:
             show = request(bridge, "show")
             hide = request(bridge, "hide")
             shutdown = request(bridge, "shutdown")
+            # CI has no secure lock session. A show request must be cancelled
+            # rather than starting the system saver or locking the runner.
+            if show["succeeded"] or show.get("cancelled") is not True:
+                raise RuntimeError(
+                    "native bridge did not cancel an unlocked show request: "
+                    + json.dumps(show, sort_keys=True)
+                )
             if not all(
                 response["succeeded"]
-                for response in (prepare, show, hide, shutdown)
+                for response in (prepare, hide, shutdown)
             ):
                 failed_actions = [
                     action
                     for action, response in (
                         ("prepare", prepare),
-                        ("show", show),
                         ("hide", hide),
                         ("shutdown", shutdown),
                     )
@@ -112,7 +118,7 @@ def main() -> int:
                 json.dumps(
                     {
                         "prepare": prepare["succeeded"],
-                        "show": show["succeeded"],
+                        "unlocked_show_cancelled": show["cancelled"],
                         "hide": hide["succeeded"],
                         "shutdown": shutdown["succeeded"],
                     }

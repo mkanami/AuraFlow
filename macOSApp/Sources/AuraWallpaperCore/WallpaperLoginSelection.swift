@@ -74,7 +74,8 @@ public enum WallpaperLoginSelection {
         // executable path so a PID reused after reboot cannot claim ownership.
         var path = [CChar](repeating: 0, count: 4096)
         return proc_pidpath(pid, &path, UInt32(path.count)) > 0 &&
-            URL(fileURLWithPath: String(cString: path)).lastPathComponent == "AuraTerminalWallpaperAgent"
+            URL(fileURLWithPath: String(decoding: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self))
+                .lastPathComponent == "AuraTerminalWallpaperAgent"
     }
 
     public static func registerTerminal(in store: WallpaperRuntimeStore, helperURL: URL, launchAgentURL: URL? = nil) throws {
