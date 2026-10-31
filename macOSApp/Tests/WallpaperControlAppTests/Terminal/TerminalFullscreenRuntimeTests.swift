@@ -42,14 +42,20 @@ struct TerminalFullscreenRuntimeTests {
         try store.saveConfig(config)
         let display = FullscreenApplicationDetector.Display(bounds: CGRect(x: 0, y: 0, width: 1600, height: 1000),
             visibleBounds: CGRect(x: 0, y: 32, width: 1600, height: 910))
-        var foregroundFrame = maximized ? CGRect(x: 0, y: 32, width: 1591, height: 910) : display.bounds
+        var coveringFrame = maximized ? CGRect(x: 0, y: 32, width: 1591, height: 910) : display.bounds
+        var coveringWindowIsOnscreen = true
         var now: TimeInterval = 100
         let publisher = TerminalLockScreenFramePublisher(store: store, clock: { now })
         let agent = TerminalWallpaperAgentDelegate(configurationURL: store.configURL, managesLockScreenPresentation: false,
             screensProvider: { [] }, framePublisher: publisher, fullscreenApplicationIsActive: {
-                let window: [String: Any] = [kCGWindowOwnerPID as String: 42, kCGWindowLayer as String: 0,
-                    kCGWindowAlpha as String: 1, kCGWindowBounds as String: foregroundFrame.dictionaryRepresentation]
-                return FullscreenApplicationDetector.isFullscreen(frontmostPID: 42, windowInfo: [window], displays: [display])
+                let covering: [String: Any] = [kCGWindowOwnerPID as String: 99, kCGWindowLayer as String: 0,
+                    kCGWindowAlpha as String: 1, kCGWindowIsOnscreen as String: coveringWindowIsOnscreen,
+                    kCGWindowBounds as String: coveringFrame.dictionaryRepresentation]
+                let focused: [String: Any] = [kCGWindowOwnerPID as String: 42, kCGWindowLayer as String: 0,
+                    kCGWindowAlpha as String: 1, kCGWindowIsOnscreen as String: true,
+                    kCGWindowBounds as String: CGRect(x: 100, y: 100, width: 700, height: 500).dictionaryRepresentation]
+                return FullscreenApplicationDetector.isFullscreen(applicationPIDs: [42, 99],
+                    windowInfo: [focused, covering], displays: [display])
             })
         agent.applicationDidFinishLaunching(.init(name: NSApplication.didFinishLaunchingNotification))
         defer { agent.applicationWillTerminate(.init(name: NSApplication.willTerminateNotification)) }
@@ -66,6 +72,12 @@ struct TerminalFullscreenRuntimeTests {
         _ = try controller.setPauseOnFullscreen(true, config: draft)
         try await awaitTerminalFullscreen { terminalChildIsStopped(child) }
         #expect(!store.isPlaybackPaused, "Automatic pause must not become an explicit Stop")
+        // A covering background window keeps the desktop covered, but hiding
+        // it or moving it to another Space must release the automatic pause.
+        coveringWindowIsOnscreen = false
+        try await awaitTerminalFullscreen { !terminalChildIsStopped(child) }
+        coveringWindowIsOnscreen = true
+        try await awaitTerminalFullscreen { terminalChildIsStopped(child) }
         // Both manual lock and the automatic saver activate the same capture
         // callback. A covering foreground window must not freeze live Aura.
         agent.lockScreenStateChanged(true)
@@ -78,7 +90,7 @@ struct TerminalFullscreenRuntimeTests {
         try await awaitTerminalFullscreen { (store.loadHealth()?.frames ?? 0) > previousFrames }
         _ = try controller.setPauseOnFullscreen(true, config: draft)
         try await awaitTerminalFullscreen { terminalChildIsStopped(child) }
-        foregroundFrame = CGRect(x: 100, y: 100, width: 1000, height: 700)
+        coveringFrame = CGRect(x: 100, y: 100, width: 1000, height: 700)
         try await awaitTerminalFullscreen { !terminalChildIsStopped(child) }
         _ = try controller.setPlaybackPaused(true)
         try await awaitTerminalFullscreen { terminalChildIsStopped(child) }

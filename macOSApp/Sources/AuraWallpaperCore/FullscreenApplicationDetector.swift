@@ -2,7 +2,7 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-/// Shared foreground-window geometry for every wallpaper renderer.
+/// Shared visible-window coverage for every wallpaper renderer.
 public enum FullscreenApplicationDetector {
     public struct Display {
         public let bounds: CGRect
@@ -15,15 +15,17 @@ public enum FullscreenApplicationDetector {
     }
 
     @MainActor public static func currentIsFullscreen() -> Bool {
-        guard let app = NSWorkspace.shared.frontmostApplication, app.activationPolicy == .regular,
-              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
                 as? [[String: Any]] else { return false }
+        let applicationPIDs = Set(NSWorkspace.shared.runningApplications.filter {
+            $0.activationPolicy == .regular && !$0.isHidden && !$0.isTerminated
+        }.map(\.processIdentifier))
         let displays = NSScreen.screens.compactMap { screen -> Display? in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
             return displayGeometry(bounds: CGDisplayBounds(number.uint32Value),
                 appKitFrame: screen.frame, visibleFrame: screen.visibleFrame)
         }
-        return isFullscreen(frontmostPID: app.processIdentifier, windowInfo: windows, displays: displays)
+        return isFullscreen(applicationPIDs: applicationPIDs, windowInfo: windows, displays: displays)
     }
 
     /// AppKit uses an upward Y axis; WindowServer's window bounds use a
@@ -38,10 +40,12 @@ public enum FullscreenApplicationDetector {
         return Display(bounds: bounds, visibleBounds: visible)
     }
 
-    public static func isFullscreen(frontmostPID: pid_t, windowInfo: [[String: Any]], displays: [Display]) -> Bool {
-        guard frontmostPID > 0 else { return false }
+    public static func isFullscreen(applicationPIDs: Set<pid_t>, windowInfo: [[String: Any]], displays: [Display]) -> Bool {
+        guard !applicationPIDs.isEmpty else { return false }
         for info in windowInfo {
-            guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == frontmostPID,
+            guard let ownerPID = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  ownerPID > 0, applicationPIDs.contains(ownerPID),
+                  (info[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue != false,
                   (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
                   let alpha = info[kCGWindowAlpha as String] as? NSNumber, alpha.doubleValue > 0,
                   let values = info[kCGWindowBounds as String] as? [String: Any],

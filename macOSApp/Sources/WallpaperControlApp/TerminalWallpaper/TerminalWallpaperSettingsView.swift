@@ -497,7 +497,7 @@ struct TerminalWallpaperSettingsView: View {
             Toggle("Pause when another app is fullscreen", isOn: Binding(
                 get: { viewModel.controlsPauseOnFullscreen }, set: { viewModel.setPauseOnFullscreen($0) }))
                 .disabled(viewModel.isBusy)
-                .help("Also pauses when the foreground window fills the working area between the menu bar and Dock.")
+                .help("Also pauses behind a visible maximized window when another app has focus. Resume when the desktop is uncovered.")
         }
     }
 
