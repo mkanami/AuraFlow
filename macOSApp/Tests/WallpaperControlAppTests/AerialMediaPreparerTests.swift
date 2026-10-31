@@ -133,13 +133,17 @@ private func writeHEVCTestMovie(to url: URL) async throws {
     let reader = try AVAssetReader(asset: fastAsset)
     let output = AVAssetReaderTrackOutput(track: fastTrack, outputSettings: nil)
     reader.add(output)
-    #expect(reader.startReading())
+    try #require(reader.startReading())
     var presentationTimes: [CMTime] = []
     while let sample = output.copyNextSampleBuffer() {
-        presentationTimes.append(
-            CMSampleBufferGetPresentationTimeStamp(sample)
-        )
+        // Reader marker buffers contain no video samples and have no numeric
+        // PTS. Including their NaNs makes Set/Double sorting nondeterministic.
+        guard CMSampleBufferGetNumSamples(sample) > 0 else { continue }
+        let timestamp = CMSampleBufferGetPresentationTimeStamp(sample)
+        try #require(timestamp.isNumeric, "Every real video sample must have a finite presentation time")
+        presentationTimes.append(timestamp)
     }
+    #expect(reader.status == .completed)
 
     #expect(abs(fastDuration.seconds - sourceDuration.seconds / 2.0) < 0.08)
     let uniquePresentationSeconds = Array(
