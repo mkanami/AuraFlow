@@ -311,7 +311,7 @@ struct TerminalPresentationRecoveryTests {
     }
 
     @Test(arguments: [false, true]) @MainActor
-    func terminalRouteDriftRebindsPresentationWithoutAnotherSessionEvent(locked: Bool) async {
+    func terminalRouteDriftRepairsStoreWithoutReplacingLockedPresentation(locked: Bool) async {
         var now: TimeInterval = 100
         var sessionLocked = false
         var drifted = false
@@ -337,13 +337,15 @@ struct TerminalPresentationRecoveryTests {
             for _ in 0..<20 { await Task.yield() }
         }
         let previousStarts = starts
+        let previousPreparations = preparations.count
         drifted = true
         now += 1
         presentation.pollSession()
         for _ in 0..<20 { await Task.yield() }
         #expect(repairs == 1)
         #expect(preparations.last?.0 == locked)
-        #expect(preparations.last?.1 == true)
+        #expect(preparations.count == previousPreparations + (locked ? 0 : 1))
+        #expect(preparations.last?.1 == !locked)
         #expect(starts == previousStarts, "A repaired route must not restart the saver repeatedly in the same lock session")
     }
 

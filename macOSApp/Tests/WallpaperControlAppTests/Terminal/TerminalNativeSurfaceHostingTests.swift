@@ -69,8 +69,9 @@ struct TerminalNativeSurfaceHostingTests {
             #expect((try? desktop().isEqual(locked ? aura : user)) == true, "loginwindow must retain the live source for the whole confirmed lock, whether the saver was started manually or automatically")
         }
         var locked = false
+        var now: TimeInterval = 100
         var starts = 0
-        let presentation = TerminalLockScreenPresentation(sessionIsLocked: { locked }, screenSaverIsRunning: { saverRunning }, startScreenSaver: {
+        let presentation = TerminalLockScreenPresentation(sessionIsLocked: { locked }, screenSaverIsRunning: { saverRunning }, uptime: { now }, startScreenSaver: {
             #expect((try? desktop().isEqual(aura)) == true)
             #expect(driver.layers.last?.superlayer != nil, "The current display lease must be hosted; retired leases may already be released")
             starts += 1
@@ -97,7 +98,18 @@ struct TerminalNativeSurfaceHostingTests {
         presentation.handleScreenSaverNotification(true)
         await settleTerminalNativePresentation()
         #expect(try desktop().isEqual(aura), "A saver-start notification must not withdraw the locked Desktop source")
-        for _ in 0..<3 { presentation.pollSession(); await settleTerminalNativePresentation() }
+        let layers = driver.layers.count
+        let liveLayer = driver.layers.last
+        for _ in 0..<3 {
+            // Simulate WallpaperAgent persisting its pre-lock selection.
+            try PropertyListSerialization.data(fromPropertyList: original, format: .binary, options: 0).write(to: index)
+            now += 1
+            presentation.pollSession()
+            await settleTerminalNativePresentation()
+            #expect(try desktop().isEqual(aura))
+            #expect(driver.layers.count == layers && liveLayer?.superlayer != nil,
+                "Repairing native routes must retain the actual live display layer")
+        }
         #expect(try desktop().isEqual(aura))
         #expect(starts == (automatic ? 0 : 1), "Retaining the source must not restart the saver")
         locked = false

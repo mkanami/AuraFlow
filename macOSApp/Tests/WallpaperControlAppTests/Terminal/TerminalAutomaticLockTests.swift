@@ -151,4 +151,105 @@ struct TerminalAutomaticLockTests {
         }
         #expect(starts == 0)
     }
+
+    @Test(arguments: [false, true]) @MainActor
+    func repairingTheStoreDoesNotReplaceALiveLockedPresentationEverySecond(automatic: Bool) async {
+        var locked = false, running = false, drift = false
+        var now: TimeInterval = 100
+        var starts = 0
+        var lockedPreparations = 0
+        let presentation = TerminalLockScreenPresentation(sessionIsLocked: { locked }, screenSaverIsRunning: { running },
+            uptime: { now }, startScreenSaver: { starts += 1; running = true; return 0 },
+            presentationPreparer: { locked, _ in if locked { lockedPreparations += 1 } }, routeRecovery: { drift })
+        defer { presentation.stop() }
+        presentation.start()
+        await settleAutomaticLock()
+        if automatic {
+            running = true
+            presentation.handleScreenSaverNotification(true)
+            await settleAutomaticLock()
+        }
+        locked = true
+        presentation.handleLockNotification(true)
+        await settleAutomaticLock()
+        presentation.handleScreenSaverNotification(true)
+        await settleAutomaticLock()
+        let prepared = lockedPreparations
+        #expect(prepared == 1, "A saver-start event must retain the same locked presentation")
+        // WallpaperAgent can flush its saved selection after the lock edge.
+        // Repairing that file must not retire the live secure layer each tick.
+        drift = true
+        for _ in 0..<10 {
+            now += 1
+            presentation.pollSession()
+            await settleAutomaticLock()
+        }
+        #expect(lockedPreparations == prepared)
+        #expect(starts == (automatic ? 0 : 1))
+        running = false
+        presentation.handleScreenSaverNotification(false)
+        await settleAutomaticLock()
+        #expect(lockedPreparations == prepared && starts == (automatic ? 0 : 1),
+            "An authentication-edge saver stop must not retire the secure presentation or start another saver")
+        running = true
+        presentation.handleScreenSaverNotification(true)
+        await settleAutomaticLock()
+        #expect(lockedPreparations == prepared)
+        // A genuine wake/provider reconstruction still needs a new assertion.
+        presentation.recoverAfterSystemChange()
+        await settleAutomaticLock()
+        #expect(lockedPreparations == prepared + 1)
+        #expect(starts == (automatic ? 0 : 1))
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func aSlowLockedPresentationSurvivesRouteFlushesAndStillRetriesFailure(automatic: Bool) async {
+        var locked = false, running = automatic
+        var now: TimeInterval = 100
+        var starts = 0, lockedPreparations = 0
+        var held: CheckedContinuation<Void, Error>?
+        let presentation = TerminalLockScreenPresentation(sessionIsLocked: { locked }, screenSaverIsRunning: { running },
+            uptime: { now }, startScreenSaver: { starts += 1; running = true; return 0 },
+            presentationPreparer: { locked, _ in
+                if locked {
+                    lockedPreparations += 1
+                    if lockedPreparations == 1 { try await withCheckedThrowingContinuation { held = $0 } }
+                }
+            }, routeRecovery: { true })
+        defer { presentation.stop() }
+        presentation.start()
+        await settleAutomaticLock()
+        locked = true
+        presentation.handleLockNotification(true)
+        await settleAutomaticLock()
+        #expect(held != nil)
+        for _ in 0..<10 {
+            now += 1
+            presentation.pollSession()
+            await settleAutomaticLock()
+        }
+        #expect(lockedPreparations == 1 && starts == 0)
+        held?.resume(throwing: CocoaError(.fileReadUnknown))
+        await settleAutomaticLock()
+        now += 4
+        presentation.pollSession()
+        await settleAutomaticLock()
+        #expect(lockedPreparations == 1 && starts == 0, "Store repairs must not bypass the failure backoff")
+        now += 1
+        presentation.pollSession()
+        await settleAutomaticLock()
+        #expect(lockedPreparations == 2)
+        #expect(starts == (automatic ? 0 : 1))
+        locked = false
+        running = false
+        presentation.handleLockNotification(false)
+        await settleAutomaticLock()
+        presentation.stop()
+        presentation.start()
+        await settleAutomaticLock()
+        locked = true
+        presentation.pollSession()
+        await settleAutomaticLock()
+        #expect(lockedPreparations == 3, "A stopped presenter must not retain the previous session request")
+    }
 }

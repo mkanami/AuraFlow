@@ -36,6 +36,7 @@ final class TerminalLockScreenPresentation {
     private var saverStartNeedsRetry = false
     private var systemRecoveryPending = false
     private var restartSaverWhenReady = false
+    private var requestedPresentationState: Bool?
     private let saverActivity = SaverActivity()
     private var playbackActive = false
     private var lastSaverCheck: TimeInterval = -.infinity
@@ -150,6 +151,7 @@ final class TerminalLockScreenPresentation {
         retryAt = nil
         saverStartNeedsRetry = false
         systemRecoveryPending = false
+        requestedPresentationState = nil
         saverActivity.running = false
         saverActivity.hasRun = false
         playbackActive = false
@@ -239,6 +241,7 @@ final class TerminalLockScreenPresentation {
         presentationQueue.stop()
         systemRecoveryPending = false
         restartSaverWhenReady = false
+        requestedPresentationState = nil
         do { try restoreUserDesktop() }
         catch { logger.error("User Desktop restoration deferred: \(error.localizedDescription, privacy: .public)") }
         if let activity { ProcessInfo.processInfo.endActivity(activity) }
@@ -293,6 +296,12 @@ final class TerminalLockScreenPresentation {
             }
         }
         let retry = retryAt.map { uptime() >= $0 } ?? false
+        // WallpaperAgent may flush its saved route after the lock edge. Repair
+        // the store without retiring the live secure assertion every second.
+        // Also retain an in-flight acquisition: superseding it on each flush
+        // can prevent a slow system presentation from ever becoming current.
+        if transition.locked, requestedPresentationState == true,
+           changed == nil, !forcePreparation, !forceReload, !retry { return }
         if forcePreparation || changed != nil || activityChanged || saverChanged || reload || retry {
             let startNeeded = transition.locked && !saverActivity.running &&
                 (forceReload || (!saverActivity.hasRun && (changed == true || retry || saverStartNeedsRetry)))
@@ -370,6 +379,7 @@ final class TerminalLockScreenPresentation {
         guard started else { return }
         restartSaverWhenReady = transition.locked && (restartSaverWhenReady || restartSaverAfterPreparation)
         retryAt = nil
+        requestedPresentationState = transition.locked
         presentationQueue.request(locked: transition.locked, reloadRoute: reloadRoute)
     }
 

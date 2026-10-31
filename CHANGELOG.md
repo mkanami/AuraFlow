@@ -2,6 +2,7 @@
 
 ## 1.3.4
 
+- Keep the current Terminal secure presentation when WallpaperAgent flushes a saved native route during lock. Repair the store without recreating the live display layer each second; retain pending acquisition and retry failed or wake-triggered replacements for both manual and automatic locks.
 - Retain the live Terminal provider for the entire confirmed Lock Screen session. A system saver-start notification must not restore the user's Desktop provider underneath loginwindow before unlock; manual and automatic locks share this rule. Add bounded saver lifecycle diagnostics for verifying actual raster/Metal presentation.
 - Keep Terminal Lock Screen playback alive after atomic helper updates and long sessions by validating the owning PID and process start identity in both the saver and background recovery. Restore already-locked login sessions through the same manual/automatic reconciler, and finish deferred helper updates after unlock without duplicate provider rearming or losing late-frame retries.
 - Route the shared Auto-Pause on Fullscreen switch to the applied Terminal wallpaper as well as video. Apply the policy without rebuilding Terminal surfaces or restarting its command; preserve manual Stop, login settings and Lock Screen frames.
