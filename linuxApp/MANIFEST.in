@@ -1,4 +1,0 @@
-include LICENSE
-recursive-include scripts *.sh
-recursive-include tests *.py
-recursive-include tests/fixtures *.html
