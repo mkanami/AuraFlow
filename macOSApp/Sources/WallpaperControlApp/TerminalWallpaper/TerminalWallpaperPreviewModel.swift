@@ -205,6 +205,9 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
     private let selectionStore: WallpaperPreviewSelectionStore
     private let runtimeStore: TerminalWallpaperRuntimeStore
     private let windowIsVisible: @MainActor () -> Bool
+    private let publishPreviewActivity: @MainActor (TerminalPreviewActivityMessage) -> Void
+    private var advertisedAgentPID: Int?
+    private var lastActivityUptime = -TimeInterval.infinity
     private var previewSession: TerminalWallpaperPreviewPTY?
     private var selectedCommand: TerminalCommandConfiguration?
     private var selectedGrid: (columns: Int, rows: Int)?
@@ -243,11 +246,17 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         runtimeStore: TerminalWallpaperRuntimeStore = TerminalWallpaperRuntimeStore(),
         windowIsVisible: @escaping @MainActor () -> Bool = {
             WallpaperPreviewVisibility.isVisible
+        },
+        publishPreviewActivity: @escaping @MainActor (TerminalPreviewActivityMessage) -> Void = { message in
+            DistributedNotificationCenter.default().postNotificationName(
+                TerminalWallpaperRuntimeNotifications.previewActivityDidChange,
+                object: nil, userInfo: message.userInfo, deliverImmediately: true)
         }
     ) {
         self.selectionStore = selectionStore
         self.runtimeStore = runtimeStore
         self.windowIsVisible = windowIsVisible
+        self.publishPreviewActivity = publishPreviewActivity
         selectionObservation = selectionStore.objectWillChange.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.reconcile() }
         }
@@ -271,7 +280,10 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.stopPreviewSession(waitForExit: true) }
+            Task { @MainActor [weak self] in
+                self?.updatePreviewActivity(agentPID: nil)
+                self?.stopPreviewSession(waitForExit: true)
+            }
         }
         let refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.reconcile() }
@@ -285,6 +297,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         guard selectionStore.kind == .terminal,
               let selected = selectionStore.terminalConfiguration?.normalized()
         else {
+            updatePreviewActivity(agentPID: nil)
             rateUpdateTask?.cancel()
             previewRateUpdateTask?.cancel()
             if previewSession != nil { stopPreviewSession() }
@@ -307,11 +320,13 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         )
 
         if runtimeMatches, let descriptor {
+            updatePreviewActivity(agentPID: windowIsVisible() ? descriptor.agentPID : nil)
             if sharedFrame != descriptor { sharedFrame = descriptor }
             if previewSession != nil { stopPreviewSession() }
             return
         }
 
+        updatePreviewActivity(agentPID: nil)
         if sharedFrame != nil { sharedFrame = nil }
         let requestedGrid = resolvedGrid(selected.render)
         if selectedCommand != selected.command {
@@ -343,6 +358,19 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
         // The IOSurface continues updating while the preview is hidden. Ask
         // its view to present the current frame immediately on return.
         if windowIsVisible(), sharedFrame != nil { frameSequence &+= 1 }
+    }
+
+    private func updatePreviewActivity(agentPID: Int?) {
+        if let previous = advertisedAgentPID, previous != agentPID {
+            publishPreviewActivity(.init(agentPID: previous, clientPID: Int(getpid()), isVisible: false))
+            advertisedAgentPID = nil
+        }
+        guard let agentPID else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard advertisedAgentPID != agentPID || now - lastActivityUptime >= 0.5 else { return }
+        advertisedAgentPID = agentPID
+        lastActivityUptime = now
+        publishPreviewActivity(.init(agentPID: agentPID, clientPID: Int(getpid()), isVisible: true))
     }
 
     private func synchronizePreviewSpeed(_ selected: TerminalWallpaperConfig) {
@@ -399,6 +427,7 @@ final class TerminalWallpaperPreviewModel: ObservableObject {
                 descriptor: descriptor,
                 surfaceAvailable: IOSurfaceLookup(descriptor.surfaceID) != nil
         ) else { return }
+        updatePreviewActivity(agentPID: agentPID)
         if sharedFrame != descriptor { sharedFrame = descriptor }
         if frameSequence != sequence { frameSequence = sequence }
         if previewSession != nil { stopPreviewSession() }

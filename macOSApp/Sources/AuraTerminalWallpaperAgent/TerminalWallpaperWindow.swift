@@ -53,6 +53,10 @@ final class TerminalWallpaperWindow: NSWindow {
         terminalView.setRendererPaused(paused)
     }
 
+    func setDesktopPresentationPaused(_ paused: Bool) {
+        terminalView.setDesktopPresentationPaused(paused)
+    }
+
     func setLockScreenCaptureEnabled(_ enabled: Bool) {
         terminalView.setLockScreenCaptureEnabled(enabled)
     }

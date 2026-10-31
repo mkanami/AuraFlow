@@ -87,6 +87,7 @@ public final class TerminalMetalView: MTKView {
     private var rasterEpoch: UInt64 = 0
     private var requestedSize: TerminalPixelSize?
     private var rendererPaused = false
+    private var desktopPresentationPaused = false
     private var gpuFrameInFlight = false
     private var presentationPending = false
     private var pendingInstallation: (frame: TerminalPreparedFrame, epoch: UInt64)?
@@ -213,6 +214,13 @@ public final class TerminalMetalView: MTKView {
         }
     }
 
+    public func setDesktopPresentationPaused(_ paused: Bool) {
+        guard desktopPresentationPaused != paused else { return }
+        desktopPresentationPaused = paused
+        needsDisplay = true
+        draw()
+    }
+
     public func setLockScreenCaptureEnabled(_ enabled: Bool) {
         guard lockScreenCaptureEnabled != enabled else { return }
         lockScreenCaptureEnabled = enabled
@@ -252,7 +260,7 @@ public final class TerminalMetalView: MTKView {
         // A desktop/preview covered by other windows or the Lock Screen has
         // no reliable drawable. Keep the shared source current offscreen so
         // occlusion and nextDrawable cannot stall its consumers.
-        let offscreenCapture = lockScreenCaptureEnabled || lockCaptureSeedPending
+        let offscreenCapture = desktopPresentationPaused || lockScreenCaptureEnabled || lockCaptureSeedPending
             || window?.occlusionState.contains(.visible) == false
         let drawable = offscreenCapture ? nil : currentDrawable
         guard offscreenCapture || drawable != nil else { return }

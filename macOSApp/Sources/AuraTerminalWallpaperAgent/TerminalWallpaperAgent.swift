@@ -2,6 +2,7 @@ import AppKit
 import AuraTerminalRendering
 import AuraTerminalWallpaperCore
 import AuraWallpaperCore
+import Darwin
 import Foundation
 import Metal
 import OSLog
@@ -38,8 +39,11 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var healthTimer: Timer?
     private var frameTimer: Timer?
     private var fullscreenTimer: Timer?
-    private var fullscreenPausePolicy = TerminalFullscreenPausePolicy()
+    private(set) var fullscreenPausePolicy = TerminalFullscreenPausePolicy()
     private let fullscreenApplicationIsActive: () -> Bool
+    private var previewActivity = TerminalPreviewActivity()
+    private let previewActivityUptime: () -> TimeInterval
+    private let previewClientIsRunning: (Int) -> Bool
     private var lockScreenIsLocked = false
     private var lockScreenPlaybackEnabled = false
     private var outputPublication = TerminalOutputPublicationState()
@@ -56,13 +60,20 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     init(configurationURL: URL, managesLockScreenPresentation: Bool = true,
          screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens },
          framePublisher: TerminalLockScreenFramePublisher? = nil,
-         fullscreenApplicationIsActive: (() -> Bool)? = nil) {
+         fullscreenApplicationIsActive: (() -> Bool)? = nil,
+         previewActivityUptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         previewClientIsRunning: @escaping (Int) -> Bool = { value in
+             guard let pid = pid_t(exactly: value), pid > 0 else { return false }
+             return kill(pid, 0) == 0 || errno == EPERM
+         }) {
         let supportURL = configurationURL.deletingLastPathComponent()
         store = TerminalWallpaperRuntimeStore(appSupportURL: supportURL)
         self.framePublisher = framePublisher ?? TerminalLockScreenFramePublisher(store: store)
         self.managesLockScreenPresentation = managesLockScreenPresentation
         self.screensProvider = screensProvider
         self.fullscreenApplicationIsActive = fullscreenApplicationIsActive ?? { Self.detectFullscreenApplication() }
+        self.previewActivityUptime = previewActivityUptime
+        self.previewClientIsRunning = previewClientIsRunning
         config = store.loadConfig()
         fullscreenPausePolicy.manuallyPaused = store.isPlaybackPaused
         super.init()
@@ -150,6 +161,10 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installNotifications() {
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(previewActivityChanged),
+            name: TerminalWallpaperRuntimeNotifications.previewActivityDidChange,
+            object: nil, suspensionBehavior: .deliverImmediately)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(screensChanged),
@@ -315,7 +330,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     }
                 )
                 lastError = nil
-                if fullscreenPausePolicy.playbackIsPaused {
+                if producerPlaybackIsPaused {
                     try? session.setPaused(true)
                 }
             } catch {
@@ -349,7 +364,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func startFrameTimer() {
         frameTimer?.invalidate()
         frameTimer = nil
-        guard !fullscreenPausePolicy.playbackIsPaused else { return }
+        guard !producerPlaybackIsPaused else { return }
         let interval = 1.0 / Double(max(config.render.maxFPS, 1))
         frameTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.publishLatestSnapshot()
@@ -496,7 +511,8 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             }
         }
         for window in windows {
-            window.setRendererPaused(fullscreenPausePolicy.playbackIsPaused)
+            window.setDesktopPresentationPaused(fullscreenPausePolicy.playbackIsPaused)
+            window.setRendererPaused(producerPlaybackIsPaused)
             window.setLockScreenCaptureEnabled(lockScreenIsLocked)
             if !window.isVisible { window.orderBack(nil); window.orderFrontRegardless() }
         }
@@ -564,6 +580,21 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         fullscreenPausePolicy.isPaused && !fullscreenPausePolicy.manuallyPaused ? 0.2 : 1
     }
 
+    private var producerPlaybackIsPaused: Bool {
+        let previewVisible = previewActivity.hasVisibleClient(
+            at: previewActivityUptime(), processIsRunning: previewClientIsRunning)
+        return fullscreenPausePolicy.manuallyPaused || store.isPlaybackPaused
+            || (fullscreenPausePolicy.isPaused && !previewVisible)
+    }
+
+    @objc private func previewActivityChanged(_ notification: Notification) {
+        guard !terminating,
+              let message = TerminalPreviewActivityMessage(userInfo: notification.userInfo),
+              message.agentPID == Int(getpid()) else { return }
+        previewActivity.update(clientPID: message.clientPID, visible: message.isVisible, at: previewActivityUptime())
+        synchronizePlaybackPause()
+    }
+
     private func startFullscreenMonitoring() {
         fullscreenTimer?.invalidate()
         let timer = Timer(timeInterval: fullscreenPollingInterval, repeats: true) { [weak self] _ in
@@ -586,14 +617,14 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let foregroundIsFullscreen = enabled && !screenLocked
             ? fullscreenApplicationIsActive()
             : false
-        guard let paused = fullscreenPausePolicy.update(
+        let changed = fullscreenPausePolicy.update(
             enabled: enabled,
             screenLocked: screenLocked,
             foregroundIsFullscreen: foregroundIsFullscreen
-        ) else { return }
+        )
 
-        let playbackPaused = fullscreenPausePolicy.playbackIsPaused
-        if let childPID = session.childPID {
+        let playbackPaused = producerPlaybackIsPaused
+        if let paused = changed, let childPID = session.childPID {
             do {
                 try session.setPaused(playbackPaused)
                 logger.notice("Terminal wallpaper fullscreen pause=\(paused), child=\(childPID)")
@@ -607,12 +638,15 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func synchronizePlaybackPause() {
-        let paused = fullscreenPausePolicy.playbackIsPaused
+        let paused = producerPlaybackIsPaused
         if session.childPID != nil {
             do { try session.setPaused(paused) }
             catch { lastError = error.localizedDescription; return }
         }
-        for window in windows { window.setRendererPaused(paused) }
+        for window in windows {
+            window.setDesktopPresentationPaused(fullscreenPausePolicy.playbackIsPaused)
+            window.setRendererPaused(paused)
+        }
         if paused {
             frameTimer?.invalidate()
             frameTimer = nil
@@ -645,7 +679,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let childPID = session.childPID.map(Int.init)
         if let childStartedAt,
            childPID != nil,
-           !fullscreenPausePolicy.playbackIsPaused,
+           !producerPlaybackIsPaused,
            frames == framesAtChildStart,
            !reportedNoOutput,
            Date().timeIntervalSince(childStartedAt) >= 3 {

@@ -4,6 +4,7 @@ import AuraWallpaperCore
 import QuartzCore
 import Testing
 @testable import AuraWallpaperAgent
+@testable import WallpaperControlApp
 
 @MainActor
 private final class WallpaperSessionFixture {
@@ -132,6 +133,38 @@ private final class SessionLaunchctlCalls { var values: [[String]] = [] }
 
 @Suite(.serialized)
 struct FullscreenResumeRegressionTests {
+    @Test @MainActor
+    func videoPreviewRemainsAnimatedDuringFullscreenAutoPause() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraVideoPreviewPause-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let movie = root.appendingPathComponent("preview.mp4")
+        try await makeSessionRegressionMovie(movie)
+        let controller = MockNativeWallpaperController()
+        controller.configuredVideoURL = movie
+        controller.statusRunning = true
+        controller.statusPaused = true
+        controller.statusHealth = .init(available: true, fresh: true, suspicious: false, reason: "ok",
+            paused: true, manual_paused: false, pause_on_fullscreen: true,
+            fullscreen_app_detected: true, auto_paused_for_fullscreen: true)
+        let model = AppViewModel(controller: controller, appSupportDirectoryURL: root)
+        await model.loadStatus()
+        model.setPreviewWindowVisible(true)
+        defer { model.setPreviewWindowVisible(false) }
+        let player = try #require(model.previewPlayer)
+        let deadline = Date().addingTimeInterval(4)
+        while player.currentItem?.status != .readyToPlay || player.rate <= 0 || player.timeControlStatus != .playing {
+            try #require(Date() < deadline)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let first = player.currentTime().seconds
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(player.currentTime().seconds > first + 0.1)
+        #expect(controller.statusPaused == true)
+        #expect(controller.startCallCount == 0 && controller.resumeCallCount == 0,
+            "Preview playback must not resume Desktop playback")
+    }
+
     @Test(arguments: [false, true]) @MainActor
     func videoResumesPromptlyWhenTheCoveringWindowLeaves(spaceChanged: Bool) async throws {
         var coveringWindow = true

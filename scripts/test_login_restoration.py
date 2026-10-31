@@ -29,6 +29,7 @@ names.append('TerminalLockScreenToggleTests')
 names.append('TerminalFullscreenRuntimeTests')
 names.append('FullscreenApplicationDetectorTests')
 names.append('FullscreenResumeRegressionTests')
+names.append('TerminalPreviewAutopauseTests')
 names.append('terminalFullscreenResumesOnFirstUncoveredSample')
 names.extend(['terminalDeferred', 'terminalNewAppReplacesAnOldHelperInsteadOfSendingItAnotherRestartCommand',
               'terminalHelperUpgradeDoesNotDropTheSurfaceOfALockedOrPausedSession',

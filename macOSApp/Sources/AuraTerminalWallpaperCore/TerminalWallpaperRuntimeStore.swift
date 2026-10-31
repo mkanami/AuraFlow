@@ -2,6 +2,9 @@ import Darwin
 import Foundation
 
 public enum TerminalWallpaperRuntimeNotifications {
+    public static let previewActivityDidChange = Notification.Name(
+        "com.andrijvergeles.auraflow.terminal-preview-activity-did-change"
+    )
     public static let lockScreenRouteDidChange = Notification.Name(
         "com.andrijvergeles.auraflow.terminal-lock-screen-route-did-change"
     )
