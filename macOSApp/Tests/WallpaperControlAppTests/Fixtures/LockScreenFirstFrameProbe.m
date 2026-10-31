@@ -1,6 +1,7 @@
 #import "AuraFlowLockScreen.h"
 #import "AuraFlowTerminalSurface.h"
 #import <QuartzCore/QuartzCore.h>
+#import <libproc.h>
 #import <unistd.h>
 
 static NSURL *runtimeRoot;
@@ -10,9 +11,24 @@ static NSURL *desktopImageURL;
 - (BOOL)terminalAgentIsAlive;
 - (NSDictionary *)resolvedConfiguration;
 - (BOOL)runtimePauseMarkerExists;
+- (nullable NSString *)terminalExecutablePath:(pid_t)pid;
 @end
 
 @interface AccountHomeSaver : AuraFlowLockScreen
+@end
+
+// An atomically replaced helper can remain alive while macOS can no longer
+// resolve the unlinked executable vnode through proc_pidpath.
+@interface ReplacedHelperSaver : AccountHomeSaver
+@end
+@implementation ReplacedHelperSaver
+- (NSString *)terminalExecutablePath:(pid_t)pid { return nil; }
+@end
+
+@interface LegacyNamedHelperSaver : AccountHomeSaver
+@end
+@implementation LegacyNamedHelperSaver
+- (NSString *)terminalExecutablePath:(pid_t)pid { return @"/fixture/AuraTerminalWallpaperAgent"; }
 @end
 @implementation AccountHomeSaver
 - (NSURL *)terminalRuntimeURLForFile:(NSString *)name {
@@ -150,6 +166,37 @@ int main(int argc, char **argv) {
         // this probe rather than AuraTerminalWallpaperAgent.
         [lease writeToURL:heartbeat atomically:YES];
         if ([orphaned terminalAgentIsAlive]) return 12;
+        // A day's old lease is still live when its saved process identity
+        // matches. Both a fresh secure view and the OS's reused idle saver
+        // must accept it after the executable file has been replaced.
+        struct proc_bsdinfo info = {0};
+        if (proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info)) return 25;
+        unsigned long long start = info.pbi_start_tvsec * 1000000ULL + info.pbi_start_tvusec;
+        NSURL *identityURL = [runtimeRoot URLByAppendingPathComponent:@"agent-identity.json"];
+        NSDictionary *identity = @{@"pid":@(getpid()), @"startTimeMicros":@(start)};
+        [[NSJSONSerialization dataWithJSONObject:identity options:0 error:nil] writeToURL:identityURL atomically:YES];
+        for (NSNumber *reuse in @[@NO, @YES]) {
+            ReplacedHelperSaver *live = [[ReplacedHelperSaver alloc] initWithFrame:NSMakeRect(0,0,320,240) isPreview:YES];
+            if (![live terminalAgentIsAlive] || ![[live valueForKey:@"terminalModeActive"] boolValue]) return 26;
+            if (reuse.boolValue) { [live startAnimation]; [live stopAnimation]; [live startAnimation]; }
+            [live animateOneFrame];
+            if (![[live valueForKey:@"terminalModeActive"] boolValue] || [[live valueForKey:@"terminalLayer"] isHidden]) return 27;
+            [live stopAnimation];
+        }
+        // A reboot's reused PID, an incomplete/corrupt identity, or a new
+        // owner can never borrow this Terminal publication.
+        for (id invalid in @[@{@"pid":@(getpid()), @"startTimeMicros":@(start - 1)},
+                              @{@"pid":@(getpid() + 1), @"startTimeMicros":@(start)}, @{}]) {
+            [[NSJSONSerialization dataWithJSONObject:invalid options:0 error:nil] writeToURL:identityURL atomically:YES];
+            if ([orphaned terminalAgentIsAlive]) return 28;
+        }
+        [@"broken identity" writeToURL:identityURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        if ([orphaned terminalAgentIsAlive]) return 29;
+        LegacyNamedHelperSaver *legacy = [[LegacyNamedHelperSaver alloc] initWithFrame:NSMakeRect(0,0,320,240) isPreview:YES];
+        if ([legacy terminalAgentIsAlive]) return 30;
+        [[NSFileManager defaultManager] removeItemAtURL:identityURL error:nil];
+        if (![legacy terminalAgentIsAlive]) return 31;
+        [legacy stopAnimation];
         // Media and pause markers must resolve through the same real account
         // root as terminal/web, rather than the screen-saver host's HOME.
         NSURL *media = [root URLByAppendingPathComponent:@"wallpaper.mov"];

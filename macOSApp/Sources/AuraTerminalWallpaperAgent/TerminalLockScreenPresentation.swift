@@ -213,9 +213,10 @@ final class TerminalLockScreenPresentation {
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.pollSession() }
         }
-        _ = refreshSaverActivity(force: true)
-        updatePlaybackActivity()
-        prepare()
+        // Login recovery can start this helper after the secure screen is
+        // already visible. Use the same reconciler as manual/automatic lock
+        // events, rather than first acquiring an unrelated idle assertion.
+        reconcileSession(forcePreparation: true, forceSaverCheck: true)
     }
 
     func stop() {
@@ -253,13 +254,21 @@ final class TerminalLockScreenPresentation {
 
     /// Manual lock, OS idle saver, polling, and wake all converge here. Saver
     /// activity is distinct from CGSession's secure lock during password grace.
-    private func reconcileSession(forceReload: Bool = false, forceSaverCheck: Bool = false) {
+    private func reconcileSession(forceReload: Bool = false, forcePreparation: Bool = false, forceSaverCheck: Bool = false) {
         guard started else { return }
         let saverChanged = refreshSaverActivity(force: forceSaverCheck)
         // Notifications can lead CGSession briefly, but must not override it
         // forever when an unlock notification is lost during sleep.
         if uptime() >= notificationExpiresAt { notifiedLockState = nil }
-        let confirmed = sessionIsLocked()
+        guard let confirmed = sessionIsLocked() else {
+            // WindowServer may not be ready after login or wake. Retain an
+            // existing assertion, but never invent an idle one for an unknown
+            // session. A running automatic saver may still publish frames.
+            systemRecoveryPending = true
+            _ = updatePlaybackActivity()
+            return
+        }
+        systemRecoveryPending = false
         let retainConfirmedLock = transition.locked && notifiedLockState == true && uptime() < notificationExpiresAt
         let changed = transition.update(retainConfirmedLock ? true : confirmed)
         if let changed { logger.notice("Terminal Lock Screen session locked=\(changed), systemSaver=\(self.saverActivity.running)") }
@@ -282,7 +291,7 @@ final class TerminalLockScreenPresentation {
             }
         }
         let retry = retryAt.map { uptime() >= $0 } ?? false
-        if changed != nil || activityChanged || saverChanged || reload || retry {
+        if forcePreparation || changed != nil || activityChanged || saverChanged || reload || retry {
             let startNeeded = transition.locked && !saverActivity.running &&
                 (forceReload || (!saverActivity.hasRun && (changed == true || retry || saverStartNeedsRetry)))
             prepare(reloadRoute: reload || retry, restartSaverAfterPreparation: startNeeded)

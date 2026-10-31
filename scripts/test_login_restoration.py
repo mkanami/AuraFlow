@@ -27,6 +27,11 @@ names.append('TerminalAutomaticLockTests')
 names.append('TerminalLoginLockIndependenceTests')
 names.append('TerminalLockScreenToggleTests')
 names.append('TerminalFullscreenRuntimeTests')
+names.extend(['terminalDeferred', 'terminalNewAppReplacesAnOldHelperInsteadOfSendingItAnotherRestartCommand',
+              'terminalHelperUpgradeDoesNotDropTheSurfaceOfALockedOrPausedSession',
+              'terminalStatusPollingPublishesOnlyActualChanges',
+              'terminalRuntimeRejectsReusedPIDEvenWhenTheProcessExists',
+              'legacyTerminalPIDCannotClaimAnUnrelatedProcessAfterReboot'])
 names.extend(['terminalFullscreenPause', 'terminalManualPauseSurvivesFullscreenAndLockTransitions'])
 names.extend(['terminalLockScreenPublisherWritesOnlyWhileLocked',
               'terminalLockScreenPublisherThrottlesDesktopSeedAndRestartsGeneration',

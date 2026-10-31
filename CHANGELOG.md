@@ -2,6 +2,7 @@
 
 ## 1.3.4
 
+- Keep Terminal Lock Screen playback alive after atomic helper updates and long sessions by validating the owning PID and process start identity in both the saver and background recovery. Restore already-locked login sessions through the same manual/automatic reconciler, and finish deferred helper updates after unlock without duplicate provider rearming or losing late-frame retries.
 - Route the shared Auto-Pause on Fullscreen switch to the applied Terminal wallpaper as well as video. Apply the policy without rebuilding Terminal surfaces or restarting its command; preserve manual Stop, login settings and Lock Screen frames.
 - Make repeated Lock Screen OFF/ON reuse the current live Terminal surface immediately, without PNG recapture or Remove/Start. Clear the former locked-capture state on OFF, reject stale surface owners, and use a command understood by helpers that are already running during an app update.
 - Keep Launch at Login completely separate from current Lock Screen playback: registration sends no renderer command, and only the Lock Screen toggle requests a fresh saver publication. Cover both login states across manual and automatic locks.

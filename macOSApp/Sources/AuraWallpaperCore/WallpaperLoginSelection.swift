@@ -56,18 +56,25 @@ public enum WallpaperLoginSelection {
         guard let text = try? String(contentsOf: root.appendingPathComponent("agent.pid")),
               let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0,
               kill(pid, 0) == 0 || errno == EPERM else { return false }
-        var path = [CChar](repeating: 0, count: 4096)
-        guard proc_pidpath(pid, &path, UInt32(path.count)) > 0,
-              URL(fileURLWithPath: String(cString: path)).lastPathComponent == "AuraTerminalWallpaperAgent" else { return false }
         let identityURL = root.appendingPathComponent("agent-identity.json")
-        guard let data = try? Data(contentsOf: identityURL) else { return true }
-        guard let identity = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              (identity["pid"] as? NSNumber)?.int32Value == pid,
-              let start = (identity["startTimeMicros"] as? NSNumber)?.uint64Value else { return false }
-        var info = proc_bsdinfo()
-        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-        return proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size
-            && info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec == start
+        if FileManager.default.fileExists(atPath: identityURL.path) {
+            // An atomic app update can unlink the executable of a healthy
+            // running helper. Its saved PID/start identity remains valid even
+            // when proc_pidpath cannot resolve that former executable vnode.
+            guard let data = try? Data(contentsOf: identityURL),
+                  let identity = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  (identity["pid"] as? NSNumber)?.int32Value == pid,
+                  let start = (identity["startTimeMicros"] as? NSNumber)?.uint64Value else { return false }
+            var info = proc_bsdinfo()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            return proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size
+                && info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec == start
+        }
+        // Legacy helpers have no start identity. They still need a matching
+        // executable path so a PID reused after reboot cannot claim ownership.
+        var path = [CChar](repeating: 0, count: 4096)
+        return proc_pidpath(pid, &path, UInt32(path.count)) > 0 &&
+            URL(fileURLWithPath: String(cString: path)).lastPathComponent == "AuraTerminalWallpaperAgent"
     }
 
     public static func registerTerminal(in store: WallpaperRuntimeStore, helperURL: URL, launchAgentURL: URL? = nil) throws {

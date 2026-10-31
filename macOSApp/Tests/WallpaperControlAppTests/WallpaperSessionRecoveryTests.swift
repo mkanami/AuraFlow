@@ -1,4 +1,5 @@
 import Foundation
+import AuraTerminalWallpaperCore
 import Testing
 @testable import AuraWallpaperCore
 
@@ -209,4 +210,56 @@ func sessionRecoveryDefersWhileLockedOrUnknown(locked: Bool?) throws {
     #expect(plist["RunAtLoad"] as? Bool == true)
     #expect(plist["StartInterval"] as? Int == 30)
     #expect(calls.last?.first == "bootstrap")
+}
+
+@Test(arguments: [false, true])
+func recoveryKeepsALiveTerminalAfterItsExecutableWasReplaced(autostart: Bool) throws {
+    let f = try SessionRecoveryFixture()
+    let executable = f.root.appendingPathComponent("AuraTerminalWallpaperAgent")
+    try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: executable.path)
+    let process = Process()
+    process.executableURL = executable
+    process.arguments = ["60"]
+    try process.run()
+    defer { if process.isRunning { process.terminate() }; process.waitUntilExit() }
+    let terminal = TerminalWallpaperRuntimeStore(appSupportURL: f.journal.deletingLastPathComponent(),
+        launchAgentURL: f.root.appendingPathComponent("unused-terminal.plist"))
+    try terminal.savePID(process.processIdentifier)
+    try terminal.saveConfig(.init(command: .init(executable: "/bin/sleep", arguments: ["60"])))
+    try terminal.saveHealth(.init(available: true, running: true,
+        updatedAt: Date().timeIntervalSince1970 - 172_800, agentPID: Int(process.processIdentifier)))
+    try terminal.saveLockScreenHeartbeat(.init(pid: Int(process.processIdentifier), updatedAt: Date().timeIntervalSince1970 - 172_800))
+    try f.store.saveConfig(.init(video_path: "", playback_speed: 1, autostart: autostart,
+        show_on_lock_screen: true, login_wallpaper_runtime: .terminal))
+    let user = f.mode("com.apple.wallpaper.choice.sequoia")
+    try f.save(["SystemDefault": ["Desktop": user, "Idle": try f.auraMode()]])
+    let original = try Data(contentsOf: f.index)
+    try #require(WallpaperLoginSelection.terminalRuntimeIsLive(in: f.store))
+    let replacement = f.root.appendingPathComponent("replacement")
+    try FileManager.default.copyItem(atPath: "/usr/bin/true", toPath: replacement.path)
+    _ = try FileManager.default.replaceItemAt(executable, withItemAt: replacement)
+    try #require(terminal.processIsAlive(pid: Int(process.processIdentifier)))
+    try #require(WallpaperLoginSelection.terminalRuntimeIsLive(in: f.store),
+        "An atomic app update must not make recovery classify its live Terminal owner as dead")
+    var starts = 0, restores = 0, refreshes = 0
+    let recovery = WallpaperSessionRecovery(store: f.store, wallpaperStoreURL: f.index,
+        sessionIsLocked: { false }, wait: { _ in Issue.record("A live owner needs no startup grace") },
+        requestAutostart: { starts += 1 }, suspendNative: { _ in restores += 1; return false },
+        refresh: { commit in refreshes += 1; try commit() })
+    for _ in 0..<120 {
+        #expect(try recovery.reconcile(autostartGracePeriod: 0, installationGracePeriod: 0) == .runtimeActive)
+    }
+    #expect(starts == 0 && restores == 0 && refreshes == 0)
+    #expect(try Data(contentsOf: f.index) == original)
+    #expect(!FileManager.default.fileExists(atPath: f.journal.appendingPathExtension("suspended").path))
+    // A persisted PID reused after shutdown must still be rejected, even if
+    // the executable path of this running generation is no longer available.
+    let identity = terminal.appSupportURL.appendingPathComponent("agent-identity.json")
+    try JSONSerialization.data(withJSONObject: ["pid": Int(process.processIdentifier), "startTimeMicros": 1])
+        .write(to: identity, options: .atomic)
+    #expect(!WallpaperLoginSelection.terminalRuntimeIsLive(in: f.store))
+    #expect(try recovery.reconcile(autostartGracePeriod: 0, installationGracePeriod: 0) == .restored)
+    let routes = try #require(try f.load()["SystemDefault"] as? [String: Any])
+    #expect(routes["Desktop"] as? NSDictionary == user as NSDictionary)
+    #expect(routes["Idle"] as? NSDictionary == user as NSDictionary)
 }

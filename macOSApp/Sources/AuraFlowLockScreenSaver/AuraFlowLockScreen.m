@@ -277,11 +277,33 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 
 - (BOOL)terminalProcessIsAlive:(pid_t)pid {
     if (kill(pid, 0) != 0 && errno != EPERM) return NO;
-    // A persisted heartbeat survives reboot, and its PID may now belong to an
-    // unrelated process. Such a lease must never hide the user's wallpaper.
+    NSURL *identityURL = [self terminalRuntimeURLForFile:@"agent-identity.json"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:identityURL.path]) {
+        // Replacing the executable atomically can make proc_pidpath fail for
+        // its still-running old vnode. The helper records its exact start
+        // identity before publishing; use that same ownership check as Core.
+        // This also rejects a persisted lease whose PID was reused on reboot.
+        NSDictionary *identity = [self JSONDictionaryAtURL:identityURL];
+        NSNumber *owner = identity[@"pid"], *savedStart = identity[@"startTimeMicros"];
+        NSNumber *actualStart = [self terminalProcessStartTime:pid];
+        return [owner isKindOfClass:NSNumber.class] && owner.longLongValue == pid &&
+            [savedStart isKindOfClass:NSNumber.class] && savedStart.unsignedLongLongValue > 0 &&
+            actualStart != nil && [savedStart isEqualToNumber:actualStart];
+    }
+    // Older helpers have no start-identity file. Existence alone must never
+    // authorize their cached frames after reboot.
+    return [[[self terminalExecutablePath:pid] lastPathComponent] isEqualToString:@"AuraTerminalWallpaperAgent"];
+}
+
+- (nullable NSNumber *)terminalProcessStartTime:(pid_t)pid {
+    struct proc_bsdinfo info = {0};
+    if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info)) return nil;
+    return @(info.pbi_start_tvsec * 1000000ULL + info.pbi_start_tvusec);
+}
+
+- (nullable NSString *)terminalExecutablePath:(pid_t)pid {
     char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
-    return proc_pidpath(pid, path, sizeof(path)) > 0 &&
-        [[NSString stringWithUTF8String:path].lastPathComponent isEqualToString:@"AuraTerminalWallpaperAgent"];
+    return proc_pidpath(pid, path, sizeof(path)) > 0 ? [NSString stringWithUTF8String:path] : nil;
 }
 
 // Web owns a separate route/lease. Never borrow terminal publications or the

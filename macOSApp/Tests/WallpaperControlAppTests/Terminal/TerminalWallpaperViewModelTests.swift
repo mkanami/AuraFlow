@@ -1,4 +1,5 @@
 import AuraTerminalWallpaperCore
+import AppKit
 import Combine
 import Foundation
 import Testing
@@ -65,6 +66,12 @@ private final class StubTerminalWallpaperController: TerminalWallpaperControllin
     private(set) var currentStatus: TerminalWallpaperStatus
     private(set) var startCount = 0
     var rejectStart = false
+    var upgradeDeferred = true
+    var sessionLocked = true
+    private(set) var deferredUpdateChecks = 0
+    private(set) var replacements = 0
+    private(set) var lockScreenReconciliations = 0
+    var statusProvider: (() -> TerminalWallpaperStatus)?
 
     init() {
         currentStatus = TerminalWallpaperStatus(
@@ -73,7 +80,15 @@ private final class StubTerminalWallpaperController: TerminalWallpaperControllin
         )
     }
 
-    func status() throws -> TerminalWallpaperStatus { currentStatus }
+    func status() throws -> TerminalWallpaperStatus { statusProvider?() ?? currentStatus }
+    func reconcileLockScreenIfRunning() throws { lockScreenReconciliations += 1 }
+    func reconcileDeferredRuntimeUpdateIfRunning() throws -> Bool {
+        deferredUpdateChecks += 1
+        guard upgradeDeferred, !sessionLocked else { return false }
+        upgradeDeferred = false
+        replacements += 1
+        return true
+    }
     func ensureCanStart() throws {
         if rejectStart { throw TerminalWallpaperControllerError.videoWallpaperAlreadyRunning }
     }
@@ -107,6 +122,90 @@ private final class StubTerminalWallpaperController: TerminalWallpaperControllin
         currentStatus.config = config
         return currentStatus
     }
+}
+
+@Test(arguments: [false, true]) @MainActor
+func terminalDeferredUpgradeRetriesWhenTheExistingProcessUnlocksWithoutAGUIReopen(missingWakeNotification: Bool) async throws {
+    let controller = StubTerminalWallpaperController()
+    _ = try controller.start(config: .defaultConfig)
+    let events = NotificationCenter()
+    let viewModel = TerminalWallpaperViewModel(controller: controller, resolveExecutable: { _ in nil },
+        sessionEventCenter: events, runtimeRecoveryInterval: 0.05)
+    events.post(name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
+    let deadline = Date().addingTimeInterval(3)
+    while controller.deferredUpdateChecks == 0 {
+        try #require(Date() < deadline)
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(controller.replacements == 0)
+    controller.sessionLocked = false
+    if !missingWakeNotification { events.post(name: NSWorkspace.didWakeNotification, object: nil) }
+    while controller.replacements == 0 {
+        try #require(Date() < deadline)
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    for _ in 0..<5 { viewModel.refresh(); try await Task.sleep(for: .milliseconds(20)) }
+    #expect(controller.replacements == 1)
+    #expect(controller.startCount == 1)
+}
+
+@Test @MainActor
+func terminalDeferredUpgradeDiscardsAnInflightStoppedSnapshotWithoutRearmingTwice() async throws {
+    let controller = StubTerminalWallpaperController()
+    _ = try controller.start(config: .defaultConfig)
+    let running = try controller.status()
+    let events = NotificationCenter()
+    let viewModel = TerminalWallpaperViewModel(controller: controller, resolveExecutable: { _ in nil },
+        sessionEventCenter: events, runtimeRecoveryInterval: 0)
+    let deadline = Date().addingTimeInterval(3)
+    while controller.lockScreenReconciliations == 0 {
+        try #require(Date() < deadline)
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    let initialReconciliations = controller.lockScreenReconciliations
+    let started = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+    defer { release.signal() }
+    let lock = NSLock()
+    var nextStatusIsStale = true
+    controller.statusProvider = {
+        let stale = lock.withLock {
+            let stale = nextStatusIsStale
+            nextStatusIsStale = false
+            return stale
+        }
+        if stale {
+            started.signal()
+            _ = release.wait(timeout: .now() + 3)
+            var snapshot = running
+            snapshot.running = false
+            return snapshot
+        }
+        return running
+    }
+    viewModel.refresh()
+    while started.wait(timeout: .now()) != .success {
+        try #require(Date() < deadline)
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    controller.sessionLocked = false
+    events.post(name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
+    while controller.replacements == 0 {
+        try #require(Date() < deadline)
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    release.signal()
+    while viewModel.statusRefreshInFlight {
+        try #require(Date() < deadline)
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(viewModel.status.running, "The old terminate/launch snapshot cannot overwrite a completed upgrade")
+    viewModel.refresh()
+    while viewModel.statusRefreshInFlight {
+        try #require(Date() < deadline)
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(controller.replacements == 1 && controller.lockScreenReconciliations == initialReconciliations)
+    #expect(viewModel.status.running)
 }
 
 @Test @MainActor

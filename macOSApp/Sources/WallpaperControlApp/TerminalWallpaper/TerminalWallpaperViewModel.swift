@@ -1,4 +1,5 @@
 import AuraTerminalWallpaperCore
+import AppKit
 import Foundation
 import Combine
 import OSLog
@@ -145,6 +146,9 @@ final class TerminalWallpaperViewModel: ObservableObject {
     private(set) var statusRefreshInFlight = false
     private var statusRefreshGeneration = 0
     private var agentStartObserver: NotificationObserverLifetime?
+    private var runtimeRecoveryObservers: [NotificationObserverLifetime] = []
+    private var runtimeRecoveryTimer: ScheduledTimerLifetime?
+    private var runtimeRecoveryTask: Task<Void, Never>?
     private var previewConfigPersistence: AnyCancellable?
     private var scaleUpdateTask: Task<Void, Never>?
     private var pendingScaleMode: TerminalScaleMode?
@@ -161,6 +165,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
         packageProvider: any TerminalAnimationPackageProviding = SystemTerminalAnimationPackageProvider.shared,
         programSearchProvider: (any TerminalProgramSearchProviding)? = nil,
         animationResolver: any TerminalProgramAnimationResolving = SystemTerminalProgramAnimationResolver.shared,
+        sessionEventCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+        runtimeRecoveryInterval: TimeInterval = 5,
         previewReady: @escaping @MainActor (TerminalWallpaperConfig, UUID) async throws -> Void = { _, _ in
             throw TerminalWallpaperControllerError.unavailable("Preview readiness is unavailable.")
         }
@@ -229,6 +235,26 @@ final class TerminalWallpaperViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }, center: DistributedNotificationCenter.default())
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification,
+                     NSWorkspace.sessionDidBecomeActiveNotification] {
+            runtimeRecoveryObservers.append(NotificationObserverLifetime(sessionEventCenter.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.reconcileDeferredRuntimeUpdate() }
+            }, center: sessionEventCenter))
+        }
+        let distributed = DistributedNotificationCenter.default()
+        runtimeRecoveryObservers.append(NotificationObserverLifetime(distributed.addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.reconcileDeferredRuntimeUpdate() }
+        }, center: distributed))
+        if runtimeRecoveryInterval > 0 {
+            runtimeRecoveryTimer = ScheduledTimerLifetime(Timer.scheduledTimer(withTimeInterval: runtimeRecoveryInterval,
+                repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.reconcileDeferredRuntimeUpdate() }
+            })
+        }
         // Status polling, search and progress are not configuration edits.
         // Coalesce actual edits before scheduling persistence on the main actor.
         previewConfigPersistence = configurationEdits
@@ -483,7 +509,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     func refresh() {
-        guard !isBusy, scaleUpdateTask == nil, !statusRefreshInFlight else { return }
+        guard !isBusy, scaleUpdateTask == nil, runtimeRecoveryTask == nil, !statusRefreshInFlight else { return }
         statusRefreshInFlight = true
         let generation = statusRefreshGeneration
         let controller = controller
@@ -494,10 +520,11 @@ final class TerminalWallpaperViewModel: ObservableObject {
                     do { continuation.resume(returning: try controller.status()) }
                     catch { continuation.resume(throwing: error) }
                 }
-            }), generation == statusRefreshGeneration, !isBusy else { return }
+            }), generation == statusRefreshGeneration, !isBusy, runtimeRecoveryTask == nil else { return }
             let wasRunning = status.running
             apply(latest)
             if latest.running && !wasRunning { reconcileLockScreen() }
+            if latest.running { reconcileDeferredRuntimeUpdate() }
         }
     }
 
@@ -1013,6 +1040,38 @@ final class TerminalWallpaperViewModel: ObservableObject {
                     "Lock Screen selection failed: \(error.localizedDescription, privacy: .public)"
                 )
                 self?.errorMessage = "Lock Screen: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func reconcileDeferredRuntimeUpdate() {
+        guard status.running, !isBusy, runtimeRecoveryTask == nil else { return }
+        // Ignore status snapshots from the terminate/launch gap. Applying a
+        // transient Stopped state would trigger a second provider activation.
+        statusRefreshGeneration &+= 1
+        let controller = controller
+        runtimeRecoveryTask = Task { @MainActor [weak self] in
+            var refreshAfterRecovery = false
+            defer {
+                self?.runtimeRecoveryTask = nil
+                if refreshAfterRecovery { self?.refresh() }
+            }
+            do {
+                let replaced = try await withCheckedThrowingContinuation { continuation in
+                    DispatchQueue.global(qos: .utility).async {
+                        do { continuation.resume(returning: try controller.reconcileDeferredRuntimeUpdateIfRunning()) }
+                        catch { continuation.resume(throwing: error) }
+                    }
+                }
+                if replaced {
+                    refreshAfterRecovery = true
+                    if self?.errorMessage?.hasPrefix("Terminal runtime update:") == true { self?.errorMessage = nil }
+                }
+            } catch {
+                terminalWallpaperViewModelLogger.error(
+                    "Deferred Terminal runtime update failed: \(error.localizedDescription, privacy: .public)"
+                )
+                self?.errorMessage = "Terminal runtime update: \(error.localizedDescription)"
             }
         }
     }

@@ -6,8 +6,9 @@ import Testing
 private final class MockTerminalLockScreenCoordinator: TerminalLockScreenCoordinating, @unchecked Sendable {
     private(set) var activations = 0
     private(set) var restorations = 0
+    var onActivate: (() throws -> Void)?
     var onRestore: (() throws -> Void)?
-    func activate() throws { activations += 1 }
+    func activate() throws { activations += 1; try onActivate?() }
     func restore() throws { restorations += 1; try onRestore?() }
 }
 
@@ -381,4 +382,121 @@ func terminalHelperUpgradeDoesNotDropTheSurfaceOfALockedOrPausedSession(paused: 
     #expect(fixture.store.loadPID() == original)
     #expect(fixture.store.processIsAlive(pid: original))
     #expect(fixture.store.isPlaybackPaused == paused)
+}
+
+@Test(arguments: [false, true], [false, true])
+func terminalDeferredHelperUpgradeRetriesAfterUnlockOrResumeOnlyOnce(lockScreenEnabled: Bool, paused: Bool) throws {
+    let fixture = try TerminalControllerFixture("deferred-helper-upgrade")
+    defer { fixture.cleanup() }
+    try fixture.store.ensureDirectories()
+    try JSONSerialization.data(withJSONObject: ["video_path": "", "playback_speed": 1,
+        "show_on_lock_screen": lockScreenEnabled, "autostart": false])
+        .write(to: fixture.root.appendingPathComponent("config.json"))
+    let coordinator = MockTerminalLockScreenCoordinator()
+    var needsReplacement = false
+    var locked: Bool? = false
+    let controller = try NativeTerminalWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }, lockScreenVideoIsActive: { false }, lockScreenCoordinator: coordinator,
+        lockScreenFrameReadinessWaiter: { _, _ in needsReplacement = false; return true },
+        runningAgentNeedsReplacement: { needsReplacement }, sessionIsLocked: { locked })
+    let config = TerminalWallpaperConfig(command: .init(executable: "/bin/echo", arguments: ["retained source"]),
+        render: .init(columns: 80, rows: 24, fontSize: 14))
+    _ = try controller.start(config: config)
+    let original = try #require(fixture.store.loadPID())
+    let originalConfig = fixture.store.loadConfig()
+    let initialActivations = coordinator.activations
+    try fixture.store.saveHealth(.init(agentPID: original, executableFingerprint: "old-helper"))
+    needsReplacement = true
+    locked = paused ? false : true
+    try fixture.store.setPlaybackPaused(paused)
+    #expect(try !controller.reconcileDeferredRuntimeUpdateIfRunning())
+    #expect(fixture.store.loadPID() == original && coordinator.activations == initialActivations)
+    locked = nil
+    #expect(try !controller.reconcileDeferredRuntimeUpdateIfRunning())
+    #expect(fixture.store.loadPID() == original)
+    locked = false
+    try fixture.store.setPlaybackPaused(false)
+    #expect(try controller.reconcileDeferredRuntimeUpdateIfRunning())
+    let replacement = try #require(fixture.store.loadPID())
+    #expect(replacement != original && fixture.store.processIsAlive(pid: replacement))
+    #expect(fixture.store.loadConfig() == originalConfig)
+    #expect(!fixture.store.launchAgentEnabled())
+    // The disabled route has no frame waiter; emulate its new helper health.
+    needsReplacement = false
+    let afterUpgrade = coordinator.activations
+    for _ in 0..<5 { #expect(try !controller.reconcileDeferredRuntimeUpdateIfRunning()) }
+    #expect(fixture.store.loadPID() == replacement && coordinator.activations == afterUpgrade)
+    #expect(afterUpgrade == initialActivations + (lockScreenEnabled ? 1 : 0))
+}
+
+@Test(arguments: ["missing", "wrong-owner", "missing-fingerprint"])
+func terminalDeferredUpgradeWaitsForOwnedStartupHealth(invalid: String) throws {
+    let fixture = try TerminalControllerFixture("unknown-upgrade-health")
+    defer { fixture.cleanup() }
+    try fixture.store.ensureDirectories()
+    try JSONSerialization.data(withJSONObject: ["video_path": "", "playback_speed": 1, "show_on_lock_screen": false])
+        .write(to: fixture.root.appendingPathComponent("config.json"))
+    var needsReplacement = false
+    var checks = 0
+    let coordinator = MockTerminalLockScreenCoordinator()
+    let controller = try NativeTerminalWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }, lockScreenVideoIsActive: { false }, lockScreenCoordinator: coordinator,
+        runningAgentNeedsReplacement: { checks += 1; return needsReplacement }, sessionIsLocked: { false })
+    _ = try controller.start(config: .init(command: .init(executable: "/bin/echo")))
+    let original = try #require(fixture.store.loadPID())
+    needsReplacement = true
+    if invalid != "missing" {
+        try fixture.store.saveHealth(.init(agentPID: invalid == "wrong-owner" ? original + 1 : original,
+            executableFingerprint: invalid == "missing-fingerprint" ? nil : "old-helper"))
+    }
+    for _ in 0..<3 { #expect(try !controller.reconcileDeferredRuntimeUpdateIfRunning()) }
+    #expect(checks == 0 && fixture.store.loadPID() == original)
+    try fixture.store.saveHealth(.init(agentPID: original, executableFingerprint: "old-helper"))
+    #expect(try controller.reconcileDeferredRuntimeUpdateIfRunning())
+    let replacement = try #require(fixture.store.loadPID())
+    #expect(replacement != original && checks == 1)
+    needsReplacement = false
+    for _ in 0..<3 { #expect(try !controller.reconcileDeferredRuntimeUpdateIfRunning()) }
+    #expect(fixture.store.loadPID() == replacement && coordinator.activations == 0)
+}
+
+@Test func terminalDeferredUpgradeRetainsRearmUntilItsLateFrameAndProviderAreReady() throws {
+    let fixture = try TerminalControllerFixture("late-upgrade-rearm")
+    defer { fixture.cleanup() }
+    var needsReplacement = false
+    var frameReady = true
+    var locked = false
+    let coordinator = MockTerminalLockScreenCoordinator()
+    let controller = try NativeTerminalWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }, lockScreenVideoIsActive: { false }, lockScreenCoordinator: coordinator,
+        lockScreenFrameReadinessWaiter: { _, _ in frameReady },
+        runningAgentNeedsReplacement: { needsReplacement }, sessionIsLocked: { locked })
+    _ = try controller.start(config: .init(command: .init(executable: "/bin/echo", arguments: ["same source"])))
+    let original = try #require(fixture.store.loadPID())
+    try fixture.store.saveHealth(.init(agentPID: original, executableFingerprint: "old-helper"))
+    let initialActivations = coordinator.activations
+    needsReplacement = true
+    frameReady = false
+    #expect(throws: TerminalWallpaperControllerError.lockScreenFrameNotReady) {
+        try controller.reconcileDeferredRuntimeUpdateIfRunning()
+    }
+    let replacement = try #require(fixture.store.loadPID())
+    #expect(replacement != original && coordinator.activations == initialActivations)
+    needsReplacement = false
+    try fixture.store.saveHealth(.init(agentPID: replacement, executableFingerprint: "current-helper"))
+    // A matching fingerprint must not lose the pending presentation work.
+    frameReady = true
+    locked = true
+    #expect(try !controller.reconcileDeferredRuntimeUpdateIfRunning())
+    #expect(fixture.store.loadPID() == replacement && coordinator.activations == initialActivations)
+    locked = false
+    coordinator.onActivate = { throw CocoaError(.fileWriteUnknown) }
+    #expect(throws: CocoaError.self) { try controller.reconcileDeferredRuntimeUpdateIfRunning() }
+    #expect(fixture.store.loadPID() == replacement)
+    coordinator.onActivate = nil
+    #expect(try controller.reconcileDeferredRuntimeUpdateIfRunning())
+    let completedActivations = coordinator.activations
+    for _ in 0..<5 { #expect(try !controller.reconcileDeferredRuntimeUpdateIfRunning()) }
+    #expect(fixture.store.loadPID() == replacement && coordinator.activations == completedActivations)
+    #expect(fixture.store.loadConfig().command.arguments == ["same source"])
 }

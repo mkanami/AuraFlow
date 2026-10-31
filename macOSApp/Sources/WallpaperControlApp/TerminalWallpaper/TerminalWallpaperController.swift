@@ -7,6 +7,7 @@ import IOSurface
 
 protocol TerminalWallpaperControlling: Sendable {
     func reconcileLockScreenIfRunning() throws
+    func reconcileDeferredRuntimeUpdateIfRunning() throws -> Bool
     func ensureCanStart() throws
     func status() throws -> TerminalWallpaperStatus
     func start(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
@@ -46,6 +47,7 @@ private final class SystemTerminalLockScreenCoordinator: TerminalLockScreenCoord
 }
 
 extension TerminalWallpaperControlling {
+    func reconcileDeferredRuntimeUpdateIfRunning() throws -> Bool { false }
     func setPauseOnFullscreen(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
         throw TerminalWallpaperControllerError.unavailable("Fullscreen pause controls are unavailable.")
     }
@@ -92,6 +94,12 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     private let sessionIsLocked: () -> Bool?
     private let applicationStore: WallpaperRuntimeStore?
     private let autostartManager: AutostartManager?
+    private struct PendingRuntimeRearm {
+        let pid: Int
+        let startedAt: TimeInterval
+        let previousFrameRevision: String?
+    }
+    private var pendingRuntimeRearm: PendingRuntimeRearm?
     // Preview speed updates use a separate controller instance. Serialize them
     // with Start/Remove so a stale slider event cannot restore an old command.
     private static let runtimeMutationLock = NSRecursiveLock()
@@ -402,17 +410,56 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         guard store.processIsAlive(pid: store.loadPID()) else { return }
         guard store.lockScreenPlaybackEnabled else { return }
         try ensureCanStart()
-        if !store.isPlaybackPaused, sessionIsLocked() == false, runningAgentNeedsReplacement() {
+        let updated = try reconcileRuntimeUpdateIfRunning(requiresOwnedHealth: false)
+        if !updated, pendingRuntimeRearm == nil { try lockScreenCoordinator.activate() }
+    }
+
+    // A GUI opened while locked/paused may have installed a new helper file
+    // without replacing the running process. Retry that update after unlock;
+    // a healthy helper must not re-arm providers on every session poll.
+    func reconcileDeferredRuntimeUpdateIfRunning() throws -> Bool {
+        try reconcileRuntimeUpdateIfRunning(requiresOwnedHealth: true)
+    }
+
+    private func reconcileRuntimeUpdateIfRunning(requiresOwnedHealth: Bool) throws -> Bool {
+        lockScreenOperationLock.lock()
+        defer { lockScreenOperationLock.unlock() }
+        guard let pid = store.loadPID(), store.processIsAlive(pid: pid), !store.isPlaybackPaused,
+              sessionIsLocked() == false else { return false }
+        if let pending = pendingRuntimeRearm, pending.pid != pid { pendingRuntimeRearm = nil }
+        if pendingRuntimeRearm == nil {
+            // A fresh helper can publish its PID before its initial health.
+            // Missing health is not proof of an outdated executable.
+            if requiresOwnedHealth {
+                guard let health = store.loadHealth(), health.agentPID == pid,
+                      health.executableFingerprint?.isEmpty == false else { return false }
+            }
+            guard runningAgentNeedsReplacement() else { return false }
+            try ensureCanStart()
             let startedAt = Date().timeIntervalSince1970
             let previousRevision = Self.lockScreenFrameRevision(in: store)
             let config = store.loadConfig()
-            try applyLaunchAtLogin(config)
+            guard sessionIsLocked() == false, !store.isPlaybackPaused else { return false }
             try replaceRunningAgent(config: config)
-            guard lockScreenFrameReadinessWaiter(startedAt, previousRevision) else {
+            guard let replacementPID = store.loadPID(), store.processIsAlive(pid: replacementPID) else {
+                throw TerminalWallpaperControllerError.unavailable("The updated Terminal helper did not start.")
+            }
+            pendingRuntimeRearm = .init(pid: replacementPID, startedAt: startedAt, previousFrameRevision: previousRevision)
+        }
+        guard let pending = pendingRuntimeRearm else { return false }
+        try ensureCanStart()
+        if store.lockScreenPlaybackEnabled {
+            guard Self.hasReadySharedFrame(in: store, pid: pending.pid)
+                    || lockScreenFrameReadinessWaiter(pending.startedAt, pending.previousFrameRevision) else {
                 throw TerminalWallpaperControllerError.lockScreenFrameNotReady
             }
+            // A slow first frame or provider failure must remain retryable
+            // after the new helper's fingerprint already matches the file.
+            guard sessionIsLocked() == false, !store.isPlaybackPaused else { return false }
+            if store.lockScreenPlaybackEnabled { try lockScreenCoordinator.activate() }
         }
-        try lockScreenCoordinator.activate()
+        pendingRuntimeRearm = nil
+        return true
     }
 
     // The caller persists the shared checkbox before notifying the helper.
