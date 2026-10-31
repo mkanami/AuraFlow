@@ -51,7 +51,12 @@ func terminalRendererReenablesLockScreenWithoutRestartingCommand(animated: Bool)
         let requestedAt = Date().timeIntervalSince1970
         try setEnabled(true)
         try store.saveCommand(TerminalWallpaperRuntimeCommand(action: .update, config: config))
-        await pumpUntil { (store.loadLockScreenHeartbeat()?.updatedAt ?? 0) > requestedAt }
+        // The completed live IOSurface can renew its lease before the
+        // asynchronous PNG fallback finishes. Verify both publications.
+        await pumpUntil {
+            (store.loadLockScreenHeartbeat()?.updatedAt ?? 0) > requestedAt
+                && CGImageSourceCreateWithURL(store.lockScreenFrameURL as CFURL, nil) != nil
+        }
         try #require((store.loadLockScreenHeartbeat()?.updatedAt ?? 0) > requestedAt)
         let source = try #require(CGImageSourceCreateWithURL(store.lockScreenFrameURL as CFURL, nil))
         let frame = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))

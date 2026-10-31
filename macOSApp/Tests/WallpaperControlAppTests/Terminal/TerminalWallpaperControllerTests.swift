@@ -1,4 +1,5 @@
 import AuraTerminalWallpaperCore
+import AuraWallpaperCore
 import Foundation
 import Testing
 @testable import WallpaperControlApp
@@ -45,9 +46,19 @@ private struct TerminalControllerFixture {
     )
 }
 
-@Test func terminalControllerWritesOnlyItsOwnRuntimeNamespace() throws {
+@Test(arguments: [false, true])
+func terminalControllerKeepsRuntimeConfigSeparateFromSharedLoginSelection(existingVideoConfig: Bool) throws {
     let fixture = try TerminalControllerFixture("isolated-store")
     defer { fixture.cleanup() }
+    let applicationStore = WallpaperRuntimeStore(appSupportURL: fixture.root,
+        launchAgentURL: fixture.root.appendingPathComponent("LaunchAgents/video.plist"))
+    var expectedSharedConfig = applicationStore.loadConfig()
+    if existingVideoConfig {
+        expectedSharedConfig = .init(video_path: "/fixtures/previous-video.mp4", playback_speed: 1.25,
+            volume: 0.4, autostart: false, blend_interpolation: true, pause_on_fullscreen: false,
+            show_on_lock_screen: true, scale_mode: "fit", login_wallpaper_runtime: .video)
+        try applicationStore.saveConfig(expectedSharedConfig)
+    }
     let controller = try NativeTerminalWallpaperController(
         store: fixture.store,
         helperURL: fixture.helperURL,
@@ -64,9 +75,11 @@ private struct TerminalControllerFixture {
     #expect(fixture.store.loadConfig().command.executable == "/bin/echo")
     #expect(fixture.store.loadCommand()?.action == .start)
     #expect(FileManager.default.fileExists(atPath: fixture.store.configURL.path))
-    #expect(!FileManager.default.fileExists(
-        atPath: fixture.store.appSupportURL.deletingLastPathComponent().appendingPathComponent("config.json").path
-    ))
+    expectedSharedConfig.login_wallpaper_runtime = .terminal
+    #expect(applicationStore.loadConfig() == expectedSharedConfig,
+        "Only the applied login engine may change in the shared configuration; preserve all video preferences")
+    #expect(!FileManager.default.fileExists(atPath: applicationStore.commandURL.path),
+        "Terminal commands must stay in the Terminal runtime namespace")
 
     _ = try controller.stop()
     #expect(fixture.store.processIsAlive(pid: fixture.store.loadPID()) == false)
