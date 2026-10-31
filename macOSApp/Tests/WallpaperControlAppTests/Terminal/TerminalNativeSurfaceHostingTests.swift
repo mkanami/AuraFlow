@@ -85,6 +85,8 @@ struct TerminalNativeSurfaceHostingTests {
         presentation.start()
         await settleTerminalNativePresentation()
         #expect(starts == 0)
+        let warmLayer = driver.layers.last
+        let warmLayerCount = driver.layers.count
         if automatic {
             saverRunning = true
             presentation.handleScreenSaverNotification(true)
@@ -95,6 +97,8 @@ struct TerminalNativeSurfaceHostingTests {
         presentation.handleLockNotification(true)
         await settleTerminalNativePresentation()
         #expect(starts == (automatic ? 0 : 1))
+        #expect(driver.layers.count == warmLayerCount && driver.layers.last === warmLayer,
+            "The live Idle display must be reused at lock; retiring its host delays loginwindow's first source choice")
         presentation.handleScreenSaverNotification(true)
         await settleTerminalNativePresentation()
         #expect(try desktop().isEqual(aura), "A saver-start notification must not withdraw the locked Desktop source")
@@ -112,6 +116,11 @@ struct TerminalNativeSurfaceHostingTests {
         }
         #expect(try desktop().isEqual(aura))
         #expect(starts == (automatic ? 0 : 1), "Retaining the source must not restart the saver")
+        presentation.recoverAfterSystemChange()
+        await settleTerminalNativePresentation()
+        #expect(driver.layers.count == layers + 1 && liveLayer?.superlayer == nil,
+            "A real wake still rebuilds the native display, unlike temporary Desktop route promotion")
+        #expect(starts == (automatic ? 0 : 1))
         locked = false
         saverRunning = false
         presentation.handleLockNotification(false)

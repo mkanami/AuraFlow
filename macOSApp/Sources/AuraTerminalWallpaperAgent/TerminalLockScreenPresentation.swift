@@ -3,6 +3,7 @@ import AuraTerminalWallpaperCore
 import AuraWallpaperCore
 import CoreGraphics
 import Darwin
+import notify
 import OSLog
 
 /// A session notification alone is not proof of a lock (launch and fast user
@@ -37,6 +38,11 @@ final class TerminalLockScreenPresentation {
     private var systemRecoveryPending = false
     private var restartSaverWhenReady = false
     private var requestedPresentationState: Bool?
+    private var lockConfirmationTask: Task<Void, Never>?
+    private var lockConfirmationGeneration: UInt64 = 0
+    private let shieldNotificationNames: [String]
+    private var shieldNotificationTokens: [Int32] = []
+    private let shieldQueue = DispatchQueue(label: "com.andrijvergeles.auraflow.terminal-lock-shield", qos: .userInitiated)
     private let saverActivity = SaverActivity()
     private var playbackActive = false
     private var lastSaverCheck: TimeInterval = -.infinity
@@ -99,7 +105,8 @@ final class TerminalLockScreenPresentation {
         displaysProvider: @escaping @MainActor () -> [TerminalLockScreenDisplay] = { TerminalLockScreenDisplay.current() },
         orderNativeWindow: @escaping @MainActor (NSWindow) -> Void = { $0.orderFrontRegardless() },
         runtimeStore: TerminalWallpaperRuntimeStore = TerminalWallpaperRuntimeStore(),
-        routeCoordinator: ScreenSaverRouteRecovery? = nil
+        routeCoordinator: ScreenSaverRouteRecovery? = nil,
+        shieldNotificationNames: [String] = ["com.apple.shieldWindowRaised", "com.apple.sessionagent.shieldWindowRaised"]
     ) {
         self.sessionIsLocked = sessionIsLocked
         self.screenSaverIsRunning = screenSaverIsRunning ?? {
@@ -113,6 +120,7 @@ final class TerminalLockScreenPresentation {
         let hasNativePresentation = self.nativeDriver != nil
         self.displaysProvider = displaysProvider
         self.orderNativeWindow = orderNativeWindow
+        self.shieldNotificationNames = shieldNotificationNames
         let store = runtimeStore
         let recovery = routeCoordinator ?? ScreenSaverRouteRecovery(journalURL: store.appSupportURL.appendingPathComponent("screen-saver-wallpaper-store-backup.json"))
         self.routeRecovery = routeRecovery ?? {
@@ -146,6 +154,7 @@ final class TerminalLockScreenPresentation {
     func start() {
         guard !started else { return }
         started = true
+        cancelLockConfirmation()
         transition = TerminalLockTransition()
         notifiedLockState = nil
         retryAt = nil
@@ -169,6 +178,21 @@ final class TerminalLockScreenPresentation {
             object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.prepare(reloadRoute: true) }
+        }
+        // sessionagent sends a Darwin signal, not a distributed Foundation
+        // notification. Receive that early edge like the video engine does.
+        for name in shieldNotificationNames {
+            var token: Int32 = 0
+            let status = name.withCString { name in
+                notify_register_dispatch(name, &token, shieldQueue) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.started else { return }
+                        self.logger.notice("Terminal Darwin lock-shield signal received")
+                        self.handleLockNotification(true)
+                    }
+                }
+            }
+            if status == NOTIFY_STATUS_OK { shieldNotificationTokens.append(token) }
         }
         let center = DistributedNotificationCenter.default()
         for (name, running) in [("com.apple.screensaver.didstart", true), ("com.apple.screensaver.didstop", false)] {
@@ -225,6 +249,9 @@ final class TerminalLockScreenPresentation {
 
     func stop() {
         started = false
+        cancelLockConfirmation()
+        for token in shieldNotificationTokens { notify_cancel(token) }
+        shieldNotificationTokens.removeAll()
         timer?.invalidate()
         timer = nil
         if let observer { DistributedNotificationCenter.default().removeObserver(observer) }
@@ -276,6 +303,7 @@ final class TerminalLockScreenPresentation {
         systemRecoveryPending = false
         let retainConfirmedLock = transition.locked && notifiedLockState == true && uptime() < notificationExpiresAt
         let changed = transition.update(retainConfirmedLock ? true : confirmed)
+        if changed == true { cancelLockConfirmation() }
         if let changed { logger.notice("Terminal Lock Screen session locked=\(changed), systemSaver=\(self.saverActivity.running)") }
         let activityChanged = updatePlaybackActivity()
         if confirmed == false, !saverActivity.running { saverActivity.hasRun = false }
@@ -289,7 +317,10 @@ final class TerminalLockScreenPresentation {
             do {
                 if try routeRecovery() {
                     logger.notice("Reconciled Aura wallpaper routes for the current presentation")
-                    reload = true
+                    // The warm screen-saver display already owns Aura. A
+                    // temporary Desktop promotion must not retire that host
+                    // at the secure edge before the system saver can start.
+                    if !transition.locked { reload = true }
                 }
             } catch {
                 logger.error("Lock Screen route recovery deferred: \(error.localizedDescription, privacy: .public)")
@@ -362,6 +393,7 @@ final class TerminalLockScreenPresentation {
 
     func handleLockNotification(_ locked: Bool) {
         guard started else { return }
+        if !locked { cancelLockConfirmation() }
         // Unlock notifications can precede CGSession, including an unrelated
         // session-active callback during lid wake. Never release the secure
         // presentation until the system confirms that it is unlocked.
@@ -371,8 +403,41 @@ final class TerminalLockScreenPresentation {
         }
         notifiedLockState = locked
         notificationExpiresAt = uptime() + 1
-        guard !locked || sessionIsLocked() == true else { return }
+        if locked, sessionIsLocked() != true {
+            scheduleLockConfirmation()
+            return
+        }
         reconcileSession(forceSaverCheck: true)
+    }
+
+    private func cancelLockConfirmation() {
+        lockConfirmationGeneration &+= 1
+        lockConfirmationTask?.cancel()
+        lockConfirmationTask = nil
+    }
+
+    private func scheduleLockConfirmation() {
+        guard lockConfirmationTask == nil else { return }
+        lockConfirmationGeneration &+= 1
+        let generation = lockConfirmationGeneration
+        lockConfirmationTask = Task { @MainActor [weak self] in
+            defer {
+                if self?.lockConfirmationGeneration == generation { self?.lockConfirmationTask = nil }
+            }
+            // The shield can lead CGSession by a few milliseconds. A regular
+            // 250 ms poll is too late for loginwindow's initial source choice.
+            for _ in 0..<100 {
+                do { try await Task.sleep(for: .milliseconds(10)) }
+                catch { return }
+                guard let self, self.started, self.lockConfirmationGeneration == generation,
+                      self.notifiedLockState == true, self.uptime() < self.notificationExpiresAt else { return }
+                if self.sessionIsLocked() == true {
+                    self.logger.notice("Confirmed early Terminal lock before the fallback poll")
+                    self.reconcileSession()
+                    return
+                }
+            }
+        }
     }
 
     private func prepare(reloadRoute: Bool = false, restartSaverAfterPreparation: Bool = false) {
@@ -426,7 +491,9 @@ final class TerminalLockScreenPresentation {
             saverStartNeedsRetry = true
             return
         }
-        _ = refreshSaverActivity(force: true)
+        // Reconciliation already sampled the saver. Do not add another
+        // synchronous loginwindow round trip to the first secure frame.
+        _ = refreshSaverActivity(force: false)
         if saverActivity.running {
             saverStartNeedsRetry = false
             return

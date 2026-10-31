@@ -1,4 +1,5 @@
 import Foundation
+import notify
 import Testing
 @testable import AuraTerminalWallpaperAgent
 
@@ -8,6 +9,78 @@ import Testing
 
 @Suite(.serialized)
 struct TerminalAutomaticLockTests {
+    @Test(arguments: [false, true]) @MainActor
+    func darwinShieldSignalsUseTheSameConfirmedPresentationAndStopWithThePresenter(automatic: Bool) async throws {
+        let name = "com.andrijvergeles.auraflow.test-shield.\(UUID())"
+        var locked = false, running = automatic
+        var starts = 0
+        var preparations: [Bool] = []
+        let presentation = TerminalLockScreenPresentation(sessionIsLocked: { locked }, screenSaverIsRunning: { running },
+            startScreenSaver: { starts += 1; running = true; return 0 },
+            presentationPreparer: { locked, _ in preparations.append(locked) }, shieldNotificationNames: [name])
+        defer { presentation.stop() }
+        presentation.start()
+        await settleAutomaticLock()
+        #expect(notify_post(name) == NOTIFY_STATUS_OK)
+        try await Task.sleep(for: .milliseconds(10))
+        #expect(starts == 0)
+        locked = true
+        try await Task.sleep(for: .milliseconds(70))
+        #expect(preparations.last == true)
+        #expect(starts == (automatic ? 0 : 1))
+        presentation.stop()
+        let count = preparations.count
+        #expect(notify_post(name) == NOTIFY_STATUS_OK)
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(preparations.count == count && starts == (automatic ? 0 : 1))
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func anEarlyShieldSignalConfirmsTheSameLockBeforeTheSlowFallbackPoll(automatic: Bool) async throws {
+        var locked = false, running = false
+        var starts = 0
+        var preparations: [Bool] = []
+        let presentation = TerminalLockScreenPresentation(sessionIsLocked: { locked }, screenSaverIsRunning: { running },
+            startScreenSaver: { starts += 1; running = true; return 0 },
+            presentationPreparer: { locked, _ in preparations.append(locked) })
+        defer { presentation.stop() }
+        presentation.start()
+        await settleAutomaticLock()
+        if automatic {
+            running = true
+            presentation.handleScreenSaverNotification(true)
+            await settleAutomaticLock()
+        }
+        presentation.handleLockNotification(true)
+        await settleAutomaticLock()
+        #expect(starts == 0 && preparations.last == false, "A shield hint alone cannot authorize a secure presentation")
+        // The real shield signal precedes CGSession by several milliseconds.
+        // Do not wait 250 ms, by which time loginwindow has chosen Desktop.
+        locked = true
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(preparations.last == true)
+        #expect(starts == (automatic ? 0 : 1))
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func anUnconfirmedShieldCannotSurviveUnlockOrStop(stopped: Bool) async throws {
+        var locked = false
+        var starts = 0
+        var preparations: [Bool] = []
+        let presentation = TerminalLockScreenPresentation(sessionIsLocked: { locked }, screenSaverIsRunning: { false },
+            startScreenSaver: { starts += 1; return 0 },
+            presentationPreparer: { locked, _ in preparations.append(locked) })
+        defer { presentation.stop() }
+        presentation.start()
+        await settleAutomaticLock()
+        presentation.handleLockNotification(true)
+        if stopped { presentation.stop() }
+        else { presentation.handleLockNotification(false) }
+        locked = true
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(starts == 0 && !preparations.contains(true))
+    }
+
     @Test(arguments: [false, true, nil] as [Bool?]) @MainActor
     func restoredHelperStartsWithTheConfirmedLockedPresentation(saverRunning: Bool?) async {
         var preparations: [Bool] = []
