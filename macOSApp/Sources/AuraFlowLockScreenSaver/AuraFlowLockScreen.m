@@ -11,6 +11,14 @@
 #import <pwd.h>
 #import <unistd.h>
 #import <sys/stat.h>
+#import <os/log.h>
+
+static os_log_t AuraFlowSaverLog(void) {
+    static os_log_t log;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ log = os_log_create("com.andrijvergeles.auraflow", "lock-screen-saver"); });
+    return log;
+}
 
 static void *AuraFlowReadyForDisplayContext = &AuraFlowReadyForDisplayContext;
 static NSString * const AuraFlowRuntimeCommandNotification =
@@ -68,6 +76,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 @property(nonatomic) BOOL runtimePaused;
 @property(nonatomic) BOOL playerLayerPaused;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, AuraFlowJSONCacheEntry *> *jsonCache;
+@property(nonatomic) NSUInteger animationTicks;
 @end
 
 @implementation AuraFlowLockScreen
@@ -157,9 +166,12 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     if (!self.runtimePaused && !self.terminalModeActive && !self.webModeActive) {
         [self.player playImmediatelyAtRate:self.playbackRate];
     }
+    self.animationTicks = 0;
+    [self logPresentationEvent:"start"];
 }
 
 - (void)stopAnimation {
+    [self logPresentationEvent:"stop"];
     [self.player pause];
     [super stopAnimation];
 }
@@ -182,6 +194,17 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         [self syncRuntimePauseState];
         if (!self.runtimePaused) [self.player playImmediatelyAtRate:self.playbackRate];
     }
+    self.animationTicks += 1;
+    if (self.animationTicks == 1) [self logPresentationEvent:"first-tick"];
+}
+
+- (void)logPresentationEvent:(const char *)event {
+    os_log_with_type(AuraFlowSaverLog(), OS_LOG_TYPE_DEFAULT,
+        "Saver %{public}s: ticks=%{public}lu terminal=%{public}d raster=%{public}d metal=%{public}d window=%{public}d alpha=%{public}.2f bounds=%{public}.0fx%{public}.0f",
+        event, (unsigned long)self.animationTicks, self.terminalModeActive,
+        self.terminalLayer.contents != nil && !self.terminalLayer.hidden,
+        self.terminalSurfaceLayer != nil && !self.terminalSurfaceLayer.hidden,
+        self.window.isVisible, self.window.alphaValue, self.bounds.size.width, self.bounds.size.height);
 }
 
 - (void)runtimeCommandDidChange:(NSNotification *)notification {
@@ -363,7 +386,8 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     NSString *diagnostic = [NSString stringWithFormat:@"alive=%d readable=%d", alive, readable];
     if (![diagnostic isEqualToString:self.terminalDiagnosticState]) {
         self.terminalDiagnosticState = diagnostic;
-        NSLog(@"AuraFlow terminal saver %@ path=%@", diagnostic, frameURL.path);
+        os_log_with_type(AuraFlowSaverLog(), OS_LOG_TYPE_DEFAULT,
+            "Terminal source: alive=%{public}d raster-readable=%{public}d", alive, readable);
     }
     if (!alive) {
         self.terminalSurfaceLayer.hidden = YES;

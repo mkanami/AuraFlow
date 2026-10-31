@@ -113,7 +113,6 @@ final class TerminalLockScreenPresentation {
         self.displaysProvider = displaysProvider
         self.orderNativeWindow = orderNativeWindow
         let store = runtimeStore
-        let saverActivity = self.saverActivity
         let recovery = routeCoordinator ?? ScreenSaverRouteRecovery(journalURL: store.appSupportURL.appendingPathComponent("screen-saver-wallpaper-store-backup.json"))
         self.routeRecovery = routeRecovery ?? {
             // Injected presentation tests must never touch the live store.
@@ -123,7 +122,10 @@ final class TerminalLockScreenPresentation {
             }
             guard ownsSource() else { return false }
             let needsDesktopHandoff = {
-                sessionIsLocked() == true && !saverActivity.running && !saverActivity.hasRun
+                // loginwindow can keep requesting Desktop after the system
+                // saver reports running. That notification is not a completed
+                // secure-surface handoff. Retain Aura until confirmed unlock.
+                sessionIsLocked() == true
             }
             var changed = false
             if sessionIsLocked() != nil, !needsDesktopHandoff() {

@@ -66,7 +66,7 @@ struct TerminalNativeSurfaceHostingTests {
         let driver = RecordingTerminalNativeDriver()
         var saverRunning = false
         driver.onPresentation = { locked in
-            #expect((try? desktop().isEqual(locked && !saverRunning ? aura : user)) == true, "An existing system saver must keep the user's Desktop; a direct lock needs its source before starting")
+            #expect((try? desktop().isEqual(locked ? aura : user)) == true, "loginwindow must retain the live source for the whole confirmed lock, whether the saver was started manually or automatically")
         }
         var locked = false
         var starts = 0
@@ -96,7 +96,10 @@ struct TerminalNativeSurfaceHostingTests {
         #expect(starts == (automatic ? 0 : 1))
         presentation.handleScreenSaverNotification(true)
         await settleTerminalNativePresentation()
-        #expect(try desktop().isEqual(user))
+        #expect(try desktop().isEqual(aura), "A saver-start notification must not withdraw the locked Desktop source")
+        for _ in 0..<3 { presentation.pollSession(); await settleTerminalNativePresentation() }
+        #expect(try desktop().isEqual(aura))
+        #expect(starts == (automatic ? 0 : 1), "Retaining the source must not restart the saver")
         locked = false
         saverRunning = false
         presentation.handleLockNotification(false)
