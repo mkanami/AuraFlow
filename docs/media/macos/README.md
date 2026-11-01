@@ -21,3 +21,9 @@ This artwork presents several supported wallpaper sources together; it is a prom
 - Bottom right: [Sunset Reflections of the Matterhorn in the Alps](https://wall.alphacoders.com/big.php?i=720751), using the gallery's existing 2000 × 1333 photograph. The gallery lists this third-party photograph for private, personal use; its rights are separate from the project's source-code license.
 
 The unchanged top half and the shared playback panel reuse pixels from real AuraFlow screenshots. The montage uses cropping, resizing, and compositing, with no AI image generation.
+
+## Adaptive glass revision
+
+`auraflow-four-wallpapers-adaptive-glass.png` keeps the same wallpapers and layout. Both controls use separate backdrop sampling on each side of the vertical seam: the speed control is light over the anime and dark over CMatrix, while the playback panel is dark over the bonsai and tinted by the sunset on the right. Native screenshot glyphs and control outlines are reused, with a single speed thumb and a single playback panel.
+
+This is an image-only compositing adjustment. Verification checks that pixels outside the two control panels, image dimensions, and outer window transparency are unchanged.
