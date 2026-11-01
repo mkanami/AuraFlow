@@ -98,6 +98,32 @@ def test_pause_freezes_the_program_and_resume_keeps_the_same_pty():
         producer.close()
 
 
+@pytest.mark.parametrize("paused", [False, True])
+def test_pause_handles_a_command_exiting_between_poll_and_signal(monkeypatch, paused):
+    producer = TerminalProducer(
+        configuration('import time;print("ready",flush=True);time.sleep(10)')
+    )
+    try:
+        producer.wait_ready()
+        producer.set_paused(not paused)
+        calls = []
+
+        def vanished(group, requested_signal):
+            calls.append((group, requested_signal))
+            raise ProcessLookupError("The command exited after poll")
+
+        # Make the exit race deterministic without affecting cleanup or
+        # unrelated processes; the producer owns this process group only.
+        with producer.lock, monkeypatch.context() as patch:
+            patch.setattr("auraflow.terminal.os.killpg", vanished)
+            producer.set_paused(paused)
+        assert calls == [(producer.process.pid, signal.SIGSTOP if paused else signal.SIGCONT)]
+        assert producer.paused is paused
+        assert producer.latest_frame is not None
+    finally:
+        producer.close()
+
+
 def test_cleanup_targets_owned_process_group_and_preserves_unrelated_process():
     unrelated = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(10)"])
     producer = TerminalProducer(

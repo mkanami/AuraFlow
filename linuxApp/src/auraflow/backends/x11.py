@@ -14,7 +14,7 @@ class DesktopSurfaces:
     """Own desktop windows only. Never write a root pixmap or native wallpaper settings."""
 
     def __init__(self):
-        from Xlib import X, Xatom, display
+        from Xlib import X, Xatom, Xutil, display
         from Xlib.ext import shape
 
         self.display = display.Display()
@@ -59,7 +59,7 @@ class DesktopSurfaces:
                     atom = self.display.intern_atom
                     window.set_wm_name("AuraFlow Wallpaper")
                     window.set_wm_class("auraflow-wallpaper", "AuraFlow")
-                    window.set_wm_hints(input=0)
+                    window.set_wm_hints(flags=Xutil.InputHint, input=0)
                     window.change_property(
                         atom("_NET_WM_WINDOW_TYPE"),
                         Xatom.ATOM,

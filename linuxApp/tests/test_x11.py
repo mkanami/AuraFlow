@@ -16,7 +16,7 @@ pytestmark = [
 
 
 def test_native_surfaces_are_desktop_click_through_and_not_focusable():
-    from Xlib import Xatom
+    from Xlib import Xatom, Xutil
     from Xlib.ext import shape
 
     surfaces = DesktopSurfaces()
@@ -26,7 +26,9 @@ def test_native_surfaces_are_desktop_click_through_and_not_focusable():
         for window in surfaces.windows:
             prop = window.get_full_property(atom("_NET_WM_WINDOW_TYPE"), Xatom.ATOM)
             assert list(prop.value) == [atom("_NET_WM_WINDOW_TYPE_DESKTOP")]
-            assert window.get_wm_hints().input == 0
+            hints = window.get_wm_hints()
+            assert hints.flags & Xutil.InputHint
+            assert hints.input == 0
             assert window.shape_get_rectangles(shape.SK.Input).rectangles == []
             assert (
                 window.get_full_property(atom("_NET_WM_DESKTOP"), Xatom.CARDINAL).value[0]

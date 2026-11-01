@@ -268,7 +268,12 @@ class TerminalProducer:
     def set_paused(self, paused: bool) -> None:
         with self.lock:
             if self.process.poll() is None and self.paused != paused:
-                os.killpg(self.process.pid, signal.SIGSTOP if paused else signal.SIGCONT)
+                try:
+                    os.killpg(self.process.pid, signal.SIGSTOP if paused else signal.SIGCONT)
+                except ProcessLookupError:
+                    # A short-lived command can exit after poll(). Its final
+                    # frame remains available and can still be paused.
+                    pass
             self.paused = paused
 
     def set_speed(self, speed: float) -> None:
