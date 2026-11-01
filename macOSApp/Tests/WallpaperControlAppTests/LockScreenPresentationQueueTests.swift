@@ -11,17 +11,28 @@ private final class PresentationQueueFixture {
     var requests: [LockScreenPresentationQueue<Surface>.Request] = []
     var waiters: [CheckedContinuation<Surface, Error>] = []
     var applied: [UInt64] = []
+    var completed: Set<UInt64> = []
     var errors = 0
     lazy var queue: LockScreenPresentationQueue<Surface> = {
         let queue = LockScreenPresentationQueue<Surface> { [unowned self] request, _ in
             requests.append(request)
+            defer { completed.insert(request.id) }
             return try await withCheckedThrowingContinuation { waiters.append($0) }
         }
         queue.onApplied = { [unowned self] in applied.append($0.id) }
         queue.onFailure = { [unowned self] _, _ in errors += 1 }
         return queue
     }()
-    func settle() async { for _ in 0..<20 { await Task.yield() } }
+    func waitUntil(_ condition: () -> Bool) async throws {
+        // A fixed number of yields does not guarantee worker progress on CI.
+        // Wait for the observed state, but fail if the queue stops making progress.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while !condition() {
+            try #require(clock.now < deadline, "Presentation queue did not reach the expected state")
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
     func succeed(_ id: UInt64) { waiters.removeFirst().resume(returning: Surface(id)) }
     func fail() { waiters.removeFirst().resume(throwing: CocoaError(.fileReadUnknown)) }
 }
@@ -33,25 +44,25 @@ struct LockScreenPresentationQueueTests {
         let queue = fixture.queue
         defer { queue.stop() }
         let first = queue.request(locked: true)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.requests.last?.id == first }
         fixture.succeed(first)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.applied.last == first }
         weak var retained = queue.surface
         #expect(retained != nil)
 
-        queue.request(locked: true, reloadRoute: true)
-        await fixture.settle()
+        let failed = queue.request(locked: true, reloadRoute: true)
+        try await fixture.waitUntil { fixture.requests.last?.id == failed }
         #expect(queue.surface === retained)
         fixture.fail()
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.errors == 1 }
         #expect(queue.surface === retained)
         #expect(fixture.errors == 1)
 
         let replacement = queue.request(locked: true, reloadRoute: true)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.requests.last?.id == replacement }
         #expect(queue.surface === retained)
         fixture.succeed(replacement)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.applied.last == replacement }
         #expect(queue.surface?.id == replacement)
         #expect(retained == nil)
     }
@@ -61,14 +72,13 @@ struct LockScreenPresentationQueueTests {
         let queue = fixture.queue
         defer { queue.stop() }
         let idle = queue.request(locked: false)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.requests.last?.id == idle }
         queue.request(locked: true, reloadRoute: true)
         queue.request(locked: false)
         let lock = queue.request(locked: true)
-        await fixture.settle()
         #expect(fixture.requests.count == 1)
         fixture.succeed(idle)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.requests.last?.id == lock }
         #expect(queue.surface == nil)
         #expect(fixture.applied.isEmpty)
         #expect(fixture.requests.count == 2)
@@ -79,50 +89,50 @@ struct LockScreenPresentationQueueTests {
         // assertion bound to the previous saver, even when coalesced.
         #expect(latest.reloadRoute)
         fixture.succeed(lock)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.applied.last == lock }
         #expect(fixture.applied == [lock])
         #expect(queue.surface?.id == lock)
     }
 
-    @Test @MainActor func lateCompletionAfterStopCannotReviveSurfaceOrClearRestartedWorker() async {
+    @Test @MainActor func lateCompletionAfterStopCannotReviveSurfaceOrClearRestartedWorker() async throws {
         let fixture = PresentationQueueFixture()
         let queue = fixture.queue
         let stale = queue.request(locked: true)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.requests.last?.id == stale }
         queue.stop()
         let current = queue.request(locked: false)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.requests.last?.id == current }
         fixture.succeed(stale)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.completed.contains(stale) }
         #expect(queue.surface == nil)
         #expect(fixture.applied.isEmpty)
         fixture.succeed(current)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.applied.last == current }
         #expect(queue.surface?.id == current)
         #expect(fixture.applied == [current])
         queue.stop()
     }
 
-    @Test @MainActor func lockUnlockWakeStressKeepsLastSurfaceUntilFinalRequestCompletes() async {
+    @Test @MainActor func lockUnlockWakeStressKeepsLastSurfaceUntilFinalRequestCompletes() async throws {
         let fixture = PresentationQueueFixture()
         let queue = fixture.queue
         defer { queue.stop() }
         var committed = queue.request(locked: false)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.requests.last?.id == committed }
         fixture.succeed(committed)
-        await fixture.settle()
+        try await fixture.waitUntil { fixture.applied.last == committed }
         for _ in 0..<1_000 {
             let stale = queue.request(locked: false, reloadRoute: true)
-            await fixture.settle()
+            try await fixture.waitUntil { fixture.requests.last?.id == stale }
             queue.request(locked: true)
             queue.request(locked: false)
             let latest = queue.request(locked: true, reloadRoute: true)
             #expect(queue.surface?.id == committed)
             fixture.succeed(stale)
-            await fixture.settle()
+            try await fixture.waitUntil { fixture.requests.last?.id == latest }
             #expect(queue.surface?.id == committed)
             fixture.succeed(latest)
-            await fixture.settle()
+            try await fixture.waitUntil { fixture.applied.last == latest }
             #expect(queue.surface?.id == latest)
             committed = latest
         }

@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/aura-ui-glass.png" width="900" alt="AuraFlow wallpaper preview and controls" />
+  <img src="docs/media/macos/auraflow-four-wallpapers-native-glass.png" width="900" alt="AuraFlow preview with anime, CMatrix, golden bonsai, and alpine wallpapers beneath one native interface" />
 </p>
 
 ## Platforms
