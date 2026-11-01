@@ -44,6 +44,8 @@ struct TerminalAutomaticLockTests {
             startScreenSaver: { starts += 1; running = true; return 0 },
             presentationPreparer: { locked, _ in preparations.append(locked) })
         defer { presentation.stop() }
+        let clock = ContinuousClock()
+        let fallbackPollDeadline = clock.now.advanced(by: .milliseconds(250))
         presentation.start()
         await settleAutomaticLock()
         if automatic {
@@ -55,9 +57,13 @@ struct TerminalAutomaticLockTests {
         await settleAutomaticLock()
         #expect(starts == 0 && preparations.last == false, "A shield hint alone cannot authorize a secure presentation")
         // The real shield signal precedes CGSession by several milliseconds.
-        // Do not wait 250 ms, by which time loginwindow has chosen Desktop.
+        // Await the actual presentation, allowing for CI timer coalescing,
+        // but require completion before the first 250 ms fallback poll.
         locked = true
-        try await Task.sleep(for: .milliseconds(60))
+        while (preparations.last != true || starts != (automatic ? 0 : 1)), clock.now < fallbackPollDeadline {
+            try await Task.sleep(for: .milliseconds(2), tolerance: .zero)
+        }
+        #expect(clock.now < fallbackPollDeadline, "The shield must confirm and present the lock before polling can do so")
         #expect(preparations.last == true)
         #expect(starts == (automatic ? 0 : 1))
     }
