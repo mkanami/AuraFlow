@@ -5,7 +5,7 @@
 <h1 align="center">AuraFlow</h1>
 
 <p align="center">
-  Native live wallpapers for the macOS Desktop and Lock Screen.
+  Native live wallpapers for macOS, with a separate Linux port in development.
 </p>
 
 <p align="center">
@@ -24,6 +24,18 @@
 <p align="center">
   <img src="docs/aura-ui-glass.png" width="900" alt="AuraFlow wallpaper preview and controls" />
 </p>
+
+## Platforms
+
+| Platform | Source and setup | Status |
+| --- | --- | --- |
+| macOS | [`macOSApp/`](macOSApp/) and the instructions below | Packaged app for Desktop and Lock Screen. |
+| Linux | [`linuxApp/`](linuxApp/README.md) | Independent Python/Qt port with X11 and selected Wayland backends; under development. |
+
+Linux has its own dependencies, installer, tests, version, and
+[CI workflow](https://github.com/mkanami/AuraFlow/actions/workflows/linux.yml).
+Continue Linux development inside `linuxApp/`; its README describes setup,
+supported sessions, and remaining features. The sections below describe macOS.
 
 ## Highlights
 

@@ -2,7 +2,9 @@ name: Tests
 
 on:
   push:
+    paths-ignore: ['linuxApp/**', '.github/workflows/linux.yml']
   pull_request:
+    paths-ignore: ['linuxApp/**', '.github/workflows/linux.yml']
   workflow_call:
   workflow_dispatch:
     inputs:
