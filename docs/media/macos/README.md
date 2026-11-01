@@ -27,3 +27,9 @@ The unchanged top half and the shared playback panel reuse pixels from real Aura
 `auraflow-four-wallpapers-adaptive-glass.png` keeps the same wallpapers and layout. Both controls use separate backdrop sampling on each side of the vertical seam: the speed control is light over the anime and dark over CMatrix, while the playback panel is dark over the bonsai and tinted by the sunset on the right. Native screenshot glyphs and control outlines are reused, with a single speed thumb and a single playback panel.
 
 This is an image-only compositing adjustment. Verification checks that pixels outside the two control panels, image dimensions, and outer window transparency are unchanged.
+
+## Clear lower-panel revision
+
+`auraflow-four-wallpapers-clear-glass.png` retains the approved speed control pixel for pixel. The lower panel uses a clear refractive backdrop, a tight specular rim, and sharper native controls. Its terminal half retains the actual native dark controls; the photo half uses a light appearance with crisp dark lettering and individually defined transparent buttons.
+
+Image checks verify that changes are limited to the lower panel and its shadow, preserving all wallpapers, their arrangement, and the outer window transparency.
