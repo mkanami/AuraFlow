@@ -33,3 +33,11 @@ This is an image-only compositing adjustment. Verification checks that pixels ou
 `auraflow-four-wallpapers-clear-glass.png` retains the approved speed control pixel for pixel. The lower panel uses a clear refractive backdrop, a tight specular rim, and sharper native controls. Its terminal half retains the actual native dark controls; the photo half uses a light appearance with crisp dark lettering and individually defined transparent buttons.
 
 Image checks verify that changes are limited to the lower panel and its shadow, preserving all wallpapers, their arrangement, and the outer window transparency.
+
+## Native lower-panel capture
+
+`auraflow-four-wallpapers-native-glass.png` replaces the reconstructed lower panel with an actual screenshot of AuraFlow's active window. The four-source montage was opened in the app's preview without applying it as wallpaper. The system Liquid Glass, its refraction, buttons, and lettering are captured pixels, with no material reconstruction, sharpening, or recoloring. The approved speed control and all pixels outside the lower-panel capture are retained exactly.
+
+`auraflow-native-glass-detail.png` is an unaltered crop of the right side of that native window screenshot, showing the Change Wallpaper and Wallpaper Catalog controls over the Matterhorn photograph.
+
+Pixel checks verify that the inserted panel matches the decoded screenshot exactly, the speed control is unchanged, and the full image retains its dimensions and outer transparency. The app's previous media preview was restored after capture; wallpaper playback and settings were not changed.
