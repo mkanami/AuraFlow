@@ -392,6 +392,7 @@ struct ContentView: View {
                 posterURL: viewModel.previewPosterURL,
                 posterRefererURL: viewModel.previewPosterRefererURL,
                 posterTitle: viewModel.previewPosterTitle,
+                effects: viewModel.wallpaperEffects,
                 onVideoReadyForDisplayChange: { player, isReady in
                     viewModel.previewReadyForDisplayDidChange(
                         player: player,
@@ -626,11 +627,14 @@ struct PreviewLayer: View {
     let posterURL: URL?
     let posterRefererURL: URL?
     let posterTitle: String
+    var effects = WallpaperEffectsSettings()
     let onVideoReadyForDisplayChange: (AVPlayer?, Bool) -> Void
 
     var body: some View {
         GeometryReader { viewport in
-            previewContent(in: viewport.size)
+            WallpaperEffectsPreview(settings: effects) {
+                previewContent(in: viewport.size)
+            }
                 .frame(width: viewport.size.width, height: viewport.size.height)
                 .background(Color.black)
         }
@@ -822,6 +826,10 @@ struct SettingsPopupCard: View {
                 .disabled(!viewModel.canToggleScaleMode)
                 .scaleAlgorithmGlassControl()
             }
+
+            Divider().padding(.vertical, 4)
+
+            WallpaperEffectsSettingsSection(viewModel: viewModel)
 
             Divider().padding(.vertical, 4)
 

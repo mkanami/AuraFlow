@@ -48,6 +48,7 @@ supported sessions, and remaining features. The sections below describe macOS.
     <tr><td><strong>Terminal wallpapers</strong></td><td>Run CLI animations, static compositions, and terminal dashboards as wallpapers.</td></tr>
     <tr><td><strong>Playback controls</strong></td><td>Change speed, pause, resume, and automatically pause for fullscreen apps.</td></tr>
     <tr><td><strong>Scaling</strong></td><td>Use one Fill / Fit / Stretch control for the installed media or terminal wallpaper.</td></tr>
+    <tr><td><strong>Wallpaper effects</strong></td><td>Add cursor parallax, glow, lens flare, reflections, bloom, blur, sparkles, and rain with live controls.</td></tr>
     <tr><td><strong>Launch at login</strong></td><td>Restore your selected wallpaper automatically when you sign in.</td></tr>
     <tr><td><strong>Safe removal</strong></td><td>Stop AuraFlow and restore the previous macOS wallpaper with one action.</td></tr>
   </tbody>
@@ -95,6 +96,21 @@ at login** controls. Scale immediately updates the installed media or terminal
 wallpaper, even when a different source is selected in the preview. Without an
 installed wallpaper, it updates the selected preview. The default is **Fill**;
 Lock Screen playback is enabled by default. Scale is unavailable for web projects.
+
+Expand **Wallpaper Effects** in Playback Settings to enable effects for the
+Desktop and main preview. Effects work with images, videos, terminal wallpapers,
+and web projects. Choose **Subtle**, **Cinematic**, or **Dreamy**, or adjust each
+effect separately. Controls include depth, smoothing, light color, glow size,
+blur, bloom, particle density, rain speed, and wind. **React to cursor** follows
+the pointer on its display; turn it off for ambient motion. Flat media uses
+simulated depth: the wallpaper, light, and foreground particles move at different
+rates, without separating objects in the source image.
+
+Effects are off by default and preferences survive restarting AuraFlow. They
+pause when playback is paused, the desktop is hidden, the session is locked,
+the display sleeps, or Low Power Mode / Reduce Motion is enabled. Lock Screen
+frames keep their original appearance. Effects do not change media files,
+Launch at Login, or the saved macOS wallpaper.
 
 When launch at login is disabled or playback fails to start, AuraFlow restores
 the user's macOS wallpaper for the Desktop and Lock Screen. A separate recovery

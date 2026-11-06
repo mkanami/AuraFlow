@@ -146,7 +146,12 @@ final class WebWallpaperAgent: NSObject, NSApplicationDelegate {
                 self?.displayErrors[id] = error; self?.publish()
             }
             view.onWarning = { message in NSLog("AuraFlow web: %@", message) }
-            window.contentView = view
+            let effects = WallpaperEffectsView(content: view)
+            effects.playbackIsPaused = { [weak self] in
+                guard let self else { return true }
+                return self.paused || self.pausePending
+            }
+            window.contentView = effects
             windows[id] = window; views[id] = view
             window.orderFrontRegardless(); view.load(config)
         }

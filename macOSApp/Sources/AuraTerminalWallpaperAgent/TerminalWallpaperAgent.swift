@@ -464,7 +464,8 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
         windows.removeAll()
         let screens = config.behavior.allDisplays ? availableScreens : Array(availableScreens.prefix(1))
-        windows = screens.map { TerminalWallpaperWindow(screen: $0, device: metalDevice) }
+        let effectsStore = WallpaperEffectsStore(appSupportURL: store.appSupportURL.deletingLastPathComponent())
+        windows = screens.map { TerminalWallpaperWindow(screen: $0, device: metalDevice, effectsStore: effectsStore) }
         if let firstWindow = windows.first {
             let generation = displayGeneration
             firstWindow.onLockScreenFrame = { [weak self] bytes, width, height in

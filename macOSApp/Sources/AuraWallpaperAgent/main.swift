@@ -2114,7 +2114,12 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     }
                 })
             }
-            window.contentView = content
+            let effects = WallpaperEffectsView(content: content, store: WallpaperEffectsStore(appSupportURL: store.appSupportURL))
+            effects.playbackIsPaused = { [weak self] in
+                guard let self else { return true }
+                return self.manualPaused || self.autoPausedForFullscreen || self.sleeping
+            }
+            window.contentView = effects
 
             windows.append(window)
             if !manualPaused {

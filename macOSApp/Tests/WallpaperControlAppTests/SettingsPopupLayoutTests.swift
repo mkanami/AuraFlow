@@ -16,7 +16,7 @@ struct SettingsPopupLayoutTests {
         defer { window.orderOut(nil); window.close() }
         try await settle(hosting)
 
-        #expect(state.contentHeight > 300 && state.contentHeight < 520)
+        #expect(state.contentHeight > 300)
         #expect(abs(state.cardHeight - min(state.contentHeight, maximumHeight)) < 1)
         #expect(state.cardHeight <= maximumHeight)
     }
@@ -41,7 +41,30 @@ struct SettingsPopupLayoutTests {
         model.optimizationInProgress = false
         try await settle(hosting)
         #expect(abs(state.contentHeight - initialHeight) < 1)
-        #expect(abs(state.cardHeight - initialHeight) < 1)
+        #expect(abs(state.cardHeight - min(initialHeight, 520)) < 1)
+    }
+
+    @Test(arguments: [180.0, 520])
+    func expandedEffectsRemainScrollableAndResizeWhenDisabled(maximumHeight: Double) async throws {
+        let model = makeModel()
+        model.applyWallpaperEffectsPreset(.dreamy)
+        model.setWallpaperEffect(\.rainEnabled, true)
+        model.setWallpaperEffect(\.blurEnabled, true)
+        model.setWallpaperEffect(\.reflectionEnabled, true)
+        let state = SettingsLayoutState()
+        let hosting = NSHostingView(rootView: SettingsLayoutFixture(model: model, state: state,
+                                                                   maximumHeight: maximumHeight))
+        let window = makeWindow(hosting)
+        defer { window.close() }
+        try await settle(hosting)
+        let expandedHeight = state.contentHeight
+        #expect(expandedHeight > 900)
+        #expect(abs(state.cardHeight - maximumHeight) < 1)
+        model.setWallpaperEffect(\.enabled, false)
+        try await settle(hosting)
+        #expect(state.contentHeight < expandedHeight)
+        #expect(abs(state.cardHeight - min(state.contentHeight, maximumHeight)) < 1)
+        #expect(!window.isVisible)
     }
 
     private func makeModel() -> AppViewModel {
@@ -55,7 +78,7 @@ struct SettingsPopupLayoutTests {
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = hosting
-        window.makeKeyAndOrderFront(nil)
+        // Layout and preference measurement do not require ordering a real window on the user's desktop.
         return window
     }
 

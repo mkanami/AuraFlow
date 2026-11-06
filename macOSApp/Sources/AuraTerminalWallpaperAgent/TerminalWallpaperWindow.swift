@@ -1,11 +1,14 @@
 import AppKit
 import AuraTerminalRendering
 import AuraTerminalWallpaperCore
+import AuraWallpaperCore
 import Metal
 import MetalKit
 
 final class TerminalWallpaperWindow: NSWindow {
     private let terminalView: TerminalMetalView
+    private let effectsView: WallpaperEffectsView
+    private var effectsPaused = false
 
     var onLockScreenFrame: ((Data, Int, Int) -> Void)? {
         get { terminalView.onLockScreenFrame }
@@ -17,12 +20,13 @@ final class TerminalWallpaperWindow: NSWindow {
         set { terminalView.onSharedFrame = newValue }
     }
 
-    init(screen: NSScreen, device: MTLDevice) {
+    init(screen: NSScreen, device: MTLDevice, effectsStore: WallpaperEffectsStore = WallpaperEffectsStore()) {
         terminalView = TerminalMetalView(
             frame: NSRect(origin: .zero, size: screen.frame.size),
             logicalSize: screen.frame.size,
             device: device
         )
+        effectsView = WallpaperEffectsView(content: terminalView, store: effectsStore)
         super.init(
             contentRect: screen.frame,
             styleMask: [.borderless],
@@ -40,7 +44,8 @@ final class TerminalWallpaperWindow: NSWindow {
         hidesOnDeactivate = false
         canHide = false
         isExcludedFromWindowsMenu = true
-        contentView = terminalView
+        effectsView.playbackIsPaused = { [weak self] in self?.effectsPaused ?? true }
+        contentView = effectsView
     }
 
     func update(snapshot: TerminalGridSnapshot, configuration: TerminalRenderConfiguration,
@@ -54,6 +59,7 @@ final class TerminalWallpaperWindow: NSWindow {
     }
 
     func setDesktopPresentationPaused(_ paused: Bool) {
+        effectsPaused = paused
         terminalView.setDesktopPresentationPaused(paused)
     }
 

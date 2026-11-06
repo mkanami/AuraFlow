@@ -2204,6 +2204,7 @@ final class AppViewModel: ObservableObject {
     private var pendingLockScreenPlayback: Bool?
     private var lockScreenPlaybackTask: Task<Void, Never>?
     @Published var isSettingsOpen: Bool = false
+    @Published private(set) var wallpaperEffects = WallpaperEffectsSettings()
     @Published var isMonitoringOpen: Bool = false
     @Published var isTerminalWallpaperOpen: Bool = false
     @Published var monitoringSnapshot: WallpaperMonitoringSnapshot?
@@ -2768,6 +2769,7 @@ final class AppViewModel: ObservableObject {
             transferCoordinator: catalogTransferCoordinator
         )
         self.appSupportDirectoryURL = resolvedAppSupportURL
+        self.wallpaperEffects = WallpaperEffectsStore(appSupportURL: resolvedAppSupportURL).load()
         if let data = try? Data(contentsOf: resolvedAppSupportURL.appendingPathComponent("config.json")),
            let saved = try? JSONDecoder().decode(ControlConfig.self, from: data) {
             autostartEnabled = saved.autostart ?? false
@@ -4183,6 +4185,31 @@ final class AppViewModel: ObservableObject {
 
     func closeSettings() {
         isSettingsOpen = false
+    }
+
+    func setWallpaperEffect<Value>(_ key: WritableKeyPath<WallpaperEffectsSettings, Value>, _ value: Value) {
+        var settings = wallpaperEffects
+        settings[keyPath: key] = value
+        saveWallpaperEffects(settings)
+    }
+
+    func applyWallpaperEffectsPreset(_ preset: WallpaperEffectsPreset) {
+        saveWallpaperEffects(preset.settings)
+    }
+
+    func resetWallpaperEffects() {
+        saveWallpaperEffects(WallpaperEffectsSettings())
+    }
+
+    private func saveWallpaperEffects(_ settings: WallpaperEffectsSettings) {
+        let normalized = settings.normalized()
+        guard normalized != wallpaperEffects else { return }
+        do {
+            try WallpaperEffectsStore(appSupportURL: appSupportDirectoryURL).save(normalized)
+            wallpaperEffects = normalized
+        } catch {
+            alertMessage = "Could not save wallpaper effects: \(error.localizedDescription)"
+        }
     }
 
     func openMonitoring() {
