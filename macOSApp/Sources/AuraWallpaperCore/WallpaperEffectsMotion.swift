@@ -15,8 +15,21 @@ public struct WallpaperEffectsActivity: Equatable {
     public init() {}
 
     public var canAnimate: Bool {
-        windowVisible && sessionActive && !sleeping && !screenSaverActive
-            && sessionLocked == false && !playbackPaused && !reduceMotion && !lowPower
+        pauseReason == nil
+    }
+
+    public var framesPerSecond: Double { lowPower ? 30 : 60 }
+
+    public var pauseReason: String? {
+        if !windowVisible { return "hidden" }
+        if !sessionActive { return "inactiveSession" }
+        if sleeping { return "sleeping" }
+        if screenSaverActive { return "screenSaver" }
+        if sessionLocked == nil { return "unknownSession" }
+        if sessionLocked == true { return "locked" }
+        if playbackPaused { return "playbackPaused" }
+        if reduceMotion { return "reduceMotion" }
+        return nil
     }
 }
 
@@ -50,7 +63,7 @@ struct WallpaperEffectsMotion {
         time += dt * (0.15 + settings.ambientSpeed * 0.85)
         let target = settings.reactsToCursor ? (cursor ?? .zero)
             : CGPoint(x: sin(time * 0.7) * 0.65, y: cos(time * 0.53) * 0.55)
-        let response = 1 - exp(-dt / (0.035 + settings.smoothing * 0.65))
+        let response = 1 - exp(-dt / (0.015 + settings.smoothing * 0.1))
         pointer.x += (min(1, max(-1, target.x)) - pointer.x) * response
         pointer.y += (min(1, max(-1, target.y)) - pointer.y) * response
         let targetPresence = !settings.reactsToCursor || cursor != nil ? 1.0 : 0

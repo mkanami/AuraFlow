@@ -88,7 +88,7 @@ struct WallpaperEffectsSettingsSection: View {
                     Text("Parallax moves the wallpaper, distant light and foreground particles at different depths. Flat media uses simulated depth.")
                         .font(.caption).foregroundStyle(.secondary)
 
-                    Text("Effects rest during playback pauses, sleep, Low Power Mode and Reduce Motion. Lock Screen keeps the original wallpaper.")
+                    Text("Effects rest during playback pauses, sleep and Reduce Motion. Low Power Mode reduces effects to 30 fps. Lock Screen keeps the original wallpaper.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Reset effects") { viewModel.resetWallpaperEffects() }
                         .controlSize(.small)

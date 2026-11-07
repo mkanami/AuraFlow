@@ -2462,7 +2462,8 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 : nil,
             active_generation: lockScreenOnlyMode
                 ? lastLockScreenOnlyStatus.generation
-                : nil
+                : nil,
+            effects: windows.compactMap { ($0.contentView as? WallpaperEffectsView)?.status }
         )
         try? store.saveHealth(health)
     }

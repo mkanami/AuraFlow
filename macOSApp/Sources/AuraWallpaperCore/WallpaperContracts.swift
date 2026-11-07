@@ -165,6 +165,7 @@ public struct DaemonHealth: Codable, Equatable, Sendable {
     public var active_source_signature: String?
     public var applied_operation_id: UInt64?
     public var active_generation: UInt64?
+    public var effects: [WallpaperEffectsStatus]?
 
     public init(
         contract_version: Int? = AuraWallpaperContract.statusVersion,
@@ -200,7 +201,8 @@ public struct DaemonHealth: Codable, Equatable, Sendable {
         native_lock_state: String? = nil,
         active_source_signature: String? = nil,
         applied_operation_id: UInt64? = nil,
-        active_generation: UInt64? = nil
+        active_generation: UInt64? = nil,
+        effects: [WallpaperEffectsStatus]? = nil
     ) {
         self.contract_version = contract_version
         self.available = available
@@ -236,6 +238,7 @@ public struct DaemonHealth: Codable, Equatable, Sendable {
         self.active_source_signature = active_source_signature
         self.applied_operation_id = applied_operation_id
         self.active_generation = active_generation
+        self.effects = effects
     }
 }
 

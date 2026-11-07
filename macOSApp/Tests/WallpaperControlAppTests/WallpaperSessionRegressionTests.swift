@@ -1,6 +1,6 @@
 import AppKit
 import AVFoundation
-import AuraWallpaperCore
+@testable import AuraWallpaperCore
 import QuartzCore
 import Testing
 @testable import AuraWallpaperAgent
@@ -72,6 +72,32 @@ private final class WallpaperSessionFixture {
 // operation. The fixture never presents its wallpaper on the user's Desktop.
 @Suite(.serialized)
 struct HiddenLoginPlaybackTests {
+    @Test @MainActor
+    func installedDesktopAgentReceivesEffectsWithoutThePreviewOrPlaybackCommands() async throws {
+        let fixture = try WallpaperSessionFixture(presentWindow: { _, _ in })
+        defer { fixture.cleanup() }
+        let effectsStore = WallpaperEffectsStore(appSupportURL: fixture.root)
+        try effectsStore.save(WallpaperEffectsPreset.cinematic.settings)
+        let agent = try await fixture.start()
+        let views = agent.windows.compactMap { $0.contentView as? WallpaperEffectsView }
+        let view = try #require(views.first)
+        let player = agent.player
+        let command = fixture.store.loadCommand()
+        #expect(view.status.surface == "desktop" && view.settings == WallpaperEffectsPreset.cinematic.settings)
+        var settings = WallpaperEffectsPreset.subtle.settings
+        settings.parallaxAmount = 0.8
+        settings.flareEnabled = true
+        try effectsStore.save(settings)
+        let deadline = Date().addingTimeInterval(2)
+        while view.settings != settings, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(view.settings == settings)
+        agent.samplePlaybackHealth()
+        let status = try #require(fixture.store.loadHealth()?.effects?.first)
+        #expect(status.surface == "desktop" && status.enabled && status.pauseReason == "hidden")
+        #expect(agent.player === player && fixture.store.loadCommand() == command)
+        #expect(agent.windows.allSatisfy { !$0.isVisible })
+    }
+
     @Test @MainActor
     func loginBeforeDisplaysAreReadyRecoversAWindowWithoutRestartingTheDecoder() async throws {
         var displaysAvailable = false

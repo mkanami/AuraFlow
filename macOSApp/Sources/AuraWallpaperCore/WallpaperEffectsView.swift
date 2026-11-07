@@ -1,8 +1,10 @@
 import AppKit
+import OSLog
 import QuartzCore
 
 /// A click-through presentation wrapper. It never orders windows or changes system wallpaper or playback.
 public final class WallpaperEffectsView: NSView {
+    private static let logger = Logger(subsystem: "com.andrijvergeles.auraflow", category: "WallpaperEffects")
     public let wallpaperContent: NSView
     public var playbackIsPaused: () -> Bool = { false }
     private let store: WallpaperEffectsStore?
@@ -11,7 +13,7 @@ public final class WallpaperEffectsView: NSView {
     private let overlay = WallpaperEffectsOverlay()
     private(set) var settings = WallpaperEffectsSettings()
     private var motion = WallpaperEffectsMotion()
-    private var animationTimer: Timer?
+    private var frameClock: WallpaperEffectsFrameClock?
     private var statusTimer: Timer?
     private var lastFrameTime: CFTimeInterval?
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -19,7 +21,21 @@ public final class WallpaperEffectsView: NSView {
     private var suspensionHints = WallpaperEffectsSuspensionHints()
     private var filtersApplied = false
     private var presentationActive = false
-    var isAnimating: Bool { animationTimer != nil }
+    private var pauseReason: String? = "hidden"
+    private var renderedFrames: UInt64 = 0
+    private var loggedActivity: String?
+    var isAnimating: Bool { frameClock != nil }
+
+    public var status: WallpaperEffectsStatus {
+        let transform = motionContainer.layer?.affineTransform() ?? .identity
+        return WallpaperEffectsStatus(surface: isPreview ? "preview" : "desktop", enabled: settings.enabled,
+            active: presentationActive, pauseReason: pauseReason,
+            framesPerSecond: frameClock?.framesPerSecond ?? 0, renderedFrames: renderedFrames,
+            cursorX: Double(motion.pointer.x), cursorY: Double(motion.pointer.y),
+            parallaxX: Double(transform.tx), parallaxY: Double(transform.ty),
+            glowX: Double(overlay.glowPosition.x), glowY: Double(overlay.glowPosition.y), glowOpacity: Double(overlay.glowOpacity),
+            flareX: Double(overlay.flarePosition.x), flareY: Double(overlay.flarePosition.y), flareOpacity: Double(overlay.flareOpacity))
+    }
 
     public init(content: NSView, store: WallpaperEffectsStore? = WallpaperEffectsStore(), isPreview: Bool = false) {
         wallpaperContent = content
@@ -134,7 +150,13 @@ public final class WallpaperEffectsView: NSView {
     }
 
     func applyActivity(_ activity: WallpaperEffectsActivity) {
-        guard settings.hasVisibleEffects && activity.canAnimate else {
+        pauseReason = !settings.enabled ? "disabled" : (!settings.hasVisibleEffects ? "noEffects" : activity.pauseReason)
+        let nextActivity = pauseReason ?? "active-\(activity.framesPerSecond)"
+        if loggedActivity != nextActivity {
+            loggedActivity = nextActivity
+            Self.logger.debug("Effects surface=\(self.isPreview ? "preview" : "desktop", privacy: .public) state=\(nextActivity, privacy: .public)")
+        }
+        guard pauseReason == nil else {
             stopAnimation()
             resetPresentation()
             return
@@ -146,30 +168,29 @@ public final class WallpaperEffectsView: NSView {
             renderFrame(deltaTime: 0, cursor: nil)
             return
         }
-        guard animationTimer == nil else { return }
+        if frameClock?.framesPerSecond == activity.framesPerSecond,
+           frameClock?.screen === (window?.screen ?? NSScreen.main) { return }
+        stopAnimation()
         lastFrameTime = nil
-        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, let window = self.window else { return }
-                let now = CACurrentMediaTime()
-                let delta = self.lastFrameTime.map { now - $0 } ?? 1.0 / 30
-                self.lastFrameTime = now
-                let screenPoint = NSEvent.mouseLocation
-                let localPoint = self.convert(window.convertPoint(fromScreen: screenPoint), from: nil)
-                let cursor = WallpaperEffectsMotion.normalizedCursor(localPoint, in: self.bounds)
-                self.renderFrame(deltaTime: delta, cursor: cursor)
-            }
+        frameClock = WallpaperEffectsFrameClock(view: self, framesPerSecond: activity.framesPerSecond) { [weak self] now in
+            guard let self, let window = self.window else { return }
+            let delta = self.lastFrameTime.map { now - $0 } ?? 1 / activity.framesPerSecond
+            self.lastFrameTime = now
+            let screenPoint = NSEvent.mouseLocation
+            let localPoint = self.convert(window.convertPoint(fromScreen: screenPoint), from: nil)
+            let cursor = WallpaperEffectsMotion.normalizedCursor(localPoint, in: self.bounds)
+            self.renderFrame(deltaTime: delta, cursor: cursor)
         }
-        timer.tolerance = 0.004
-        animationTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
     }
 
     func renderFrame(deltaTime: Double, cursor: CGPoint?) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if settings.hasVisibleEffects && presentationActive {
-            if animationTimer != nil { motion.advance(settings: settings, cursor: cursor, deltaTime: deltaTime) }
+            if frameClock != nil {
+                motion.advance(settings: settings, cursor: cursor, deltaTime: deltaTime)
+                if deltaTime > 0 { renderedFrames &+= 1 }
+            }
             let frame = motion.contentFrame(in: bounds.size, settings: settings)
             let scale = bounds.width > 0 ? frame.width / bounds.width : 1
             if let layer = motionContainer.layer {
@@ -217,8 +238,8 @@ public final class WallpaperEffectsView: NSView {
     }
 
     private func stopAnimation() {
-        animationTimer?.invalidate()
-        animationTimer = nil
+        frameClock?.stop()
+        frameClock = nil
         lastFrameTime = nil
     }
 
@@ -233,7 +254,6 @@ public final class WallpaperEffectsView: NSView {
     }
 
     deinit {
-        animationTimer?.invalidate()
         statusTimer?.invalidate()
         for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         for observer in distributedObservers { DistributedNotificationCenter.default().removeObserver(observer) }

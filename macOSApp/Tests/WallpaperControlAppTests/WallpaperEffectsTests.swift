@@ -80,12 +80,13 @@ struct WallpaperEffectsTests {
         #expect(motion.presence > 0.99 && motion.pointer != .zero)
     }
 
-    @Test(arguments: [false, true]) @MainActor
-    func manualAndAutomaticLocksSleepWakeAndMissingNotificationsOnlySuspendEffects(automatic: Bool) {
+    @Test(arguments: [false, true], [false, true]) @MainActor
+    func manualAndAutomaticLocksSleepWakeAndMissingNotificationsOnlySuspendEffects(automatic: Bool, lowPower: Bool) {
         let content = NSView(frame: CGRect(x: 0, y: 0, width: 640, height: 400))
         let view = WallpaperEffectsView(content: content, store: nil)
         view.update(settings: WallpaperEffectsPreset.cinematic.settings)
         var activity = WallpaperEffectsActivity()
+        activity.lowPower = lowPower
         view.applyActivity(activity)
         #expect(view.isAnimating)
         // Automatic idle saver precedes password lock; the session is still unlocked.
@@ -148,12 +149,89 @@ struct WallpaperEffectsTests {
         case 1: activity.playbackPaused = true
         case 2: activity.sessionActive = false
         case 3: activity.reduceMotion = true
-        default: activity.lowPower = true
+        default: activity.sleeping = true
         }
         view.applyActivity(activity)
         #expect(!view.isAnimating)
         #expect(view.subviews.first?.layer?.affineTransform() == .identity)
         #expect(view.subviews.first?.layer?.filters == nil)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func desktopLayersReactToTheCursorIncludingInLowPowerMode(lowPower: Bool) throws {
+        let view = WallpaperEffectsView(content: NSView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800)), store: nil)
+        view.update(settings: WallpaperEffectsPreset.cinematic.settings)
+        var activity = WallpaperEffectsActivity()
+        activity.lowPower = lowPower
+        view.applyActivity(activity)
+        let fps = lowPower ? 30.0 : 60
+        #expect(view.isAnimating && view.status.framesPerSecond == fps)
+        for _ in 0..<60 { view.renderFrame(deltaTime: 1 / fps, cursor: CGPoint(x: -0.8, y: -0.6)) }
+        let left = view.status
+        for _ in 0..<60 { view.renderFrame(deltaTime: 1 / fps, cursor: CGPoint(x: 0.8, y: 0.6)) }
+        let right = view.status
+        #expect(right.surface == "desktop" && right.active && right.pauseReason == nil)
+        #expect(left.cursorX < -0.79 && right.cursorX > 0.79)
+        #expect(abs(left.parallaxX - right.parallaxX) > 20)
+        #expect(abs(left.glowX - right.glowX) > 300 && abs(left.flareX - right.flareX) > 600)
+        #expect(right.flareOpacity > 0.5 && right.renderedFrames == 120)
+        let health = DaemonHealth(effects: [right])
+        #expect(try JSONDecoder().decode(DaemonHealth.self, from: JSONEncoder().encode(health)) == health)
+        #expect(try JSONDecoder().decode(DaemonHealth.self, from: Data("{}".utf8)).effects == nil)
+
+        // Power-mode changes only reschedule the clock, retaining the current depth and light position.
+        activity.lowPower.toggle()
+        view.applyActivity(activity)
+        #expect(view.status.framesPerSecond == (lowPower ? 60 : 30))
+        #expect(view.status.cursorX == right.cursorX && view.status.parallaxX == right.parallaxX)
+        activity.reduceMotion = true
+        view.applyActivity(activity)
+        #expect(!view.status.active && view.status.pauseReason == "reduceMotion")
+    }
+
+    @Test func defaultCursorSmoothingRespondsWithinOneTenthOfASecond() {
+        var motion = WallpaperEffectsMotion()
+        let settings = WallpaperEffectsPreset.subtle.settings
+        for _ in 0..<6 { motion.advance(settings: settings, cursor: CGPoint(x: 1, y: 0), deltaTime: 1.0 / 60) }
+        #expect(motion.pointer.x > 0.7)
+    }
+
+    @Test @MainActor func pointerFramesReuseGradientStylesAndParticlePaths() throws {
+        var settings = WallpaperEffectsPreset.dreamy.settings
+        settings.rainEnabled = true
+        let overlay = WallpaperEffectsOverlay()
+        var motion = WallpaperEffectsMotion()
+        let size = CGSize(width: 1200, height: 800)
+        overlay.render(settings: settings, motion: motion, size: size, scale: 2)
+        let generation = overlay.styleGeneration
+        let sparkle = try #require(overlay.sublayers?.first { $0.name == "sparkle" }) as? CAShapeLayer
+        let path = try #require(sparkle?.path)
+        for _ in 0..<120 {
+            motion.advance(settings: settings, cursor: CGPoint(x: 0.8, y: 0.6), deltaTime: 1.0 / 60)
+            overlay.render(settings: settings, motion: motion, size: size, scale: 2)
+        }
+        #expect(overlay.styleGeneration == generation)
+        #expect(sparkle?.path === path)
+        settings.tint = .warm
+        overlay.render(settings: settings, motion: motion, size: size, scale: 2)
+        #expect(overlay.styleGeneration == generation + 1)
+    }
+
+    @Test @MainActor func animationClockDoesNotRetainTheRemovedWallpaperView() async throws {
+        weak var retained: WallpaperEffectsView?
+        autoreleasepool {
+            let view = WallpaperEffectsView(content: NSView(frame: CGRect(x: 0, y: 0, width: 600, height: 400)), store: nil)
+            retained = view
+            view.update(settings: WallpaperEffectsPreset.cinematic.settings)
+            view.applyActivity(WallpaperEffectsActivity())
+            #expect(view.isAnimating)
+        }
+        // AppKit/Core Animation retain pending layout work until the transaction drains.
+        for _ in 0..<10 where retained != nil {
+            CATransaction.flush()
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(retained == nil)
     }
 
     @Test @MainActor func parallaxKeepsPlayerIdentityAndSourceGeometryAndDisableIsReversible() throws {

@@ -12,6 +12,11 @@ final class WallpaperEffectsOverlay: CALayer {
     private let sparkles = (0..<48).map { _ in CAShapeLayer() }
     private let rain = (0..<120).map { _ in CAShapeLayer() }
 
+    var glowPosition: CGPoint { glow.position }
+    var flarePosition: CGPoint { core.position }
+    var glowOpacity: Float { isHidden ? 0 : glow.opacity }
+    var flareOpacity: Float { isHidden ? 0 : core.opacity }
+
     override init() {
         super.init()
         masksToBounds = true
@@ -40,62 +45,38 @@ final class WallpaperEffectsOverlay: CALayer {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    private var configuredSettings: WallpaperEffectsSettings?
+    private var configuredSize = CGSize.zero
+    private var configuredScale: CGFloat = 0
+    private var sparkleCount = 0
+    private var rainCount = 0
+    private(set) var styleGeneration: UInt64 = 0
+
+    /// Pointer-only frames update transforms and opacity; gradient textures and paths stay cached.
     func render(settings: WallpaperEffectsSettings, motion: WallpaperEffectsMotion, size: CGSize, scale: CGFloat) {
-        frame = CGRect(origin: .zero, size: size)
-        let colors = palette(settings.tint)
+        configure(settings: settings, size: size, scale: scale)
         let focus = CGPoint(x: size.width * (0.5 + motion.pointer.x * 0.44),
                             y: size.height * (0.5 + motion.pointer.y * 0.44))
-        let farFocus = CGPoint(x: size.width * (0.5 + motion.pointer.x * 0.24),
-                               y: size.height * (0.5 + motion.pointer.y * 0.24))
-        let unit = min(size.width, size.height)
-        let glowDiameter = unit * (0.3 + settings.glowSize * 1.1)
-        glow.frame = centered(farFocus, diameter: glowDiameter)
-        glow.colors = [colors.0.withAlphaComponent(0.6).cgColor,
-                       colors.1.withAlphaComponent(0.12).cgColor, NSColor.clear.cgColor]
-        glow.locations = [0, 0.35, 1]
+        glow.position = CGPoint(x: size.width * (0.5 + motion.pointer.x * 0.24),
+                                y: size.height * (0.5 + motion.pointer.y * 0.24))
         glow.opacity = settings.glowEnabled ? Float(settings.glowIntensity * motion.presence) : 0
-
-        reflection.frame = bounds.insetBy(dx: -size.width * 0.5, dy: 0)
-        let sweep = 0.5 + motion.pointer.x * 0.22 + motion.pointer.y * 0.08
-        reflection.colors = [NSColor.clear.cgColor, colors.0.withAlphaComponent(0.01).cgColor,
-                              colors.0.withAlphaComponent(0.22).cgColor,
-                              colors.1.withAlphaComponent(0.07).cgColor, NSColor.clear.cgColor]
-        reflection.locations = [0, NSNumber(value: sweep - 0.12), NSNumber(value: sweep),
-                                NSNumber(value: sweep + 0.12), 1]
+        reflection.position = CGPoint(x: size.width * (0.5 + motion.pointer.x * 0.44 + motion.pointer.y * 0.16),
+                                      y: size.height / 2)
         reflection.opacity = settings.reflectionEnabled ? Float(settings.reflectionIntensity * motion.presence) : 0
-
         let flareAlpha = settings.flareEnabled ? Float(settings.flareIntensity * motion.presence) : 0
-        core.frame = centered(focus, diameter: unit * 0.12)
-        core.colors = [NSColor.white.withAlphaComponent(0.9).cgColor,
-                       colors.0.withAlphaComponent(0.28).cgColor, NSColor.clear.cgColor]
-        core.locations = [0, 0.16, 1]
+        core.position = focus
         core.opacity = flareAlpha
-        let streakWidth = unit * (0.45 + settings.flareIntensity * 0.6)
-        streak.frame = CGRect(x: focus.x - streakWidth / 2, y: focus.y - 1, width: streakWidth, height: 2)
-        streak.colors = [NSColor.clear.cgColor, colors.0.withAlphaComponent(0.15).cgColor,
-                         NSColor.white.withAlphaComponent(0.85).cgColor,
-                         colors.0.withAlphaComponent(0.15).cgColor, NSColor.clear.cgColor]
-        streak.locations = [0, 0.35, 0.5, 0.65, 1]
+        streak.position = focus
         streak.opacity = flareAlpha
+        ring.position = focus
+        ring.opacity = flareAlpha
         for (index, ghost) in ghosts.enumerated() {
             let distance = [0.3, 0.75, 1.3][index]
-            let position = CGPoint(x: size.width / 2 - motion.pointer.x * size.width * distance * 0.35,
-                                   y: size.height / 2 - motion.pointer.y * size.height * distance * 0.35)
-            ghost.frame = centered(position, diameter: unit * [0.045, 0.09, 0.16][index])
-            ghost.colors = [colors.1.withAlphaComponent(0.02).cgColor,
-                            colors.1.withAlphaComponent(0.22).cgColor, NSColor.clear.cgColor]
-            ghost.locations = [0, 0.7, 1]
+            ghost.position = CGPoint(x: size.width / 2 - motion.pointer.x * size.width * distance * 0.35,
+                                     y: size.height / 2 - motion.pointer.y * size.height * distance * 0.35)
             ghost.opacity = flareAlpha
         }
-        ring.frame = bounds
-        ring.path = CGPath(ellipseIn: centered(focus, diameter: unit * 0.2), transform: nil)
-        ring.strokeColor = colors.1.withAlphaComponent(0.22).cgColor
-        ring.opacity = flareAlpha
-
-        let count = settings.sparkleEnabled && settings.sparkleAmount > 0 ? Int(8 + settings.sparkleAmount * 40) : 0
-        for (index, sparkle) in sparkles.enumerated() {
-            sparkle.isHidden = index >= count
-            guard index < count else { continue }
+        for (index, sparkle) in sparkles.prefix(sparkleCount).enumerated() {
             let seed = Double(index + 1)
             let x = fraction(seed * 0.61803398875)
             let y = fraction(seed * 0.41421356237 + motion.time * (0.012 + fraction(seed * 0.7) * 0.018))
@@ -103,11 +84,75 @@ final class WallpaperEffectsOverlay: CALayer {
             let dy = focus.y / max(1, size.height) - y
             let attraction = settings.reactsToCursor ? exp(-(dx * dx + dy * dy) * 12) * motion.presence : 0
             let depth = settings.parallaxEnabled ? settings.parallaxAmount * (0.01 + fraction(seed * 0.31) * 0.04) : 0
-            let position = CGPoint(x: (x + sin(motion.time + seed) * 0.01 + dx * attraction * 0.14 - motion.pointer.x * depth) * size.width,
-                                   y: (y + dy * attraction * 0.14 - motion.pointer.y * depth) * size.height)
+            sparkle.position = CGPoint(x: (x + sin(motion.time + seed) * 0.01 + dx * attraction * 0.14 - motion.pointer.x * depth) * size.width,
+                                       y: (y + dy * attraction * 0.14 - motion.pointer.y * depth) * size.height)
+            sparkle.opacity = Float((0.12 + (sin(motion.time * 1.7 + seed * 2.4) + 1) * 0.22
+                + attraction * 0.35) * settings.sparkleAmount)
+        }
+        for (index, drop) in rain.prefix(rainCount).enumerated() {
+            let seed = Double(index + 1)
+            let depth = 0.4 + fraction(seed * 0.75487766) * 0.6
+            let fall = motion.time * (0.4 + settings.rainSpeed * 1.6) * depth
+            let wind = (settings.rainAngle - 0.5) * 0.6 + (settings.reactsToCursor ? motion.pointer.x * 0.08 : 0)
+            let parallax = settings.parallaxEnabled ? motion.pointer.x * settings.parallaxAmount * 0.04 * depth : 0
+            drop.position = CGPoint(x: fraction(seed * 0.61803398875 + fall * wind - parallax) * (size.width + 60) - 30,
+                                    y: (1 - fraction(seed * 0.41421356237 + fall)) * (size.height + 60) - 30)
+            drop.setAffineTransform(CGAffineTransform(rotationAngle: CGFloat(atan(Double(wind)))))
+        }
+    }
+
+    private func configure(settings: WallpaperEffectsSettings, size: CGSize, scale: CGFloat) {
+        guard configuredSettings != settings || configuredSize != size || configuredScale != scale else { return }
+        configuredSettings = settings
+        configuredSize = size
+        configuredScale = scale
+        styleGeneration &+= 1
+        frame = CGRect(origin: .zero, size: size)
+        let colors = palette(settings.tint)
+        let unit = min(size.width, size.height)
+        let glowDiameter = unit * (0.3 + settings.glowSize * 1.1)
+        glow.bounds = CGRect(x: 0, y: 0, width: glowDiameter, height: glowDiameter)
+        glow.colors = [colors.0.withAlphaComponent(0.6).cgColor,
+                       colors.1.withAlphaComponent(0.12).cgColor, NSColor.clear.cgColor]
+        glow.locations = [0, 0.35, 1]
+        core.bounds = CGRect(x: 0, y: 0, width: unit * 0.12, height: unit * 0.12)
+        core.colors = [NSColor.white.withAlphaComponent(0.9).cgColor,
+                       colors.0.withAlphaComponent(0.28).cgColor, NSColor.clear.cgColor]
+        core.locations = [0, 0.16, 1]
+        reflection.bounds = CGRect(x: 0, y: 0, width: size.width * 2, height: size.height)
+        reflection.colors = [NSColor.clear.cgColor, colors.0.withAlphaComponent(0.01).cgColor,
+                              colors.0.withAlphaComponent(0.22).cgColor,
+                              colors.1.withAlphaComponent(0.07).cgColor, NSColor.clear.cgColor]
+        reflection.locations = [0, 0.38, 0.5, 0.62, 1]
+        streak.bounds = CGRect(x: 0, y: 0, width: unit * (0.45 + settings.flareIntensity * 0.6), height: 2)
+        streak.colors = [NSColor.clear.cgColor, colors.0.withAlphaComponent(0.15).cgColor,
+                         NSColor.white.withAlphaComponent(0.85).cgColor,
+                         colors.0.withAlphaComponent(0.15).cgColor, NSColor.clear.cgColor]
+        streak.locations = [0, 0.35, 0.5, 0.65, 1]
+        for (index, ghost) in ghosts.enumerated() {
+            let diameter = unit * [0.045, 0.09, 0.16][index]
+            ghost.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
+            ghost.colors = [colors.1.withAlphaComponent(0.02).cgColor,
+                            colors.1.withAlphaComponent(0.22).cgColor, NSColor.clear.cgColor]
+            ghost.locations = [0, 0.7, 1]
+        }
+        // These lights are deliberately soft. Cache them at one pixel per point;
+        // moving a cached layer must not redraw a display-sized radial gradient.
+        for gradient in [glow, core, reflection] + ghosts {
+            gradient.shouldRasterize = true
+            gradient.rasterizationScale = 1
+        }
+        ring.bounds = CGRect(x: 0, y: 0, width: unit * 0.2, height: unit * 0.2)
+        ring.path = CGPath(ellipseIn: ring.bounds.insetBy(dx: 1, dy: 1), transform: nil)
+        ring.strokeColor = colors.1.withAlphaComponent(0.22).cgColor
+        ring.contentsScale = scale
+        sparkleCount = settings.sparkleEnabled && settings.sparkleAmount > 0 ? Int(8 + settings.sparkleAmount * 40) : 0
+        for (index, sparkle) in sparkles.enumerated() {
+            sparkle.isHidden = index >= sparkleCount
+            guard index < sparkleCount else { continue }
+            let seed = Double(index + 1)
             let radius = 1.3 + fraction(seed * 0.7548) * 2.5
-            sparkle.frame = CGRect(x: position.x - radius, y: position.y - radius,
-                                   width: radius * 2, height: radius * 2)
+            sparkle.bounds = CGRect(x: 0, y: 0, width: radius * 2, height: radius * 2)
             let path = CGMutablePath()
             for point in 0..<8 {
                 let angle = Double(point) * .pi / 4
@@ -119,38 +164,23 @@ final class WallpaperEffectsOverlay: CALayer {
             sparkle.path = path
             sparkle.fillColor = (index.isMultiple(of: 3) ? colors.1 : colors.0).cgColor
             sparkle.contentsScale = scale
-            sparkle.opacity = Float((0.12 + (sin(motion.time * 1.7 + seed * 2.4) + 1) * 0.22
-                + attraction * 0.35) * settings.sparkleAmount)
         }
-
-        let dropCount = settings.rainEnabled && settings.rainAmount > 0 ? Int(20 + settings.rainAmount * 100) : 0
+        rainCount = settings.rainEnabled && settings.rainAmount > 0 ? Int(20 + settings.rainAmount * 100) : 0
         for (index, drop) in rain.enumerated() {
-            drop.isHidden = index >= dropCount
-            guard index < dropCount else { continue }
-            let seed = Double(index + 1)
-            let depth = 0.4 + fraction(seed * 0.75487766) * 0.6
-            let fall = motion.time * (0.4 + settings.rainSpeed * 1.6) * depth
-            let wind = (settings.rainAngle - 0.5) * 0.6 + (settings.reactsToCursor ? motion.pointer.x * 0.08 : 0)
-            let parallax = settings.parallaxEnabled ? motion.pointer.x * settings.parallaxAmount * 0.04 * depth : 0
-            let x = fraction(seed * 0.61803398875 + fall * wind - parallax) * (size.width + 60) - 30
-            let y = (1 - fraction(seed * 0.41421356237 + fall)) * (size.height + 60) - 30
+            drop.isHidden = index >= rainCount
+            guard index < rainCount else { continue }
+            let depth = 0.4 + fraction(Double(index + 1) * 0.75487766) * 0.6
             let length = (8 + depth * 22) * max(0.65, unit / 900)
-            let dropFrame = CGRect(x: min(x, x - wind * length) - 2, y: y - 2,
-                                   width: abs(wind * length) + 4, height: length + 4)
+            drop.bounds = CGRect(x: 0, y: 0, width: 4, height: length + 4)
             let path = CGMutablePath()
-            path.move(to: CGPoint(x: x - dropFrame.minX, y: y - dropFrame.minY))
-            path.addLine(to: CGPoint(x: x - wind * length - dropFrame.minX, y: y + length - dropFrame.minY))
-            drop.frame = dropFrame
+            path.move(to: CGPoint(x: 2, y: 2))
+            path.addLine(to: CGPoint(x: 2, y: length + 2))
             drop.path = path
             drop.strokeColor = colors.0.withAlphaComponent(0.18 + depth * 0.3).cgColor
             drop.lineWidth = 0.5 + depth
             drop.lineCap = .round
             drop.contentsScale = scale
         }
-    }
-
-    private func centered(_ point: CGPoint, diameter: CGFloat) -> CGRect {
-        CGRect(x: point.x - diameter / 2, y: point.y - diameter / 2, width: diameter, height: diameter)
     }
 
     private func fraction(_ value: Double) -> Double { value - floor(value) }

@@ -108,7 +108,8 @@ rates, without separating objects in the source image.
 
 Effects are off by default and preferences survive restarting AuraFlow. They
 pause when playback is paused, the desktop is hidden, the session is locked,
-the display sleeps, or Low Power Mode / Reduce Motion is enabled. Lock Screen
+the display sleeps, or Reduce Motion is enabled. Low Power Mode keeps cursor
+effects responsive at 30 fps instead of 60 fps. Lock Screen
 frames keep their original appearance. Effects do not change media files,
 Launch at Login, or the saved macOS wallpaper.
 
