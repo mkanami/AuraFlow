@@ -7,6 +7,8 @@ private final class FirstFrameTrace {
     var locked: Bool? = false
     var promoted = false
     var events: [String] = []
+    var holdPreparation = false
+    var preparation: (@Sendable (Bool) -> Void)?
 }
 
 private final class FirstFramePlatform: LockScreenSaverInstalling {
@@ -33,7 +35,10 @@ private final class FirstFrameBridge: NativeLockScreenBridging {
     var isReady = true
     var onFailure: (@Sendable (String) -> Void)?
     init(_ trace: FirstFrameTrace) { self.trace = trace }
-    func prepare(completion: @escaping @Sendable (Bool) -> Void) { completion(true) }
+    func prepare(completion: @escaping @Sendable (Bool) -> Void) {
+        if trace.holdPreparation { trace.preparation = completion }
+        else { completion(true) }
+    }
     func showForLockTransition(completion: (@Sendable (Bool) -> Void)?) {
         trace.events.append(trace.promoted ? "show-aura" : "show-before-promotion")
         completion?(true)
@@ -47,6 +52,50 @@ private final class FirstFrameBridge: NativeLockScreenBridging {
 
 @Suite(.serialized)
 struct LockScreenFirstFrameHandoffTests {
+    @Test(arguments: [false, true]) @MainActor
+    func sharedReadinessBelongsToTheCommittedSourceAcrossManualAndDelayedAutomaticLocks(automatic: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraSharedReady-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = WallpaperRuntimeStore(appSupportURL: root)
+        try store.ensureDirectories()
+        let movie = root.appendingPathComponent("fixture.mp4")
+        try Data("unopened mock media".utf8).write(to: movie)
+        let config = ControlConfig(video_path: movie.path, playback_speed: 1, show_on_lock_screen: true)
+        try store.saveConfig(config)
+        try store.savePID()
+        store.markPaused(true) // Preparation may run while the decoded Desktop stays paused.
+        let trace = FirstFrameTrace()
+        trace.holdPreparation = true
+        let agent = WallpaperAgentDelegate(store: store,
+            lockScreenPlatform: FirstFramePlatform(trace, promotionRequired: false),
+            nativeLockScreenBridge: FirstFrameBridge(trace),
+            presentWindow: { _, _ in }, observesSystemEvents: false, sessionIsLocked: { trace.locked })
+        try store.saveCommand(.init(operationID: 42, action: .rearmLockScreen, config: config))
+        agent.pollCommand()
+        #expect(trace.preparation != nil && !store.isLockScreenAgentReady(operationID: 42))
+        if automatic {
+            trace.locked = nil
+            agent.lockShieldDidRaise(Notification(name: .init("com.apple.shieldWindowRaised")))
+            try await Task.sleep(for: .milliseconds(20))
+            trace.locked = true // The normal session notification is missing.
+            try await Task.sleep(for: .milliseconds(150))
+        } else {
+            trace.locked = true
+            agent.handleSessionNotification(expectedLocked: true)
+        }
+        trace.preparation?(true)
+        trace.preparation = nil
+        let deadline = Date().addingTimeInterval(1)
+        while !store.isLockScreenAgentReady(operationID: 42), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(store.isLockScreenAgentReady(operationID: 42))
+        #expect(!store.isLockScreenAgentReady(operationID: 41))
+        #expect(trace.events.contains("show-aura"))
+        trace.locked = false
+        agent.handleSessionNotification(expectedLocked: false)
+    }
+
     @Test @MainActor
     func disabledLockScreenDoesNotStartEarlyNativePresentation() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraDisabledFirstFrame-\(UUID())")

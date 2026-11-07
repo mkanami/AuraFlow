@@ -62,6 +62,38 @@ private final class SecurePresentationFixture {
 
 @Suite(.serialized)
 struct NativeLockScreenSessionRegressionTests {
+    @Test(arguments: [false, true]) @MainActor
+    func manualAndIdleLocksRecoverThroughUnknownSessionSleepWakeAndUnlock(automatic: Bool) async throws {
+        let fixture = try SecurePresentationFixture()
+        defer { fixture.cleanup() }
+        try await fixture.prepare()
+        // An idle saver before its password deadline is not a secure lock.
+        fixture.bridge.recoverAfterSystemChange()
+        try await eventually { fixture.requests.count >= 2 }
+        #expect(fixture.requests.last?.locked == false && fixture.saverStarts.isEmpty)
+        fixture.locked = nil
+        fixture.bridge.recoverAfterSystemChange()
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(fixture.saverStarts.isEmpty)
+        fixture.locked = true
+        if !automatic { fixture.bridge.showForLockTransition() }
+        // The automatic path has no session notification: the wake/recovery
+        // reconciler must read the now-confirmed WindowServer session itself.
+        try await eventually { fixture.bridge.hasLockedPresentation && !fixture.saverStarts.isEmpty }
+        let previousStarts = fixture.saverStarts.count
+        fixture.holdNextLockedAssertion = true
+        fixture.bridge.recoverAfterSystemChange()
+        try await eventually { fixture.pendingAssertion != nil }
+        fixture.locked = false // Unlock before a delayed wake completion.
+        fixture.releaseAssertion()
+        try await eventually { !fixture.bridge.hasLockedPresentation }
+        fixture.bridge.hideAfterUnlock()
+        fixture.bridge.showForLockTransition()
+        #expect(fixture.saverStarts.count == previousStarts)
+        #expect(fixture.saverStarts.allSatisfy { $0 == true })
+        #expect(!fixture.window.isVisible, "All native window ordering and system actions stay intercepted")
+    }
+
     @Test @MainActor
     func issue1PreparedHelperNeverRelocksAfterStaleShowsOrLateRecovery() async throws {
         let fixture = try SecurePresentationFixture()

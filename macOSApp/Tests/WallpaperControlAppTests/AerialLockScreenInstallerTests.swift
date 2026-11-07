@@ -439,7 +439,8 @@ func orphanedLegacyDesktopCanInstallPromoteAndRestoreNativeAppearance(lockOnly: 
     #expect(expectedDesktop.count == 2)
     for name in ["AllSpacesAndDisplays", "SystemDefault"] {
         let container = try #require(try readWallpaperStore(fixture.storeURL)[name] as? [String: Any])
-        #expect((container["Desktop"] as? NSDictionary)?.isEqual(user) == true)
+        if lockOnly { #expect((container["Desktop"] as? NSDictionary)?.isEqual(user) == true) }
+        else { #expect(wallpaperStoreContains(container, provider: WallpaperPlatformConstants.aerialProviderID, assetID: AerialLockScreenFixture.assetID)) }
     }
 
     // Manual and idle-initiated secure locks share the same promotion. The idle saver
@@ -1299,7 +1300,7 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(!wallpaperStoreText(restoredDesktop).contains("default"))
 }
 
-@Test func modernLockScreenUsesAerialAndPrunesDeletedSpaces() async throws {
+@Test func modernLockScreenUsesAerialAndPreservesSavedSpaceAndDisplayChoices() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
@@ -1323,9 +1324,15 @@ private func writeAerialTestVideo(to url: URL) async throws {
         )
     )
     let spaces = try #require(root["Spaces"] as? [String: Any])
-    #expect(Set(spaces.keys) == [AerialLockScreenFixture.activeSpaceID])
+    #expect(Set(spaces.keys) == [
+        AerialLockScreenFixture.activeSpaceID,
+        AerialLockScreenFixture.staleSpaceID,
+    ])
     let displays = try #require(root["Displays"] as? [String: Any])
-    #expect(Set(displays.keys) == [AerialLockScreenFixture.displayID])
+    #expect(Set(displays.keys) == [
+        AerialLockScreenFixture.displayID,
+        AerialLockScreenFixture.staleDisplayID,
+    ])
     let activeSpace = try #require(
         spaces[AerialLockScreenFixture.activeSpaceID] as? [String: Any]
     )
@@ -1334,8 +1341,13 @@ private func writeAerialTestVideo(to url: URL) async throws {
     )
     #expect(
         Set(activeDisplays.keys)
-            == [AerialLockScreenFixture.displayID]
+            == [AerialLockScreenFixture.displayID, AerialLockScreenFixture.staleDisplayID]
     )
+    let backupRoot = try readWallpaperStore(
+        fixture.stateURL.appendingPathComponent("Index.before-auraflow.plist")
+    )
+    #expect(Set(try #require(backupRoot["Spaces"] as? [String: Any]).keys) == Set(spaces.keys))
+    #expect(Set(try #require(backupRoot["Displays"] as? [String: Any]).keys) == Set(displays.keys))
     #expect(
         wallpaperStoreContains(
             root,
@@ -1738,48 +1750,63 @@ private func writeAerialTestVideo(to url: URL) async throws {
     #expect(fixture.refreshCounter.count == 1)
 }
 
-@Test func desktopAgentNativeInstallNeverReplacesDesktopOrLinkedRoutes() async throws {
+@Test(arguments: ["manual", "idle-before-password", "delayed-notification", "missing-notification", "sleep-wake"])
+func sharedStartPrewarmsTheNativeChoiceBeforeAnyLockNotification(transition: String) async throws {
+    var preparedStore: Data?
+    let fixture = try AerialLockScreenFixture(onRefresh: { url in preparedStore = try? Data(contentsOf: url) })
+    defer { fixture.cleanup() }
+    var userRoot = try readWallpaperStore(fixture.storeURL)
+    userRoot = replaceTestDesktopModesDistinctly(in: userRoot)
+    try writeWallpaperStore(userRoot, to: fixture.storeURL)
+    let userRoutes = testDesktopRouteData(in: userRoot)
+    try await fixture.installer.installForDesktopAgent(videoURL: fixture.videoURL)
+    let prepared = try #require(preparedStore)
+    let cached = try #require(PropertyListSerialization.propertyList(from: prepared, format: nil) as? [String: Any])
+    for container in testWallpaperContainers(in: cached) {
+        for route in ["Desktop", "Idle", "Linked"] {
+            if let mode = container[route] as? [String: Any] {
+                #expect(wallpaperStoreContains(mode, provider: WallpaperPlatformConstants.aerialProviderID,
+                    assetID: AerialLockScreenFixture.assetID), "loginwindow must resolve Aura even before its notification reaches the agent")
+            }
+        }
+    }
+    // The idle saver is still unlocked; delayed/missing lock notifications do
+    // not require a different native configuration. Wake rearms the same source.
+    if transition == "sleep-wake" {
+        _ = try await fixture.installer.rearmForNextLock(videoURL: fixture.videoURL)
+    }
+    #expect(!fixture.installer.requiresLockScreenSessionPromotion)
+    #expect(try fixture.installer.activateLockScreenForCurrentSession() == false)
+    #expect(try fixture.installer.restoreDesktopAfterLockScreenSession() == false)
+    #expect(fixture.installer.installationConfirmed)
+    try fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    #expect(testDesktopRouteData(in: try readWallpaperStore(fixture.storeURL)) == userRoutes)
+}
+
+@Test func desktopAgentNativeStartPreparesBothSurfacesAndRestoresCompleteUserDescriptors() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
-
     var root = try readWallpaperStore(fixture.storeURL)
     root = replaceTestDesktopModesDistinctly(in: root)
     try writeWallpaperStore(root, to: fixture.storeURL)
     let expectedDesktopRoutes = testDesktopRouteData(in: root)
     #expect(expectedDesktopRoutes.count > 2)
 
-    try await fixture.installer.installForDesktopAgent(
-        videoURL: fixture.videoURL
-    )
-
+    try await fixture.installer.installForDesktopAgent(videoURL: fixture.videoURL)
     root = try readWallpaperStore(fixture.storeURL)
-    #expect(testDesktopRouteData(in: root) == expectedDesktopRoutes)
     for container in testWallpaperContainers(in: root) {
-        if let desktop = container["Desktop"] as? [String: Any] {
-            #expect(!wallpaperStoreContains(
-                desktop,
-                provider: "com.apple.wallpaper.choice.aerials",
-                assetID: AerialLockScreenFixture.assetID
-            ))
-        }
-        if let linked = container["Linked"] as? [String: Any] {
-            #expect(!wallpaperStoreContains(
-                linked,
-                provider: "com.apple.wallpaper.choice.aerials",
-                assetID: AerialLockScreenFixture.assetID
-            ))
-        }
-        if let idle = container["Idle"] as? [String: Any] {
-            #expect(wallpaperStoreContains(
-                idle,
-                provider: "com.apple.wallpaper.choice.aerials",
-                assetID: AerialLockScreenFixture.assetID
-            ))
+        for key in ["Desktop", "Idle", "Linked"] {
+            if let mode = container[key] as? [String: Any] {
+                #expect(wallpaperStoreContains(mode, provider: WallpaperPlatformConstants.aerialProviderID,
+                    assetID: AerialLockScreenFixture.assetID))
+            }
         }
     }
     #expect(!fixture.installer.isLockScreenOnlyInstallation)
-    #expect(fixture.installer.requiresLockScreenSessionPromotion)
+    #expect(!fixture.installer.requiresLockScreenSessionPromotion)
     #expect(fixture.installer.installationConfirmed)
+    try fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    #expect(testDesktopRouteData(in: try readWallpaperStore(fixture.storeURL)) == expectedDesktopRoutes)
 }
 
 // WallpaperAgent updates LastUse while consuming the freshly written Idle
@@ -1814,7 +1841,7 @@ func repeatedNativeStartRemoveStartAcceptsDesktopUsageTimestampUpdates(lockOnly:
             try await fixture.installer.installForDesktopAgent(videoURL: fixture.videoURL)
         }
         #expect(fixture.installer.installationConfirmed)
-        #expect(fixture.installer.requiresLockScreenSessionPromotion)
+        #expect(fixture.installer.requiresLockScreenSessionPromotion == lockOnly)
         try await fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
         #expect(!fixture.installer.isInstalled)
     }
@@ -1878,7 +1905,7 @@ func repeatedNativeStartRemoveStartAcceptsDesktopUsageTimestampUpdates(lockOnly:
     ))
 }
 
-@Test func desktopAgentNativeRemovePreservesEveryDesktopWithoutImageTransition() async throws {
+@Test func desktopAgentNativeRemovePreservesEveryDesktopAndReleasesNativeProvider() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
@@ -1902,11 +1929,11 @@ func repeatedNativeStartRemoveStartAcceptsDesktopUsageTimestampUpdates(lockOnly:
     root = try readWallpaperStore(fixture.storeURL)
     #expect(testDesktopRouteData(in: root) == expectedDesktopRoutes)
     #expect(imageTransitionCalls == 0)
-    #expect(fixture.refreshCounter.count == refreshCountBeforeRemove)
+    #expect(fixture.refreshCounter.count == refreshCountBeforeRemove + 1)
     #expect(!fixture.installer.isInstalled)
 }
 
-@Test func desktopAgentNativeRoutePromotesOnlyForLockSession() async throws {
+@Test func desktopAgentNativeRouteRemainsPreparedAcrossLockAndUnlock() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }
 
@@ -1933,8 +1960,10 @@ func repeatedNativeStartRemoveStartAcceptsDesktopUsageTimestampUpdates(lockOnly:
 
     _ = try fixture.installer.restoreDesktopAfterLockScreenSession()
     root = try readWallpaperStore(fixture.storeURL)
-    #expect(testDesktopRouteData(in: root) == expectedDesktopRoutes)
+    #expect(!fixture.installer.requiresLockScreenSessionPromotion)
     #expect(fixture.installer.installationConfirmed)
+    try fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    #expect(testDesktopRouteData(in: try readWallpaperStore(fixture.storeURL)) == expectedDesktopRoutes)
 }
 
 @Test func desktopAgentNativeSourceChangeKeepsLatestDesktopRoutes() async throws {
@@ -1956,9 +1985,10 @@ func repeatedNativeStartRemoveStartAcceptsDesktopUsageTimestampUpdates(lockOnly:
     )
 
     root = try readWallpaperStore(fixture.storeURL)
-    #expect(testDesktopRouteData(in: root) == expectedDesktopRoutes)
-    #expect(fixture.installer.requiresLockScreenSessionPromotion)
+    #expect(!fixture.installer.requiresLockScreenSessionPromotion)
     #expect(fixture.installer.installationConfirmed)
+    try fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    #expect(testDesktopRouteData(in: try readWallpaperStore(fixture.storeURL)) == expectedDesktopRoutes)
 }
 
 @Test func desktopAgentNativeMigratesOldSharedStartFromLatestUserJournal() async throws {
@@ -1988,10 +2018,52 @@ func repeatedNativeStartRemoveStartAcceptsDesktopUsageTimestampUpdates(lockOnly:
     )
 
     let migratedRoot = try readWallpaperStore(fixture.storeURL)
-    #expect(testDesktopRouteData(in: migratedRoot) == expectedDesktopRoutes)
+    #expect(wallpaperStoreContains(migratedRoot, provider: WallpaperPlatformConstants.aerialProviderID, assetID: AerialLockScreenFixture.assetID))
     #expect(!fixture.installer.isLockScreenOnlyInstallation)
-    #expect(fixture.installer.requiresLockScreenSessionPromotion)
+    #expect(!fixture.installer.requiresLockScreenSessionPromotion)
     #expect(fixture.installer.installationConfirmed)
+    try fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    #expect(testDesktopRouteData(in: try readWallpaperStore(fixture.storeURL)) == expectedDesktopRoutes)
+}
+
+@Test(arguments: ["apply", "repair", "rearm"])
+func completedIsolatedStartPreparesBothNativeSurfacesBeforeTheNextLock(entry: String) async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL)
+    let userRoot = replaceTestDesktopModesDistinctly(in: try readWallpaperStore(fixture.storeURL))
+    try writeWallpaperStore(userRoot, to: fixture.storeURL)
+    let expectedDesktopRoutes = testDesktopRouteData(in: userRoot)
+    // Recreate the completed Idle-only journal written by earlier Start builds.
+    let markerURL = fixture.stateURL.appendingPathComponent("installation.json")
+    var marker = try #require(JSONSerialization.jsonObject(
+        with: Data(contentsOf: markerURL)) as? [String: Any])
+    marker["lockScreenOnly"] = false
+    marker["desktopIncluded"] = false
+    marker["desiredMode"] = "desktopAgentIsolated"
+    try JSONSerialization.data(withJSONObject: marker).write(to: markerURL, options: .atomic)
+    #expect(fixture.installer.installationConfirmed)
+    #expect(fixture.installer.requiresLockScreenSessionPromotion)
+
+    let previousRefreshes = fixture.refreshCounter.count
+    switch entry {
+    case "apply": try await fixture.installer.installForDesktopAgent(videoURL: fixture.videoURL)
+    case "repair": _ = try await fixture.installer.repair(videoURL: fixture.videoURL, shouldProceed: { true })
+    default: _ = try await fixture.installer.rearmForNextLock(videoURL: fixture.videoURL)
+    }
+    #expect(fixture.refreshCounter.count == previousRefreshes + 1)
+    #expect(fixture.installer.installationConfirmed)
+    #expect(!fixture.installer.requiresLockScreenSessionPromotion)
+    for container in testWallpaperContainers(in: try readWallpaperStore(fixture.storeURL)) {
+        for route in ["Desktop", "Idle", "Linked"] {
+            if let mode = container[route] as? [String: Any] {
+                #expect(wallpaperStoreContains(mode, provider: WallpaperPlatformConstants.aerialProviderID,
+                    assetID: AerialLockScreenFixture.assetID))
+            }
+        }
+    }
+    try fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    #expect(testDesktopRouteData(in: try readWallpaperStore(fixture.storeURL)) == expectedDesktopRoutes)
 }
 
 @Test func lockOnlyApplyKeepsLatestDesktopWhenSourceChanges() async throws {
@@ -3882,13 +3954,13 @@ func incompleteIsolatedGenerationRecoversWithoutRepeatingProviderRestarts(entry:
         _ = try await fixture.installer.rearmForNextLock(videoURL: fixture.videoURL)
     }
     #expect(fixture.installer.installationConfirmed)
-    #expect(fixture.installer.requiresLockScreenSessionPromotion)
+    #expect(fixture.installer.requiresLockScreenSessionPromotion == lockOnly)
     #expect(fixture.installer.isLockScreenOnlyInstallation == lockOnly)
-    #expect(testDesktopRouteData(in: try readWallpaperStore(fixture.storeURL)) == expectedDesktopRoutes)
+    if lockOnly { #expect(testDesktopRouteData(in: try readWallpaperStore(fixture.storeURL)) == expectedDesktopRoutes) }
     let completed = try #require(JSONSerialization.jsonObject(
         with: Data(contentsOf: markerURL)) as? [String: Any])
     #expect(completed["completed"] as? Bool == true)
-    #expect(completed["desiredMode"] as? String == (lockOnly ? "lockOnly" : "desktopAgentIsolated"))
+    #expect(completed["desiredMode"] as? String == (lockOnly ? "lockOnly" : "shared"))
     #expect(completed["playbackSpeed"] as? Double == (entry == "apply" ? 1.0 : 1.5))
     #expect(completed["scaleMode"] as? String == (entry == "apply" ? "fill" : "fit"))
     let refreshes = fixture.refreshCounter.count
@@ -3896,6 +3968,8 @@ func incompleteIsolatedGenerationRecoversWithoutRepeatingProviderRestarts(entry:
         #expect(try await !fixture.installer.repair(videoURL: fixture.videoURL, shouldProceed: { true }))
     }
     #expect(fixture.refreshCounter.count == refreshes)
+    try fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    #expect(testDesktopRouteData(in: try readWallpaperStore(fixture.storeURL)) == expectedDesktopRoutes)
 }
 
 @Test func corruptModernLockScreenMarkerStillRestoresBackup() async throws {

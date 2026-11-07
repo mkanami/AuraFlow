@@ -868,7 +868,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         )
     }
 
-    private func waitForSharedLockScreenReady() async throws {
+    private func waitForSharedLockScreenReady(operationID: UInt64) async throws {
         guard nativeBridgeRequired,
               store.appSupportURL.standardizedFileURL
                 == WallpaperRuntimeStore.defaultAppSupportURL().standardizedFileURL
@@ -880,7 +880,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                     "The wallpaper agent stopped before Lock Screen was ready."
                 )
             }
-            if store.isLockScreenAgentReady() { return }
+            if store.isLockScreenAgentReady(operationID: operationID) { return }
             try await Task.sleep(nanoseconds: 50_000_000)
         }
         throw NativeWallpaperControllerError.unavailable(
@@ -997,6 +997,15 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 throw NativeWallpaperControllerError.unavailable(
                     "macOS did not confirm the Desktop and Lock Screen wallpaper configuration."
                 )
+            }
+            if nextConfig.show_on_lock_screen == true,
+               lockScreenCapabilities.supportsSecureLockScreen {
+                // Desktop starts first, so its bridge may still refer to the
+                // provider that existed before installation. Bind the committed
+                // source before reporting Start as ready for a direct lock.
+                store.markLockScreenAgentReady(false)
+                try send(.rearmLockScreen, config: nextConfig)
+                try await waitForSharedLockScreenReady(operationID: nextRuntimeOperationID)
             }
             try autostartManager.selectRuntime(.video)
             return store.status()
@@ -1640,7 +1649,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
             if enabled, store.isLockScreenOnlyAgent(), let source = store.loadLockScreenOnlySource() {
                 try await waitForLockScreenGenerationReady(videoURL: source)
             } else if rearmSharedLockScreen {
-                try await waitForSharedLockScreenReady()
+                try await waitForSharedLockScreenReady(operationID: nextRuntimeOperationID)
             }
         } catch {
             try? store.saveConfig(currentConfig)

@@ -272,14 +272,15 @@ public final class WallpaperRuntimeStore {
         FileManager.default.fileExists(atPath: lockScreenOnlyAgentURL.path)
     }
 
-    public func markLockScreenAgentReady(_ ready: Bool) {
+    private struct LockScreenReadyMarker: Codable {
+        let operationID: UInt64
+    }
+
+    public func markLockScreenAgentReady(_ ready: Bool, operationID: UInt64? = nil) {
         if ready {
             try? ensureDirectories()
-            FileManager.default.createFile(
-                atPath: lockScreenAgentReadyURL.path,
-                contents: Data(),
-                attributes: nil
-            )
+            let data = operationID.flatMap { try? JSONEncoder().encode(LockScreenReadyMarker(operationID: $0)) } ?? Data()
+            try? data.write(to: lockScreenAgentReadyURL, options: .atomic)
         } else {
             try? FileManager.default.removeItem(at: lockScreenAgentReadyURL)
         }
@@ -287,6 +288,12 @@ public final class WallpaperRuntimeStore {
 
     public func isLockScreenAgentReady() -> Bool {
         FileManager.default.fileExists(atPath: lockScreenAgentReadyURL.path)
+    }
+
+    public func isLockScreenAgentReady(operationID: UInt64) -> Bool {
+        guard let data = try? Data(contentsOf: lockScreenAgentReadyURL),
+              let marker = try? JSONDecoder().decode(LockScreenReadyMarker.self, from: data) else { return false }
+        return marker.operationID == operationID
     }
 
     /// Indicates that the dedicated agent has installed its run-loop,

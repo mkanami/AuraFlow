@@ -75,6 +75,38 @@ private enum TestInstallerError: Error {
     case scaleModeUpdateFailed
 }
 
+@Test func sharedReadinessRejectsEarlierCommandsAndLegacyEmptyMarkers() throws {
+    let fixture = try NativeRuntimeFixture("shared-readiness-command")
+    defer { fixture.cleanup() }
+    fixture.store.markLockScreenAgentReady(true)
+    #expect(fixture.store.isLockScreenAgentReady())
+    #expect(!fixture.store.isLockScreenAgentReady(operationID: 42))
+    fixture.store.markLockScreenAgentReady(true, operationID: 41)
+    #expect(!fixture.store.isLockScreenAgentReady(operationID: 42))
+    fixture.store.markLockScreenAgentReady(true, operationID: 42)
+    #expect(fixture.store.isLockScreenAgentReady(operationID: 42))
+    fixture.store.markLockScreenAgentReady(false)
+    #expect(!fixture.store.isLockScreenAgentReady())
+}
+
+@Test func sharedStartRebindsTheNativeBridgeAfterInstallationCommits() async throws {
+    let fixture = try NativeRuntimeFixture("shared-start-source-commit")
+    defer { fixture.cleanup() }
+    let installer = RecordingLockScreenSaverInstaller()
+    var desktopWasLaunchedBeforeInstall = false
+    installer.onInstallForDesktopAgent = {
+        desktopWasLaunchedBeforeInstall = fixture.store.loadCommand()?.action == .reload
+        fixture.store.markLockScreenAgentReady(true, operationID: 1)
+    }
+    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        lockScreenSaverInstaller: installer)
+    _ = try await controller.start(videoURL: fixture.videoURL, speed: 1)
+    #expect(desktopWasLaunchedBeforeInstall)
+    let command = try #require(fixture.store.loadCommand())
+    #expect(command.action == .rearmLockScreen && command.config?.video_path == fixture.videoURL.path)
+    #expect(!fixture.store.isLockScreenAgentReady(), "The pre-install assertion must not advertise the committed source as ready")
+}
+
 private final class RuntimeModernInstaller: ModernLockScreenInstalling {
     let isAvailable = true
     var isInstalled: Bool
@@ -676,8 +708,8 @@ func runtimeNativeBridgeCancellationKeepsSecureRoute(reason: String) throws {
     #expect(config.show_on_lock_screen == true)
     #expect(status.pid != nil)
     #expect(fixture.store.processIsAlive(pid: status.pid))
-    #expect(command?.action == .reload)
-    #expect(command?.operationID == 1)
+    #expect(command?.action == .rearmLockScreen)
+    #expect(command?.operationID == 2)
     #expect(command?.config?.video_path == fixture.videoURL.path)
     #expect(installer.installedVideoURL == fixture.videoURL)
     #expect(installer.installedLockScreenOnlyVideoURL == nil)
@@ -1547,7 +1579,7 @@ func runtimeNativeBridgeCancellationKeepsSecureRoute(reason: String) throws {
     #expect(status.paused == false)
     #expect(status.pid != nil)
     #expect(fixture.store.processIsAlive(pid: status.pid))
-    #expect(fixture.store.loadCommand()?.action == .reload)
+    #expect(fixture.store.loadCommand()?.action == .rearmLockScreen)
 }
 
 @Test func nativeAutostartPlistPointsToSwiftHelper() async throws {

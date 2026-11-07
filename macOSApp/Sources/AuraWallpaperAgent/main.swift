@@ -1400,7 +1400,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                     nativeLockScreenBridge.invalidatePreparation()
                     store.markLockScreenAgentReady(false)
                     lockScreenBridgeNeedsPreparation = true
-                    if manualPaused || store.isPaused() {
+                    if manualPaused || store.isPaused() || systemSessionIsLocked() == true {
                         lockScreenBridgeNeedsPreparation = false
                         prepareNativeLockScreenBridgeForStart()
                     } else {
@@ -1554,14 +1554,19 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
               lockScreenPlatform.capabilities.supportsSecureLockScreen
         else { return }
         let token = currentRearmToken()
+        let operationID = lastCommandOperationID
         nativeLockScreenBridge.prepare { [weak self] succeeded in
             Task { @MainActor [weak self] in
                 guard let self, !self.isTerminating,
-                      self.currentRearmToken() == token,
+                      self.currentRearmToken().wallpaperRevision == token.wallpaperRevision,
+                      self.currentRearmToken().videoPath == token.videoPath,
                       self.config.show_on_lock_screen == true,
                       self.store.loadConfig().show_on_lock_screen == true
                 else { return }
-                self.store.markLockScreenAgentReady(succeeded)
+                self.store.markLockScreenAgentReady(succeeded, operationID: operationID)
+                if succeeded, self.systemSessionIsLocked() == true {
+                    self.nativeLockScreenBridge.showForLockTransition()
+                }
                 self.writeHealth(
                     reason: succeeded
                         ? "native-lock-bridge-ready"

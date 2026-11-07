@@ -100,12 +100,12 @@ internal final class WallpaperStoreTransaction {
         }
     }
 
-    func cleanedWallpaperStoreData(from data: Data) throws -> Data {
+    func cleanedWallpaperStoreData(from data: Data, preservingAllRoutes: Bool = false) throws -> Data {
         guard var root = try propertyListDictionary(from: data) else {
             throw AerialLockScreenInstallerError.malformedWallpaperStore
         }
         let validTopology = loadValidWallpaperTopology()
-        if !validTopology.spaceIDs.isEmpty,
+        if !preservingAllRoutes, !validTopology.spaceIDs.isEmpty,
            var spaces = root["Spaces"] as? [String: Any] {
             spaces = spaces.filter {
                 validTopology.spaceIDs.contains($0.key)
@@ -125,7 +125,7 @@ internal final class WallpaperStoreTransaction {
             }
             root["Spaces"] = spaces
         }
-        if !validTopology.displayIDs.isEmpty,
+        if !preservingAllRoutes, !validTopology.displayIDs.isEmpty,
            var displays = root["Displays"] as? [String: Any] {
             displays = displays.filter {
                 validTopology.displayIDs.contains($0.key)
@@ -163,7 +163,7 @@ internal final class WallpaperStoreTransaction {
                 if let fallbackIdle { result["Idle"] = fallbackIdle }
                 else { missingUserSelection = true }
             }
-            if !validTopology.displayIDs.isEmpty,
+            if !preservingAllRoutes, !validTopology.displayIDs.isEmpty,
                var displays = result["Displays"] as? [String: Any] {
                 displays = displays.filter {
                     validTopology.displayIDs.contains($0.key)
