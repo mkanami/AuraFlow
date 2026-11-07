@@ -13,9 +13,7 @@ struct WallpaperEffectsSettingsSection: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            AuraGlassContentGroup(spacing: 12) {
-                effectControls
-            }
+            effectControls
         } label: {
             HStack {
                 Label("Wallpaper Effects", systemImage: "sparkles")
@@ -37,15 +35,17 @@ struct WallpaperEffectsSettingsSection: View {
                 .foregroundStyle(.secondary)
 
             if viewModel.wallpaperEffects.enabled {
-                HStack {
-                    ForEach(WallpaperEffectsPreset.allCases) { preset in
-                        Button(preset.title) { viewModel.applyWallpaperEffectsPreset(preset) }
-                            .help("Apply the \(preset.title) effect preset")
+                AuraGlassContentGroup(spacing: 8) {
+                    HStack(spacing: 8) {
+                        ForEach(WallpaperEffectsPreset.allCases) { preset in
+                            Button(preset.title) { viewModel.applyWallpaperEffectsPreset(preset) }
+                                .help("Apply the \(preset.title) effect preset")
+                        }
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 0)
+                    .modifier(WallpaperEffectsGlassButtons())
+                    .controlSize(.small)
                 }
-                .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
-                .controlSize(.small)
 
                 Toggle("React to cursor", isOn: binding(\.reactsToCursor))
                     .help("Follow the cursor on its display. Turn off for gentle automatic motion.")
@@ -106,7 +106,7 @@ struct WallpaperEffectsSettingsSection: View {
                 Text("Effects rest during playback pauses, sleep and Reduce Motion. Low Power Mode reduces effects to 30 fps. Lock Screen keeps the original wallpaper.")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Reset effects") { viewModel.resetWallpaperEffects() }
-                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+                    .modifier(WallpaperEffectsGlassButtons())
                     .controlSize(.small)
             }
         }
@@ -124,17 +124,13 @@ struct WallpaperEffectsSettingsSection: View {
                 }
                 .pickerStyle(.inline)
             } label: {
-                HStack(spacing: 12) {
-                    Text(viewModel.wallpaperEffects.tint.title)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2.weight(.semibold))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(AuraGlassInsetCard(cornerRadius: 9))
+                Text(viewModel.wallpaperEffects.tint.title)
             }
             .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
+            .menuIndicator(.visible)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .modifier(AuraGlassInsetCardModifier(cornerRadius: 9))
             .fixedSize()
             .accessibilityLabel("Light color")
             .accessibilityValue(viewModel.wallpaperEffects.tint.title)
@@ -179,5 +175,33 @@ struct WallpaperEffectsSettingsSection: View {
 
     private func adjust(_ key: WritableKeyPath<WallpaperEffectsSettings, Double>, by amount: Double) {
         viewModel.setWallpaperEffect(key, min(1, max(0, viewModel.wallpaperEffects[keyPath: key] + amount)))
+    }
+}
+
+private struct WallpaperEffectsGlassButtons: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if compiler(>=6.2.3)
+        if #available(macOS 26.1, *) {
+            content.buttonStyle(.glass(.clear))
+        } else {
+            compatibleButtons(content)
+        }
+        #else
+        compatibleButtons(content)
+        #endif
+    }
+
+    @ViewBuilder
+    private func compatibleButtons(_ content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            content.buttonStyle(.glass)
+        } else {
+            content.buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+        }
+        #else
+        content.buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+        #endif
     }
 }
