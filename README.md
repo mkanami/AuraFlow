@@ -101,7 +101,10 @@ Expand **Wallpaper Effects** in Playback Settings to enable effects for the
 Desktop and main preview. Effects work with images, videos, terminal wallpapers,
 and web projects. Choose **Subtle**, **Cinematic**, or **Dreamy**, or adjust each
 effect separately. Controls include depth, smoothing, light color, glow size,
-blur, bloom, particle density, rain speed, and wind. **React to cursor** follows
+blur, bloom, particle density, rain color, speed, and wind. Rain is blue by
+default, with red, cyan, purple, green, gold, pink, and white alternatives. Its
+color is independent of the lighting palette. Depth-sorted droplets share
+cached textures with tapered trails and rounded highlights. **React to cursor** follows
 the pointer on its display; turn it off for ambient motion. Flat media uses
 simulated depth: the wallpaper, light, and foreground particles move at different
 rates, without separating objects in the source image.

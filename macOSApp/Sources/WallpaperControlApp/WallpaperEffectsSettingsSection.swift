@@ -95,6 +95,7 @@ struct WallpaperEffectsSettingsSection: View {
 
                 Toggle("Rain", isOn: binding(\.rainEnabled))
                 if viewModel.wallpaperEffects.rainEnabled {
+                    rainColorMenu
                     effectSlider("Rain density", value: \.rainAmount)
                     effectSlider("Rain speed", value: \.rainSpeed)
                     effectSlider("Wind direction", value: \.rainAngle)
@@ -116,15 +117,29 @@ struct WallpaperEffectsSettingsSection: View {
     }
 
     private var lightColorMenu: some View {
+        colorMenu("Light color", selection: binding(\.tint), options: WallpaperEffectsTint.allCases, name: { $0.title })
+    }
+
+    private var rainColorMenu: some View {
+        let rgb = viewModel.wallpaperEffects.rainColor.rgb
+        return colorMenu("Rain color", selection: binding(\.rainColor), options: WallpaperRainColor.allCases,
+            name: { $0.title }, swatch: Color(red: rgb.red, green: rgb.green, blue: rgb.blue))
+    }
+
+    private func colorMenu<Value: Identifiable & Hashable>(_ title: String, selection: Binding<Value>,
+        options: [Value], name: @escaping (Value) -> String, swatch: Color? = nil) -> some View {
         HStack(spacing: 10) {
-            Text("Light color")
+            Text(title)
+            if let swatch {
+                Circle().fill(swatch).frame(width: 9, height: 9).accessibilityHidden(true)
+            }
             Menu {
-                Picker("Light color", selection: binding(\.tint)) {
-                    ForEach(WallpaperEffectsTint.allCases) { tint in Text(tint.title).tag(tint) }
+                Picker(title, selection: selection) {
+                    ForEach(options) { option in Text(name(option)).tag(option) }
                 }
                 .pickerStyle(.inline)
             } label: {
-                Text(viewModel.wallpaperEffects.tint.title)
+                Text(name(selection.wrappedValue))
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.visible)
@@ -132,8 +147,8 @@ struct WallpaperEffectsSettingsSection: View {
             .padding(.vertical, 5)
             .modifier(AuraGlassInsetCardModifier(cornerRadius: 9))
             .fixedSize()
-            .accessibilityLabel("Light color")
-            .accessibilityValue(viewModel.wallpaperEffects.tint.title)
+            .accessibilityLabel(title)
+            .accessibilityValue(name(selection.wrappedValue))
         }
     }
 

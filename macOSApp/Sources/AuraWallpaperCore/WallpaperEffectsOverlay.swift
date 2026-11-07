@@ -8,7 +8,7 @@ final class WallpaperEffectsOverlay: CALayer {
     private let reflection = CAGradientLayer()
     private let ghosts = (0..<3).map { _ in CAGradientLayer() }
     private let sparkles = (0..<48).map { _ in CAShapeLayer() }
-    private let rain = (0..<120).map { _ in CAShapeLayer() }
+    private let rain = WallpaperRainLayer()
 
     var glowPosition: CGPoint { glow.position }
     var flarePosition: CGPoint { core.position }
@@ -32,7 +32,7 @@ final class WallpaperEffectsOverlay: CALayer {
             addSublayer(gradient)
         }
         for sparkle in sparkles { sparkle.name = "sparkle"; addSublayer(sparkle) }
-        for drop in rain { drop.name = "rain"; addSublayer(drop) }
+        addSublayer(rain)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -41,7 +41,6 @@ final class WallpaperEffectsOverlay: CALayer {
     private var configuredSize = CGSize.zero
     private var configuredScale: CGFloat = 0
     private var sparkleCount = 0
-    private var rainCount = 0
     private(set) var styleGeneration: UInt64 = 0
 
     /// Pointer-only frames update transforms and opacity; gradient textures and paths stay cached.
@@ -77,16 +76,7 @@ final class WallpaperEffectsOverlay: CALayer {
             sparkle.opacity = Float((0.12 + (sin(motion.time * 1.7 + seed * 2.4) + 1) * 0.22
                 + attraction * 0.35) * settings.sparkleAmount)
         }
-        for (index, drop) in rain.prefix(rainCount).enumerated() {
-            let seed = Double(index + 1)
-            let depth = 0.4 + fraction(seed * 0.75487766) * 0.6
-            let fall = motion.time * (0.4 + settings.rainSpeed * 1.6) * depth
-            let wind = (settings.rainAngle - 0.5) * 0.6 + (settings.reactsToCursor ? motion.pointer.x * 0.08 : 0)
-            let parallax = settings.parallaxEnabled ? motion.pointer.x * settings.parallaxAmount * 0.04 * depth : 0
-            drop.position = CGPoint(x: fraction(seed * 0.61803398875 + fall * wind - parallax) * (size.width + 60) - 30,
-                                    y: (1 - fraction(seed * 0.41421356237 + fall)) * (size.height + 60) - 30)
-            drop.setAffineTransform(CGAffineTransform(rotationAngle: CGFloat(atan(Double(wind)))))
-        }
+        rain.render(settings: settings, motion: motion, size: size, scale: scale)
     }
 
     private func configure(settings: WallpaperEffectsSettings, size: CGSize, scale: CGFloat) {
@@ -143,22 +133,6 @@ final class WallpaperEffectsOverlay: CALayer {
             sparkle.path = path
             sparkle.fillColor = (index.isMultiple(of: 3) ? colors.1 : colors.0).cgColor
             sparkle.contentsScale = scale
-        }
-        rainCount = settings.rainEnabled && settings.rainAmount > 0 ? Int(20 + settings.rainAmount * 100) : 0
-        for (index, drop) in rain.enumerated() {
-            drop.isHidden = index >= rainCount
-            guard index < rainCount else { continue }
-            let depth = 0.4 + fraction(Double(index + 1) * 0.75487766) * 0.6
-            let length = (8 + depth * 22) * max(0.65, unit / 900)
-            drop.bounds = CGRect(x: 0, y: 0, width: 4, height: length + 4)
-            let path = CGMutablePath()
-            path.move(to: CGPoint(x: 2, y: 2))
-            path.addLine(to: CGPoint(x: 2, y: length + 2))
-            drop.path = path
-            drop.strokeColor = colors.0.withAlphaComponent(0.18 + depth * 0.3).cgColor
-            drop.lineWidth = 0.5 + depth
-            drop.lineCap = .round
-            drop.contentsScale = scale
         }
     }
 

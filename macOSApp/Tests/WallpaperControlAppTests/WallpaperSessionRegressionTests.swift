@@ -87,6 +87,8 @@ struct HiddenLoginPlaybackTests {
         var settings = WallpaperEffectsPreset.subtle.settings
         settings.parallaxAmount = 0.8
         settings.flareEnabled = true
+        settings.rainEnabled = true
+        settings.rainColor = .red
         try effectsStore.save(settings)
         let deadline = Date().addingTimeInterval(2)
         while view.settings != settings, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
