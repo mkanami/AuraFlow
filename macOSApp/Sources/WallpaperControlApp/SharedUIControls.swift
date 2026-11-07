@@ -144,6 +144,7 @@ struct AuraLegacySpeedSlider: View {
     let step: Double
     let onValueChanged: (Double) -> Void
     let onEditingChanged: (Bool) -> Void
+    var textTone: AdaptiveTextTone? = nil
 
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @State private var isDragging = false
@@ -163,7 +164,7 @@ struct AuraLegacySpeedSlider: View {
             let knobX = normalizedValue * usableWidth
 
             ZStack(alignment: .leading) {
-                AuraLegacySliderDashes()
+                AuraLegacySliderDashes(tone: textTone ?? adaptiveGlassAppearance.topTextTone)
                     .mask(
                         Capsule()
                             .frame(height: trackHeight)
@@ -190,7 +191,7 @@ struct AuraLegacySpeedSlider: View {
                 .overlay(
                     knobShape
                         .stroke(
-                            adaptiveGlassAppearance.topTextTone.primaryTextColor.opacity(
+                            (textTone ?? adaptiveGlassAppearance.topTextTone).primaryTextColor.opacity(
                                 isDragging ? 0.34 : 0.24
                             ),
                             lineWidth: 0.8
@@ -234,7 +235,7 @@ struct AuraLegacySpeedSlider: View {
 }
 
 private struct AuraLegacySliderDashes: View {
-    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
+    let tone: AdaptiveTextTone
 
     var body: some View {
         GeometryReader { proxy in
@@ -249,7 +250,7 @@ private struct AuraLegacySliderDashes: View {
             HStack(spacing: spacing) {
                 ForEach(0..<dashCount, id: \.self) { _ in
                     Capsule()
-                        .fill(adaptiveGlassAppearance.topTextTone.primaryTextColor.opacity(0.28))
+                        .fill(tone.primaryTextColor.opacity(0.28))
                         .frame(width: dashWidth, height: dashHeight)
                 }
             }

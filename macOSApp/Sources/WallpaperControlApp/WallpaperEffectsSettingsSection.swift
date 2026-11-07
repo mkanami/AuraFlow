@@ -3,6 +3,7 @@ import SwiftUI
 
 struct WallpaperEffectsSettingsSection: View {
     @ObservedObject var viewModel: AppViewModel
+    @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @State private var isExpanded: Bool
 
     init(viewModel: AppViewModel) {
@@ -12,91 +13,9 @@ struct WallpaperEffectsSettingsSection: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 12) {
-                Toggle("Enable wallpaper effects", isOn: binding(\.enabled))
-                    .toggleStyle(.switch)
-                Text("Applies immediately to the Desktop and this preview, for photos, videos, terminal and web wallpapers.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                if viewModel.wallpaperEffects.enabled {
-                    HStack {
-                        ForEach(WallpaperEffectsPreset.allCases) { preset in
-                            Button(preset.title) { viewModel.applyWallpaperEffectsPreset(preset) }
-                                .help("Apply the \(preset.title) effect preset")
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-
-                    Toggle("React to cursor", isOn: binding(\.reactsToCursor))
-                        .help("Follow the cursor on its display. Turn off for gentle automatic motion.")
-                    effectSlider("Smoothing", value: \.smoothing)
-                    effectSlider("Ambient speed", value: \.ambientSpeed)
-                    Picker("Light color", selection: binding(\.tint)) {
-                        ForEach(WallpaperEffectsTint.allCases) { tint in Text(tint.title).tag(tint) }
-                    }
-
-                    Divider()
-                    Toggle("Parallax", isOn: binding(\.parallaxEnabled))
-                    if viewModel.wallpaperEffects.parallaxEnabled {
-                        effectSlider("Depth", value: \.parallaxAmount)
-                        Text("Adds a slight crop so movement keeps the edges covered.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-
-                    Toggle("Soft glow", isOn: binding(\.glowEnabled))
-                    if viewModel.wallpaperEffects.glowEnabled {
-                        effectSlider("Glow intensity", value: \.glowIntensity)
-                        effectSlider("Glow size", value: \.glowSize)
-                    }
-
-                    Toggle("Lens flare", isOn: binding(\.flareEnabled))
-                    if viewModel.wallpaperEffects.flareEnabled {
-                        effectSlider("Flare intensity", value: \.flareIntensity)
-                    }
-
-                    Toggle("Light reflections", isOn: binding(\.reflectionEnabled))
-                    if viewModel.wallpaperEffects.reflectionEnabled {
-                        effectSlider("Reflection", value: \.reflectionIntensity)
-                    }
-
-                    Toggle("Bloom", isOn: binding(\.bloomEnabled))
-                    if viewModel.wallpaperEffects.bloomEnabled {
-                        effectSlider("Bloom intensity", value: \.bloomIntensity)
-                        effectSlider("Bloom radius", value: \.bloomRadius)
-                    }
-
-                    Toggle("Blur", isOn: binding(\.blurEnabled))
-                    if viewModel.wallpaperEffects.blurEnabled {
-                        effectSlider("Blur amount", value: \.blurAmount)
-                    }
-
-                    Toggle("Sparkles", isOn: binding(\.sparkleEnabled))
-                    if viewModel.wallpaperEffects.sparkleEnabled {
-                        effectSlider("Sparkle density", value: \.sparkleAmount)
-                    }
-
-                    Toggle("Rain", isOn: binding(\.rainEnabled))
-                    if viewModel.wallpaperEffects.rainEnabled {
-                        effectSlider("Rain density", value: \.rainAmount)
-                        effectSlider("Rain speed", value: \.rainSpeed)
-                        effectSlider("Wind direction", value: \.rainAngle)
-                    }
-
-                    Text("Parallax moves the wallpaper, distant light and foreground particles at different depths. Flat media uses simulated depth.")
-                        .font(.caption).foregroundStyle(.secondary)
-
-                    Text("Effects rest during playback pauses, sleep and Reduce Motion. Low Power Mode reduces effects to 30 fps. Lock Screen keeps the original wallpaper.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Button("Reset effects") { viewModel.resetWallpaperEffects() }
-                        .controlSize(.small)
-                }
+            AuraGlassContentGroup(spacing: 12) {
+                effectControls
             }
-            .toggleStyle(.checkbox)
-            .padding(.top, 8)
-            .padding(.leading, 4)
         } label: {
             HStack {
                 Label("Wallpaper Effects", systemImage: "sparkles")
@@ -109,6 +28,119 @@ struct WallpaperEffectsSettingsSection: View {
         .accessibilityIdentifier("wallpaper-effects-settings")
     }
 
+    private var effectControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("Enable wallpaper effects", isOn: binding(\.enabled))
+                .toggleStyle(.switch)
+            Text("Applies immediately to the Desktop and this preview, for photos, videos, terminal and web wallpapers.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if viewModel.wallpaperEffects.enabled {
+                HStack {
+                    ForEach(WallpaperEffectsPreset.allCases) { preset in
+                        Button(preset.title) { viewModel.applyWallpaperEffectsPreset(preset) }
+                            .help("Apply the \(preset.title) effect preset")
+                    }
+                    Spacer(minLength: 0)
+                }
+                .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+                .controlSize(.small)
+
+                Toggle("React to cursor", isOn: binding(\.reactsToCursor))
+                    .help("Follow the cursor on its display. Turn off for gentle automatic motion.")
+                effectSlider("Smoothing", value: \.smoothing)
+                effectSlider("Ambient speed", value: \.ambientSpeed)
+                lightColorMenu
+
+                Divider()
+                Toggle("Parallax", isOn: binding(\.parallaxEnabled))
+                if viewModel.wallpaperEffects.parallaxEnabled {
+                    effectSlider("Depth", value: \.parallaxAmount)
+                    Text("Adds a slight crop so movement keeps the edges covered.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+
+                Toggle("Soft glow", isOn: binding(\.glowEnabled))
+                if viewModel.wallpaperEffects.glowEnabled {
+                    effectSlider("Glow intensity", value: \.glowIntensity)
+                    effectSlider("Glow size", value: \.glowSize)
+                }
+
+                Toggle("Lens flare", isOn: binding(\.flareEnabled))
+                if viewModel.wallpaperEffects.flareEnabled {
+                    effectSlider("Flare intensity", value: \.flareIntensity)
+                }
+
+                Toggle("Light reflections", isOn: binding(\.reflectionEnabled))
+                if viewModel.wallpaperEffects.reflectionEnabled {
+                    effectSlider("Reflection", value: \.reflectionIntensity)
+                }
+
+                Toggle("Bloom", isOn: binding(\.bloomEnabled))
+                if viewModel.wallpaperEffects.bloomEnabled {
+                    effectSlider("Bloom intensity", value: \.bloomIntensity)
+                    effectSlider("Bloom radius", value: \.bloomRadius)
+                }
+
+                Toggle("Blur", isOn: binding(\.blurEnabled))
+                if viewModel.wallpaperEffects.blurEnabled {
+                    effectSlider("Blur amount", value: \.blurAmount)
+                }
+
+                Toggle("Sparkles", isOn: binding(\.sparkleEnabled))
+                if viewModel.wallpaperEffects.sparkleEnabled {
+                    effectSlider("Sparkle density", value: \.sparkleAmount)
+                }
+
+                Toggle("Rain", isOn: binding(\.rainEnabled))
+                if viewModel.wallpaperEffects.rainEnabled {
+                    effectSlider("Rain density", value: \.rainAmount)
+                    effectSlider("Rain speed", value: \.rainSpeed)
+                    effectSlider("Wind direction", value: \.rainAngle)
+                }
+
+                Text("Parallax moves the wallpaper, distant light and foreground particles at different depths. Flat media uses simulated depth.")
+                    .font(.caption).foregroundStyle(.secondary)
+
+                Text("Effects rest during playback pauses, sleep and Reduce Motion. Low Power Mode reduces effects to 30 fps. Lock Screen keeps the original wallpaper.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Reset effects") { viewModel.resetWallpaperEffects() }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+                    .controlSize(.small)
+            }
+        }
+        .toggleStyle(.checkbox)
+        .padding(.top, 8)
+        .padding(.leading, 4)
+    }
+
+    private var lightColorMenu: some View {
+        HStack(spacing: 10) {
+            Text("Light color")
+            Menu {
+                Picker("Light color", selection: binding(\.tint)) {
+                    ForEach(WallpaperEffectsTint.allCases) { tint in Text(tint.title).tag(tint) }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                HStack(spacing: 12) {
+                    Text(viewModel.wallpaperEffects.tint.title)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.semibold))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(AuraGlassInsetCard(cornerRadius: 9))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Light color")
+            .accessibilityValue(viewModel.wallpaperEffects.tint.title)
+        }
+    }
+
     private func binding<Value>(_ key: WritableKeyPath<WallpaperEffectsSettings, Value>) -> Binding<Value> {
         Binding(get: { viewModel.wallpaperEffects[keyPath: key] },
                 set: { viewModel.setWallpaperEffect(key, $0) })
@@ -117,12 +149,35 @@ struct WallpaperEffectsSettingsSection: View {
     private func effectSlider(_ title: String, value key: WritableKeyPath<WallpaperEffectsSettings, Double>) -> some View {
         HStack(spacing: 10) {
             Text(title).font(.caption).frame(width: 100, alignment: .leading)
-            Slider(value: binding(key), in: 0...1)
+            AuraLegacySpeedSlider(value: viewModel.wallpaperEffects[keyPath: key], range: 0...1, step: 0.01,
+                onValueChanged: { viewModel.setWallpaperEffect(key, $0) }, onEditingChanged: { _ in },
+                textTone: adaptiveGlassAppearance.centerTextTone)
+                .accessibilityElement(children: .ignore)
                 .accessibilityLabel(title)
+                .accessibilityValue(Text(viewModel.wallpaperEffects[keyPath: key], format: .percent.precision(.fractionLength(0))))
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: adjust(key, by: 0.01)
+                    case .decrement: adjust(key, by: -0.01)
+                    @unknown default: break
+                    }
+                }
+                .focusable()
+                .onMoveCommand { direction in
+                    switch direction {
+                    case .right, .up: adjust(key, by: 0.01)
+                    case .left, .down: adjust(key, by: -0.01)
+                    default: break
+                    }
+                }
             Text(viewModel.wallpaperEffects[keyPath: key], format: .percent.precision(.fractionLength(0)))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .frame(width: 38, alignment: .trailing)
         }
+    }
+
+    private func adjust(_ key: WritableKeyPath<WallpaperEffectsSettings, Double>, by amount: Double) {
+        viewModel.setWallpaperEffect(key, min(1, max(0, viewModel.wallpaperEffects[keyPath: key] + amount)))
     }
 }
