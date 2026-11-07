@@ -5,8 +5,6 @@ import QuartzCore
 final class WallpaperEffectsOverlay: CALayer {
     private let glow = CAGradientLayer()
     private let core = CAGradientLayer()
-    private let streak = CAGradientLayer()
-    private let ring = CAShapeLayer()
     private let reflection = CAGradientLayer()
     private let ghosts = (0..<3).map { _ in CAGradientLayer() }
     private let sparkles = (0..<48).map { _ in CAShapeLayer() }
@@ -33,12 +31,6 @@ final class WallpaperEffectsOverlay: CALayer {
             gradient.endPoint = CGPoint(x: 1, y: 0.5)
             addSublayer(gradient)
         }
-        streak.startPoint = CGPoint(x: 0, y: 0.5)
-        streak.endPoint = CGPoint(x: 1, y: 0.5)
-        addSublayer(streak)
-        ring.fillColor = nil
-        ring.lineWidth = 1
-        addSublayer(ring)
         for sparkle in sparkles { sparkle.name = "sparkle"; addSublayer(sparkle) }
         for drop in rain { drop.name = "rain"; addSublayer(drop) }
     }
@@ -66,10 +58,6 @@ final class WallpaperEffectsOverlay: CALayer {
         let flareAlpha = settings.flareEnabled ? Float(settings.flareIntensity * motion.presence) : 0
         core.position = focus
         core.opacity = flareAlpha
-        streak.position = focus
-        streak.opacity = flareAlpha
-        ring.position = focus
-        ring.opacity = flareAlpha
         for (index, ghost) in ghosts.enumerated() {
             let distance = [0.3, 0.75, 1.3][index]
             ghost.position = CGPoint(x: size.width / 2 - motion.pointer.x * size.width * distance * 0.35,
@@ -115,26 +103,21 @@ final class WallpaperEffectsOverlay: CALayer {
         glow.colors = [colors.0.withAlphaComponent(0.6).cgColor,
                        colors.1.withAlphaComponent(0.12).cgColor, NSColor.clear.cgColor]
         glow.locations = [0, 0.35, 1]
-        core.bounds = CGRect(x: 0, y: 0, width: unit * 0.12, height: unit * 0.12)
-        core.colors = [NSColor.white.withAlphaComponent(0.9).cgColor,
-                       colors.0.withAlphaComponent(0.28).cgColor, NSColor.clear.cgColor]
-        core.locations = [0, 0.16, 1]
+        core.bounds = CGRect(x: 0, y: 0, width: unit * 0.18, height: unit * 0.18)
+        core.colors = [colors.0.withAlphaComponent(0.45).cgColor,
+                       colors.0.withAlphaComponent(0.14).cgColor, NSColor.clear.cgColor]
+        core.locations = [0, 0.28, 1]
         reflection.bounds = CGRect(x: 0, y: 0, width: size.width * 2, height: size.height)
         reflection.colors = [NSColor.clear.cgColor, colors.0.withAlphaComponent(0.01).cgColor,
                               colors.0.withAlphaComponent(0.22).cgColor,
                               colors.1.withAlphaComponent(0.07).cgColor, NSColor.clear.cgColor]
         reflection.locations = [0, 0.38, 0.5, 0.62, 1]
-        streak.bounds = CGRect(x: 0, y: 0, width: unit * (0.45 + settings.flareIntensity * 0.6), height: 2)
-        streak.colors = [NSColor.clear.cgColor, colors.0.withAlphaComponent(0.15).cgColor,
-                         NSColor.white.withAlphaComponent(0.85).cgColor,
-                         colors.0.withAlphaComponent(0.15).cgColor, NSColor.clear.cgColor]
-        streak.locations = [0, 0.35, 0.5, 0.65, 1]
         for (index, ghost) in ghosts.enumerated() {
             let diameter = unit * [0.045, 0.09, 0.16][index]
             ghost.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
-            ghost.colors = [colors.1.withAlphaComponent(0.02).cgColor,
-                            colors.1.withAlphaComponent(0.22).cgColor, NSColor.clear.cgColor]
-            ghost.locations = [0, 0.7, 1]
+            ghost.colors = [colors.1.withAlphaComponent(0.10).cgColor,
+                            colors.1.withAlphaComponent(0.045).cgColor, NSColor.clear.cgColor]
+            ghost.locations = [0, 0.35, 1]
         }
         // These lights are deliberately soft. Cache them at one pixel per point;
         // moving a cached layer must not redraw a display-sized radial gradient.
@@ -142,10 +125,6 @@ final class WallpaperEffectsOverlay: CALayer {
             gradient.shouldRasterize = true
             gradient.rasterizationScale = 1
         }
-        ring.bounds = CGRect(x: 0, y: 0, width: unit * 0.2, height: unit * 0.2)
-        ring.path = CGPath(ellipseIn: ring.bounds.insetBy(dx: 1, dy: 1), transform: nil)
-        ring.strokeColor = colors.1.withAlphaComponent(0.22).cgColor
-        ring.contentsScale = scale
         sparkleCount = settings.sparkleEnabled && settings.sparkleAmount > 0 ? Int(8 + settings.sparkleAmount * 40) : 0
         for (index, sparkle) in sparkles.enumerated() {
             sparkle.isHidden = index >= sparkleCount
