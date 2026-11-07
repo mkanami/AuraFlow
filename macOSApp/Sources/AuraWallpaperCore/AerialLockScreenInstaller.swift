@@ -2454,10 +2454,11 @@ public final class AerialLockScreenInstaller: ModernLockScreenInstalling {
                 guard shouldProceed(), let marker = loadMarker(), marker.completed == true else { return false }
                 let original = try Data(contentsOf: wallpaperStoreURL)
                 var userStore = original
-                if wallpaperStoreTransaction.wallpaperStoreHasManagedDesktop(original, managedAssetID: marker.assetID) {
-                    // Older shared installs and a lock promotion interrupted
-                    // by shutdown can own Desktop as well as Idle. Recover the
-                    // exact saved providers before releasing the native slot.
+                if fileManager.fileExists(atPath: wallpaperStoreBackupURL.path)
+                    || wallpaperStoreTransaction.wallpaperStoreHasManagedDesktop(original, managedAssetID: marker.assetID) {
+                    // Recover exact saved Idle providers even when only Idle is
+                    // managed. Mirroring Desktop here would erase a distinct
+                    // user Lock Screen after an isolated native installation.
                     userStore = try wallpaperStoreTransaction.captureLatestUserWallpaperStoreData(
                         from: original,
                         fallbackData: Data(contentsOf: wallpaperStoreBackupURL),

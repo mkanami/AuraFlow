@@ -133,18 +133,30 @@ internal final class WallpaperStoreTransaction {
             root["Displays"] = displays
         }
 
-        let fallbackDesktop = safeDesktopMode(from: root)
+        let fallbackDesktop = safeDesktopMode(from: root, includeLegacyImageBackup: false)
         let fallbackIdle = safeIdleMode(from: root)
         var missingUserSelection = false
         root = mapWallpaperContainers(in: root) { container in
             var result = container
-            if let desktop = result["Desktop"] as? [String: Any],
-               modeReferencesAuraFlow(desktop) {
-                if let fallbackDesktop { result["Desktop"] = fallbackDesktop }
-                else { missingUserSelection = true }
-            }
-            if let desktop = result["Desktop"] as? [String: Any] {
-                result["Desktop"] = normalizeImageModeFiles(desktop)
+            for route in ["Desktop", "Linked"] {
+                if let mode = result[route] as? [String: Any],
+                   modeReferencesAuraFlow(mode) {
+                    if let fallbackDesktop { result[route] = fallbackDesktop }
+                    else if let idle = result["Idle"] as? [String: Any],
+                            WallpaperDesktopSupport.isUserWallpaperMode(idle) {
+                        // A removed legacy saver can leave only its Desktop route behind.
+                        // The paired native Idle is still a complete user selection;
+                        // preserve its opaque appearance options instead of inventing an image.
+                        result[route] = idle
+                    }
+                    else if let legacyDesktop = safeDesktopMode(from: root) {
+                        result[route] = legacyDesktop
+                    }
+                    else { missingUserSelection = true }
+                }
+                if let mode = result[route] as? [String: Any] {
+                    result[route] = normalizeImageModeFiles(mode)
+                }
             }
             if let idle = result["Idle"] as? [String: Any],
                modeReferencesAuraFlow(idle) {
@@ -1097,11 +1109,13 @@ internal final class WallpaperStoreTransaction {
     ) -> Bool {
         wallpaperContainersWithPaths(in: root).contains { _, container in
             if let linked = container["Linked"] as? [String: Any],
-               modeFullySelectsAerial(linked, assetID: assetID) {
+               modeReferencesAuraFlow(linked)
+                || modeFullySelectsAerial(linked, assetID: assetID) {
                 return true
             }
             if let desktop = container["Desktop"] as? [String: Any],
-               modeFullySelectsAerial(desktop, assetID: assetID) {
+               modeReferencesAuraFlow(desktop)
+                || modeFullySelectsAerial(desktop, assetID: assetID) {
                 return true
             }
             return false
@@ -1470,7 +1484,8 @@ internal final class WallpaperStoreTransaction {
     }
 
     private func safeDesktopMode(
-        from root: [String: Any]
+        from root: [String: Any],
+        includeLegacyImageBackup: Bool = true
     ) -> [String: Any]? {
         for key in ["AllSpacesAndDisplays", "SystemDefault"] {
             let container = root[key] as? [String: Any]
@@ -1479,7 +1494,8 @@ internal final class WallpaperStoreTransaction {
                    WallpaperDesktopSupport.isUserWallpaperMode(mode) { return mode }
             }
         }
-        guard let wallpaperPath = loadOriginalWallpaperPath() else { return nil }
+        guard includeLegacyImageBackup,
+              let wallpaperPath = loadOriginalWallpaperPath() else { return nil }
         return makeMode(
             provider: WallpaperPlatformConstants.imageProviderID,
             configuration: [

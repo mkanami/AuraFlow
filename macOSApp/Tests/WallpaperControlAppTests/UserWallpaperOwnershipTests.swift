@@ -8,6 +8,72 @@ private func ownershipMode(_ provider: String, configuration: [String: Any] = [:
         "EncodedOptionValues": options ?? Data()]]
 }
 
+@Test func orphanedAuraDesktopRecoversTheCompletePairedNativeWallpaper() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraOrphanedDesktop-\(UUID())")
+    let transaction = WallpaperStoreTransaction(wallpaperStoreURL: root.appendingPathComponent("Index.plist"),
+        spacesPreferencesURL: root.appendingPathComponent("spaces.plist"))
+    let options = try PropertyListSerialization.data(fromPropertyList: ["values": ["appearance": "automatic", "customOption": "preserve"]], format: .binary, options: 0)
+    let user = try ownershipMode("com.apple.wallpaper.choice.sequoia", options: options)
+    let aura = try ownershipMode(WallpaperPlatformConstants.screenSaverProviderID,
+        configuration: ["module": ["relative": "file:///Users/test/Library/Screen%20Savers/AuraFlowLockScreen.saver"]])
+    let container: [String: Any] = ["Desktop": aura, "Idle": user, "Type": "individual", "CustomMetadata": Data([1, 2, 3])]
+    let data = try PropertyListSerialization.data(fromPropertyList: ["AllSpacesAndDisplays": container, "SystemDefault": container], format: .binary, options: 0)
+    let cleaned = try transaction.cleanedWallpaperStoreData(from: data)
+    let decoded = try #require(try PropertyListSerialization.propertyList(from: cleaned, format: nil) as? [String: [String: Any]])
+    for name in ["AllSpacesAndDisplays", "SystemDefault"] {
+        #expect((decoded[name]?["Desktop"] as? NSDictionary)?.isEqual(user) == true)
+        #expect((decoded[name]?["Idle"] as? NSDictionary)?.isEqual(user) == true)
+        #expect(decoded[name]?["CustomMetadata"] as? Data == Data([1, 2, 3]))
+    }
+}
+
+@Test func orphanedAuraDesktopsKeepDifferentNativeAppearancesPerDisplayAndSpace() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraOrphanedRoutes-\(UUID())")
+    let transaction = WallpaperStoreTransaction(wallpaperStoreURL: root.appendingPathComponent("Index.plist"),
+        spacesPreferencesURL: root.appendingPathComponent("spaces.plist"))
+    let aura = try ownershipMode(WallpaperPlatformConstants.screenSaverProviderID,
+        configuration: ["module": ["relative": "file:///Users/test/Library/Screen%20Savers/AuraFlowLockScreen.saver"]])
+    let first = try ownershipMode("com.apple.wallpaper.choice.sequoia",
+        options: PropertyListSerialization.data(fromPropertyList: ["values": ["appearance": "automatic"]], format: .binary, options: 0))
+    let second = try ownershipMode("com.apple.wallpaper.choice.sequoia",
+        options: PropertyListSerialization.data(fromPropertyList: ["values": ["appearance": "dark", "contrast": 0.8]], format: .binary, options: 0))
+    let displays = [UUID().uuidString: ["Desktop": aura, "Idle": first],
+                    UUID().uuidString: ["Desktop": aura, "Idle": second]]
+    let space = UUID().uuidString
+    let data = try PropertyListSerialization.data(fromPropertyList: ["Displays": displays,
+        "Spaces": [space: ["Default": ["Desktop": aura, "Idle": second], "Displays": displays]]], format: .binary, options: 0)
+    let cleaned = try transaction.cleanedWallpaperStoreData(from: data)
+    let decoded = try #require(try PropertyListSerialization.propertyList(from: cleaned, format: nil) as? [String: Any])
+    let cleanedDisplays = try #require(decoded["Displays"] as? [String: [String: Any]])
+    let cleanedSpace = try #require((decoded["Spaces"] as? [String: [String: Any]])?[space])
+    let spaceDisplays = try #require(cleanedSpace["Displays"] as? [String: [String: Any]])
+    for (id, container) in displays {
+        #expect((cleanedDisplays[id]?["Desktop"] as? NSDictionary)?.isEqual(container["Idle"]) == true)
+        #expect((spaceDisplays[id]?["Desktop"] as? NSDictionary)?.isEqual(container["Idle"]) == true)
+    }
+    #expect(((cleanedSpace["Default"] as? [String: Any])?["Desktop"] as? NSDictionary)?.isEqual(second) == true)
+}
+
+@Test func orphanedAuraDesktopPrefersNativeAppearanceToAFileOnlyLegacyBackup() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraNativeRecovery-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let image = root.appendingPathComponent("older-wallpaper.png")
+    try Data("older image".utf8).write(to: image)
+    try JSONEncoder().encode(["display": image.path]).write(to: root.appendingPathComponent("wallpaper_backup.json"))
+    let transaction = WallpaperStoreTransaction(wallpaperStoreURL: root.appendingPathComponent("Index.plist"),
+        spacesPreferencesURL: root.appendingPathComponent("spaces.plist"),
+        latestUserWallpaperStoreURL: root.appendingPathComponent("ModernLockScreen/Index.latest-user.plist"))
+    let user = try ownershipMode("com.apple.wallpaper.choice.sequoia",
+        options: PropertyListSerialization.data(fromPropertyList: ["values": ["appearance": "automatic"]], format: .binary, options: 0))
+    let aura = try ownershipMode(WallpaperPlatformConstants.screenSaverProviderID,
+        configuration: ["module": ["relative": "file:///Users/test/Library/Screen%20Savers/AuraFlowLockScreen.saver"]])
+    let data = try PropertyListSerialization.data(fromPropertyList: ["SystemDefault": ["Desktop": aura, "Idle": user]], format: .binary, options: 0)
+    let cleaned = try transaction.cleanedWallpaperStoreData(from: data)
+    let decoded = try #require(try PropertyListSerialization.propertyList(from: cleaned, format: nil) as? [String: [String: Any]])
+    #expect((decoded["SystemDefault"]?["Desktop"] as? NSDictionary)?.isEqual(user) == true)
+}
+
 @Test func missingUserWallpaperMustNeverInventStoneOrVentura() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraOwnership-\(UUID())")
     let transaction = WallpaperStoreTransaction(wallpaperStoreURL: root.appendingPathComponent("Index.plist"),

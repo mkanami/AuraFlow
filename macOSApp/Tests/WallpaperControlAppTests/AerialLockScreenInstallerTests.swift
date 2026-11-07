@@ -417,6 +417,49 @@ private struct AerialLockScreenFixture {
     }
 }
 
+@Test(arguments: [false, true])
+func orphanedLegacyDesktopCanInstallPromoteAndRestoreNativeAppearance(lockOnly: Bool) async throws {
+    let fixture = try AerialLockScreenFixture()
+    defer { fixture.cleanup() }
+    var user = AerialLockScreenFixture.makeMode(provider: "com.apple.wallpaper.choice.sequoia", configuration: [:])
+    var content = try #require(user["Content"] as? [String: Any])
+    content["EncodedOptionValues"] = try PropertyListSerialization.data(
+        fromPropertyList: ["values": ["appearance": "automatic", "customOption": "keep"]], format: .binary, options: 0)
+    user["Content"] = content
+    let staleDesktop = AerialLockScreenFixture.makeMode(provider: WallpaperPlatformConstants.screenSaverProviderID,
+        configuration: ["module": ["relative": "file:///Users/test/Library/Screen%20Savers/AuraFlowLockScreen.saver"]])
+    let orphaned: [String: Any] = ["Desktop": staleDesktop, "Idle": user, "Type": "individual"]
+    try writeWallpaperStore(["AllSpacesAndDisplays": orphaned, "SystemDefault": orphaned,
+                             "Displays": [:], "Spaces": [:]], to: fixture.storeURL)
+
+    if lockOnly { try await fixture.installer.installLockScreenOnly(videoURL: fixture.videoURL) }
+    else { try await fixture.installer.installForDesktopAgent(videoURL: fixture.videoURL) }
+    #expect(fixture.installer.installationConfirmed)
+    let expectedDesktop = testDesktopRouteData(in: try readWallpaperStore(fixture.storeURL))
+    #expect(expectedDesktop.count == 2)
+    for name in ["AllSpacesAndDisplays", "SystemDefault"] {
+        let container = try #require(try readWallpaperStore(fixture.storeURL)[name] as? [String: Any])
+        #expect((container["Desktop"] as? NSDictionary)?.isEqual(user) == true)
+    }
+
+    // Manual and idle-initiated secure locks share the same promotion. The idle saver
+    // before password lock leaves the recovered Desktop in place until this call.
+    for _ in ["manual", "automatic"] {
+        _ = try fixture.installer.activateLockScreenForCurrentSession()
+        _ = try fixture.installer.activateLockScreenForCurrentSession() // Duplicate/delayed lock notification.
+        _ = try fixture.installer.restoreDesktopAfterLockScreenSession()
+        _ = try fixture.installer.restoreDesktopAfterLockScreenSession() // Unlock is idempotent too.
+        #expect(testDesktopRouteData(in: try readWallpaperStore(fixture.storeURL)) == expectedDesktop)
+    }
+    try fixture.installer.uninstallLockScreenOnlyPreservingCurrentDesktop()
+    for name in ["AllSpacesAndDisplays", "SystemDefault"] {
+        let container = try #require(try readWallpaperStore(fixture.storeURL)[name] as? [String: Any])
+        #expect((container["Desktop"] as? NSDictionary)?.isEqual(user) == true)
+        #expect((container["Idle"] as? NSDictionary)?.isEqual(user) == true)
+    }
+    #expect(try Data(contentsOf: fixture.assetURL) == Data("original-aerial".utf8))
+}
+
 @Test func nativeSessionRecoveryRestoresUserRoutesAndKeepsAutostartGeneration() async throws {
     let fixture = try AerialLockScreenFixture()
     defer { fixture.cleanup() }

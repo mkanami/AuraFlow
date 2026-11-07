@@ -9,6 +9,34 @@ import Testing
 @MainActor
 struct PreviewViewportTests {
     @Test(arguments: [false, true])
+    func nestedEffectsPreviewCoversTheTitlebarWithoutATopInset(effectsEnabled: Bool) async throws {
+        var effects = WallpaperEffectsSettings()
+        effects.enabled = effectsEnabled
+        let fixture = makePreview(effects: effects)
+        let hosting = NSHostingView(rootView: fixture.preview.ignoresSafeArea())
+        hosting.sizingOptions = []
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 500),
+                              styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.titlebarAppearsTransparent = true
+        window.contentView = hosting
+        defer { window.close() }
+
+        for size in [CGSize(width: 800, height: 500), CGSize(width: 600, height: 700)] {
+            window.setContentSize(size)
+            hosting.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(50))
+            hosting.layoutSubtreeIfNeeded()
+            let player = try #require(findPlayerView(in: hosting))
+            let previewFrame = player.convert(player.bounds, to: hosting)
+            #expect(abs(previewFrame.minY - hosting.bounds.minY) < 1)
+            #expect(abs(previewFrame.maxY - hosting.bounds.maxY) < 1)
+            #expect(abs(previewFrame.height - hosting.bounds.height) < 1)
+            #expect(!window.isVisible) // No real window is ordered while testing the active desktop.
+        }
+    }
+
+    @Test(arguments: [false, true])
     func videoUsesWindowBoundsAndKeepsPlayerAcrossResizes(isReady: Bool) async throws {
         let fixture = makePreview(isReady: isReady)
         let hosting = NSHostingView(rootView: fixture.preview)
@@ -100,7 +128,7 @@ struct PreviewViewportTests {
     }
 
     private func makePreview(wallpaperURL: URL? = nil, isReady: Bool = true,
-                             posterURL: URL? = nil) -> (preview: PreviewLayer, player: AVPlayer) {
+                             posterURL: URL? = nil, effects: WallpaperEffectsSettings = WallpaperEffectsSettings()) -> (preview: PreviewLayer, player: AVPlayer) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let selection = WallpaperPreviewSelectionStore(selectionURL: root.appendingPathComponent("selection.json"))
         let terminal = TerminalWallpaperPreviewModel(selectionStore: selection, windowIsVisible: { false })
@@ -110,7 +138,7 @@ struct PreviewViewportTests {
         return (PreviewLayer(previewSelectionStore: selection, terminalPreviewModel: terminal,
             wallpaperEngine: web, player: player, wallpaperURL: wallpaperURL,
             isVideoReadyForDisplay: isReady, posterURL: posterURL, posterRefererURL: nil,
-            posterTitle: "Preview", onVideoReadyForDisplayChange: { _, _ in }), player)
+            posterTitle: "Preview", effects: effects, onVideoReadyForDisplayChange: { _, _ in }), player)
     }
 
     private func findPlayerView(in view: NSView) -> AuraPreviewPlayerView? {
