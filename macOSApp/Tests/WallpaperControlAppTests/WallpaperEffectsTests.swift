@@ -6,8 +6,47 @@ import Testing
 @testable import AuraWallpaperCore
 @testable import WallpaperControlApp
 
+private final class ResetCountingLayer: CALayer {
+    var transformWrites = 0
+    override func setAffineTransform(_ transform: CGAffineTransform) {
+        transformWrites += 1
+        super.setAffineTransform(transform)
+    }
+}
+
 @Suite(.serialized)
 struct WallpaperEffectsTests {
+    @Test(arguments: [false, true]) @MainActor
+    func dormantEffectsResetLayersOnceAndResumeWithTheSameSettings(disabled: Bool) throws {
+        let view = WallpaperEffectsView(content: NSView(frame: CGRect(x: 0, y: 0, width: 800, height: 500)), store: nil)
+        let motionLayer = ResetCountingLayer()
+        try #require(view.subviews.first).layer = motionLayer
+        var settings = WallpaperEffectsPreset.cinematic.settings
+        view.update(settings: settings)
+        var activity = WallpaperEffectsActivity()
+        view.applyActivity(activity)
+        view.renderFrame(deltaTime: 1.0 / 60, cursor: CGPoint(x: 1, y: 1))
+        #expect(motionLayer.affineTransform() != .identity)
+        if disabled {
+            settings.enabled = false
+            view.update(settings: settings)
+        } else {
+            activity.windowVisible = false
+        }
+        view.applyActivity(activity)
+        let writes = motionLayer.transformWrites
+        for _ in 0..<1_000 { view.applyActivity(activity) }
+        #expect(motionLayer.transformWrites == writes)
+        #expect(motionLayer.affineTransform() == .identity && !view.isAnimating)
+        settings.enabled = true
+        view.update(settings: settings)
+        activity.windowVisible = true
+        view.applyActivity(activity)
+        view.renderFrame(deltaTime: 1.0 / 60, cursor: CGPoint(x: -1, y: 0))
+        #expect(view.isAnimating && view.status.active && motionLayer.affineTransform() != .identity)
+        #expect(view.window == nil)
+    }
+
     @Test func preferencesMigrateAndRejectInvalidNumbers() throws {
         let old = try JSONDecoder().decode(WallpaperEffectsSettings.self, from: Data("{}".utf8))
         #expect(old == WallpaperEffectsSettings())

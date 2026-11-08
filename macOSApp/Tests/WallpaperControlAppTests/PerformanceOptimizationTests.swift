@@ -9,6 +9,25 @@ import Testing
 @testable import AuraWallpaperCore
 @testable import WallpaperControlApp
 
+@Test func performanceExecutableVerificationDetectsEditsReplacementsAndRemoval() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: file) }
+    try Data("before".utf8).write(to: file)
+    let original = try #require(RuntimeExecutableFingerprint.digest(at: file))
+    let date = try #require(try FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date)
+    for _ in 0..<100 { #expect(RuntimeExecutableFingerprint.digest(at: file, allowCachedRead: true) == original) }
+    try Data("edited".utf8).write(to: file)
+    try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
+    let edited = try #require(RuntimeExecutableFingerprint.digest(at: file, allowCachedRead: true))
+    #expect(edited != original && edited == RuntimeExecutableFingerprint.digest(at: file))
+    try Data("swap!!".utf8).write(to: file, options: .atomic)
+    try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
+    let replaced = try #require(RuntimeExecutableFingerprint.digest(at: file, allowCachedRead: true))
+    #expect(replaced != edited && replaced == RuntimeExecutableFingerprint.digest(at: file))
+    try FileManager.default.removeItem(at: file)
+    #expect(RuntimeExecutableFingerprint.digest(at: file, allowCachedRead: true) == nil)
+}
+
 @Test func performanceSignatureCacheExpiresAndExplicitChecksAlwaysRead() throws {
     let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try Data("source".utf8).write(to: file)

@@ -133,6 +133,12 @@ public final class WallpaperEffectsView: NSView {
     private func refreshActivity() {
         var activity = WallpaperEffectsActivity()
         activity.windowVisible = window?.isVisible == true && window?.occlusionState.contains(.visible) == true && !isHiddenOrHasHiddenAncestor
+        // These reasons take precedence over every system state below. A
+        // dormant surface needs no WindowServer, power or accessibility query.
+        guard settings.enabled, settings.hasVisibleEffects, activity.windowVisible else {
+            applyActivity(activity)
+            return
+        }
         let session = CGSessionCopyCurrentDictionary() as? [String: Any]
         activity.sessionActive = (session?["kCGSSessionOnConsoleKey"] as? NSNumber)?.boolValue == true
             && (!isPreview || NSApp.isActive)
@@ -158,7 +164,9 @@ public final class WallpaperEffectsView: NSView {
         }
         guard pauseReason == nil else {
             stopAnimation()
-            resetPresentation()
+            // Polling an already dormant surface must not dirty its layers
+            // and trigger another Core Animation/AppKit display cycle.
+            if presentationActive || filtersApplied { resetPresentation() }
             return
         }
         if !presentationActive { updateFilters(active: true) }

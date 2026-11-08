@@ -155,7 +155,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     static func helperNeedsReplacement(in store: TerminalWallpaperRuntimeStore, expectedExecutable: URL) -> Bool {
         guard expectedExecutable.lastPathComponent == "AuraTerminalWallpaperAgent",
               let pid = store.loadPID(), store.processIsAlive(pid: pid),
-              let expected = RuntimeExecutableFingerprint.digest(at: expectedExecutable) else { return false }
+              let expected = RuntimeExecutableFingerprint.digest(at: expectedExecutable, allowCachedRead: true) else { return false }
         // processIsAlive validates the saved PID and process start time.
         // After an atomic helper update proc_pidpath can no longer resolve
         // the old executable, even though that verified process is still live.
