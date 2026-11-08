@@ -33,7 +33,7 @@ struct WallpaperRainTexture {
         context.saveGState()
         context.clip(to: body)
         let gradient = CGGradient(colorsSpace: space,
-            colors: [tone(0), tone(0.3), tone(0.8), tone(0.28), tone(0)] as CFArray,
+            colors: [tone(0), tone(0.5), tone(0.95), tone(0.5), tone(0)] as CFArray,
             locations: [0, 0.16, 0.52, 0.84, 1])!
         context.drawLinearGradient(gradient, start: CGPoint(x: body.midX, y: body.minY),
             end: CGPoint(x: body.midX, y: body.maxY), options: [])
