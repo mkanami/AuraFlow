@@ -7,6 +7,13 @@ public final class WallpaperEffectsView: NSView {
     private static let logger = Logger(subsystem: "com.andrijvergeles.auraflow", category: "WallpaperEffects")
     public let wallpaperContent: NSView
     public var playbackIsPaused: () -> Bool = { false }
+    public var rainLightingSurfaceID: UInt32? {
+        didSet { if oldValue != rainLightingSurfaceID { rainLightingSampler.stop(); overlay.rainLighting = .neutral } }
+    }
+    public var rainLightingImageURL: URL? {
+        didSet { if oldValue != rainLightingImageURL { rainLightingSampler.stop(); overlay.rainLighting = .neutral } }
+    }
+    private let rainLightingSampler = WallpaperRainLightingSampler()
     private let store: WallpaperEffectsStore?
     private let isPreview: Bool
     private let motionContainer = NSView()
@@ -54,6 +61,7 @@ public final class WallpaperEffectsView: NSView {
         overlay.isHidden = true
         autoresizingMask = [.width, .height]
         if let store { settings = store.load() }
+        rainLightingSampler.onSample = { [weak self] lighting in self?.overlay.rainLighting = lighting }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -163,6 +171,7 @@ public final class WallpaperEffectsView: NSView {
             Self.logger.debug("Effects surface=\(self.isPreview ? "preview" : "desktop", privacy: .public) state=\(nextActivity, privacy: .public)")
         }
         guard pauseReason == nil else {
+            rainLightingSampler.stop()
             stopAnimation()
             // Polling an already dormant surface must not dirty its layers
             // and trigger another Core Animation/AppKit display cycle.
@@ -171,6 +180,12 @@ public final class WallpaperEffectsView: NSView {
         }
         if !presentationActive { updateFilters(active: true) }
         presentationActive = true
+        if settings.rainEnabled, settings.rainAmount > 0 {
+            rainLightingSampler.sample(content: wallpaperContent, surfaceID: rainLightingSurfaceID,
+                imageURL: rainLightingImageURL, at: CACurrentMediaTime())
+        } else {
+            rainLightingSampler.stop()
+        }
         guard settings.hasAnimatedEffects else {
             stopAnimation()
             renderFrame(deltaTime: 0, cursor: nil)
@@ -252,6 +267,7 @@ public final class WallpaperEffectsView: NSView {
     }
 
     private func stopMonitoring() {
+        rainLightingSampler.stop()
         stopAnimation()
         statusTimer?.invalidate()
         statusTimer = nil

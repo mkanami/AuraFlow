@@ -99,6 +99,8 @@ struct WallpaperEffectsSettingsSection: View {
                     effectSlider("Rain density", value: \.rainAmount)
                     effectSlider("Rain speed", value: \.rainSpeed)
                     effectSlider("Wind direction", value: \.rainAngle)
+                    Text("Three depth layers, gentle wind gusts and lighting sampled from the wallpaper. Cursor movement adds a small parallax.")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
 
                 Text("Parallax moves the wallpaper, distant light and foreground particles at different depths. Flat media uses simulated depth.")

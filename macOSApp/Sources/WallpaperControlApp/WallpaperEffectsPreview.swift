@@ -4,6 +4,7 @@ import SwiftUI
 /// Hosts only the wallpaper background; controls and desktop clicks remain outside the effect layers.
 struct WallpaperEffectsPreview<Content: View>: NSViewRepresentable {
     let settings: WallpaperEffectsSettings
+    var imageURL: URL? = nil
     @ViewBuilder var content: () -> Content
 
     func makeNSView(context: Context) -> WallpaperEffectsView {
@@ -15,6 +16,7 @@ struct WallpaperEffectsPreview<Content: View>: NSViewRepresentable {
             hosting.safeAreaRegions = []
         }
         let view = WallpaperEffectsView(content: hosting, store: nil, isPreview: true)
+        view.rainLightingImageURL = imageURL
         view.update(settings: settings)
         return view
     }
@@ -22,6 +24,7 @@ struct WallpaperEffectsPreview<Content: View>: NSViewRepresentable {
     func updateNSView(_ view: WallpaperEffectsView, context: Context) {
         (view.wallpaperContent as? NSHostingView<WallpaperEffectsPreviewContent<Content>>)?.rootView =
             WallpaperEffectsPreviewContent(content: content())
+        view.rainLightingImageURL = imageURL
         view.update(settings: settings)
     }
 }

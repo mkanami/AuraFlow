@@ -632,7 +632,9 @@ struct PreviewLayer: View {
 
     var body: some View {
         GeometryReader { viewport in
-            WallpaperEffectsPreview(settings: effects) {
+            WallpaperEffectsPreview(settings: effects,
+                imageURL: previewSelectionStore.kind == .terminal || previewSelectionStore.kind == .web ? nil
+                    : wallpaperURL.flatMap { WallpaperMediaKind.forURL($0).isStaticImage ? $0 : nil }) {
                 previewContent(in: viewport.size)
             }
                 .frame(width: viewport.size.width, height: viewport.size.height)

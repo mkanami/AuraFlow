@@ -50,6 +50,7 @@ struct WallpaperEffectsMotion {
     private(set) var pointer = CGPoint.zero
     private(set) var presence = 0.0
     private(set) var time = 0.0
+    private(set) var elapsedTime = 0.0
 
     /// Coordinates use AppKit's bottom-left origin and the actual window, including secondary displays.
     static func normalizedCursor(_ cursor: CGPoint, in frame: CGRect) -> CGPoint? {
@@ -60,6 +61,7 @@ struct WallpaperEffectsMotion {
 
     mutating func advance(settings: WallpaperEffectsSettings, cursor: CGPoint?, deltaTime: Double) {
         let dt = deltaTime.isFinite ? min(0.1, max(0, deltaTime)) : 0
+        elapsedTime += dt
         time += dt * (0.15 + settings.ambientSpeed * 0.85)
         let target = settings.reactsToCursor ? (cursor ?? .zero)
             : CGPoint(x: sin(time * 0.7) * 0.65, y: cos(time * 0.53) * 0.55)

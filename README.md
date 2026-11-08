@@ -103,9 +103,14 @@ and web projects. Choose **Subtle**, **Cinematic**, or **Dreamy**, or adjust eac
 effect separately. Controls include depth, smoothing, light color, glow size,
 blur, bloom, particle density, rain color, speed, and wind. Rain is blue by
 default, with red, cyan, purple, green, gold, pink, and white alternatives. Its
-color is independent of the lighting palette. Depth-sorted droplets share
-cached textures with tapered trails and rounded highlights. **React to cursor** follows
-the pointer on its display; turn it off for ambient motion. Flat media uses
+color is independent of the lighting palette. Rain has three depth layers
+(70% distant, 25% middle, 5% foreground), varied fading streaks, and soft motion
+blur on the rare foreground drops. About 90% have no rounded head or glint.
+Slow gusts determine its direction; the cursor adds only a small depth offset.
+The chosen rain color stays primary, with restrained brightness and accent
+colors sampled from the wallpaper. Small samples update at most every two
+seconds while rain is visible; sprites and blur are cached. **React to cursor** follows
+the pointer for lighting and parallax; turn it off for ambient motion. Flat media uses
 simulated depth: the wallpaper, light, and foreground particles move at different
 rates, without separating objects in the source image.
 

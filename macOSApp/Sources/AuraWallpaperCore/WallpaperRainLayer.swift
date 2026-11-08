@@ -1,118 +1,148 @@
 import Foundation
 import QuartzCore
 
-/// Depth-sorted textured drops. Only positions and wind transforms change per frame.
+enum WallpaperRainPlane: Int, CaseIterable {
+    case far, middle, near
+    var name: String { ["rain-far", "rain-middle", "rain-near"][rawValue] }
+    var strokeWidth: Double { [0.45, 0.85, 1.35][rawValue] }
+    var referenceLength: Double { [5, 22, 52][rawValue] }
+    var depth: Double { [0.12, 0.45, 1][rawValue] }
+    func velocity(speed: Double) -> Double { [85 + speed * 130, 240 + speed * 360, 650 + speed * 850][rawValue] }
+    var exposure: Double { [0.025, 0.045, 0.05][rawValue] }
+    var opacity: Double { [0.18, 0.68, 0.55][rawValue] }
+}
+
+/// Three independent particle pools: 70% distant, 25% middle, 5% foreground.
 final class WallpaperRainLayer: CALayer {
     private static let maximumDrops = 512
-    private static let variants = 8
     private final class Drop {
         let layer = CALayer()
-        let variant: Int
+        let highlighted: Bool
+        let speed: Double
+        let length: Double
+        let thickness: Double
+        let brightness: Double
+        let catchesLight: Bool
+        let accent: Int
+        var styleRevision: UInt64 = 0
         var x: Double
         var fall: Double
-
-        init(index: Int) {
-            let seed = UInt64(index + 1) * 3
-            variant = min(WallpaperRainLayer.variants - 1, Int(randomUnit(seed) * Double(WallpaperRainLayer.variants)))
-            x = randomUnit(seed + 1)
-            fall = randomUnit(seed + 2)
-            layer.name = "rain-drop"
-            layer.zPosition = CGFloat(variant) / CGFloat(WallpaperRainLayer.variants)
+        init(index: Int, plane: WallpaperRainPlane) {
+            let seed = UInt64(index + 1) * 11 + UInt64(plane.rawValue) * 100_003
+            highlighted = index % 10 == 7
+            speed = 0.8 + randomUnit(seed) * 0.4
+            length = 0.7 + randomUnit(seed + 1) * 0.65
+            thickness = 0.65 + randomUnit(seed + 2) * 0.7
+            brightness = 0.3 + pow(randomUnit(seed + 3), 1.5) * 0.7
+            catchesLight = randomUnit(seed + 4) > 0.8
+            accent = Int(randomUnit(seed + 5) * 2)
+            x = randomUnit(seed + 6)
+            fall = randomUnit(seed + 7)
+            layer.name = highlighted ? "rain-drop-highlight" : "rain-drop"
             layer.minificationFilter = .trilinear
             layer.magnificationFilter = .linear
         }
     }
-
-    private var drops: [Drop] = []
-    private var textures: [WallpaperRainTexture] = []
-    private var textureColor: WallpaperRainColor?
+    private let planes = WallpaperRainPlane.allCases.map { plane -> CALayer in
+        let layer = CALayer(); layer.name = plane.name; layer.zPosition = Double(plane.rawValue); return layer
+    }
+    private var pools = [[Drop]](repeating: [], count: 3)
+    private var textures: [[[WallpaperRainTexture]]] = []
+    private var texturePalette: [WallpaperRainLighting.RGB] = []
     private var textureUnit: CGFloat = 0
     private var textureScale: CGFloat = 0
-    private var activeCount = 0
     private var lastTime: Double?
+    private var styledSpeed = -1.0
+    private var styleRevision: UInt64 = 0
+    var lighting = WallpaperRainLighting.neutral
 
     override init() {
         super.init()
-        name = "rain"
-        masksToBounds = true
-        isHidden = true
+        name = "rain"; masksToBounds = true; isHidden = true
+        planes.forEach(addSublayer)
     }
-
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func render(settings: WallpaperEffectsSettings, motion: WallpaperEffectsMotion, size: CGSize, scale: CGFloat) {
         frame = CGRect(origin: .zero, size: size)
         guard settings.enabled, settings.rainEnabled, settings.rainAmount > 0, size.width > 0, size.height > 0 else {
-            isHidden = true
-            lastTime = nil
-            return
+            isHidden = true; lastTime = nil; return
         }
         let unit = min(1.5, max(0.7, min(size.width, size.height) / 1000))
         let scale = max(1, scale)
-        let densityScale = min(1, max(0.35, size.width * size.height / (1600 * 1000)))
-        let count = min(Self.maximumDrops, Int((56 + settings.rainAmount * 456) * densityScale))
-        let rebuild = textureColor != settings.rainColor || textureUnit != unit || textureScale != scale
+        let density = min(1, max(0.35, size.width * size.height / 1_600_000))
+        let count = min(Self.maximumDrops, Int((56 + settings.rainAmount * 456) * density))
+        let counts = [count - count / 4 - count / 20, count / 4, count / 20]
+        let palette = lighting.palette(base: settings.rainColor)
+        let rebuild = palette != texturePalette || unit != textureUnit || scale != textureScale
+        let restyle = rebuild || styledSpeed != settings.rainSpeed
         if rebuild {
-            let next = (0..<Self.variants).compactMap { index in
-                WallpaperRainTexture.make(color: settings.rainColor, depth: depth(at: index), unit: unit, scale: scale)
-            }
-            guard next.count == Self.variants else { isHidden = true; lastTime = nil; return }
-            textures = next
-            textureColor = settings.rainColor
-            textureUnit = unit
-            textureScale = scale
-        }
-        let previousPoolSize = drops.count
-        while drops.count < count {
-            let drop = Drop(index: drops.count)
-            drops.append(drop)
-            addSublayer(drop.layer)
-        }
-        if rebuild || count != activeCount {
-            for (index, drop) in drops.enumerated() {
-                drop.layer.isHidden = index >= count
-                if rebuild || index >= previousPoolSize {
-                    let texture = textures[drop.variant]
-                    drop.layer.contents = texture.image
-                    drop.layer.bounds = CGRect(origin: .zero, size: texture.size)
-                    drop.layer.contentsScale = scale
-                    drop.layer.opacity = Float(0.28 + depth(at: drop.variant) * 0.60)
+            var next: [[[WallpaperRainTexture]]] = []
+            for plane in WallpaperRainPlane.allCases {
+                var colors: [[WallpaperRainTexture]] = []
+                for color in palette {
+                    let pair = [false, true].compactMap {
+                        WallpaperRainTexture.make(color: color, plane: plane, highlighted: $0, unit: unit, scale: scale)
+                    }
+                    guard pair.count == 2 else { isHidden = true; lastTime = nil; return }
+                    colors.append(pair)
                 }
+                next.append(colors)
             }
-            activeCount = count
+            textures = next; texturePalette = palette; textureUnit = unit; textureScale = scale
         }
-        isHidden = false
-        // Integrate wind over frame deltas. Multiplying cursor wind by the total
-        // elapsed time would make drops teleport after the wallpaper runs for a while.
-        let dt = lastTime.map { min(0.1, max(0, motion.time - $0)) } ?? 0
-        lastTime = motion.time
-        let margin: CGFloat = 64 * unit
+        if restyle { styleRevision &+= 1 }
+        let dt = lastTime.map { min(0.1, max(0, motion.elapsedTime - $0)) } ?? 0
+        lastTime = motion.elapsedTime
+        let margin = 100 * unit
         let width = size.width + margin * 2
         let height = size.height + margin * 2
-        let wind = (settings.rainAngle - 0.5) * 0.9
-            + (settings.reactsToCursor ? motion.pointer.x * 0.12 : 0)
-            + sin(motion.time * 0.55) * 0.025
-        let transforms = (0..<Self.variants).map { index in
-            CGAffineTransform(rotationAngle: CGFloat(atan(wind * (0.8 + depth(at: index) * 0.2))))
+        for plane in WallpaperRainPlane.allCases {
+            let p = plane.rawValue
+            planes[p].frame = CGRect(origin: .zero, size: size)
+            while pools[p].count < counts[p] {
+                let drop = Drop(index: pools[p].count, plane: plane)
+                pools[p].append(drop); planes[p].addSublayer(drop.layer)
+            }
+            for (index, drop) in pools[p].enumerated() {
+                if drop.layer.isHidden != (index >= counts[p]) { drop.layer.isHidden = index >= counts[p] }
+                guard index < counts[p] else { continue }
+                let accent = drop.catchesLight && palette.count > 1 ? 1 + drop.accent % (palette.count - 1) : 0
+                let texture = textures[p][accent][drop.highlighted ? 1 : 0]
+                // Trail length follows velocity; changing speed never redraws a sprite.
+                let velocity = plane.velocity(speed: settings.rainSpeed) * drop.speed * unit
+                let trail = max(2 * unit, velocity * plane.exposure * drop.length)
+                // Hidden pooled drops can miss a color, speed or scale change.
+                // Rebind their current style when they become visible again.
+                if drop.styleRevision != styleRevision {
+                    drop.layer.contents = texture.image
+                    drop.layer.bounds = CGRect(x: 0, y: 0, width: texture.size.width * drop.thickness,
+                        height: texture.size.height * trail / (plane.referenceLength * unit))
+                    drop.layer.contentsScale = scale
+                    drop.styleRevision = styleRevision
+                }
+                // A slow coherent field: two long gusts plus a gentle spatial variation.
+                // Cursor coordinates never enter the trajectory or rotation.
+                let t = motion.elapsedTime
+                let wind = (settings.rainAngle - 0.5) * 0.9
+                    + sin(t * 0.21) * 0.065 + sin(t * 0.087 + 1.4) * 0.035
+                    + sin(drop.x * 4 + (1 - drop.fall) * 2 + t * 0.13) * 0.025
+                drop.fall = fraction(drop.fall + dt * velocity / height)
+                drop.x = fraction(drop.x + dt * velocity * wind / width)
+                let parallax = settings.parallaxEnabled ? settings.parallaxAmount * plane.depth : 0
+                drop.layer.position = CGPoint(x: drop.x * width - margin - motion.pointer.x * 10 * unit * parallax,
+                    y: (1 - drop.fall) * height - margin - motion.pointer.y * 5 * unit * parallax)
+                drop.layer.setAffineTransform(CGAffineTransform(rotationAngle: atan(wind)))
+                let illumination = lighting.illumination(x: drop.x, y: 1 - drop.fall)
+                drop.layer.opacity = Float(plane.opacity * drop.brightness * (0.5 + illumination * 0.5))
+            }
         }
-        for drop in drops.prefix(count) {
-            let depth = depth(at: drop.variant)
-            let velocity = (0.45 + settings.rainSpeed * 1.7) * (0.35 + depth * 0.8)
-            drop.fall = fraction(drop.fall + dt * velocity)
-            drop.x = fraction(drop.x + dt * velocity * wind * (0.8 + depth * 0.2) * height / width)
-            let parallax = settings.parallaxEnabled ? settings.parallaxAmount * depth : 0
-            drop.layer.position = CGPoint(
-                x: drop.x * width - margin - motion.pointer.x * 22 * unit * parallax,
-                y: (1 - drop.fall) * height - margin - motion.pointer.y * 12 * unit * parallax)
-            drop.layer.setAffineTransform(transforms[drop.variant])
-        }
+        styledSpeed = settings.rainSpeed
+        isHidden = false
     }
 }
 
 private func fraction(_ value: Double) -> Double { value - floor(value) }
-private func depth(at index: Int) -> Double { 0.25 + Double(index) / 7 * 0.75 }
-
-/// Stable independent seeds avoid visible diagonal bands without random work per frame.
 private func randomUnit(_ seed: UInt64) -> Double {
     var value = seed &+ 0x9e3779b97f4a7c15
     value = (value ^ (value >> 30)) &* 0xbf58476d1ce4e5b9

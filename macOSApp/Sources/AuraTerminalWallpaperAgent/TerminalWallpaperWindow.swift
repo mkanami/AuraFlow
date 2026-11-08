@@ -15,10 +15,7 @@ final class TerminalWallpaperWindow: NSWindow {
         set { terminalView.onLockScreenFrame = newValue }
     }
 
-    var onSharedFrame: ((TerminalSharedFrameDescriptor, UInt64) -> Void)? {
-        get { terminalView.onSharedFrame }
-        set { terminalView.onSharedFrame = newValue }
-    }
+    var onSharedFrame: ((TerminalSharedFrameDescriptor, UInt64) -> Void)?
 
     init(screen: NSScreen, device: MTLDevice, effectsStore: WallpaperEffectsStore = WallpaperEffectsStore()) {
         terminalView = TerminalMetalView(
@@ -46,6 +43,10 @@ final class TerminalWallpaperWindow: NSWindow {
         isExcludedFromWindowsMenu = true
         effectsView.playbackIsPaused = { [weak self] in self?.effectsPaused ?? true }
         contentView = effectsView
+        terminalView.onSharedFrame = { [weak self] descriptor, sequence in
+            self?.effectsView.rainLightingSurfaceID = descriptor.surfaceID
+            self?.onSharedFrame?(descriptor, sequence)
+        }
     }
 
     func update(snapshot: TerminalGridSnapshot, configuration: TerminalRenderConfiguration,

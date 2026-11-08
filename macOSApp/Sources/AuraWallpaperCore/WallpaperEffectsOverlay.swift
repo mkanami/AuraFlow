@@ -9,6 +9,10 @@ final class WallpaperEffectsOverlay: CALayer {
     private let ghosts = (0..<3).map { _ in CAGradientLayer() }
     private let sparkles = (0..<48).map { _ in CAShapeLayer() }
     private let rain = WallpaperRainLayer()
+    var rainLighting: WallpaperRainLighting {
+        get { rain.lighting }
+        set { rain.lighting = newValue }
+    }
 
     var glowPosition: CGPoint { glow.position }
     var flarePosition: CGPoint { core.position }

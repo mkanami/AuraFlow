@@ -346,8 +346,8 @@ struct WallpaperEffectsTests {
         let flare = try #require(layers.first { $0.name == "flare" })
         #expect(glow.position.x < flare.position.x && glow.position.y < flare.position.y)
         let rain = try #require(layers.first { $0.name == "rain" })
-        let drops = try #require(rain.sublayers).filter { !$0.isHidden }
-        #expect(drops.count > 20 && drops.allSatisfy { $0.bounds.height < 60 && $0.bounds.width < 30 })
+        let drops = try #require(rain.sublayers).flatMap { $0.sublayers ?? [] }.filter { !$0.isHidden }
+        #expect(drops.count > 20 && drops.allSatisfy { $0.bounds.height < 180 && $0.bounds.width < 30 })
         let firstPosition = try #require(drops.first?.frame.origin)
         motion.advance(settings: settings, cursor: CGPoint(x: -1, y: 0), deltaTime: 1.0 / 30)
         overlay.render(settings: settings, motion: motion, size: CGSize(width: 1200, height: 800), scale: 2)

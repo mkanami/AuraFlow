@@ -1,5 +1,6 @@
 import AppKit
 import AuraTerminalRendering
+import AuraWallpaperCore
 import AuraTerminalWallpaperCore
 import Combine
 import CoreText
@@ -119,7 +120,8 @@ private struct TerminalIOSurfacePreview: NSViewRepresentable {
     }
 }
 
-final class TerminalIOSurfacePreviewView: MTKView {
+final class TerminalIOSurfacePreviewView: MTKView, WallpaperRainSurfaceProviding {
+    var rainLightingSurfaceID: UInt32? { descriptor?.surfaceID }
     private let renderPipeline: MTLRenderPipelineState?
     private let commandQueue: MTLCommandQueue?
     private var surface: IOSurfaceRef?
