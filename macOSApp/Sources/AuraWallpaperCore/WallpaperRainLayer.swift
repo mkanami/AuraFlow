@@ -4,12 +4,12 @@ import QuartzCore
 enum WallpaperRainPlane: Int, CaseIterable {
     case far, middle, near
     var name: String { ["rain-far", "rain-middle", "rain-near"][rawValue] }
-    var strokeWidth: Double { [0.45, 0.85, 1.35][rawValue] }
+    var strokeWidth: Double { [0.5, 0.95, 1.5][rawValue] }
     var referenceLength: Double { [5, 22, 52][rawValue] }
     var depth: Double { [0.12, 0.45, 1][rawValue] }
     func velocity(speed: Double) -> Double { [85 + speed * 130, 240 + speed * 360, 650 + speed * 850][rawValue] }
     var exposure: Double { [0.025, 0.045, 0.05][rawValue] }
-    var opacity: Double { [0.18, 0.68, 0.55][rawValue] }
+    var opacity: Double { [0.22, 0.82, 0.66][rawValue] }
 }
 
 /// Three independent particle pools: 70% distant, 25% middle, 5% foreground.

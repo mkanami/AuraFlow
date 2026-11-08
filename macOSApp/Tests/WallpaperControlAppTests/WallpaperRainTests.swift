@@ -24,7 +24,7 @@ struct WallpaperRainTests {
         func mean(_ values: [Double]) -> Double { values.reduce(0, +) / Double(values.count) }
         let lengths = drops.map { mean($0.map { Double($0.bounds.height) }) }
         #expect(lengths[0] < lengths[1] && lengths[1] < lengths[2])
-        #expect(drops[0].allSatisfy { $0.opacity < 0.18 })
+        #expect(drops[0].allSatisfy { $0.opacity < 0.22 })
         // Changing the density repeatedly cannot accumulate additional particle pools.
         for amount in stride(from: 0.02, through: 1, by: 0.02) {
             settings.rainAmount = amount
