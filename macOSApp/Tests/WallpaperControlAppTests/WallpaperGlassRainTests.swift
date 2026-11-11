@@ -17,7 +17,7 @@ struct WallpaperGlassRainTests {
 
     @Test func independentModesMigrateNormalizeAndRoundTrip() throws {
         var s = try JSONDecoder().decode(WallpaperEffectsSettings.self, from: Data(#"{"enabled":true,"rainEnabled":true,"rainColor":"red"}"#.utf8))
-        #expect(!s.glassRainEnabled && s.rainBlur == 0.25 && s.rainColor == .red)
+        #expect(!s.glassRainEnabled && s.glassRainSlidingEnabled && s.rainBlur == 0.25 && s.rainColor == .red)
         s = settings()
         #expect(s.hasVisibleEffects && s.hasAnimatedEffects && !s.rainEnabled)
         s.rainEnabled = true; s.glassRainIntensity = 0
@@ -26,6 +26,7 @@ struct WallpaperGlassRainTests {
         #expect(!s.hasAnimatedEffects)
         s.glassRainIntensity = .nan; s.glassRainWind = -2; s.glassRainRefraction = 9
         s.glassRainBlur = .infinity
+        s.glassRainSlidingEnabled = false
         s = s.normalized()
         #expect(s.glassRainIntensity == 0.45 && s.glassRainWind == 0 && s.glassRainRefraction == 1 && s.glassRainBlur == 0.2)
         #expect(try JSONDecoder().decode(WallpaperEffectsSettings.self, from: JSONEncoder().encode(s)) == s)
@@ -43,8 +44,8 @@ struct WallpaperGlassRainTests {
         // Uncollected tiny beads remain exactly at their original positions.
         let stationary = zip(initialBeads, a.beads).filter { $0 == $1 }.count
         #expect(stationary > initialBeads.count / 3)
-        #expect(!a.trails.isEmpty && a.trails.count <= 384)
-        #expect(a.beads.count <= 1000 && a.runners.count <= 50 && a.instances.count <= 1434)
+        #expect(!a.trails.isEmpty && a.trails.count <= 768)
+        #expect(a.beads.count <= 1000 && a.runners.count <= 50 && a.instances.count <= 1818)
         #expect(a.instances.allSatisfy { $0.ellipse.x.isFinite && $0.ellipse.y.isFinite })
     }
 
@@ -65,6 +66,105 @@ struct WallpaperGlassRainTests {
             b.advance(deltaTime: 1.0/30, aspect: 1.6, settings: alternate)
         }
         #expect(a.runners != b.runners)
+    }
+
+    @Test func slidingSwitchFreezesBeadsAndLargeDropsClearsTrailsAndResumesWithoutJumping() {
+        var simulation = WallpaperGlassRainSimulation()
+        var s = settings()
+        for _ in 0..<300 { simulation.advance(deltaTime: 1.0/30,aspect: 16.0/9,settings: s) }
+        #expect(!simulation.trails.isEmpty)
+        s.glassRainSlidingEnabled = false
+        simulation.advance(deltaTime: 0,aspect: 16.0/9,settings: s)
+        let runners = simulation.runners, beads = simulation.beads, instances = simulation.instances
+        for _ in 0..<600 { simulation.advance(deltaTime: 1.0/30,aspect: 16.0/9,settings: s) }
+        #expect(simulation.runners == runners && simulation.beads == beads && simulation.instances == instances)
+        #expect(simulation.trails.isEmpty && s.hasAnimatedEffects, "Video and Falling Rain still update through stationary glass")
+        #expect(simulation.runners.allSatisfy { $0.velocityY == 0 })
+        s.glassRainSlidingEnabled = true
+        simulation.advance(deltaTime: 1.0/60,aspect: 16.0/9,settings: s)
+        #expect(zip(runners,simulation.runners).allSatisfy { hypot($0.x-$1.x,$0.y-$1.y) < 2 })
+        for _ in 0..<120 { simulation.advance(deltaTime: 1.0/60,aspect: 16.0/9,settings: s) }
+        #expect(simulation.runners != runners && !simulation.trails.isEmpty)
+        #expect(simulation.runners.contains { $0.velocityY > 20 })
+    }
+
+    @Test @MainActor func fallingRainSurvivesCompositorHandoffAndSourceUnavailability() throws {
+        let overlay = WallpaperEffectsOverlay()
+        var s = settings(); s.rainEnabled = true
+        let size = CGSize(width: 1280,height: 720)
+        overlay.render(settings: s,motion: WallpaperEffectsMotion(),size: size,scale: 1)
+        let before = overlay.airRainInstances
+        let rain = try #require(overlay.sublayers?.first { $0.name == "rain" })
+        #expect(!before.isEmpty && !rain.isHidden)
+        overlay.setRainComposited(true)
+        #expect(rain.isHidden && overlay.airRainInstances.count == before.count)
+        overlay.setRainComposited(false)
+        #expect(!rain.isHidden)
+        s.rainEnabled = false
+        overlay.render(settings: s,motion: WallpaperEffectsMotion(),size: size,scale: 1)
+        #expect(overlay.airRainInstances.isEmpty)
+        s.rainEnabled = true
+        let view = WallpaperEffectsView(content: NSView(frame: CGRect(origin: .zero,size: size)),store: nil)
+        view.update(settings: s)
+        view.applyActivity(WallpaperEffectsActivity())
+        view.renderFrame(deltaTime: 1.0/30,cursor: nil)
+        let visibleRain = try #require(view.layer?.sublayers?.first { $0 is WallpaperEffectsOverlay }?.sublayers?.first { $0.name == "rain" })
+        #expect(view.status.glassReady == false && !visibleRain.isHidden)
+        var paused = WallpaperEffectsActivity(); paused.playbackPaused = true
+        view.applyActivity(paused)
+        #expect(view.window == nil)
+    }
+
+    @Test @MainActor func wetGlassRefractsFallingRainAndDryAreasKeepTheSameStorm() throws {
+        let renderer = try #require(WallpaperGlassRainRenderer())
+        let queue = try #require(renderer.device.makeCommandQueue())
+        let width = 512, height = 288
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,width: width,height: height,mipmapped: false)
+        descriptor.storageMode = .shared; descriptor.usage = [.renderTarget,.shaderRead]
+        let target = try #require(renderer.device.makeTexture(descriptor: descriptor))
+        let size = CGSize(width: width,height: height), rect = CGRect(origin: .zero,size: size)
+        let background = CIImage(color: .black).cropped(to: rect)
+        let water = WallpaperGlassRainSimulation.Instance(ellipse: SIMD4(960,540,330,330),optics: SIMD4(1,0,0,0))
+        let airborne = [900,350].map { x in WallpaperAirRainInstance(ellipse: SIMD4(Float(x),540,20,500),
+            color: SIMD4(1,0.1,0.1,0.95),optics: SIMD4(0,0.65,0.95,0.15)) }
+        var s = settings(); s.rainEnabled = true; s.glassRainBlur = 0; s.glassRainRefraction = 0
+        func render(settings: WallpaperEffectsSettings,water: [WallpaperGlassRainSimulation.Instance],rain: [WallpaperAirRainInstance]) throws -> [UInt8] {
+            let command = try #require(queue.makeCommandBuffer())
+            try renderer.encode(command: command,target: target,
+                source: .init(image: background,gravity: .resize,revision: 1,label: "test"),settings: settings,
+                size: size,contentFrame: rect,instances: water,airRain: rain)
+            command.commit(); command.waitUntilCompleted(); #expect(command.status == .completed)
+            var pixels = [UInt8](repeating: 0,count: width*height*4)
+            target.getBytes(&pixels,bytesPerRow: width*4,from: MTLRegionMake2D(0,0,width,height),mipmapLevel: 0)
+            return pixels
+        }
+        let clear = try render(settings: s,water: [water],rain: airborne)
+        s.glassRainRefraction = 1
+        let wet = try render(settings: s,water: [water],rain: airborne)
+        var wetChanges = 0, dryChanges = 0, dryVisible = 0
+        for y in 0..<height { for x in 0..<width {
+            let p=(y*width+x)*4
+            if abs(Int(clear[p+2])-Int(wet[p+2])) > 15 {
+                if hypot(Double(x)-256,Double(y)-144) < 95 { wetChanges += 1 }
+                else { dryChanges += 1 }
+            }
+            if x < 130 && wet[p+2] > 40 { dryVisible += 1 }
+        } }
+        #expect(wetChanges > 200)
+        #expect(dryChanges == 0)
+        #expect(dryVisible > 100)
+        #expect(renderer.composedRainCount == 2)
+        s.rainEnabled = false
+        let noRain = try render(settings: s,water: [water],rain: airborne)
+        #expect(renderer.composedRainCount == 0 && zip(wet,noRain).filter { abs(Int($0)-Int($1)) > 20 }.count > 500)
+        let brightCenter = (125..<163).reduce(0) { count,y in
+            count + (237..<275).filter { x in noRain[(y*width+x)*4+2] > 5 }.count
+        }
+        #expect(brightCenter < 10, "A specular highlight must not fill a flat triangular sector through the drop center")
+        s.rainEnabled = true
+        let dry = try render(settings: s,water: [],rain: airborne)
+        #expect(dry[(height/2*width+Int(350.0/1920*512))*4+3] > 80)
+        #expect(dry[3] == 0)
     }
 
     @Test @MainActor func metalReallyRefractsBlursUpdatesSourceAndLeavesDryPixelsTransparent() throws {
@@ -226,9 +326,16 @@ struct WallpaperGlassRainTests {
         var simulation = WallpaperGlassRainSimulation()
         var s = settings(); s.glassRainIntensity = 0.7
         for _ in 0..<600 { simulation.advance(deltaTime: 1.0/30,aspect: 16.0/9,settings: s) }
+        s.rainEnabled = true; s.rainAmount = 0.7; s.rainColor = .cyan
+        let rain = WallpaperRainLayer()
+        var motion = WallpaperEffectsMotion()
+        for _ in 0..<60 {
+            motion.advance(settings: s,cursor: nil,deltaTime: 1.0/30)
+            rain.render(settings: s,motion: motion,size: size,scale: 1)
+        }
         let command = try #require(queue.makeCommandBuffer())
         try renderer.encode(command: command,target: target,source: .init(image: CIImage(cgImage: image),gravity: .resizeAspectFill,revision: 999,label: "artifact"),
-            settings: s,size: size,contentFrame: rect,instances: simulation.instances)
+            settings: s,size: size,contentFrame: rect,instances: simulation.instances,airRain: rain.airRainInstances)
         command.commit(); command.waitUntilCompleted()
         let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil,pixelsWide: 1920,pixelsHigh: 1080,bitsPerSample: 8,samplesPerPixel: 4,hasAlpha: true,isPlanar: false,colorSpaceName: .deviceRGB,bytesPerRow: 1920*4,bitsPerPixel: 32))
         var bytes = [UInt8](repeating: 0,count: 1920*1080*4)
@@ -242,7 +349,7 @@ struct WallpaperGlassRainTests {
             let measured = try #require(queue.makeCommandBuffer())
             try renderer.encode(command: measured,target: target,
                 source: .init(image: CIImage(cgImage: image),gravity: .resizeAspectFill,revision: UInt64(1000+i),label: "benchmark"),
-                settings: s,size: size,contentFrame: rect,instances: simulation.instances)
+                settings: s,size: size,contentFrame: rect,instances: simulation.instances,airRain: rain.airRainInstances)
             measured.commit(); measured.waitUntilCompleted()
             try #require(measured.status == .completed)
             gpuTimes.append((measured.gpuEndTime-measured.gpuStartTime)*1000)

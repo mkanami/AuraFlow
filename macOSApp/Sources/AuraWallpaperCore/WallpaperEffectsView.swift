@@ -50,6 +50,7 @@ public final class WallpaperEffectsView: NSView {
             flareX: Double(overlay.flarePosition.x), flareY: Double(overlay.flarePosition.y), flareOpacity: Double(overlay.flareOpacity),
             glassReady: glassRenderer.map { !$0.layer.isHidden } ?? false,
             glassRenderedFrames: glassRenderer?.completedFrames ?? 0,
+            glassAirRainCount: glassRenderer?.composedRainCount ?? 0,
             glassDropCount: glassRenderer.map { $0.simulation.beads.count + $0.simulation.runners.count } ?? 0)
     }
 
@@ -213,11 +214,11 @@ public final class WallpaperEffectsView: NSView {
             let screenPoint = NSEvent.mouseLocation
             let localPoint = self.convert(window.convertPoint(fromScreen: screenPoint), from: nil)
             let cursor = WallpaperEffectsMotion.normalizedCursor(localPoint, in: self.bounds)
-            self.renderFrame(deltaTime: delta, cursor: cursor)
+            self.renderFrame(deltaTime: delta, cursor: cursor, at: now)
         }
     }
 
-    func renderFrame(deltaTime: Double, cursor: CGPoint?) {
+    func renderFrame(deltaTime: Double, cursor: CGPoint?, at frameTime: CFTimeInterval? = nil) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if settings.hasVisibleEffects && presentationActive {
@@ -233,11 +234,12 @@ public final class WallpaperEffectsView: NSView {
                     tx: frame.minX + (scale - 1) * bounds.width * anchor.x,
                     ty: frame.minY + (scale - 1) * bounds.height * anchor.y))
             }
-            renderGlass(contentFrame: frame)
             overlay.isHidden = !settings.hasAnimatedEffects
             if !overlay.isHidden {
                 overlay.render(settings: settings, motion: motion, size: bounds.size, scale: window?.backingScaleFactor ?? 1)
             }
+            renderGlass(contentFrame: frame, at: frameTime ?? CACurrentMediaTime())
+            overlay.setRainComposited(glassRenderer.map { !$0.layer.isHidden } ?? false)
         } else {
             motionContainer.layer?.setAffineTransform(.identity)
             overlay.isHidden = true
@@ -246,7 +248,7 @@ public final class WallpaperEffectsView: NSView {
         CATransaction.commit()
     }
 
-    private func renderGlass(contentFrame: CGRect) {
+    private func renderGlass(contentFrame: CGRect, at now: CFTimeInterval) {
         guard settings.glassRainEnabled, settings.glassRainIntensity > 0, !glassUnavailable else { stopGlass(); return }
         if glassRenderer == nil {
             glassRenderer = WallpaperGlassRainRenderer()
@@ -255,15 +257,17 @@ public final class WallpaperEffectsView: NSView {
             layer?.addSublayer(glassRenderer.layer)
         }
         guard let glassRenderer else { return }
-        let now = CACurrentMediaTime()
+        // Use the display deadline, so main-thread scheduling jitter cannot
+        // accidentally skip every other glass frame at a 30 Hz display clock.
         guard glassRenderer.wantsFrame(at: now) else { return }
         let source = glassFrameSource.current(content: wallpaperContent, surfaceID: rainLightingSurfaceID,
             sequence: rainFrameSequence, imageURL: rainLightingImageURL, surfaceGravity: rainFrameGravity, at: now)
         glassRenderer.render(source: source, settings: settings, size: bounds.size, contentFrame: contentFrame,
-            scale: window?.backingScaleFactor ?? 1, at: now)
+            scale: window?.backingScaleFactor ?? 1, at: now, airRain: overlay.airRainInstances)
     }
 
     private func stopGlass() {
+        overlay.setRainComposited(false)
         glassFrameSource.stop()
         glassRenderer?.stop()
     }

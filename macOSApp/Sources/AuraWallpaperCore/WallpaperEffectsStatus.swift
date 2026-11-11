@@ -21,5 +21,6 @@ public struct WallpaperEffectsStatus: Codable, Equatable, Sendable {
     public var flareOpacity: Double
     public var glassReady: Bool? = nil
     public var glassRenderedFrames: UInt64? = nil
+    public var glassAirRainCount: Int? = nil
     public var glassDropCount: Int? = nil
 }

@@ -39,6 +39,7 @@ public struct WallpaperEffectsSettings: Codable, Equatable, Sendable {
     public var rainAngle = 0.5
     public var rainBlur = 0.25
     public var glassRainEnabled = false
+    public var glassRainSlidingEnabled = true
     public var glassRainIntensity = 0.45
     public var glassRainSpeed = 0.35
     public var glassRainWind = 0.5
@@ -87,7 +88,7 @@ public struct WallpaperEffectsSettings: Codable, Equatable, Sendable {
         case reflectionEnabled, reflectionIntensity, bloomEnabled, bloomIntensity, bloomRadius, blurEnabled, blurAmount
         case sparkleEnabled, sparkleAmount, ambientSpeed, tint
         case rainEnabled, rainAmount, rainSpeed, rainAngle, rainColor, rainBlur
-        case glassRainEnabled, glassRainIntensity, glassRainSpeed, glassRainWind, glassRainBlur, glassRainRefraction
+        case glassRainEnabled, glassRainSlidingEnabled, glassRainIntensity, glassRainSpeed, glassRainWind, glassRainBlur, glassRainRefraction
     }
 
     public init(from decoder: Decoder) throws {
@@ -118,6 +119,7 @@ public struct WallpaperEffectsSettings: Codable, Equatable, Sendable {
         rainAngle = try values.decodeIfPresent(Double.self, forKey: .rainAngle) ?? rainAngle
         rainBlur = try values.decodeIfPresent(Double.self, forKey: .rainBlur) ?? rainBlur
         glassRainEnabled = try values.decodeIfPresent(Bool.self, forKey: .glassRainEnabled) ?? glassRainEnabled
+        glassRainSlidingEnabled = try values.decodeIfPresent(Bool.self, forKey: .glassRainSlidingEnabled) ?? glassRainSlidingEnabled
         glassRainIntensity = try values.decodeIfPresent(Double.self, forKey: .glassRainIntensity) ?? glassRainIntensity
         glassRainSpeed = try values.decodeIfPresent(Double.self, forKey: .glassRainSpeed) ?? glassRainSpeed
         glassRainWind = try values.decodeIfPresent(Double.self, forKey: .glassRainWind) ?? glassRainWind

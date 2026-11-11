@@ -5,7 +5,7 @@ import Metal
 import QuartzCore
 import OSLog
 
-/// Two GPU passes: additive water normal/height map, then refracted wallpaper.
+/// Falling rain, water normal map, then a shared refracted scene.
 /// The transparent dry area leaves the original media renderer untouched.
 @MainActor
 final class WallpaperGlassRainRenderer {
@@ -15,8 +15,12 @@ final class WallpaperGlassRainRenderer {
     private let queue: MTLCommandQueue
     private let context: CIContext
     private let mapPipeline: MTLRenderPipelineState
+    private let airPipeline: MTLRenderPipelineState
     private let compositePipeline: MTLRenderPipelineState
     private var water: MTLTexture?
+    private var airTexture: MTLTexture?
+    private var airBuffer: MTLBuffer?
+    private(set) var composedRainCount = 0
     private var background: MTLTexture?
     private var instanceBuffer: MTLBuffer?
     private var uploadedRevision: UInt64?
@@ -42,6 +46,16 @@ final class WallpaperGlassRainRenderer {
             blend.sourceRGBBlendFactor = .one; blend.destinationRGBBlendFactor = .one
             blend.sourceAlphaBlendFactor = .one; blend.destinationAlphaBlendFactor = .one
             mapPipeline = try device.makeRenderPipelineState(descriptor: map)
+            let air = MTLRenderPipelineDescriptor()
+            air.vertexFunction = library.makeFunction(name: "airRainVertex")
+            air.fragmentFunction = library.makeFunction(name: "airRainFragment")
+            air.colorAttachments[0].pixelFormat = .bgra8Unorm
+            air.colorAttachments[0].isBlendingEnabled = true
+            air.colorAttachments[0].sourceRGBBlendFactor = .one
+            air.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            air.colorAttachments[0].sourceAlphaBlendFactor = .one
+            air.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            airPipeline = try device.makeRenderPipelineState(descriptor: air)
             let composite = MTLRenderPipelineDescriptor()
             composite.vertexFunction = library.makeFunction(name: "paneVertex")
             composite.fragmentFunction = library.makeFunction(name: "refractPane")
@@ -68,11 +82,12 @@ final class WallpaperGlassRainRenderer {
         layer.isHidden = true
         uploadedRevision = nil; loggedSource = nil
         // A submitted command retains its resources until completion.
-        background = nil; water = nil; instanceBuffer = nil; uploadedSettings = nil
+        background = nil; water = nil; airTexture = nil; airBuffer = nil; composedRainCount = 0
+        instanceBuffer = nil; uploadedSettings = nil
     }
 
     func render(source: WallpaperGlassFrameSource.Frame?, settings: WallpaperEffectsSettings,
-                size: CGSize, contentFrame: CGRect, scale: CGFloat, at time: Double) {
+                size: CGSize, contentFrame: CGRect, scale: CGFloat, at time: Double, airRain: [WallpaperAirRainInstance] = []) {
         guard settings.enabled, settings.glassRainEnabled, settings.glassRainIntensity > 0,
               size.width > 0, size.height > 0, let source else {
             if !layer.isHidden { layer.isHidden = true }
@@ -83,14 +98,15 @@ final class WallpaperGlassRainRenderer {
         let dt = lastTime.map { min(0.1, max(0, time - $0)) } ?? 0
         lastTime = time
         simulation.advance(deltaTime: dt, aspect: size.width / size.height, settings: settings)
-        layer.frame = CGRect(origin: .zero, size: size)
-        layer.contentsScale = scale
+        let layerFrame = CGRect(origin: .zero, size: size)
+        if layer.frame != layerFrame { layer.frame = layerFrame }
+        if layer.contentsScale != scale { layer.contentsScale = scale }
         let target = Self.renderSize(size: size, scale: scale)
-        layer.drawableSize = target
+        if layer.drawableSize != target { layer.drawableSize = target }
         guard let drawable = layer.nextDrawable(), let command = queue.makeCommandBuffer() else { gate.release(); return }
         do {
             try encode(command: command, target: drawable.texture, source: source, settings: settings,
-                size: size, contentFrame: contentFrame, instances: simulation.instances)
+                size: size, contentFrame: contentFrame, instances: simulation.instances, airRain: airRain)
         } catch {
             layer.isHidden = true; gate.release(); return
         }
@@ -120,7 +136,7 @@ final class WallpaperGlassRainRenderer {
     /// Also used by GPU regressions; no NSWindow or system presentation is needed.
     func encode(command: MTLCommandBuffer, target: MTLTexture, source: WallpaperGlassFrameSource.Frame,
                 settings: WallpaperEffectsSettings, size: CGSize, contentFrame: CGRect,
-                instances: [WallpaperGlassRainSimulation.Instance]) throws {
+                instances: [WallpaperGlassRainSimulation.Instance], airRain: [WallpaperAirRainInstance] = []) throws {
         let width = target.width, height = target.height
         if water?.width != width || water?.height != height {
             let map = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false)
@@ -129,9 +145,10 @@ final class WallpaperGlassRainRenderer {
             let frame = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
             frame.usage = [.shaderRead, .shaderWrite, .renderTarget]; frame.storageMode = .private
             background = device.makeTexture(descriptor: frame)
+            airTexture = device.makeTexture(descriptor: frame)
             uploadedRevision = nil
         }
-        guard let water, let background else { throw GlassError.resource }
+        guard let water, let background, let airTexture else { throw GlassError.resource }
         if uploadedRevision != source.revision || uploadedFrame != contentFrame || uploadedSettings != settings {
             let image = Self.wallpaperImage(source: source, target: CGSize(width: width, height: height),
                 size: size, contentFrame: contentFrame, settings: settings)
@@ -151,6 +168,27 @@ final class WallpaperGlassRainRenderer {
         }
         var uniforms = SIMD4<Float>(Float(size.width / size.height * 1080), 1080,
             Float(settings.glassRainRefraction), Float(settings.glassRainBlur))
+        let rain = settings.rainEnabled && settings.rainAmount > 0 ? airRain : []
+        let rainBytes = max(1, rain.count) * MemoryLayout<WallpaperAirRainInstance>.stride
+        if (airBuffer?.length ?? 0) < rainBytes {
+            airBuffer = device.makeBuffer(length: max(rainBytes, 512 * 48), options: .storageModeShared)
+        }
+        guard let airBuffer else { throw GlassError.resource }
+        if !rain.isEmpty {
+            rain.withUnsafeBytes { airBuffer.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
+        }
+        let airPass = MTLRenderPassDescriptor()
+        airPass.colorAttachments[0].texture = airTexture
+        airPass.colorAttachments[0].loadAction = .clear; airPass.colorAttachments[0].storeAction = .store
+        airPass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+        guard let airEncoder = command.makeRenderCommandEncoder(descriptor: airPass) else { throw GlassError.resource }
+        airEncoder.label = "Falling rain behind the wet glass"
+        airEncoder.setRenderPipelineState(airPipeline)
+        airEncoder.setVertexBuffer(airBuffer, offset: 0, index: 0)
+        airEncoder.setVertexBytes(&uniforms, length: MemoryLayout<SIMD4<Float>>.stride, index: 1)
+        if !rain.isEmpty { airEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: rain.count) }
+        airEncoder.endEncoding()
+        composedRainCount = rain.count
         let mapPass = MTLRenderPassDescriptor()
         mapPass.colorAttachments[0].texture = water
         mapPass.colorAttachments[0].loadAction = .clear; mapPass.colorAttachments[0].storeAction = .store
@@ -170,6 +208,7 @@ final class WallpaperGlassRainRenderer {
         composite.setRenderPipelineState(compositePipeline)
         composite.setFragmentTexture(background, index: 0)
         composite.setFragmentTexture(water, index: 1)
+        composite.setFragmentTexture(airTexture, index: 2)
         composite.setFragmentBytes(&uniforms, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
         composite.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         composite.endEncoding()
@@ -202,7 +241,7 @@ final class WallpaperGlassRainRenderer {
     #include <metal_stdlib>
     using namespace metal;
     struct Drop { float4 ellipse; float4 optics; };
-    struct WaterVertex { float4 position [[position]]; float2 local; float strength; float angle; float trail; float radius; };
+    struct WaterVertex { float4 position [[position]]; float2 local; float strength; float angle; float trail; float radius; float length; float seed; };
     vertex WaterVertex dropVertex(uint v [[vertex_id]], uint i [[instance_id]],
         constant Drop *drops [[buffer(0)]], constant float4 &pane [[buffer(1)]]) {
         const float2 corners[6] = {float2(-1,-1),float2(1,-1),float2(-1,1),float2(-1,1),float2(1,-1),float2(1,1)};
@@ -211,17 +250,53 @@ final class WallpaperGlassRainRenderer {
         float c = cos(d.optics.y), s = sin(d.optics.y);
         p = float2(c*p.x-s*p.y,s*p.x+c*p.y) + d.ellipse.xy;
         WaterVertex o; o.position = float4(p.x/pane.x*2-1,1-p.y/pane.y*2,0,1);
-        o.local=q; o.strength=d.optics.x; o.angle=d.optics.y; o.trail=d.optics.z; o.radius=d.ellipse.z; return o;
+        o.local=q; o.strength=d.optics.x; o.angle=d.optics.y; o.trail=d.optics.z; o.radius=d.ellipse.z; o.length=d.ellipse.w; o.seed=d.optics.w; return o;
     }
     fragment float4 dropMap(WaterVertex in [[stage_in]]) {
         float2 q=in.local;
-        if(in.trail>1.5f) q.x/=mix(0.70f,1.02f,smoothstep(-1.0f,1.0f,q.y));
-        float r2 = dot(q,q); if(r2>=1) discard_fragment();
-        float h = sqrt(max(0.0f,1-r2));
-        float edge = 1-smoothstep(0.78f,1.0f,sqrt(r2));
-        float2 n = -q*(0.35f+0.65f*h);
+        float2 n; float h; float edge;
+        if(in.trail>0.5f && in.trail<1.5f) {
+            // A capsule's straight middle joins neighboring water segments without beads.
+            float2 p=q*float2(in.radius,in.length);
+            float2 cap=float2(p.x,sign(p.y)*max(0.0f,abs(p.y)-max(0.0f,in.length-in.radius)));
+            float r=length(cap)/max(0.1f,in.radius);
+            if(r>=1) discard_fragment();
+            h=sqrt(max(0.0f,1-r*r)); edge=1-smoothstep(0.65f,1.0f,r);
+            n=-cap/max(0.1f,in.radius)*(0.35f+0.65f*h);
+        } else {
+            // Mild contact-line irregularity; running drops have a narrow trailing neck
+            // and a heavy rounded lower lobe. Resting beads remain nearly spherical.
+            float ripple=1+sin(atan2(q.y,q.x)*3+in.seed*12)*0.025f;
+            if(in.trail>1.5f) q.x/=mix(0.58f,1.02f,smoothstep(-0.9f,0.55f,q.y));
+            q/=ripple;
+            float r2=dot(q,q); if(r2>=1) discard_fragment();
+            h=sqrt(max(0.0f,1-r2)); edge=1-smoothstep(0.84f,1.0f,sqrt(r2));
+            n=-q*(0.3f+0.7f*h);
+        }
         float c=cos(in.angle),s=sin(in.angle); n=float2(c*n.x-s*n.y,s*n.x+c*n.y);
         return float4(n*in.strength*in.radius,h*in.strength,edge*in.strength);
+    }
+    struct AirDrop { float4 ellipse; float4 color; float4 optics; };
+    struct AirVertex { float4 position [[position]]; float2 q; float4 color; float3 optics; };
+    vertex AirVertex airRainVertex(uint v [[vertex_id]], uint i [[instance_id]],
+        constant AirDrop *rain [[buffer(0)]], constant float4 &pane [[buffer(1)]]) {
+        const float2 corners[6]={float2(-1,-1),float2(1,-1),float2(-1,1),float2(-1,1),float2(1,-1),float2(1,1)};
+        AirDrop d=rain[i]; float2 q=corners[v], p=q*d.ellipse.zw;
+        float c=cos(d.optics.x),s=sin(d.optics.x);
+        p=float2(c*p.x-s*p.y,s*p.x+c*p.y)+d.ellipse.xy;
+        AirVertex o; o.position=float4(p.x/pane.x*2-1,1-p.y/pane.y*2,0,1);
+        o.q=q; o.color=d.color; o.optics=d.optics.yzw; return o;
+    }
+    fragment float4 airRainFragment(AirVertex in [[stage_in]]) {
+        float y=in.q.y/max(0.001f,in.optics.y);
+        if(abs(y)>=1) return float4(0);
+        float t=(y+1)*0.5f;
+        float longitudinal=pow(sin(M_PI_F*t),0.7f);
+        float taper=0.72f+0.28f*sin(M_PI_F*t);
+        float x=in.q.x/max(0.001f,in.optics.x)/taper;
+        float profile=exp(-x*x*2.6f)*0.9f+exp(-x*x/(1+in.optics.z*3))*in.optics.z*0.16f;
+        float a=min(0.96f,profile*longitudinal)*in.color.a;
+        return float4(in.color.rgb*a,a);
     }
     struct PaneVertex { float4 position [[position]]; float2 uv; };
     vertex PaneVertex paneVertex(uint v [[vertex_id]]) {
@@ -229,24 +304,35 @@ final class WallpaperGlassRainRenderer {
         o.position=float4(p*2-1,0,1); o.uv=float2(p.x,1-p.y); return o;
     }
     fragment float4 refractPane(PaneVertex in [[stage_in]], texture2d<float> background [[texture(0)]],
-        texture2d<float> water [[texture(1)]], constant float4 &pane [[buffer(0)]]) {
+        texture2d<float> water [[texture(1)]], texture2d<float> rain [[texture(2)]], constant float4 &pane [[buffer(0)]]) {
         constexpr sampler linearSampler(coord::normalized,address::clamp_to_edge,filter::linear);
         float4 wet=water.sample(linearSampler,in.uv);
-        float alpha=min(0.97f,wet.a*0.92f); if(alpha<0.001f) return float4(0);
+        // Lighting needs the curved surface slope, not a normalized XY direction:
+        // the latter creates a bright triangular sector across the whole drop.
+        float3 surfaceNormal=normalize(float3(-dfdx(wet.b)*8,-dfdy(wet.b)*8,0.5f));
+        float alpha=min(0.98f,wet.a*0.97f);
+        float4 dryRain=rain.sample(linearSampler,in.uv);
+        if(alpha<0.001f) return dryRain;
         float2 pixel=1.0f/float2(background.get_width(),background.get_height());
-        float2 normal=wet.rg/max(1.0f,length(wet.rg));
         float2 offset=clamp(wet.rg,float2(-24),float2(24))*1.6f*pane.z*(float(background.get_height())/1080.0f)*pixel;
         float2 uv=in.uv+offset;
         float radius=pane.w*6;
-        float3 color=background.sample(linearSampler,uv).rgb*0.4f;
-        color+=background.sample(linearSampler,uv+float2(pixel.x,0)*radius).rgb*0.15f;
-        color+=background.sample(linearSampler,uv-float2(pixel.x,0)*radius).rgb*0.15f;
-        color+=background.sample(linearSampler,uv+float2(0,pixel.y)*radius).rgb*0.15f;
-        color+=background.sample(linearSampler,uv-float2(0,pixel.y)*radius).rgb*0.15f;
-        float rim=pow(max(0.0f,dot(normalize(float3(normal,0.6f)),normalize(float3(-0.6f,-0.8f,0.2f)))),18.0f);
+        // Rain and wallpaper are sampled together at the refracted coordinates.
+        // Sampling only the wallpaper would paint over, rather than refract, the storm.
+        float3 color=float3(0);
+        const float2 taps[5]={float2(0),float2(1,0),float2(-1,0),float2(0,1),float2(0,-1)};
+        for(uint i=0;i<5;i++) {
+            float2 at=uv+taps[i]*pixel*radius;
+            float4 airborne=rain.sample(linearSampler,at);
+            float3 scene=background.sample(linearSampler,at).rgb*(1-airborne.a)+airborne.rgb;
+            color+=scene*(i==0?0.4f:0.15f);
+        }
+        float rim=pow(max(0.0f,dot(surfaceNormal,normalize(float3(-0.55f,-0.7f,0.6f)))),36.0f);
         // Subtle clear-water edge; background supplies the color, never a white cursor streak.
-        color=color*(1-min(0.1f,wet.b*0.045f))+float3(0.72f,0.84f,1.0f)*rim*0.22f;
-        return float4(color*alpha,alpha);
+        float meniscus=smoothstep(0.04f,0.32f,wet.b)*(1-smoothstep(0.32f,0.75f,wet.b));
+        float shade=meniscus*max(0.0f,surfaceNormal.y)*0.12f;
+        color=color*(1-shade)+float3(0.72f,0.84f,1.0f)*rim*0.24f;
+        return float4(color*alpha+dryRain.rgb*(1-alpha),alpha+dryRain.a*(1-alpha));
     }
     """
 }

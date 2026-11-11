@@ -105,7 +105,8 @@ blur, bloom, particle density, rain color, speed, and wind. **Falling Rain** is 
 default, with red, cyan, purple, green, gold, pink, and white alternatives. Its
 color is independent of the lighting palette. Rain has three depth layers
 (70% distant, 25% middle, 5% foreground), varied fading streaks, and soft motion
-blur on the rare foreground drops. About 90% have no rounded head or glint.
+blur on the rare foreground drops. Streaks have a tapered exposure profile,
+soft edges and a subtly desaturated lit core, without round particle heads.
 Slow gusts determine its direction; the cursor adds only a small depth offset.
 The chosen rain color stays primary, with restrained brightness and accent
 colors sampled from the wallpaper. Small samples update at most every two
@@ -115,11 +116,15 @@ simulated depth: the wallpaper, light, and foreground particles move at differen
 rates, without separating objects in the source image.
 
 **Rain on Glass** is a separate mode and can run together with Falling Rain.
-Small beads stay attached to the pane; larger drops slide slowly, collect nearby
-beads, merge, and leave fading water trails. Its intensity, sliding speed, wind,
-blur, and refraction have independent controls. Clear water takes its color from
+Small beads stay attached to the pane. **Sliding drops** independently enables
+large drops that release from the glass, accelerate under gravity, collect
+nearby beads, merge and leave connected fading water trails. Turn it off to
+keep the glass beads still while Falling Rain continues. Intensity, sliding
+speed, wind, blur and refraction have independent controls. Clear water takes its color from
 the wallpaper itself. A Metal water normal map refracts the actual wallpaper
-frame, including live video and terminal surfaces. Photos are cached; video and
+frame, including live video and terminal surfaces. Falling Rain is composed
+behind the glass and sampled through the same refraction, including inside
+drops and trails; dry areas retain the original rain. Photos are cached; video and
 terminal frames stay on the GPU. Web projects use bounded snapshots of their
 own view (at most 8 per second). Glass rendering is capped at 30 fps and a
 1920-pixel longest edge, with one GPU frame in flight. Unavailable media or

@@ -4,7 +4,7 @@ import QuartzCore
 enum WallpaperRainPlane: Int, CaseIterable {
     case far, middle, near
     var name: String { ["rain-far", "rain-middle", "rain-near"][rawValue] }
-    var strokeWidth: Double { [0.85, 2.2, 3.0][rawValue] }
+    var strokeWidth: Double { [1.6, 3.8, 5.6][rawValue] }
     var referenceLength: Double { [5, 22, 52][rawValue] }
     var depth: Double { [0.12, 0.45, 1][rawValue] }
     func velocity(speed: Double) -> Double { [85 + speed * 130, 240 + speed * 360, 650 + speed * 850][rawValue] }
@@ -24,6 +24,11 @@ final class WallpaperRainLayer: CALayer {
         let brightness: Double
         let catchesLight: Bool
         let accent: Int
+        var opticalWidth = 0.0
+        var opticalLength = 0.0
+        var halo = 0.0
+        var color = SIMD4<Float>(repeating: 0)
+        var rotation = 0.0
         var styleRevision: UInt64 = 0
         var x: Double
         var fall: Double
@@ -113,6 +118,11 @@ final class WallpaperRainLayer: CALayer {
                 // Trail length follows velocity; changing speed never redraws a sprite.
                 let velocity = plane.velocity(speed: settings.rainSpeed) * drop.speed * unit
                 let trail = max(2 * unit, velocity * plane.exposure * drop.length)
+                drop.opticalWidth = plane.strokeWidth * unit * drop.thickness
+                drop.opticalLength = trail
+                drop.halo = WallpaperRainTexture.softness(plane: plane, amount: settings.rainBlur)
+                let rgb = WallpaperRainTexture.opticalColor(palette[accent], plane: plane)
+                drop.color = SIMD4(Float(rgb.r), Float(rgb.g), Float(rgb.b), 0)
                 // Hidden pooled drops can miss a color, speed or scale change.
                 // Rebind their current style when they become visible again.
                 if drop.styleRevision != styleRevision {
@@ -133,6 +143,7 @@ final class WallpaperRainLayer: CALayer {
                 let parallax = settings.parallaxEnabled ? settings.parallaxAmount * plane.depth : 0
                 drop.layer.position = CGPoint(x: drop.x * width - margin - motion.pointer.x * 10 * unit * parallax,
                     y: (1 - drop.fall) * height - margin - motion.pointer.y * 5 * unit * parallax)
+                drop.rotation = -atan(wind)
                 drop.layer.setAffineTransform(CGAffineTransform(rotationAngle: atan(wind)))
                 let illumination = lighting.illumination(x: drop.x, y: 1 - drop.fall)
                 drop.layer.opacity = Float(plane.opacity * drop.brightness * (0.5 + illumination * 0.5))
@@ -140,6 +151,24 @@ final class WallpaperRainLayer: CALayer {
         }
         styledSpeed = settings.rainSpeed
         isHidden = false
+    }
+
+    /// The same completed trajectories feed the GPU when rain is behind wet glass.
+    /// No second simulation and no full-window CALayer readback.
+    var airRainInstances: [WallpaperAirRainInstance] {
+        guard frame.height > 0 else { return [] }
+        let factor = 1080 / frame.height
+        return pools.flatMap { pool in pool.compactMap { drop in
+            guard !drop.layer.isHidden else { return nil }
+            let width = drop.layer.bounds.width, length = drop.layer.bounds.height
+            var color = drop.color
+            color.w = drop.layer.opacity * (drop.highlighted ? 1.04 : 1)
+            return WallpaperAirRainInstance(
+                ellipse: SIMD4(Float(drop.layer.position.x * factor), Float((frame.height - drop.layer.position.y) * factor),
+                    Float(width * factor / 2), Float(length * factor / 2)),
+                color: color, optics: SIMD4(Float(drop.rotation), Float(drop.opticalWidth / width),
+                    Float(drop.opticalLength / length), Float(drop.halo)))
+        } }
     }
 }
 

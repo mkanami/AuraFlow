@@ -107,11 +107,15 @@ struct WallpaperEffectsSettingsSection: View {
                 Toggle("Rain on Glass", isOn: binding(\.glassRainEnabled))
                 if viewModel.wallpaperEffects.glassRainEnabled {
                     effectSlider("Glass intensity", value: \.glassRainIntensity)
-                    effectSlider("Sliding speed", value: \.glassRainSpeed)
-                    effectSlider("Glass wind", value: \.glassRainWind)
+                    Toggle("Sliding drops", isOn: binding(\.glassRainSlidingEnabled))
+                        .help("Let large drops collect water and run down the glass. Turn off to keep beads still.")
+                    if viewModel.wallpaperEffects.glassRainSlidingEnabled {
+                        effectSlider("Sliding speed", value: \.glassRainSpeed)
+                        effectSlider("Glass wind", value: \.glassRainWind)
+                    }
                     effectSlider("Glass blur", value: \.glassRainBlur)
                     effectSlider("Refraction", value: \.glassRainRefraction)
-                    Text("Still beads and slowly merging drops refract the wallpaper and leave fading water trails. Combine with Falling Rain for a storm outside the glass.")
+                    Text("Wet glass refracts both the wallpaper and Falling Rain. Sliding drops collect beads, merge and leave connected water trails.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
 

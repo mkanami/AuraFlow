@@ -14,6 +14,14 @@ final class WallpaperEffectsOverlay: CALayer {
         set { rain.lighting = newValue }
     }
 
+    private var rainVisible = false
+    private(set) var rainUsesGlassCompositor = false
+    var airRainInstances: [WallpaperAirRainInstance] { rainVisible ? rain.airRainInstances : [] }
+    func setRainComposited(_ composited: Bool) {
+        rainUsesGlassCompositor = composited
+        rain.isHidden = !rainVisible || composited
+    }
+
     var glowPosition: CGPoint { glow.position }
     var flarePosition: CGPoint { core.position }
     var glowOpacity: Float { isHidden ? 0 : glow.opacity }
@@ -81,6 +89,8 @@ final class WallpaperEffectsOverlay: CALayer {
                 + attraction * 0.35) * settings.sparkleAmount)
         }
         rain.render(settings: settings, motion: motion, size: size, scale: scale)
+        rainVisible = !rain.isHidden
+        if rainUsesGlassCompositor { rain.isHidden = true }
     }
 
     private func configure(settings: WallpaperEffectsSettings, size: CGSize, scale: CGFloat) {
