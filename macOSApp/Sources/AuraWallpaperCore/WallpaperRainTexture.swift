@@ -7,10 +7,10 @@ struct WallpaperRainTexture {
     let size: CGSize
 
     static func make(color: WallpaperRainLighting.RGB, plane: WallpaperRainPlane,
-                     highlighted: Bool, unit: CGFloat, scale: CGFloat) -> Self? {
+                     highlighted: Bool, unit: CGFloat, scale: CGFloat, softness: Double = 0.25) -> Self? {
         let width = plane.strokeWidth * unit
         let length = plane.referenceLength * unit
-        let blur = plane == .near ? 1.4 * unit : 0
+        let blur = plane == .near ? (softness * 5.6) * unit : 0
         let padding = ceil(3 * unit + blur * 2)
         let size = CGSize(width: ceil(width + padding * 2), height: ceil(length + padding * 2))
         let space = CGColorSpace(name: CGColorSpace.sRGB)!

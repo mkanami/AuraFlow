@@ -50,6 +50,7 @@ final class WallpaperRainLayer: CALayer {
     private var textures: [[[WallpaperRainTexture]]] = []
     private var texturePalette: [WallpaperRainLighting.RGB] = []
     private var textureUnit: CGFloat = 0
+    private var textureBlur = -1.0
     private var textureScale: CGFloat = 0
     private var lastTime: Double?
     private var styledSpeed = -1.0
@@ -74,7 +75,7 @@ final class WallpaperRainLayer: CALayer {
         let count = min(Self.maximumDrops, Int((56 + settings.rainAmount * 456) * density))
         let counts = [count - count / 4 - count / 20, count / 4, count / 20]
         let palette = lighting.palette(base: settings.rainColor)
-        let rebuild = palette != texturePalette || unit != textureUnit || scale != textureScale
+        let rebuild = palette != texturePalette || unit != textureUnit || scale != textureScale || settings.rainBlur != textureBlur
         let restyle = rebuild || styledSpeed != settings.rainSpeed
         if rebuild {
             var next: [[[WallpaperRainTexture]]] = []
@@ -82,14 +83,14 @@ final class WallpaperRainLayer: CALayer {
                 var colors: [[WallpaperRainTexture]] = []
                 for color in palette {
                     let pair = [false, true].compactMap {
-                        WallpaperRainTexture.make(color: color, plane: plane, highlighted: $0, unit: unit, scale: scale)
+                        WallpaperRainTexture.make(color: color, plane: plane, highlighted: $0, unit: unit, scale: scale, softness: settings.rainBlur)
                     }
                     guard pair.count == 2 else { isHidden = true; lastTime = nil; return }
                     colors.append(pair)
                 }
                 next.append(colors)
             }
-            textures = next; texturePalette = palette; textureUnit = unit; textureScale = scale
+            textures = next; texturePalette = palette; textureUnit = unit; textureScale = scale; textureBlur = settings.rainBlur
         }
         if restyle { styleRevision &+= 1 }
         let dt = lastTime.map { min(0.1, max(0, motion.elapsedTime - $0)) } ?? 0

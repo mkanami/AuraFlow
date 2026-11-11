@@ -101,7 +101,7 @@ Expand **Wallpaper Effects** in Playback Settings to enable effects for the
 Desktop and main preview. Effects work with images, videos, terminal wallpapers,
 and web projects. Choose **Subtle**, **Cinematic**, or **Dreamy**, or adjust each
 effect separately. Controls include depth, smoothing, light color, glow size,
-blur, bloom, particle density, rain color, speed, and wind. Rain is blue by
+blur, bloom, particle density, rain color, speed, and wind. **Falling Rain** is blue by
 default, with red, cyan, purple, green, gold, pink, and white alternatives. Its
 color is independent of the lighting palette. Rain has three depth layers
 (70% distant, 25% middle, 5% foreground), varied fading streaks, and soft motion
@@ -113,6 +113,17 @@ seconds while rain is visible; sprites and blur are cached. **React to cursor** 
 the pointer for lighting and parallax; turn it off for ambient motion. Flat media uses
 simulated depth: the wallpaper, light, and foreground particles move at different
 rates, without separating objects in the source image.
+
+**Rain on Glass** is a separate mode and can run together with Falling Rain.
+Small beads stay attached to the pane; larger drops slide slowly, collect nearby
+beads, merge, and leave fading water trails. Its intensity, sliding speed, wind,
+blur, and refraction have independent controls. Clear water takes its color from
+the wallpaper itself. A Metal water normal map refracts the actual wallpaper
+frame, including live video and terminal surfaces. Photos are cached; video and
+terminal frames stay on the GPU. Web projects use bounded snapshots of their
+own view (at most 8 per second). Glass rendering is capped at 30 fps and a
+1920-pixel longest edge, with one GPU frame in flight. Unavailable media or
+Metal leaves the original wallpaper visible. No screen capture is used.
 
 Effects are off by default and preferences survive restarting AuraFlow. They
 pause when playback is paused, the desktop is hidden, the session is locked,

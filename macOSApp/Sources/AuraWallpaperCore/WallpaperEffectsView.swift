@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import OSLog
 import QuartzCore
 
@@ -8,11 +9,16 @@ public final class WallpaperEffectsView: NSView {
     public let wallpaperContent: NSView
     public var playbackIsPaused: () -> Bool = { false }
     public var rainLightingSurfaceID: UInt32? {
-        didSet { if oldValue != rainLightingSurfaceID { rainLightingSampler.stop(); overlay.rainLighting = .neutral } }
+        didSet { if oldValue != rainLightingSurfaceID { rainLightingSampler.stop(); glassFrameSource.stop(); overlay.rainLighting = .neutral } }
     }
     public var rainLightingImageURL: URL? {
-        didSet { if oldValue != rainLightingImageURL { rainLightingSampler.stop(); overlay.rainLighting = .neutral } }
+        didSet { if oldValue != rainLightingImageURL { rainLightingSampler.stop(); glassFrameSource.stop(); overlay.rainLighting = .neutral } }
     }
+    public var rainFrameGravity: AVLayerVideoGravity?
+    public var rainFrameSequence: UInt64?
+    private let glassFrameSource = WallpaperGlassFrameSource()
+    private var glassRenderer: WallpaperGlassRainRenderer?
+    private var glassUnavailable = false
     private let rainLightingSampler = WallpaperRainLightingSampler()
     private let store: WallpaperEffectsStore?
     private let isPreview: Bool
@@ -41,7 +47,10 @@ public final class WallpaperEffectsView: NSView {
             cursorX: Double(motion.pointer.x), cursorY: Double(motion.pointer.y),
             parallaxX: Double(transform.tx), parallaxY: Double(transform.ty),
             glowX: Double(overlay.glowPosition.x), glowY: Double(overlay.glowPosition.y), glowOpacity: Double(overlay.glowOpacity),
-            flareX: Double(overlay.flarePosition.x), flareY: Double(overlay.flarePosition.y), flareOpacity: Double(overlay.flareOpacity))
+            flareX: Double(overlay.flarePosition.x), flareY: Double(overlay.flarePosition.y), flareOpacity: Double(overlay.flareOpacity),
+            glassReady: glassRenderer.map { !$0.layer.isHidden } ?? false,
+            glassRenderedFrames: glassRenderer?.completedFrames ?? 0,
+            glassDropCount: glassRenderer.map { $0.simulation.beads.count + $0.simulation.runners.count } ?? 0)
     }
 
     public init(content: NSView, store: WallpaperEffectsStore? = WallpaperEffectsStore(), isPreview: Bool = false) {
@@ -172,6 +181,7 @@ public final class WallpaperEffectsView: NSView {
         }
         guard pauseReason == nil else {
             rainLightingSampler.stop()
+            stopGlass()
             stopAnimation()
             // Polling an already dormant surface must not dirty its layers
             // and trigger another Core Animation/AppKit display cycle.
@@ -186,6 +196,7 @@ public final class WallpaperEffectsView: NSView {
         } else {
             rainLightingSampler.stop()
         }
+        if !settings.glassRainEnabled || settings.glassRainIntensity <= 0 { stopGlass() }
         guard settings.hasAnimatedEffects else {
             stopAnimation()
             renderFrame(deltaTime: 0, cursor: nil)
@@ -222,6 +233,7 @@ public final class WallpaperEffectsView: NSView {
                     tx: frame.minX + (scale - 1) * bounds.width * anchor.x,
                     ty: frame.minY + (scale - 1) * bounds.height * anchor.y))
             }
+            renderGlass(contentFrame: frame)
             overlay.isHidden = !settings.hasAnimatedEffects
             if !overlay.isHidden {
                 overlay.render(settings: settings, motion: motion, size: bounds.size, scale: window?.backingScaleFactor ?? 1)
@@ -229,12 +241,36 @@ public final class WallpaperEffectsView: NSView {
         } else {
             motionContainer.layer?.setAffineTransform(.identity)
             overlay.isHidden = true
+            stopGlass()
         }
         CATransaction.commit()
     }
 
+    private func renderGlass(contentFrame: CGRect) {
+        guard settings.glassRainEnabled, settings.glassRainIntensity > 0, !glassUnavailable else { stopGlass(); return }
+        if glassRenderer == nil {
+            glassRenderer = WallpaperGlassRainRenderer()
+            guard let glassRenderer else { glassUnavailable = true; return }
+            glassRenderer.layer.zPosition = 1.5
+            layer?.addSublayer(glassRenderer.layer)
+        }
+        guard let glassRenderer else { return }
+        let now = CACurrentMediaTime()
+        guard glassRenderer.wantsFrame(at: now) else { return }
+        let source = glassFrameSource.current(content: wallpaperContent, surfaceID: rainLightingSurfaceID,
+            sequence: rainFrameSequence, imageURL: rainLightingImageURL, surfaceGravity: rainFrameGravity, at: now)
+        glassRenderer.render(source: source, settings: settings, size: bounds.size, contentFrame: contentFrame,
+            scale: window?.backingScaleFactor ?? 1, at: now)
+    }
+
+    private func stopGlass() {
+        glassFrameSource.stop()
+        glassRenderer?.stop()
+    }
+
     private func resetPresentation() {
         presentationActive = false
+        stopGlass()
         motion = WallpaperEffectsMotion()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -268,6 +304,7 @@ public final class WallpaperEffectsView: NSView {
 
     private func stopMonitoring() {
         rainLightingSampler.stop()
+        stopGlass()
         stopAnimation()
         statusTimer?.invalidate()
         statusTimer = nil

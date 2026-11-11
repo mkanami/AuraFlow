@@ -93,13 +93,25 @@ struct WallpaperEffectsSettingsSection: View {
                     effectSlider("Sparkle density", value: \.sparkleAmount)
                 }
 
-                Toggle("Rain", isOn: binding(\.rainEnabled))
+                Toggle("Falling Rain", isOn: binding(\.rainEnabled))
                 if viewModel.wallpaperEffects.rainEnabled {
                     rainColorMenu
                     effectSlider("Rain density", value: \.rainAmount)
                     effectSlider("Rain speed", value: \.rainSpeed)
                     effectSlider("Wind direction", value: \.rainAngle)
+                    effectSlider("Rain blur", value: \.rainBlur)
                     Text("Three depth layers, gentle wind gusts and lighting sampled from the wallpaper. Cursor movement adds a small parallax.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+
+                Toggle("Rain on Glass", isOn: binding(\.glassRainEnabled))
+                if viewModel.wallpaperEffects.glassRainEnabled {
+                    effectSlider("Glass intensity", value: \.glassRainIntensity)
+                    effectSlider("Sliding speed", value: \.glassRainSpeed)
+                    effectSlider("Glass wind", value: \.glassRainWind)
+                    effectSlider("Glass blur", value: \.glassRainBlur)
+                    effectSlider("Refraction", value: \.glassRainRefraction)
+                    Text("Still beads and slowly merging drops refract the wallpaper and leave fading water trails. Combine with Falling Rain for a storm outside the glass.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
 

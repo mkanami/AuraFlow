@@ -45,12 +45,18 @@ final class TerminalWallpaperWindow: NSWindow {
         contentView = effectsView
         terminalView.onSharedFrame = { [weak self] descriptor, sequence in
             self?.effectsView.rainLightingSurfaceID = descriptor.surfaceID
+            self?.effectsView.rainFrameSequence = sequence
             self?.onSharedFrame?(descriptor, sequence)
         }
     }
 
     func update(snapshot: TerminalGridSnapshot, configuration: TerminalRenderConfiguration,
                 presentationBackground: TerminalRGBA? = nil) {
+        switch configuration.scaleMode {
+        case .fill: effectsView.rainFrameGravity = .resizeAspectFill
+        case .fit: effectsView.rainFrameGravity = .resizeAspect
+        case .stretch: effectsView.rainFrameGravity = .resize
+        }
         terminalView.update(snapshot: snapshot, configuration: configuration,
                             presentationBackground: presentationBackground)
     }

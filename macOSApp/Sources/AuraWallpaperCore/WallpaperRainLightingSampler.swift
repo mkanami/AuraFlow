@@ -9,6 +9,13 @@ import WebKit
 /// Renderers can expose their already completed frame without a full-size CPU readback.
 @MainActor public protocol WallpaperRainSurfaceProviding: AnyObject {
     var rainLightingSurfaceID: UInt32? { get }
+    var rainFrameSequence: UInt64? { get }
+    var rainFrameGravity: AVLayerVideoGravity { get }
+}
+
+public extension WallpaperRainSurfaceProviding {
+    var rainFrameSequence: UInt64? { nil }
+    var rainFrameGravity: AVLayerVideoGravity { .resize }
 }
 
 @MainActor

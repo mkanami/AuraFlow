@@ -37,6 +37,13 @@ public struct WallpaperEffectsSettings: Codable, Equatable, Sendable {
     public var rainAmount = 0.45
     public var rainSpeed = 0.5
     public var rainAngle = 0.5
+    public var rainBlur = 0.25
+    public var glassRainEnabled = false
+    public var glassRainIntensity = 0.45
+    public var glassRainSpeed = 0.35
+    public var glassRainWind = 0.5
+    public var glassRainBlur = 0.2
+    public var glassRainRefraction = 0.5
     public var rainColor: WallpaperRainColor = .blue
     public var ambientSpeed = 0.3
     public var tint: WallpaperEffectsTint = .pearl
@@ -53,7 +60,8 @@ public struct WallpaperEffectsSettings: Codable, Equatable, Sendable {
             || (flareEnabled && flareIntensity > 0)
             || (reflectionEnabled && reflectionIntensity > 0)
             || (sparkleEnabled && sparkleAmount > 0)
-            || (rainEnabled && rainAmount > 0))
+            || (rainEnabled && rainAmount > 0)
+            || (glassRainEnabled && glassRainIntensity > 0))
     }
 
     public func normalized() -> Self {
@@ -69,7 +77,8 @@ public struct WallpaperEffectsSettings: Codable, Equatable, Sendable {
     private static let numericKeys: [WritableKeyPath<Self, Double>] = [
         \.smoothing, \.parallaxAmount, \.glowIntensity, \.glowSize,
         \.flareIntensity, \.reflectionIntensity, \.bloomIntensity, \.bloomRadius, \.blurAmount,
-        \.sparkleAmount, \.rainAmount, \.rainSpeed, \.rainAngle, \.ambientSpeed
+        \.sparkleAmount, \.rainAmount, \.rainSpeed, \.rainAngle, \.rainBlur, \.ambientSpeed,
+        \.glassRainIntensity, \.glassRainSpeed, \.glassRainWind, \.glassRainBlur, \.glassRainRefraction
     ]
 
     private enum CodingKeys: String, CodingKey {
@@ -77,7 +86,8 @@ public struct WallpaperEffectsSettings: Codable, Equatable, Sendable {
         case glowEnabled, glowIntensity, glowSize, flareEnabled, flareIntensity
         case reflectionEnabled, reflectionIntensity, bloomEnabled, bloomIntensity, bloomRadius, blurEnabled, blurAmount
         case sparkleEnabled, sparkleAmount, ambientSpeed, tint
-        case rainEnabled, rainAmount, rainSpeed, rainAngle, rainColor
+        case rainEnabled, rainAmount, rainSpeed, rainAngle, rainColor, rainBlur
+        case glassRainEnabled, glassRainIntensity, glassRainSpeed, glassRainWind, glassRainBlur, glassRainRefraction
     }
 
     public init(from decoder: Decoder) throws {
@@ -106,6 +116,13 @@ public struct WallpaperEffectsSettings: Codable, Equatable, Sendable {
         rainAmount = try values.decodeIfPresent(Double.self, forKey: .rainAmount) ?? rainAmount
         rainSpeed = try values.decodeIfPresent(Double.self, forKey: .rainSpeed) ?? rainSpeed
         rainAngle = try values.decodeIfPresent(Double.self, forKey: .rainAngle) ?? rainAngle
+        rainBlur = try values.decodeIfPresent(Double.self, forKey: .rainBlur) ?? rainBlur
+        glassRainEnabled = try values.decodeIfPresent(Bool.self, forKey: .glassRainEnabled) ?? glassRainEnabled
+        glassRainIntensity = try values.decodeIfPresent(Double.self, forKey: .glassRainIntensity) ?? glassRainIntensity
+        glassRainSpeed = try values.decodeIfPresent(Double.self, forKey: .glassRainSpeed) ?? glassRainSpeed
+        glassRainWind = try values.decodeIfPresent(Double.self, forKey: .glassRainWind) ?? glassRainWind
+        glassRainBlur = try values.decodeIfPresent(Double.self, forKey: .glassRainBlur) ?? glassRainBlur
+        glassRainRefraction = try values.decodeIfPresent(Double.self, forKey: .glassRainRefraction) ?? glassRainRefraction
         if let rawRainColor = try values.decodeIfPresent(String.self, forKey: .rainColor) {
             rainColor = WallpaperRainColor(rawValue: rawRainColor) ?? .blue
         }

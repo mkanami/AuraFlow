@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import AuraTerminalRendering
 import AuraWallpaperCore
 import AuraTerminalWallpaperCore
@@ -122,6 +123,8 @@ private struct TerminalIOSurfacePreview: NSViewRepresentable {
 
 final class TerminalIOSurfacePreviewView: MTKView, WallpaperRainSurfaceProviding {
     var rainLightingSurfaceID: UInt32? { descriptor?.surfaceID }
+    var rainFrameSequence: UInt64? { lastSequence }
+    var rainFrameGravity: AVLayerVideoGravity { glassGravity(scaleMode) }
     private let renderPipeline: MTLRenderPipelineState?
     private let commandQueue: MTLCommandQueue?
     private var surface: IOSurfaceRef?
@@ -255,11 +258,14 @@ private struct TerminalSnapshotPreview: NSViewRepresentable {
             device: device
         )
         context.coordinator.attach(model, to: view)
-        return view
+        let pane = TerminalSnapshotPane(terminal: view)
+        pane.scaleMode = configuration.render.scaleMode
+        return pane
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        if let view = view as? TerminalMetalView { context.coordinator.attach(model, to: view) }
+        if let pane = view as? TerminalSnapshotPane { context.coordinator.attach(model, to: pane.terminal) }
+        (view as? TerminalSnapshotPane)?.scaleMode = configuration.render.scaleMode
     }
 
     static func update(_ view: TerminalMetalView, snapshot: TerminalGridSnapshot, configuration: TerminalWallpaperConfig) {
@@ -282,7 +288,7 @@ private struct TerminalSnapshotPreview: NSViewRepresentable {
 
     static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
         coordinator.observation = nil
-        (view as? TerminalMetalView)?.setRendererPaused(true)
+        (view as? TerminalSnapshotPane)?.terminal.setRendererPaused(true)
     }
 
     @MainActor final class Coordinator {
@@ -298,5 +304,34 @@ private struct TerminalSnapshotPreview: NSViewRepresentable {
                     TerminalSnapshotPreview.update(view, snapshot: snapshot, configuration: configuration)
                 }
         }
+    }
+}
+
+/// Exposes only completed frames from the local terminal preview, just like the
+/// installed helper's shared surface. No readback or second terminal session.
+private final class TerminalSnapshotPane: NSView, WallpaperRainSurfaceProviding {
+    let terminal: TerminalMetalView
+    var scaleMode: TerminalScaleMode = .fill
+    var rainLightingSurfaceID: UInt32?
+    var rainFrameSequence: UInt64?
+    var rainFrameGravity: AVLayerVideoGravity { glassGravity(scaleMode) }
+    init(terminal: TerminalMetalView) {
+        self.terminal = terminal
+        super.init(frame: terminal.frame)
+        terminal.autoresizingMask = [.width, .height]
+        addSubview(terminal)
+        terminal.onSharedFrame = { [weak self] descriptor, sequence in
+            self?.rainLightingSurfaceID = descriptor.surfaceID
+            self?.rainFrameSequence = sequence
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+private func glassGravity(_ mode: TerminalScaleMode) -> AVLayerVideoGravity {
+    switch mode {
+    case .fill: return .resizeAspectFill
+    case .fit: return .resizeAspect
+    case .stretch: return .resize
     }
 }
