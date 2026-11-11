@@ -116,9 +116,11 @@ simulated depth: the wallpaper, light, and foreground particles move at differen
 rates, without separating objects in the source image.
 
 **Rain on Glass** is a separate mode and can run together with Falling Rain.
-Small beads stay attached to the pane. **Sliding drops** independently enables
-large drops that release from the glass, accelerate under gravity, collect
-nearby beads, merge and leave connected fading water trails. Turn it off to
+Small beads have individual, fixed asymmetrical contours, proportions and
+orientations. **Sliding drops** independently enables large drops that release
+from the glass, accelerate and bend along the pane. Their bodies gradually
+stretch, lean and settle; collected beads and colliding drops converge smoothly
+as they merge, leaving connected fading water trails. Turn it off to
 keep the glass beads still while Falling Rain continues. Intensity, sliding
 speed, wind, blur and refraction have independent controls. Clear water takes its color from
 the wallpaper itself. A Metal water normal map refracts the actual wallpaper

@@ -88,6 +88,76 @@ struct WallpaperGlassRainTests {
         #expect(simulation.runners.contains { $0.velocityY > 20 })
     }
 
+    @Test func restingDropsHaveStableIndependentContoursAspectAndRotation() {
+        var simulation = WallpaperGlassRainSimulation()
+        var s = settings(); s.glassRainSlidingEnabled = false
+        simulation.advance(deltaTime: 0,aspect: 16.0/9,settings: s)
+        let first = simulation.instances
+        let beads = first.filter { $0.optics.z == 0 }
+        let aspects = beads.map { Double($0.ellipse.z / $0.ellipse.w) }
+        #expect(aspects.min() ?? 1 < 0.8 && aspects.max() ?? 1 > 1.4)
+        #expect(Set(beads.map { Int($0.optics.y * 100) }).count > 100)
+        #expect(Set(beads.map { Int($0.shape.x * 100) }).count > 100)
+        #expect(beads.allSatisfy { $0.shape.z > 0 && $0.shape.w == 0 })
+        for _ in 0..<300 { simulation.advance(deltaTime: 1.0/30,aspect: 16.0/9,settings: s) }
+        #expect(simulation.instances == first, "Random contact patches must not wobble while stationary")
+    }
+
+    @Test func flowingBodiesChangeShapeContinuouslyAndBendAlongDifferentPaths() {
+        var simulation = WallpaperGlassRainSimulation()
+        let s = settings()
+        simulation.advance(deltaTime: 0,aspect: 16.0/9,settings: s)
+        var maxStretchStep = 0.0, maxFlowStep = 0.0
+        var directions: [Double: [Double]] = [:]
+        var mergingFrames = 0, collectedBeadFrames = 0
+        for _ in 0..<1200 {
+            let previous = simulation.runners
+            simulation.advance(deltaTime: 1.0/60,aspect: 16.0/9,settings: s)
+            collectedBeadFrames += simulation.beads.filter { $0.mergeRemaining > 0 }.count
+            for (a,b) in zip(previous,simulation.runners) where a.seed == b.seed {
+                maxStretchStep = max(maxStretchStep,abs(a.stretch-b.stretch))
+                maxFlowStep = max(maxFlowStep,abs(a.flow-b.flow))
+                if b.radius > 0 && b.velocityY > 15 {
+                    directions[b.seed,default: []].append(atan2(b.velocityX,b.velocityY))
+                }
+                if b.mergeRemaining > 0 { mergingFrames += 1 }
+            }
+        }
+        #expect(maxStretchStep > 0.001 && maxStretchStep < 0.06)
+        #expect(maxFlowStep > 0.001 && maxFlowStep < 0.08)
+        #expect(directions.values.filter { ($0.max() ?? 0) - ($0.min() ?? 0) > 0.12 }.count > 5)
+        #expect(mergingFrames > 0, "Coalescing drops should converge over multiple frames")
+        #expect(collectedBeadFrames > 0, "Collected beads should shrink into the flowing drop instead of disappearing")
+    }
+
+    @Test @MainActor func differentContactPatchesProduceDistinctStableMetalSilhouettes() throws {
+        let renderer = try #require(WallpaperGlassRainRenderer())
+        let queue = try #require(renderer.device.makeCommandQueue())
+        let width=512, height=288, size=CGSize(width: 512,height: 288)
+        let rect=CGRect(origin: .zero,size: size)
+        let descriptor=MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,width: width,height: height,mipmapped: false)
+        descriptor.storageMode = .shared; descriptor.usage = [.renderTarget,.shaderRead]
+        let target=try #require(renderer.device.makeTexture(descriptor: descriptor))
+        func render(_ shape: SIMD4<Float>) throws -> [UInt8] {
+            let command=try #require(queue.makeCommandBuffer())
+            let drop=WallpaperGlassRainSimulation.Instance(ellipse: SIMD4(960,540,300,300),optics: SIMD4(1,0,0,0),shape: shape)
+            try renderer.encode(command: command,target: target,
+                source: .init(image: CIImage(color: .black).cropped(to: rect),gravity: .resize,revision: 1,label: "contour"),
+                settings: settings(),size: size,contentFrame: rect,instances: [drop])
+            command.commit(); command.waitUntilCompleted(); #expect(command.status == .completed)
+            var bytes=[UInt8](repeating: 0,count: width*height*4)
+            target.getBytes(&bytes,bytesPerRow: width*4,from: MTLRegionMake2D(0,0,width,height),mipmapLevel: 0)
+            return stride(from: 3,to: bytes.count,by: 4).map { bytes[$0] > 100 ? 1 : 0 }
+        }
+        let a=try render(SIMD4(0.5,-0.15,0.09,0))
+        let b=try render(SIMD4(3.8,0.14,0.075,0))
+        let repeated=try render(SIMD4(0.5,-0.15,0.09,0))
+        let circle=try render(.zero)
+        #expect(a == repeated)
+        #expect(zip(a,b).filter { $0 != $1 }.count > 800)
+        #expect(zip(a,circle).filter { $0 != $1 }.count > 1000)
+    }
+
     @Test @MainActor func fallingRainSurvivesCompositorHandoffAndSourceUnavailability() throws {
         let overlay = WallpaperEffectsOverlay()
         var s = settings(); s.rainEnabled = true
@@ -167,7 +237,7 @@ struct WallpaperGlassRainTests {
         #expect(dry[3] == 0)
     }
 
-    @Test @MainActor func metalReallyRefractsBlursUpdatesSourceAndLeavesDryPixelsTransparent() throws {
+    @Test @MainActor func metalReallyRefractsBlursUpdatesSourceAndLeavesDryPixelsTransparent() async throws {
         let renderer = try #require(WallpaperGlassRainRenderer(), "A Metal device and compiling glass shaders are required")
         let device = renderer.device, queue = try #require(device.makeCommandQueue())
         let width = 512, height = 288
@@ -208,7 +278,7 @@ struct WallpaperGlassRainTests {
         let changed = try render(blue, revision: 3, settings: s)
         #expect(changed[top] > 180 && changed[top+2] < 10, "The next media frame must replace the cached wallpaper")
         if let path = ProcessInfo.processInfo.environment["AURAFLOW_GLASS_ARTIFACTS"] {
-            try exportScene(renderer: renderer, queue: queue, directory: path)
+            try await exportScene(renderer: renderer, queue: queue, directory: path)
         }
         #expect(WallpaperGlassRainRenderer.renderSize(size: CGSize(width: 5120,height: 2880), scale: 2) == CGSize(width: 1920,height: 1080))
     }
@@ -312,7 +382,7 @@ struct WallpaperGlassRainTests {
         return url
     }
 
-    @MainActor private func exportScene(renderer: WallpaperGlassRainRenderer, queue: MTLCommandQueue, directory: String) throws {
+    @MainActor private func exportScene(renderer: WallpaperGlassRainRenderer, queue: MTLCommandQueue, directory: String) async throws {
         try FileManager.default.createDirectory(atPath: directory,withIntermediateDirectories: true)
         // An optional real wallpaper path is read only for local visual verification.
         let image: CGImage
@@ -336,7 +406,7 @@ struct WallpaperGlassRainTests {
         let command = try #require(queue.makeCommandBuffer())
         try renderer.encode(command: command,target: target,source: .init(image: CIImage(cgImage: image),gravity: .resizeAspectFill,revision: 999,label: "artifact"),
             settings: s,size: size,contentFrame: rect,instances: simulation.instances,airRain: rain.airRainInstances)
-        command.commit(); command.waitUntilCompleted()
+        command.commit(); await command.completed()
         let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil,pixelsWide: 1920,pixelsHigh: 1080,bitsPerSample: 8,samplesPerPixel: 4,hasAlpha: true,isPlanar: false,colorSpaceName: .deviceRGB,bytesPerRow: 1920*4,bitsPerPixel: 32))
         var bytes = [UInt8](repeating: 0,count: 1920*1080*4)
         target.getBytes(&bytes,bytesPerRow: 1920*4,from: MTLRegionMake2D(0,0,1920,1080),mipmapLevel: 0)
@@ -350,7 +420,7 @@ struct WallpaperGlassRainTests {
             try renderer.encode(command: measured,target: target,
                 source: .init(image: CIImage(cgImage: image),gravity: .resizeAspectFill,revision: UInt64(1000+i),label: "benchmark"),
                 settings: s,size: size,contentFrame: rect,instances: simulation.instances,airRain: rain.airRainInstances)
-            measured.commit(); measured.waitUntilCompleted()
+            measured.commit(); await measured.completed()
             try #require(measured.status == .completed)
             gpuTimes.append((measured.gpuEndTime-measured.gpuStartTime)*1000)
         }
@@ -360,5 +430,62 @@ struct WallpaperGlassRainTests {
         context.draw(image,in: rect); context.draw(overlay,in: rect)
         let final = NSBitmapImageRep(cgImage: try #require(context.makeImage()))
         try final.representation(using: .png,properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("rain-on-glass.png"))
+        if ProcessInfo.processInfo.environment["AURAFLOW_GLASS_ANIMATION"] == "1" {
+            try await exportMotion(renderer: renderer,queue: queue,image: image,simulation: simulation,
+                settings: s,directory: directory)
+        }
     }
+    @MainActor private func exportMotion(renderer: WallpaperGlassRainRenderer,queue: MTLCommandQueue,
+        image: CGImage,simulation initial: WallpaperGlassRainSimulation,settings: WallpaperEffectsSettings,directory: String) async throws {
+        let width=1280, height=720, size=CGSize(width: 1280,height: 720), rect=CGRect(x: 0,y: 0,width: 1280,height: 720)
+        let url=URL(fileURLWithPath: directory).appendingPathComponent("glass-rain-motion.mp4")
+        try? FileManager.default.removeItem(at: url)
+        let writer=try AVAssetWriter(outputURL: url,fileType: .mp4)
+        let input=AVAssetWriterInput(mediaType: .video,outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: width,AVVideoHeightKey: height,AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 5_000_000]])
+        let adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input,sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: width,kCVPixelBufferHeightKey as String: height])
+        writer.add(input); try #require(writer.startWriting()); writer.startSession(atSourceTime: .zero)
+        let descriptor=MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,width: width,height: height,mipmapped: false)
+        descriptor.storageMode = .shared; descriptor.usage = [.renderTarget,.shaderRead]
+        let target=try #require(renderer.device.makeTexture(descriptor: descriptor))
+        let rain=WallpaperRainLayer()
+        var simulation=initial, motion=WallpaperEffectsMotion()
+        let bitmapInfo=CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        var pixels=[UInt8](repeating: 0,count: width*height*4)
+        for index in 0..<120 {
+            simulation.advance(deltaTime: 1.0/30,aspect: 16.0/9,settings: settings)
+            motion.advance(settings: settings,cursor: nil,deltaTime: 1.0/30)
+            rain.render(settings: settings,motion: motion,size: size,scale: 1)
+            let command=try #require(queue.makeCommandBuffer())
+            try renderer.encode(command: command,target: target,
+                source: .init(image: CIImage(cgImage: image),gravity: .resizeAspectFill,revision: 10_000,label: "animation"),
+                settings: settings,size: size,contentFrame: rect,instances: simulation.instances,airRain: rain.airRainInstances)
+            command.commit(); await command.completed(); try #require(command.status == .completed)
+            target.getBytes(&pixels,bytesPerRow: width*4,from: MTLRegionMake2D(0,0,width,height),mipmapLevel: 0)
+            let provider=try #require(CGDataProvider(data: Data(pixels) as CFData))
+            let overlay=try #require(CGImage(width: width,height: height,bitsPerComponent: 8,bitsPerPixel: 32,bytesPerRow: width*4,
+                space: CGColorSpaceCreateDeviceRGB(),bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),provider: provider,
+                decode: nil,shouldInterpolate: true,intent: .defaultIntent))
+            let deadline=Date().addingTimeInterval(2)
+            while !input.isReadyForMoreMediaData && Date() < deadline { try await Task.sleep(for: .milliseconds(1)) }
+            try #require(input.isReadyForMoreMediaData)
+            var pixel: CVPixelBuffer?
+            try #require(CVPixelBufferPoolCreatePixelBuffer(nil,try #require(adaptor.pixelBufferPool),&pixel) == kCVReturnSuccess)
+            let buffer=try #require(pixel)
+            CVPixelBufferLockBaseAddress(buffer,[])
+            let context=try #require(CGContext(data: CVPixelBufferGetBaseAddress(buffer),width: width,height: height,bitsPerComponent: 8,
+                bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),space: CGColorSpaceCreateDeviceRGB(),bitmapInfo: bitmapInfo))
+            context.draw(image,in: rect); context.draw(overlay,in: rect)
+            if [0,39,79,119].contains(index) {
+                let snapshot=NSBitmapImageRep(cgImage: try #require(context.makeImage()))
+                try snapshot.representation(using: .png,properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("motion-\(index).png"))
+            }
+            CVPixelBufferUnlockBaseAddress(buffer,[])
+            try #require(adaptor.append(buffer,withPresentationTime: CMTime(value: Int64(index),timescale: 30)))
+        }
+        input.markAsFinished(); await writer.finishWriting(); try #require(writer.status == .completed)
+    }
+
 }

@@ -158,7 +158,7 @@ final class WallpaperGlassRainRenderer {
         }
         let byteCount = max(1, instances.count) * MemoryLayout<WallpaperGlassRainSimulation.Instance>.stride
         if (instanceBuffer?.length ?? 0) < byteCount {
-            instanceBuffer = device.makeBuffer(length: max(byteCount, 1536 * 32), options: .storageModeShared)
+            instanceBuffer = device.makeBuffer(length: max(byteCount, 2048 * MemoryLayout<WallpaperGlassRainSimulation.Instance>.stride), options: .storageModeShared)
         }
         guard let instanceBuffer else { throw GlassError.resource }
         if !instances.isEmpty {
@@ -240,8 +240,8 @@ final class WallpaperGlassRainRenderer {
     private static let shader = """
     #include <metal_stdlib>
     using namespace metal;
-    struct Drop { float4 ellipse; float4 optics; };
-    struct WaterVertex { float4 position [[position]]; float2 local; float strength; float angle; float trail; float radius; float length; float seed; };
+    struct Drop { float4 ellipse; float4 optics; float4 shape; };
+    struct WaterVertex { float4 position [[position]]; float2 local; float strength; float angle; float trail; float radius; float length; float seed; float4 shape; };
     vertex WaterVertex dropVertex(uint v [[vertex_id]], uint i [[instance_id]],
         constant Drop *drops [[buffer(0)]], constant float4 &pane [[buffer(1)]]) {
         const float2 corners[6] = {float2(-1,-1),float2(1,-1),float2(-1,1),float2(-1,1),float2(1,-1),float2(1,1)};
@@ -250,7 +250,7 @@ final class WallpaperGlassRainRenderer {
         float c = cos(d.optics.y), s = sin(d.optics.y);
         p = float2(c*p.x-s*p.y,s*p.x+c*p.y) + d.ellipse.xy;
         WaterVertex o; o.position = float4(p.x/pane.x*2-1,1-p.y/pane.y*2,0,1);
-        o.local=q; o.strength=d.optics.x; o.angle=d.optics.y; o.trail=d.optics.z; o.radius=d.ellipse.z; o.length=d.ellipse.w; o.seed=d.optics.w; return o;
+        o.local=q; o.strength=d.optics.x; o.angle=d.optics.y; o.trail=d.optics.z; o.radius=d.ellipse.z/(d.shape.z>0?1.28f:1.0f); o.length=d.ellipse.w; o.seed=d.optics.w; o.shape=d.shape; return o;
     }
     fragment float4 dropMap(WaterVertex in [[stage_in]]) {
         float2 q=in.local;
@@ -264,11 +264,19 @@ final class WallpaperGlassRainRenderer {
             h=sqrt(max(0.0f,1-r*r)); edge=1-smoothstep(0.65f,1.0f,r);
             n=-cap/max(0.1f,in.radius)*(0.35f+0.65f*h);
         } else {
-            // Mild contact-line irregularity; running drops have a narrow trailing neck
-            // and a heavy rounded lower lobe. Resting beads remain nearly spherical.
-            float ripple=1+sin(atan2(q.y,q.x)*3+in.seed*12)*0.025f;
-            if(in.trail>1.5f) q.x/=mix(0.58f,1.02f,smoothstep(-0.9f,0.55f,q.y));
-            q/=ripple;
+            // Each contact patch has its own fixed asymmetry and lobes. Padding
+            // contains its full outline, so irregular beads never get clipped flat.
+            if(in.shape.z>0) {
+                q*=1.28f;
+                q.x+=in.shape.y*q.y+sin(in.shape.x)*q.y*q.y*0.06f;
+                float angle=atan2(q.y,q.x);
+                float boundary=1+cos(angle*2+in.shape.x)*0.075f
+                    +sin(angle*3-in.shape.x*0.7f)*in.shape.z+cos(angle+in.shape.x)*0.04f;
+                q/=boundary;
+            }
+            // A continuous neck/shoulder response replaces the abrupt circle-to-teardrop switch.
+            float flow=in.trail>1.5f?clamp(in.shape.w,0.0f,1.0f):0.0f;
+            q.x/=mix(1-0.38f*flow,1+0.04f*flow,smoothstep(-0.9f,0.6f,q.y));
             float r2=dot(q,q); if(r2>=1) discard_fragment();
             h=sqrt(max(0.0f,1-r2)); edge=1-smoothstep(0.84f,1.0f,sqrt(r2));
             n=-q*(0.3f+0.7f*h);

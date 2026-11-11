@@ -138,3 +138,30 @@ are preserved. Water trails keep their restrained lighting.
 Nine focused glass regressions passed. GPU exports were visually checked on
 Night Train and Summer Mountain at the normal 45% glass intensity, with Falling
 Rain enabled. The export helper now uses this default intensity rather than 70%.
+
+
+## Individual contact patches and fluid body motion
+
+Stationary drops now have independently seeded aspect ratios, rotation, shear
+and smooth irregular contours. Their contact patches stay fixed, rather than
+wobbling over time. The normal-map shader uses the same deformed surface for
+silhouette, refraction and lighting, with padding around the full outline.
+
+Flowing drops use damped body responses for elongation and tilt, and continuous
+neck deformation. Per-drop surface variation curves the trajectory through
+filtered lateral velocity. Added volume grows the visible body gradually;
+weighted centers retain their visual position and ease into the merged center.
+Collected beads and secondary drops shrink and converge over 0.22 seconds,
+reusing their existing pool slots. The Sliding drops switch also freezes these
+transitions. Pool limits and the shared Falling Rain compositor are preserved.
+
+59 focused regressions passed, including stable shape diversity, actual GPU
+silhouette differences, bounded per-step deformation, curved trajectories,
+multi-frame bead collection and coalescence, and existing suspension and
+preference independence checks. Optional artifact export writes a four-second,
+30 fps H.264 clip and sampled frames from the real shader without capturing a
+screen or creating a presentation window. These are local build artifacts.
+
+The latest 1920×1080 offscreen combined-scene sample averaged 0.88 ms per GPU
+command (2.80 ms maximum) and 3.85 ms CPU+GPU wall time. As before, this is a
+short renderer sample, not a total power or endurance measurement.

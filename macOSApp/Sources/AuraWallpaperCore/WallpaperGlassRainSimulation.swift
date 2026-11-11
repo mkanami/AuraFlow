@@ -13,6 +13,15 @@ struct WallpaperGlassRainSimulation {
         var velocityX = 0.0, velocityY = 0.0
         var pinRemaining = 0.0, nextPinY = 0.0
         var trailX = 0.0, trailY = 0.0
+        var aspect = 1.0, restingAngle = 0.0
+        var contour = SIMD4<Double>(repeating: 0) // phase, shear, lobes, flow
+        var visibleRadius = 0.0
+        var stretch = 1.0, stretchVelocity = 0.0
+        var tilt = 0.0, tiltVelocity = 0.0, flow = 0.0
+        var visualOffset = SIMD2<Double>(repeating: 0)
+        var mergeRemaining = 0.0
+        var mergeTarget = SIMD2<Double>(repeating: 0)
+        var mergeVelocity = SIMD2<Double>(repeating: 0)
     }
     struct Trail {
         var x: Double, y: Double, width: Double, length: Double, angle: Double, life: Double
@@ -20,7 +29,8 @@ struct WallpaperGlassRainSimulation {
     /// Two float4s match the Metal instance layout. Radii are in logical pane units.
     struct Instance: Equatable {
         var ellipse: SIMD4<Float>
-        var optics: SIMD4<Float> // strength, rotation, trail flag, reserved
+        var optics: SIMD4<Float> // strength, rotation, kind, seed
+        var shape = SIMD4<Float>(repeating: 0) // phase, shear, lobes, continuous flow
     }
     private(set) var beads: [Drop] = []
     private(set) var runners: [Drop] = []
@@ -78,6 +88,10 @@ struct WallpaperGlassRainSimulation {
         drop.pinRemaining = drop.radius < 9 ? 0.5 + random(5) * 3.5 : random(5) * 0.6
         drop.nextPinY = drop.y + 80 + random(6) * 180
         drop.trailX = drop.x; drop.trailY = drop.y
+        drop.aspect = moving ? 0.82 + random(7) * 0.38 : 0.62 + random(7) * 1.05
+        drop.restingAngle = moving ? (random(8) - 0.5) * 0.3 : random(8) * .pi * 2
+        drop.contour = SIMD4(random(9) * .pi * 2, (random(10) - 0.5) * 0.3, 0.035 + random(11) * 0.055, 0)
+        drop.visibleRadius = drop.radius
         serial &+= 1
         return drop
     }
@@ -92,12 +106,23 @@ struct WallpaperGlassRainSimulation {
         func cell(_ x: Double, _ y: Double) -> Int { Int(floor(y / 48)) * columns + Int(floor(x / 48)) }
         for i in beads.indices {
             if beads[i].cooldown > 0 {
+                if beads[i].mergeRemaining > 0 {
+                    var bead = beads[i]
+                    animateMerge(&bead, dt: dt)
+                    beads[i] = bead
+                }
                 beads[i].cooldown -= dt
                 if beads[i].cooldown <= 0 { beads[i] = makeDrop(moving: false, anywhere: true) }
             } else { grid[cell(beads[i].x, beads[i].y), default: []].append(i) }
         }
         let wind = (settings.glassRainWind - 0.5) * 0.55 + sin(time * 0.17) * 0.035
         for i in runners.indices {
+            if runners[i].mergeRemaining > 0 {
+                var drop = runners[i]
+                animateMerge(&drop, dt: dt)
+                runners[i] = drop
+                continue
+            }
             guard runners[i].radius > 0 else { continue }
             let old = runners[i]
             // Contact-line adhesion pins small drops. Once released, inertia and
@@ -113,10 +138,13 @@ struct WallpaperGlassRainSimulation {
             let gravitySpeed = min(210, pow(max(1, old.radius - 3.8), 1.55) * 3.2)
                 * (0.25 + settings.glassRainSpeed * 1.75)
             let targetY = pinned ? 0 : gravitySpeed
-            let response = 1 - exp(-dt * (pinned ? 12 : 2.4))
+            let response = 1 - exp(-dt * (pinned ? 7 + old.seed * 4 : 1.6 + old.seed * 1.8))
             runners[i].velocityY += (targetY - old.velocityY) * response
-            let targetX = runners[i].velocityY * (wind * 0.45 + sin(old.y * 0.012 + old.seed * 24) * 0.045)
-            runners[i].velocityX += (targetX - old.velocityX) * (1 - exp(-dt * 3))
+            // Surface variations bend each rivulet differently, filtered through inertia.
+            let surfaceDrift = sin(old.y * 0.016 + old.seed * 31) * (0.08 + old.seed * 0.12)
+                + sin(old.y * 0.047 + old.seed * 57) * 0.025
+            let targetX = runners[i].velocityY * (wind * 0.4 + surfaceDrift)
+            runners[i].velocityX += (targetX - old.velocityX) * (1 - exp(-dt * (2 + old.seed)))
             runners[i].y += runners[i].velocityY * dt
             runners[i].x += runners[i].velocityX * dt
             let dx = runners[i].x - old.trailX, dy = runners[i].y - old.trailY
@@ -136,6 +164,9 @@ struct WallpaperGlassRainSimulation {
                         runners[i].radius = mergedRadius(runners[i].radius, beads[j].radius)
                         if runners[i].radius > 10 { runners[i].pinRemaining = 0 }
                         beads[j].cooldown = 5 + beads[j].seed * 12
+                        beads[j].mergeRemaining = 0.22
+                        beads[j].mergeTarget = SIMD2(runners[i].x, runners[i].y) + runners[i].visualOffset
+                        beads[j].mergeVelocity = SIMD2(runners[i].velocityX, runners[i].velocityY)
                         mergeCount += 1
                     }
                 }
@@ -143,22 +174,62 @@ struct WallpaperGlassRainSimulation {
             for j in runners.indices where j < i && runners[j].radius > 0 {
                 if overlaps(runners[i], runners[j]) {
                     let a = pow(runners[i].radius, 3), b = pow(runners[j].radius, 3)
+                    let previous = SIMD2(runners[i].x, runners[i].y)
                     runners[i].x = (runners[i].x * a + runners[j].x * b) / (a + b)
-                    runners[i].y = max(runners[i].y, runners[j].y)
+                    runners[i].y = (runners[i].y * a + runners[j].y * b) / (a + b)
+                    runners[i].visualOffset += previous - SIMD2(runners[i].x, runners[i].y)
                     runners[i].radius = mergedRadius(runners[i].radius, runners[j].radius)
                     runners[i].velocityY = (runners[i].velocityY * a + runners[j].velocityY * b) / (a + b)
+                    runners[i].velocityX = (runners[i].velocityX * a + runners[j].velocityX * b) / (a + b)
                     runners[i].pinRemaining = 0 // Added weight releases the contact line.
                     runners[i].trailX = runners[i].x; runners[i].trailY = runners[i].y
                     runners[j].radius = 0
+                    runners[j].mergeRemaining = 0.22
+                    runners[j].mergeTarget = SIMD2(runners[i].x, runners[i].y) + runners[i].visualOffset
+                    runners[j].mergeVelocity = SIMD2(runners[i].velocityX, runners[i].velocityY)
                     mergeCount += 1
                 }
             }
+            animateBody(index: i, dt: dt)
             if runners[i].y > 1110 || runners[i].x < -30 || runners[i].x > paneWidth + 30 {
                 runners[i] = makeDrop(moving: true, anywhere: false)
             }
         }
-        for i in runners.indices where runners[i].radius == 0 { runners[i] = makeDrop(moving: true, anywhere: false) }
+        for i in runners.indices where runners[i].radius == 0 && runners[i].mergeRemaining <= 0 {
+            runners[i] = makeDrop(moving: true, anywhere: false)
+        }
         if trails.count > Self.maximumTrails { trails.removeFirst(trails.count - Self.maximumTrails) }
+    }
+
+    private func animateMerge(_ drop: inout Drop, dt: Double) {
+        drop.mergeRemaining = max(0, drop.mergeRemaining - dt)
+        drop.mergeTarget += drop.mergeVelocity * dt
+        let follow = 1 - exp(-dt * 18)
+        drop.x += (drop.mergeTarget.x - drop.x) * follow
+        drop.y += (drop.mergeTarget.y - drop.y) * follow
+    }
+
+    private mutating func animateBody(index: Int, dt: Double) {
+        var drop = runners[index]
+        // Damped capillary response: the body stretches after release, leans into
+        // turns and settles after pinning instead of switching rigid silhouettes.
+        let targetStretch = 1 + min(0.8, drop.velocityY / 155)
+        let targetTilt = atan2(drop.velocityX, max(8, drop.velocityY))
+        spring(value: &drop.stretch, velocity: &drop.stretchVelocity, target: targetStretch,
+            frequency: 9 + drop.seed * 3, damping: 0.78, dt: dt)
+        spring(value: &drop.tilt, velocity: &drop.tiltVelocity, target: targetTilt,
+            frequency: 8, damping: 0.9, dt: dt)
+        drop.stretch = min(1.9, max(0.9, drop.stretch))
+        drop.flow += (min(1, drop.velocityY / 65) - drop.flow) * (1 - exp(-dt * 6))
+        drop.visibleRadius += (drop.radius - drop.visibleRadius) * (1 - exp(-dt * 9))
+        drop.visualOffset *= exp(-dt * 10)
+        runners[index] = drop
+    }
+
+    private func spring(value: inout Double, velocity: inout Double, target: Double,
+                        frequency: Double, damping: Double, dt: Double) {
+        velocity += ((target - value) * frequency * frequency - 2 * damping * frequency * velocity) * dt
+        value += velocity * dt
     }
 
     private func overlaps(_ a: Drop, _ b: Drop) -> Bool {
@@ -174,17 +245,26 @@ struct WallpaperGlassRainSimulation {
             result.append(Instance(ellipse: SIMD4(Float(trail.x), Float(trail.y), Float(trail.width), Float(trail.length)),
                 optics: SIMD4(Float(trail.life * 0.32), Float(trail.angle), 1, 0)))
         }
-        for bead in beads where bead.cooldown <= 0 {
-            // Increase the optical footprint without changing mass, collisions or motion.
-            let visibleRadius = bead.radius * 1.8
-            result.append(Instance(ellipse: SIMD4(Float(bead.x), Float(bead.y), Float(visibleRadius), Float(visibleRadius * (0.85 + bead.seed * 0.3))),
-                optics: SIMD4(Float(0.85 + bead.seed * 0.15), 0, 0, Float(bead.seed))))
+        for bead in beads where bead.cooldown <= 0 || bead.mergeRemaining > 0 {
+            let fade = bead.mergeRemaining > 0 ? min(1, bead.mergeRemaining / 0.22) : 1
+            let visibleRadius = bead.radius * 1.8 * sqrt(fade)
+            let aspect = sqrt(bead.aspect)
+            result.append(Instance(ellipse: SIMD4(Float(bead.x), Float(bead.y),
+                    Float(visibleRadius * aspect * 1.28), Float(visibleRadius / aspect * 1.28)),
+                optics: SIMD4(Float((0.85 + bead.seed * 0.15) * min(1, fade * 3)), Float(bead.restingAngle), 0, Float(bead.seed)),
+                shape: SIMD4(Float(bead.contour.x), Float(bead.contour.y), Float(bead.contour.z), 0)))
         }
         for drop in runners {
-            let stretch = slidingEnabled ? 1 + min(0.72, drop.velocityY / 160) : 1
-            let angle = slidingEnabled ? -atan2(drop.velocityX, max(1, drop.velocityY)) : 0
-            result.append(Instance(ellipse: SIMD4(Float(drop.x), Float(drop.y), Float(drop.radius * 1.35 / sqrt(stretch)), Float(drop.radius * 1.35 * stretch)),
-                optics: SIMD4(1, Float(angle), slidingEnabled && drop.velocityY > 5 ? 2 : 0, Float(drop.seed))))
+            let merging = drop.mergeRemaining > 0
+            let fade = merging ? min(1, drop.mergeRemaining / 0.22) : 1
+            let radius = drop.visibleRadius * 1.35 * (merging ? sqrt(fade) : 1)
+            let aspect = sqrt(drop.aspect)
+            let angle = drop.restingAngle * (1 - drop.flow) - drop.tilt
+            let shear = drop.contour.y + (atan2(drop.velocityX, max(8, drop.velocityY)) - drop.tilt) * drop.flow * 0.45
+            result.append(Instance(ellipse: SIMD4(Float(drop.x + drop.visualOffset.x), Float(drop.y + drop.visualOffset.y),
+                    Float(radius * aspect / sqrt(drop.stretch) * 1.28), Float(radius / aspect * drop.stretch * 1.28)),
+                optics: SIMD4(Float(min(1, fade * 3)), Float(angle), 2, Float(drop.seed)),
+                shape: SIMD4(Float(drop.contour.x), Float(shear), Float(drop.contour.z), Float(drop.flow))))
         }
         return result
     }
