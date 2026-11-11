@@ -80,6 +80,7 @@ var targets: [Target] = [
     .executableTarget(
         name: "WallpaperControlApp",
         dependencies: [
+            .product(name: "SwiftSoup", package: "SwiftSoup"),
             "AuraWallpaperEngineCore",
             "AuraWallpaperCore",
             "AuraTerminalWallpaperCore",
@@ -156,5 +157,8 @@ let package = Package(
         .macOS(.v13),
     ],
     products: products,
+    dependencies: [
+        .package(url: "https://github.com/scinfu/SwiftSoup.git", exact: "2.14.3"),
+    ],
     targets: targets
 )

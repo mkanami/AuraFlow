@@ -11,7 +11,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
     private let curatedCatalog: [CatalogWallpaper]
 
     init(
-        animeProvider: WallpaperCatalogProviding = MoeWallsSource(),
+        animeProvider: WallpaperCatalogProviding = AnimeWallpaperCatalogProvider(),
         animeNatureProvider: WallpaperCatalogProviding = MotionBGSAnimeNatureSource(),
         scenicProvider: WallpaperCatalogProviding = DarefulSource(),
         curatedCatalog: [CatalogWallpaper] = CatalogWallpaper.defaultCatalog

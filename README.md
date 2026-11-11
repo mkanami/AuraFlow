@@ -149,6 +149,11 @@ wallpaper playback. Saved wallpaper choices remain available for the next Start.
 
 ## Wallpaper Catalog
 
+On macOS, **Anime** combines MoeWalls, DesktopHut and LiveWallpapers4Free;
+**Anime Nature** uses MotionBGS and **Scenic** uses Dareful. New-site API
+operations and local verification commands are documented in
+[Catalog APIs](docs/catalog-apis.md).
+
 The catalog uses lightweight media for previews and downloads the original file
 only after you select **Download**. Saved files appear under **Downloaded
 Wallpapers** and are reused on the next launch. Downloads show progress and can

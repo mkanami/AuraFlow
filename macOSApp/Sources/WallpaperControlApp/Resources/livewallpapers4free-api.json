@@ -1,0 +1,241 @@
+{
+  "name": "livewallpapers4free",
+  "baseUrl": "https://livewallpapers4free.com",
+  "operations": [
+    {
+      "name": "list",
+      "request": {
+        "method": "GET",
+        "url": "https://livewallpapers4free.com/category/anime-live-wallpapers/page/%7Bpage%7D/",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
+          "priority": "u=0, i",
+          "sec-ch-ua": "\"Chromium\";v=\"153\", \"Not_A Brand\";v=\"8\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\"",
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-user": "?1",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+        }
+      },
+      "slots": [
+        {
+          "param": "page",
+          "at": [
+            "path:3"
+          ]
+        }
+      ],
+      "volatile": [],
+      "trigger": {
+        "url": "https://livewallpapers4free.com/category/anime-live-wallpapers/page/{page}/"
+      },
+      "match": {
+        "method": "GET",
+        "host": "livewallpapers4free.com"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html; charset=UTF-8",
+        "html": {
+          "items": "#primary .post",
+          "fields": {
+            "title": "h2 a",
+            "url": "h2 a@href",
+            "image": "img@src"
+          }
+        }
+      },
+      "params": [
+        {
+          "name": "page",
+          "type": "string",
+          "required": true,
+          "example": "2",
+          "min": 1
+        }
+      ],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {
+            "page": "4"
+          },
+          "expect": "result"
+        }
+      ],
+      "paging": {
+        "param": "page"
+      }
+    },
+    {
+      "name": "search",
+      "request": {
+        "method": "GET",
+        "url": "https://livewallpapers4free.com/?s=%7Bquery%7D&paged=%7Bpage%7D",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
+          "priority": "u=0, i",
+          "sec-ch-ua": "\"Chromium\";v=\"153\", \"Not_A Brand\";v=\"8\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\"",
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-user": "?1",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+        }
+      },
+      "slots": [
+        {
+          "param": "query",
+          "at": [
+            "query:s"
+          ]
+        },
+        {
+          "param": "page",
+          "at": [
+            "query:paged"
+          ]
+        }
+      ],
+      "volatile": [],
+      "trigger": {
+        "url": "https://livewallpapers4free.com/?s={query}&paged={page}"
+      },
+      "match": {
+        "method": "GET",
+        "host": "livewallpapers4free.com"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html; charset=UTF-8",
+        "html": {
+          "items": "#primary .post",
+          "fields": {
+            "title": "h2 a",
+            "url": "h2 a@href",
+            "image": "img@src",
+            "categories": "@class"
+          },
+          "empty": ".no-results"
+        }
+      },
+      "params": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "example": "naruto"
+        },
+        {
+          "name": "page",
+          "type": "string",
+          "required": true,
+          "example": "1",
+          "min": 1
+        }
+      ],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {
+            "query": "gojo",
+            "page": "1"
+          },
+          "expect": "result"
+        },
+        {
+          "args": {
+            "query": "auraflownoresults9x7z",
+            "page": "1"
+          },
+          "expect": "empty"
+        }
+      ],
+      "paging": {
+        "param": "page"
+      }
+    },
+    {
+      "name": "detail",
+      "request": {
+        "method": "GET",
+        "url": "https://livewallpapers4free.com/%7Bslug%7D/",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
+          "priority": "u=0, i",
+          "sec-ch-ua": "\"Chromium\";v=\"153\", \"Not_A Brand\";v=\"8\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\"",
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-user": "?1",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+        }
+      },
+      "slots": [
+        {
+          "param": "slug",
+          "at": [
+            "path:0"
+          ]
+        }
+      ],
+      "volatile": [],
+      "trigger": {
+        "url": "https://livewallpapers4free.com/{slug}/"
+      },
+      "match": {
+        "method": "GET",
+        "host": "livewallpapers4free.com",
+        "path": "/*/"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html; charset=UTF-8",
+        "html": {
+          "items": "#primary",
+          "fields": {
+            "preview": "all:video source@src",
+            "original": "all:a.dlm-download-link@href",
+            "labels": "all:a.dlm-download-link"
+          }
+        }
+      },
+      "params": [
+        {
+          "name": "slug",
+          "type": "string",
+          "required": true,
+          "example": "shiroko-before-the-ride-blue-archive"
+        }
+      ],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {
+            "slug": "lynae-in-the-golden-classroom-wuthering-waves"
+          },
+          "expect": "result"
+        }
+      ]
+    }
+  ]
+}
