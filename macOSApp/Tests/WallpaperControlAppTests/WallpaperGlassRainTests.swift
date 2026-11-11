@@ -130,6 +130,114 @@ struct WallpaperGlassRainTests {
         #expect(collectedBeadFrames > 0, "Collected beads should shrink into the flowing drop instead of disappearing")
     }
 
+    @Test func suctionStretchesConnectsAndTransfersVolumeGraduallyTowardALiveReceiver() {
+        let s=settings()
+        var scene=contactScene(s)
+        let originalVolume=pow(scene.runners[0].radius,3)+pow(scene.beads[0].radius,3)
+        let initialReceiver=scene.runners[0].radius
+        scene.advance(deltaTime: 1.0/60,aspect: 16.0/9,settings: s)
+        #expect(scene.beads[0].suction != nil)
+        #expect(scene.runners[0].radius <= initialReceiver, "Contact must not add the entire bead volume immediately")
+        var maxElongation=1.0, bridgeFrames=0
+        var fractions: [Double]=[]
+        for _ in 0..<70 {
+            scene.advance(deltaTime: 1.0/60,aspect: 16.0/9,settings: s)
+            if let suction=scene.beads[0].suction {
+                fractions.append(suction.transferredFraction)
+                if scene.beads[0].mergeRemaining > 0 {
+                    maxElongation=max(maxElongation,suction.elongation(toward: scene.beads[0].mergeTarget))
+                    let receiver=scene.runners[0]
+                    let targetDistance=hypot(scene.beads[0].mergeTarget.x-receiver.x,scene.beads[0].mergeTarget.y-receiver.y)
+                    #expect(targetDistance < receiver.visibleRadius*1.4+2)
+                }
+                let remaining=pow(suction.initialRadius,3)*(1-suction.transferredFraction)
+                let accounted=pow(scene.runners[0].radius,3)+remaining+scene.runners[0].depositedVolume
+                #expect(abs(accounted-originalVolume) < 0.0001, "Water must move between the lobe, receiver and deposited film")
+            }
+            if scene.instances.contains(where: { $0.optics.z == 4 }) { bridgeFrames += 1 }
+        }
+        #expect(maxElongation > 1.5 && bridgeFrames > 5)
+        #expect(fractions.contains { $0 > 0.1 && $0 < 0.9 } && fractions.last == 1)
+        #expect(zip(fractions,fractions.dropFirst()).allSatisfy { $0 <= $1 })
+        #expect(scene.beads[0].mergeRemaining == 0 && scene.runners[0].courseBias > 0)
+    }
+
+    @Test func filmLossShrinksTheFlowAndOffCenterCollectionChangesItsCourse() {
+        let s=settings()
+        var wet=contactScene(s), dry=contactScene(s,withBead: false)
+        let initial=wet.runners[0].radius
+        for _ in 0..<180 {
+            wet.advance(deltaTime: 1.0/60,aspect: 16.0/9,settings: s)
+            dry.advance(deltaTime: 1.0/60,aspect: 16.0/9,settings: s)
+        }
+        #expect(wet.runners[0].x > dry.runners[0].x+1)
+        #expect(wet.runners[0].courseBias > dry.runners[0].courseBias)
+        #expect(dry.runners[0].radius < initial*0.97 && dry.runners[0].depositedVolume > 0)
+        #expect(abs(pow(dry.runners[0].radius,3)+dry.runners[0].depositedVolume-pow(initial,3)) < 0.0001)
+        #expect(wet.instances.count <= 1882)
+    }
+
+    @Test func suctionDoesNotJumpToARecycledReceiverAndTheSwitchFreezesItsNeck() {
+        var s=settings()
+        var scene=contactScene(s,nearBottom: true)
+        scene.advance(deltaTime: 1.0/60,aspect: 16.0/9,settings: s)
+        #expect(scene.beads[0].suction != nil)
+        let originalSeed=scene.runners[0].seed
+        s.glassRainSlidingEnabled=false
+        scene.advance(deltaTime: 0,aspect: 16.0/9,settings: s)
+        let frozen=scene.instances
+        for _ in 0..<60 { scene.advance(deltaTime: 1.0/60,aspect: 16.0/9,settings: s) }
+        #expect(scene.instances == frozen)
+        s.glassRainSlidingEnabled=true
+        var sawReplacement=false
+        for _ in 0..<50 {
+            scene.advance(deltaTime: 1.0/60,aspect: 16.0/9,settings: s)
+            if scene.runners[0].seed != originalSeed { sawReplacement=true }
+            if scene.beads[0].mergeRemaining > 0 { #expect(scene.beads[0].y > 1050) }
+        }
+        #expect(sawReplacement && scene.beads[0].suction?.transferredFraction == 1)
+    }
+
+    @Test @MainActor func capillaryNeckRendersConnectedWaterBetweenTheLobes() throws {
+        let renderer=try #require(WallpaperGlassRainRenderer())
+        let queue=try #require(renderer.device.makeCommandQueue())
+        let width=512,height=288,size=CGSize(width: 512,height: 288),rect=CGRect(x: 0,y: 0,width: 512,height: 288)
+        let descriptor=MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,width: width,height: height,mipmapped: false)
+        descriptor.storageMode = .shared; descriptor.usage = [.renderTarget,.shaderRead]
+        let target=try #require(renderer.device.makeTexture(descriptor: descriptor))
+        let lobes=[WallpaperGlassRainSimulation.Instance(ellipse: SIMD4(800,540,50,70),optics: SIMD4(1,0,0,0)),
+            WallpaperGlassRainSimulation.Instance(ellipse: SIMD4(1000,540,100,100),optics: SIMD4(1,0,0,0))]
+        let neck=WallpaperGlassRainSimulation.Instance(ellipse: SIMD4(875,540,18,70),optics: SIMD4(0.85,-.pi/2,4,0))
+        func alpha(_ instances: [WallpaperGlassRainSimulation.Instance]) throws -> UInt8 {
+            let command=try #require(queue.makeCommandBuffer())
+            try renderer.encode(command: command,target: target,
+                source: .init(image: CIImage(color: .black).cropped(to: rect),gravity: .resize,revision: 1,label: "neck"),
+                settings: settings(),size: size,contentFrame: rect,instances: instances)
+            command.commit(); command.waitUntilCompleted(); #expect(command.status == .completed)
+            var pixel=[UInt8](repeating: 0,count: 4)
+            target.getBytes(&pixel,bytesPerRow: 4,from: MTLRegionMake2D(Int(875.0/1920*512),height/2,1,1),mipmapLevel: 0)
+            return pixel[3]
+        }
+        #expect(try alpha(lobes) == 0)
+        #expect(try alpha(lobes+[neck]) > 120)
+    }
+
+    private func contactScene(_ settings: WallpaperEffectsSettings,withBead: Bool=true,nearBottom: Bool=false,delayedContact: Bool=false) -> WallpaperGlassRainSimulation {
+        let beadCount=Int(180+settings.glassRainIntensity*820),runnerCount=Int(6+settings.glassRainIntensity*44)
+        func drop(x: Double,y: Double,radius: Double,seed: Double) -> WallpaperGlassRainSimulation.Drop {
+            var d=WallpaperGlassRainSimulation.Drop(x: x,y: y,radius: radius,seed: seed)
+            d.visibleRadius=radius; d.nextPinY=10_000; d.contour=SIMD4(1.5,0.1,0.07,0)
+            return d
+        }
+        var beads=(0..<beadCount).map { drop(x: Double($0)*3,y: -4000,radius: 2,seed: 0.7) }
+        var runners=(0..<runnerCount).map { drop(x: Double($0)*40,y: -4000,radius: 6,seed: 0.8) }
+        let y=nearBottom ? 1104.0 : 500.0
+        runners[0]=drop(x: 960,y: y,radius: 10,seed: 0.3)
+        runners[0].velocityY=nearBottom ? 120 : 30
+        if withBead { beads[0]=drop(x: delayedContact ? 972 : 974,y: y+(delayedContact ? 24 : 6),radius: 4,seed: 0.4) }
+        return WallpaperGlassRainSimulation(beads: beads,runners: runners,aspect: 16.0/9)
+    }
+
     @Test @MainActor func differentContactPatchesProduceDistinctStableMetalSilhouettes() throws {
         let renderer = try #require(WallpaperGlassRainRenderer())
         let queue = try #require(renderer.device.makeCommandQueue())
@@ -433,12 +541,14 @@ struct WallpaperGlassRainTests {
         if ProcessInfo.processInfo.environment["AURAFLOW_GLASS_ANIMATION"] == "1" {
             try await exportMotion(renderer: renderer,queue: queue,image: image,simulation: simulation,
                 settings: s,directory: directory)
+            try await exportMotion(renderer: renderer,queue: queue,image: image,simulation: contactScene(s,delayedContact: true),
+                settings: s,directory: directory,closeup: true)
         }
     }
     @MainActor private func exportMotion(renderer: WallpaperGlassRainRenderer,queue: MTLCommandQueue,
-        image: CGImage,simulation initial: WallpaperGlassRainSimulation,settings: WallpaperEffectsSettings,directory: String) async throws {
+        image: CGImage,simulation initial: WallpaperGlassRainSimulation,settings: WallpaperEffectsSettings,directory: String,closeup: Bool=false) async throws {
         let width=1280, height=720, size=CGSize(width: 1280,height: 720), rect=CGRect(x: 0,y: 0,width: 1280,height: 720)
-        let url=URL(fileURLWithPath: directory).appendingPathComponent("glass-rain-motion.mp4")
+        let url=URL(fileURLWithPath: directory).appendingPathComponent(closeup ? "glass-suction-closeup.mp4" : "glass-rain-motion.mp4")
         try? FileManager.default.removeItem(at: url)
         let writer=try AVAssetWriter(outputURL: url,fileType: .mp4)
         let input=AVAssetWriterInput(mediaType: .video,outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264,
@@ -454,14 +564,25 @@ struct WallpaperGlassRainTests {
         var simulation=initial, motion=WallpaperEffectsMotion()
         let bitmapInfo=CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
         var pixels=[UInt8](repeating: 0,count: width*height*4)
-        for index in 0..<120 {
+        let frameCount=closeup ? 240 : 120
+        for index in 0..<frameCount {
             simulation.advance(deltaTime: 1.0/30,aspect: 16.0/9,settings: settings)
             motion.advance(settings: settings,cursor: nil,deltaTime: 1.0/30)
             rain.render(settings: settings,motion: motion,size: size,scale: 1)
+            var instances=simulation.instances
+            if closeup {
+                for i in instances.indices {
+                    let cameraX=960+(Float(simulation.runners[0].x)-960)*0.4
+                    let cameraY=500+(Float(simulation.runners[0].y)-500)*0.65
+                    instances[i].ellipse.x=(instances[i].ellipse.x-cameraX)*4+960
+                    instances[i].ellipse.y=(instances[i].ellipse.y-cameraY)*4+400
+                    instances[i].ellipse.z*=4; instances[i].ellipse.w*=4
+                }
+            }
             let command=try #require(queue.makeCommandBuffer())
             try renderer.encode(command: command,target: target,
                 source: .init(image: CIImage(cgImage: image),gravity: .resizeAspectFill,revision: 10_000,label: "animation"),
-                settings: settings,size: size,contentFrame: rect,instances: simulation.instances,airRain: rain.airRainInstances)
+                settings: settings,size: size,contentFrame: rect,instances: instances,airRain: closeup ? [] : rain.airRainInstances)
             command.commit(); await command.completed(); try #require(command.status == .completed)
             target.getBytes(&pixels,bytesPerRow: width*4,from: MTLRegionMake2D(0,0,width,height),mipmapLevel: 0)
             let provider=try #require(CGDataProvider(data: Data(pixels) as CFData))
@@ -478,9 +599,9 @@ struct WallpaperGlassRainTests {
             let context=try #require(CGContext(data: CVPixelBufferGetBaseAddress(buffer),width: width,height: height,bitsPerComponent: 8,
                 bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),space: CGColorSpaceCreateDeviceRGB(),bitmapInfo: bitmapInfo))
             context.draw(image,in: rect); context.draw(overlay,in: rect)
-            if [0,39,79,119].contains(index) {
+            if (closeup ? [0,6,12,18,30,90,180,239] : [0,39,79,119]).contains(index) {
                 let snapshot=NSBitmapImageRep(cgImage: try #require(context.makeImage()))
-                try snapshot.representation(using: .png,properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("motion-\(index).png"))
+                try snapshot.representation(using: .png,properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(closeup ? "suction" : "motion")-\(index).png"))
             }
             CVPixelBufferUnlockBaseAddress(buffer,[])
             try #require(adaptor.append(buffer,withPresentationTime: CMTime(value: Int64(index),timescale: 30)))

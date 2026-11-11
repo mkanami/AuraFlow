@@ -119,8 +119,11 @@ rates, without separating objects in the source image.
 Small beads have individual, fixed asymmetrical contours, proportions and
 orientations. **Sliding drops** independently enables large drops that release
 from the glass, accelerate and bend along the pane. Their bodies gradually
-stretch, lean and settle; collected beads and colliding drops converge smoothly
-as they merge, leaving connected fading water trails. Turn it off to
+stretch, lean and settle. Collected beads attach through a water neck, stretch
+toward the live receiver and transfer their volume progressively. Depositing
+water in the trail reduces a flowing drop's size; off-center collection can
+bend its course. Colliding drops converge smoothly as they merge, leaving
+connected fading water trails. Turn it off to
 keep the glass beads still while Falling Rain continues. Intensity, sliding
 speed, wind, blur and refraction have independent controls. Clear water takes its color from
 the wallpaper itself. A Metal water normal map refracts the actual wallpaper

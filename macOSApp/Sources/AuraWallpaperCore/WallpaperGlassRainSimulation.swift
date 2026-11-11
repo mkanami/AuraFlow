@@ -22,11 +22,16 @@ struct WallpaperGlassRainSimulation {
         var mergeRemaining = 0.0
         var mergeTarget = SIMD2<Double>(repeating: 0)
         var mergeVelocity = SIMD2<Double>(repeating: 0)
+        var suction: WallpaperGlassSuction?
+        var mergeReceiver = -1
+        var mergeReceiverSeed = 0.0
+        var courseBias = 0.0, absorptionPulse = 0.0
+        var depositedVolume = 0.0
     }
     struct Trail {
         var x: Double, y: Double, width: Double, length: Double, angle: Double, life: Double
     }
-    /// Two float4s match the Metal instance layout. Radii are in logical pane units.
+    /// Three float4s match the Metal instance layout. Radii are in logical pane units.
     struct Instance: Equatable {
         var ellipse: SIMD4<Float>
         var optics: SIMD4<Float> // strength, rotation, kind, seed
@@ -42,6 +47,14 @@ struct WallpaperGlassRainSimulation {
     private var aspect = 0.0
     private(set) var slidingEnabled = true
     static let maximumTrails = 768
+    static let maximumBridges = 64
+
+    init() {}
+
+    /// Explicit initial conditions also support focused offscreen scene exports.
+    init(beads: [Drop], runners: [Drop], aspect: Double) {
+        self.beads = beads; self.runners = runners; self.aspect = aspect
+    }
     var paneWidth: Double { max(1, aspect * 1080) }
 
     mutating func advance(deltaTime: Double, aspect: Double, settings: WallpaperEffectsSettings) {
@@ -108,7 +121,8 @@ struct WallpaperGlassRainSimulation {
             if beads[i].cooldown > 0 {
                 if beads[i].mergeRemaining > 0 {
                     var bead = beads[i]
-                    animateMerge(&bead, dt: dt)
+                    if bead.suction != nil { animateSuction(&bead, dt: dt) }
+                    else { animateMerge(&bead, dt: dt) }
                     beads[i] = bead
                 }
                 beads[i].cooldown -= dt
@@ -125,6 +139,8 @@ struct WallpaperGlassRainSimulation {
             }
             guard runners[i].radius > 0 else { continue }
             let old = runners[i]
+            runners[i].courseBias *= exp(-dt * 0.35)
+            runners[i].absorptionPulse *= exp(-dt * 5)
             // Contact-line adhesion pins small drops. Once released, inertia and
             // gravity produce an accelerating run, rather than a shared sine-wave speed.
             if runners[i].pinRemaining > 0 {
@@ -132,7 +148,11 @@ struct WallpaperGlassRainSimulation {
             }
             if old.y >= old.nextPinY {
                 runners[i].nextPinY = old.y + 100 + old.seed * 220
-                if old.radius < 9.5 { runners[i].pinRemaining = 0.4 + old.seed * 1.7 }
+                if old.radius < 9.5 {
+                    runners[i].pinRemaining = 0.4 + old.seed * 1.7
+                    runners[i].courseBias = min(0.32, max(-0.32, runners[i].courseBias
+                        + sin(old.y * 0.031 + old.seed * 91) * 0.13))
+                }
             }
             let pinned = runners[i].pinRemaining > 0
             let gravitySpeed = min(210, pow(max(1, old.radius - 3.8), 1.55) * 3.2)
@@ -143,10 +163,19 @@ struct WallpaperGlassRainSimulation {
             // Surface variations bend each rivulet differently, filtered through inertia.
             let surfaceDrift = sin(old.y * 0.016 + old.seed * 31) * (0.08 + old.seed * 0.12)
                 + sin(old.y * 0.047 + old.seed * 57) * 0.025
-            let targetX = runners[i].velocityY * (wind * 0.4 + surfaceDrift)
+            let targetX = runners[i].velocityY * (wind * 0.4 + surfaceDrift + runners[i].courseBias)
             runners[i].velocityX += (targetX - old.velocityX) * (1 - exp(-dt * (2 + old.seed)))
             runners[i].y += runners[i].velocityY * dt
             runners[i].x += runners[i].velocityX * dt
+            // The wet film contains water from this drop: depositing a trail
+            // gradually reduces its volume and can pin or redirect a lighter body.
+            let travelled = hypot(runners[i].x - old.x, runners[i].y - old.y)
+            let filmWidth = max(0.7, old.radius * 0.095)
+            let volume = pow(runners[i].radius, 3)
+            let deposited = min(max(0, volume - pow(4.3, 3)),
+                travelled * filmWidth * filmWidth * (0.85 + old.seed * 0.55))
+            runners[i].radius = cbrt(max(0, volume - deposited))
+            runners[i].depositedVolume += deposited
             let dx = runners[i].x - old.trailX, dy = runners[i].y - old.trailY
             let distance = hypot(dx, dy)
             if distance >= max(4, old.radius * 0.65) {
@@ -158,15 +187,17 @@ struct WallpaperGlassRainSimulation {
                 runners[i].trailX = runners[i].x; runners[i].trailY = runners[i].y
             }
             let key = cell(runners[i].x, runners[i].y)
-            for row in -1...1 { for col in -1...1 {
+            let reach = max(1, Int(ceil((runners[i].visibleRadius * 1.35 * runners[i].stretch + 9) / 48)))
+            for row in -reach...reach { for col in -reach...reach {
                 for j in grid[key + row * columns + col] ?? [] where beads[j].cooldown <= 0 {
-                    if overlaps(runners[i], beads[j]) {
-                        runners[i].radius = mergedRadius(runners[i].radius, beads[j].radius)
-                        if runners[i].radius > 10 { runners[i].pinRemaining = 0 }
-                        beads[j].cooldown = 5 + beads[j].seed * 12
-                        beads[j].mergeRemaining = 0.22
+                    if touchesBead(runners[i], beads[j]) {
+                        let duration = 0.46 + beads[j].seed * 0.18
+                        beads[j].cooldown = 5 + beads[j].seed * 12 + duration
+                        beads[j].mergeRemaining = duration
                         beads[j].mergeTarget = SIMD2(runners[i].x, runners[i].y) + runners[i].visualOffset
                         beads[j].mergeVelocity = SIMD2(runners[i].velocityX, runners[i].velocityY)
+                        beads[j].suction = WallpaperGlassSuction(receiver: i, receiverSeed: runners[i].seed,
+                            origin: SIMD2(beads[j].x, beads[j].y), initialRadius: beads[j].radius, duration: duration)
                         mergeCount += 1
                     }
                 }
@@ -185,6 +216,8 @@ struct WallpaperGlassRainSimulation {
                     runners[i].trailX = runners[i].x; runners[i].trailY = runners[i].y
                     runners[j].radius = 0
                     runners[j].mergeRemaining = 0.22
+                    runners[j].mergeReceiver = i
+                    runners[j].mergeReceiverSeed = runners[i].seed
                     runners[j].mergeTarget = SIMD2(runners[i].x, runners[i].y) + runners[i].visualOffset
                     runners[j].mergeVelocity = SIMD2(runners[i].velocityX, runners[i].velocityY)
                     mergeCount += 1
@@ -201,6 +234,84 @@ struct WallpaperGlassRainSimulation {
         if trails.count > Self.maximumTrails { trails.removeFirst(trails.count - Self.maximumTrails) }
     }
 
+    private func receiverIndex(for suction: WallpaperGlassSuction) -> Int? {
+        guard runners.indices.contains(suction.receiver), runners[suction.receiver].seed == suction.receiverSeed else { return nil }
+        // A recipient may itself coalesce while it is drawing in a bead.
+        var index = suction.receiver
+        for _ in runners.indices {
+            if runners[index].radius > 0 { return index }
+            let ghost = runners[index]
+            let next = ghost.mergeReceiver
+            guard runners.indices.contains(next), runners[next].seed == ghost.mergeReceiverSeed else { return nil }
+            index = next
+        }
+        return nil
+    }
+
+    private mutating func animateSuction(_ drop: inout Drop, dt: Double) {
+        guard var suction = drop.suction else { return }
+        suction.elapsed = min(suction.duration, suction.elapsed + dt)
+        let fraction = suction.volumeFraction
+        let deltaVolume = max(0, fraction - suction.transferredFraction) * pow(suction.initialRadius, 3)
+        if let index = receiverIndex(for: suction) {
+            suction.receiver = index; suction.receiverSeed = runners[index].seed
+            var receiver = runners[index]
+            let center = SIMD2(receiver.x, receiver.y) + receiver.visualOffset
+            let toward = center - suction.origin
+            let distance = max(0.001, simd_length(toward))
+            let direction = toward / distance
+            // Land inside the receiving meniscus, while the source stays attached
+            // to its original patch during the initial capillary stretch.
+            drop.mergeTarget = center - direction * min(distance * 0.65, receiver.visibleRadius * 1.35 * 0.55)
+            drop.mergeVelocity = SIMD2(receiver.velocityX, receiver.velocityY)
+            if deltaVolume > 0 {
+                let volume = pow(receiver.radius, 3)
+                let nextVolume = min(pow(22, 3), volume + deltaVolume)
+                let ratio = deltaVolume / max(1, volume + deltaVolume)
+                receiver.radius = cbrt(nextVolume)
+                receiver.depositedVolume += max(0, volume + deltaVolume - nextVolume)
+                receiver.velocityY *= volume / max(1, volume + deltaVolume)
+                receiver.velocityX = receiver.velocityX * (1 - ratio) - direction.x * ratio * 70
+                receiver.courseBias = min(0.32, max(-0.32, receiver.courseBias - direction.x * ratio * 1.6))
+                receiver.absorptionPulse = min(0.3, receiver.absorptionPulse + ratio)
+                if receiver.radius > 10 { receiver.pinRemaining = 0 }
+                runners[index] = receiver
+            }
+        } else {
+            // The old receiver left the pane: finish along its last course,
+            // never toward the newly spawned drop occupying that slot.
+            drop.mergeTarget += drop.mergeVelocity * dt
+        }
+        suction.transferredFraction = fraction
+        let point = suction.origin + (drop.mergeTarget - suction.origin) * suction.pull
+        drop.x = point.x; drop.y = point.y
+        drop.visibleRadius = suction.initialRadius * cbrt(max(0, 1 - fraction))
+        drop.mergeRemaining = max(0, suction.duration - suction.elapsed)
+        drop.suction = suction
+    }
+
+    private func suctionCenter(_ bead: Drop, phase: WallpaperGlassSuction) -> SIMD2<Double> {
+        let point = SIMD2(bead.x, bead.y)
+        let toward = bead.mergeTarget - point
+        let distance = max(0.001, simd_length(toward))
+        let extensionLength = bead.visibleRadius * 1.8 / sqrt(bead.aspect)
+            * (phase.elongation(toward: bead.mergeTarget) - 1)
+        // Extend the front into the receiver; keep the rear contact patch anchored
+        // instead of inflating an ellipse in both directions.
+        return point + toward / distance * extensionLength
+    }
+
+    private func touchesBead(_ receiver: Drop, _ bead: Drop) -> Bool {
+        let delta = SIMD2(bead.x - receiver.x, bead.y - receiver.y) - receiver.visualOffset
+        let angle = receiver.restingAngle * (1 - receiver.flow) - receiver.tilt
+        let c = cos(angle), s = sin(angle)
+        let local = SIMD2(c * delta.x + s * delta.y, -s * delta.x + c * delta.y)
+        let aspect = sqrt(receiver.aspect)
+        let x = max(0.1, receiver.visibleRadius * 1.35 * aspect / sqrt(receiver.stretch)) + bead.radius * 1.8
+        let y = max(0.1, receiver.visibleRadius * 1.35 / aspect * receiver.stretch) + bead.radius * 1.8
+        return local.x * local.x / (x * x) + local.y * local.y / (y * y) < 0.92 * 0.92
+    }
+
     private func animateMerge(_ drop: inout Drop, dt: Double) {
         drop.mergeRemaining = max(0, drop.mergeRemaining - dt)
         drop.mergeTarget += drop.mergeVelocity * dt
@@ -213,7 +324,7 @@ struct WallpaperGlassRainSimulation {
         var drop = runners[index]
         // Damped capillary response: the body stretches after release, leans into
         // turns and settles after pinning instead of switching rigid silhouettes.
-        let targetStretch = 1 + min(0.8, drop.velocityY / 155)
+        let targetStretch = 1 + min(0.8, drop.velocityY / 155) - min(0.12, drop.absorptionPulse * 0.6)
         let targetTilt = atan2(drop.velocityX, max(8, drop.velocityY))
         spring(value: &drop.stretch, velocity: &drop.stretchVelocity, target: targetStretch,
             frequency: 9 + drop.seed * 3, damping: 0.78, dt: dt)
@@ -240,19 +351,45 @@ struct WallpaperGlassRainSimulation {
 
     var instances: [Instance] {
         var result: [Instance] = []
-        result.reserveCapacity(beads.count + runners.count + trails.count)
+        result.reserveCapacity(beads.count + runners.count + trails.count + Self.maximumBridges)
         for trail in trails {
             result.append(Instance(ellipse: SIMD4(Float(trail.x), Float(trail.y), Float(trail.width), Float(trail.length)),
                 optics: SIMD4(Float(trail.life * 0.32), Float(trail.angle), 1, 0)))
         }
+        var bridgeCount = 0
+        for bead in beads where bead.mergeRemaining > 0 && bead.suction != nil {
+            guard bridgeCount < Self.maximumBridges, let suction = bead.suction,
+                  suction.progress > 0.03, suction.progress < 0.9 else { continue }
+            let from = suctionCenter(bead, phase: suction)
+            let delta = bead.mergeTarget - from
+            guard simd_dot(delta, bead.mergeTarget - SIMD2(bead.x, bead.y)) > 0 else { continue }
+            let distance = simd_length(delta)
+            let sourceRadius = bead.visibleRadius * 1.8
+            guard distance > max(0.7, sourceRadius * 0.35) else { continue }
+            let start = from + delta / distance * min(distance * 0.65, sourceRadius * suction.elongation(toward: bead.mergeTarget) * 0.6)
+            let span = bead.mergeTarget - start
+            let length = simd_length(span)
+            let width = max(0.5, min(2.8, sourceRadius * 0.4 * suction.neck))
+            let center = (start + bead.mergeTarget) / 2
+            result.append(Instance(ellipse: SIMD4(Float(center.x), Float(center.y), Float(width), Float(length / 2 + width)),
+                optics: SIMD4(Float(0.4 + suction.neck * 0.4), Float(-atan2(span.x, span.y)), 4, 0)))
+            bridgeCount += 1
+        }
         for bead in beads where bead.cooldown <= 0 || bead.mergeRemaining > 0 {
-            let fade = bead.mergeRemaining > 0 ? min(1, bead.mergeRemaining / 0.22) : 1
-            let visibleRadius = bead.radius * 1.8 * sqrt(fade)
+            let suction = bead.mergeRemaining > 0 ? bead.suction : nil
+            let visibleRadius = (suction == nil ? bead.radius : bead.visibleRadius) * 1.8
             let aspect = sqrt(bead.aspect)
-            result.append(Instance(ellipse: SIMD4(Float(bead.x), Float(bead.y),
-                    Float(visibleRadius * aspect * 1.28), Float(visibleRadius / aspect * 1.28)),
-                optics: SIMD4(Float((0.85 + bead.seed * 0.15) * min(1, fade * 3)), Float(bead.restingAngle), 0, Float(bead.seed)),
-                shape: SIMD4(Float(bead.contour.x), Float(bead.contour.y), Float(bead.contour.z), 0)))
+            let elongation = suction?.elongation(toward: bead.mergeTarget) ?? 1
+            let delta = bead.mergeTarget - SIMD2(bead.x, bead.y)
+            let targetAngle = -atan2(delta.x, delta.y)
+            let turn = atan2(sin(targetAngle - bead.restingAngle), cos(targetAngle - bead.restingAngle))
+            let alignment = suction.map { min(1, $0.progress / 0.28) } ?? 0
+            let angle = bead.restingAngle + turn * alignment * alignment * (3 - 2 * alignment)
+            let center = suction.map { suctionCenter(bead, phase: $0) } ?? SIMD2(bead.x, bead.y)
+            result.append(Instance(ellipse: SIMD4(Float(center.x), Float(center.y),
+                    Float(visibleRadius * aspect / elongation * 1.28), Float(visibleRadius / aspect * elongation * 1.28)),
+                optics: SIMD4(Float(0.85 + bead.seed * 0.15), Float(angle), suction == nil ? 0 : 3, Float(bead.seed)),
+                shape: SIMD4(Float(bead.contour.x), Float(bead.contour.y), Float(bead.contour.z), Float(suction?.neck ?? 0))))
         }
         for drop in runners {
             let merging = drop.mergeRemaining > 0

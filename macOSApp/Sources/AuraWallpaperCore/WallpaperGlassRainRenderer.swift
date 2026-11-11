@@ -255,7 +255,8 @@ final class WallpaperGlassRainRenderer {
     fragment float4 dropMap(WaterVertex in [[stage_in]]) {
         float2 q=in.local;
         float2 n; float h; float edge;
-        if(in.trail>0.5f && in.trail<1.5f) {
+        if((in.trail>0.5f && in.trail<1.5f) || in.trail>3.5f) {
+            if(in.trail>3.5f) q.x/=mix(0.42f,1.0f,smoothstep(0.0f,0.9f,abs(q.y)));
             // A capsule's straight middle joins neighboring water segments without beads.
             float2 p=q*float2(in.radius,in.length);
             float2 cap=float2(p.x,sign(p.y)*max(0.0f,abs(p.y)-max(0.0f,in.length-in.radius)));
@@ -276,7 +277,12 @@ final class WallpaperGlassRainRenderer {
             }
             // A continuous neck/shoulder response replaces the abrupt circle-to-teardrop switch.
             float flow=in.trail>1.5f?clamp(in.shape.w,0.0f,1.0f):0.0f;
-            q.x/=mix(1-0.38f*flow,1+0.04f*flow,smoothstep(-0.9f,0.6f,q.y));
+            if(in.trail>2.5f) {
+                // The attached lobe stretches a narrowing neck toward the receiver.
+                q.x/=mix(1+0.06f*flow,1-0.65f*flow,smoothstep(-0.6f,0.9f,q.y));
+            } else {
+                q.x/=mix(1-0.38f*flow,1+0.04f*flow,smoothstep(-0.9f,0.6f,q.y));
+            }
             float r2=dot(q,q); if(r2>=1) discard_fragment();
             h=sqrt(max(0.0f,1-r2)); edge=1-smoothstep(0.84f,1.0f,sqrt(r2));
             n=-q*(0.3f+0.7f*h);

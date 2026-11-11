@@ -165,3 +165,28 @@ screen or creating a presentation window. These are local build artifacts.
 The latest 1920×1080 offscreen combined-scene sample averaged 0.88 ms per GPU
 command (2.80 ms maximum) and 3.85 ms CPU+GPU wall time. As before, this is a
 short renderer sample, not a total power or endurance measurement.
+
+
+## Capillary suction and variable volume
+
+Bead collection now starts at the visible contact patch. A short attachment
+phase stretches the bead and forms a tapered water bridge; volume then moves
+progressively into the live receiving drop over 0.46–0.64 seconds. The rear
+contact remains anchored as the neck extends inward. The receiving body reacts
+to added water and the side of impact. Receiver identity is checked across
+coalescence and slot recycling, so an attached lobe cannot jump to a new drop.
+
+Water deposited along the traversed path is deducted from the moving drop's
+volume. Its radius and speed can decrease, its contact line can pin, and a
+course bias from collection or a sticky patch bends the next run. Lost or
+excess volume is accounted as deposited film. Water bridges reuse the existing
+normal-map pass, with a maximum of 64 extra instances; particle pools remain
+bounded. Sliding drops freezes the suction phase and its geometry as well.
+
+63 focused regressions passed. New controlled cases cover gradual transfer
+and volume accounting, visible connected GPU necks, shrinkage from film loss,
+course changes after side collection, a frozen suction phase and recycled
+receiver identity. The optional exporter also creates an eight-second,
+four-times magnified real-time suction clip in addition to the full scene.
+The latest offscreen sample averaged 0.88 ms GPU command time (4.59 ms maximum)
+and 3.92 ms CPU+GPU wall time; this remains a short renderer measurement.
