@@ -126,3 +126,15 @@ The Mac locked after the measurement. Fullscreen autopause was restored via
 WallpaperRuntimeStore and its normal update-command channel. A configuration
 diff confirmed that only pause_on_fullscreen changed. Login, Lock Screen and
 all user-chosen rain values were preserved; no system lock or saver was invoked.
+
+## Glass-drop visibility adjustment
+
+The optical footprint of stationary beads is now 1.8 times larger, and moving
+drops 1.35 times larger. Stationary coverage is stronger, with a bright upper
+meniscus and a shaded lower rim so drops remain readable against both dark
+and bright artwork. Physical masses, trajectories, collection and pool limits
+are preserved. Water trails keep their restrained lighting.
+
+Nine focused glass regressions passed. GPU exports were visually checked on
+Night Train and Summer Mountain at the normal 45% glass intensity, with Falling
+Rain enabled. The export helper now uses this default intensity rather than 70%.

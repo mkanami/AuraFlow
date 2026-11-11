@@ -324,7 +324,7 @@ struct WallpaperGlassRainTests {
         descriptor.storageMode = .shared; descriptor.usage = [.renderTarget,.shaderRead]
         let target = try #require(renderer.device.makeTexture(descriptor: descriptor))
         var simulation = WallpaperGlassRainSimulation()
-        var s = settings(); s.glassRainIntensity = 0.7
+        var s = settings()
         for _ in 0..<600 { simulation.advance(deltaTime: 1.0/30,aspect: 16.0/9,settings: s) }
         s.rainEnabled = true; s.rainAmount = 0.7; s.rainColor = .cyan
         let rain = WallpaperRainLayer()

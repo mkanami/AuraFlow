@@ -328,10 +328,16 @@ final class WallpaperGlassRainRenderer {
             color+=scene*(i==0?0.4f:0.15f);
         }
         float rim=pow(max(0.0f,dot(surfaceNormal,normalize(float3(-0.55f,-0.7f,0.6f)))),36.0f);
-        // Subtle clear-water edge; background supplies the color, never a white cursor streak.
-        float meniscus=smoothstep(0.04f,0.32f,wet.b)*(1-smoothstep(0.32f,0.75f,wet.b));
-        float shade=meniscus*max(0.0f,surfaceNormal.y)*0.12f;
-        color=color*(1-shade)+float3(0.72f,0.84f,1.0f)*rim*0.24f;
+        // A bright upper meniscus and shaded lower edge keep clear water visible
+        // on both dark and light artwork. Fade the band before the flat center;
+        // thin trails retain their own, quieter refraction instead of a white wire.
+        float meniscus=smoothstep(0.08f,0.3f,wet.b)*(1-smoothstep(0.55f,0.88f,wet.b));
+        float beadPresence=smoothstep(0.45f,0.8f,wet.a);
+        float lowerArc=smoothstep(-0.1f,0.65f,surfaceNormal.y);
+        float upperArc=smoothstep(-0.1f,0.65f,-surfaceNormal.y);
+        float shade=meniscus*beadPresence*(0.1f+lowerArc*0.26f);
+        float edgeLight=meniscus*beadPresence*(0.035f+upperArc*0.2f);
+        color=color*(1-shade)+float3(0.78f,0.88f,1.0f)*(edgeLight+rim*0.3f);
         return float4(color*alpha+dryRain.rgb*(1-alpha),alpha+dryRain.a*(1-alpha));
     }
     """

@@ -175,13 +175,15 @@ struct WallpaperGlassRainSimulation {
                 optics: SIMD4(Float(trail.life * 0.32), Float(trail.angle), 1, 0)))
         }
         for bead in beads where bead.cooldown <= 0 {
-            result.append(Instance(ellipse: SIMD4(Float(bead.x), Float(bead.y), Float(bead.radius), Float(bead.radius * (0.85 + bead.seed * 0.3))),
-                optics: SIMD4(Float(0.65 + bead.seed * 0.35), 0, 0, Float(bead.seed))))
+            // Increase the optical footprint without changing mass, collisions or motion.
+            let visibleRadius = bead.radius * 1.8
+            result.append(Instance(ellipse: SIMD4(Float(bead.x), Float(bead.y), Float(visibleRadius), Float(visibleRadius * (0.85 + bead.seed * 0.3))),
+                optics: SIMD4(Float(0.85 + bead.seed * 0.15), 0, 0, Float(bead.seed))))
         }
         for drop in runners {
             let stretch = slidingEnabled ? 1 + min(0.72, drop.velocityY / 160) : 1
             let angle = slidingEnabled ? -atan2(drop.velocityX, max(1, drop.velocityY)) : 0
-            result.append(Instance(ellipse: SIMD4(Float(drop.x), Float(drop.y), Float(drop.radius / sqrt(stretch)), Float(drop.radius * stretch)),
+            result.append(Instance(ellipse: SIMD4(Float(drop.x), Float(drop.y), Float(drop.radius * 1.35 / sqrt(stretch)), Float(drop.radius * 1.35 * stretch)),
                 optics: SIMD4(1, Float(angle), slidingEnabled && drop.velocityY > 5 ? 2 : 0, Float(drop.seed))))
         }
         return result
