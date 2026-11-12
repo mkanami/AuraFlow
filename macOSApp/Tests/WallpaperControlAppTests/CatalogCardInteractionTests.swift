@@ -175,7 +175,10 @@ struct CatalogCardInteractionTests {
         sources: []
     )
     var clickCount = 0
-    let card = CatalogWallpaperCard(wallpaper: wallpaper) {
+    let cache = FileManager.default.temporaryDirectory.appendingPathComponent("audio-card-\(UUID()).json")
+    defer { try? FileManager.default.removeItem(at: cache) }
+    let audio = CatalogAudioMetadata(provider: CardAudioOfflineProvider(), coordinator: CatalogTransferCoordinator(), cacheURL: cache)
+    let card = CatalogWallpaperCard(wallpaper: wallpaper, audioMetadata: audio) {
         clickCount += 1
     }
     .frame(width: 360, height: 150)
@@ -331,6 +334,12 @@ private func makeInteractionWindow<Content: View>(
     window.contentView = contentView
     window.makeKeyAndOrderFront(nil)
     return window
+}
+
+private struct CardAudioOfflineProvider: WallpaperCatalogProviding {
+    func loadCachedCatalog() async -> [CatalogWallpaper]? { nil }
+    func fetchCatalog() async throws -> [CatalogWallpaper] { [] }
+    func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL { throw URLError(.notConnectedToInternet) }
 }
 
 @MainActor

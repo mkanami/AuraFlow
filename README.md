@@ -149,6 +149,12 @@ wallpaper playback. Saved wallpaper choices remain available for the next Start.
 
 ## Wallpaper Catalog
 
+Video wallpapers can play their embedded audio. **Speed** and **Volume** share
+the preview's top row; the speaker button mutes/restores sound. Volume starts
+muted and is saved for Desktop playback. Preview and Desktop never play the
+soundtrack together. Catalog cards and downloaded wallpapers show an **Audio**
+music-note badge when an audio track is confirmed in the original video.
+
 On macOS, **Anime** combines MoeWalls, DesktopHut and LiveWallpapers4Free;
 **Anime Nature** uses MotionBGS and **Scenic** uses Dareful. New-site API
 operations and local verification commands are documented in

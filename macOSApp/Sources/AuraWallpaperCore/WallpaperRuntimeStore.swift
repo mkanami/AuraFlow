@@ -83,6 +83,7 @@ public typealias LaunchctlRunner = ([String]) -> LaunchctlResult
 public enum WallpaperRuntimeCommandAction: String, Codable, Equatable {
     case reload
     case update
+    case updateVolume
     case rearmLockScreen
     case pause
     case resume
@@ -419,7 +420,7 @@ public final class WallpaperRuntimeStore {
     public func normalized(_ config: ControlConfig) -> ControlConfig {
         var normalized = config
         normalized.playback_speed = max(0.1, min(config.playback_speed, 4.0))
-        normalized.volume = max(0, min(config.volume ?? 0, 1))
+        normalized.volume = WallpaperAudioPolicy.normalized(config.volume ?? 0)
         normalized.autostart = config.autostart ?? false
         normalized.blend_interpolation = config.blend_interpolation ?? false
         normalized.pause_on_fullscreen = config.pause_on_fullscreen ?? true

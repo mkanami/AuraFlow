@@ -812,7 +812,7 @@ final class VideoOptimizer {
             inputURL.path,
             "-map_metadata",
             "-1",
-            "-an",
+            "-map", "0:v:0", "-map", "0:a?", "-c:a", "aac",
             "-sn",
             "-dn",
             "-pix_fmt",
@@ -849,7 +849,7 @@ final class VideoOptimizer {
             inputURL.path,
             "-map_metadata",
             "-1",
-            "-an",
+            "-map", "0:v:0", "-map", "0:a?", "-c:a", "aac",
             "-sn",
             "-dn",
             "-pix_fmt",
@@ -1034,6 +1034,7 @@ final class VideoOptimizer {
         let fileSize = (metadata[.size] as? NSNumber)?.int64Value ?? 0
         let modified = (metadata[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
         let signature = [
+            "audio-preserving-v2",
             kindTag,
             inputURL.path,
             String(fileSize),

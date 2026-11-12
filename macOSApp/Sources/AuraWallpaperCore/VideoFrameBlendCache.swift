@@ -13,7 +13,7 @@ public struct VideoFrameBlendCache: Sendable {
 
     public func outputURL(for source: URL) throws -> URL {
         let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
-        let identity = ["blend-v1", source.standardizedFileURL.path,
+        let identity = ["blend-v2-audio", source.standardizedFileURL.path,
                         String(describing: attributes[.systemFileNumber] ?? ""),
                         String(describing: attributes[.size] ?? ""),
                         String((attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)]
@@ -56,7 +56,7 @@ public struct VideoFrameBlendCache: Sendable {
         // Pad the decoder's final look-ahead and trim back to the original duration.
         // No scale filter: resolution and aspect ratio remain intact.
         let args = ["-y", "-hide_banner", "-loglevel", "error", "-i", source.path,
-                    "-an", "-sn", "-dn", "-vf",
+                    "-map", "0:v:0", "-map", "0:a?", "-c:a", "aac", "-sn", "-dn", "-vf",
                     "tpad=stop_mode=clone:stop_duration=1,minterpolate=fps=\(fps):mi_mode=blend:scd=none",
                     "-t", String(duration), "-c:v", "libx264", "-preset", "fast", "-crf", "16",
                     "-pix_fmt", "yuv420p", "-movflags", "+faststart", temporary.path]

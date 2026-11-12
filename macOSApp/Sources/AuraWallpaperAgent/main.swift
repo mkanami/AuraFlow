@@ -316,6 +316,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private(set) var windows: [NSWindow] = []
     private(set) var playerLayers: [AVPlayerLayer] = []
     private var firstFrameObservers: [NSKeyValueObservation] = []
+    private var audioScreenSaverActive = false
     private var fallbackImage: CGImage?
     private(set) var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
@@ -619,6 +620,11 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startTimers() {
+        for name in ["com.apple.screensaver.didstart", "com.apple.screensaver.didstop"] {
+            DistributedNotificationCenter.default().addObserver(self,
+                selector: #selector(audioSaverDidChange(_:)), name: Notification.Name(name),
+                object: nil, suspensionBehavior: .deliverImmediately)
+        }
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(runtimeCommandDidChange),
@@ -1350,6 +1356,8 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
 
         switch command.action {
+        case .updateVolume:
+            applyAudioSettings()
         case .reload:
             _ = lockScreenState.apply(
                 .setEnabled(config.show_on_lock_screen ?? false)
@@ -2033,10 +2041,11 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let item = AVPlayerItem(url: url)
         let player = AVQueuePlayer(items: [])
         player.actionAtItemEnd = .none
-        player.volume = Float(max(0, min(config.volume ?? 0, 1)))
+        player.volume = 0
         player.automaticallyWaitsToMinimizeStalling = false
         looper = AVPlayerLooper(player: player, templateItem: item)
         self.player = player
+        applyAudioSettings()
         lastPlaybackProgressUptime = ProcessInfo.processInfo.systemUptime
         playbackTimeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
@@ -2175,6 +2184,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminating else { return }
         let previousMode = lockScreenState.presentationMode
         let stateChanged = lockScreenState.apply(event)
+        applyAudioSettings()
         let modeChanged = previousMode != lockScreenState.presentationMode
 
         guard stateChanged else { return }
@@ -2274,7 +2284,22 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         showWindows()
     }
 
+    @objc private func audioSaverDidChange(_ notification: Notification) {
+        audioScreenSaverActive = notification.name.rawValue == "com.apple.screensaver.didstart"
+        applyAudioSettings()
+    }
+
+    private func applyAudioSettings() {
+        let volume = WallpaperAudioPolicy.desktopVolume(config.volume ?? 0,
+            lockScreenOnly: lockScreenOnlyMode, sessionInactive: sessionInactive,
+            systemLocked: systemSessionIsLocked() == true, sleeping: sleeping,
+            screenSaverActive: audioScreenSaverActive, paused: manualPaused || autoPausedForFullscreen)
+        player?.volume = volume
+        player?.isMuted = volume == 0
+    }
+
     private func applyPlaybackRate() {
+        applyAudioSettings()
         guard !manualPaused && !sleeping else { return }
         if lockScreenState.presentationMode != .lockScreen {
             guard !autoPausedForFullscreen else { return }
@@ -2326,7 +2351,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             nativeLockScreenBridge.invalidatePreparation()
         }
         syncLockScreenSetting(reason: "lock-setting")
-        player?.volume = Float(max(0, min(config.volume ?? 0, 1)))
+        applyAudioSettings()
         let gravity = videoGravity(for: config.scale_mode)
         for layer in playerLayers {
             layer.videoGravity = gravity
@@ -2354,6 +2379,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyFullscreenPolicy() {
+        defer { applyAudioSettings() }
         guard !isTerminating, !lockScreenOnlyMode else { return }
         defer {
             if let fullscreenTimer, fullscreenTimer.timeInterval != fullscreenPollingInterval {

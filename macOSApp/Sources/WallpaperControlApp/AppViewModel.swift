@@ -246,6 +246,7 @@ protocol WallpaperControlling: AnyObject, Sendable {
         scaleMode: WallpaperScaleMode
     ) async throws
     func setSpeed(_ speed: Double) async throws -> ControlStatus
+    func setVolume(_ volume: Double) async throws -> ControlStatus
     func setInterpolation(_ enabled: Bool) async throws -> ControlStatus
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus
     func setShowOnLockScreen(_ enabled: Bool) async throws -> ControlStatus
@@ -258,6 +259,10 @@ protocol WallpaperControlling: AnyObject, Sendable {
 }
 
 extension WallpaperControlling {
+    func setVolume(_ volume: Double) async throws -> ControlStatus {
+        throw NativeWallpaperControllerError.unavailable("Wallpaper audio is unavailable.")
+    }
+
     var lockScreenCapabilities: PlatformCapabilities {
         .legacyMacOS
     }
@@ -1433,6 +1438,14 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
         }
     }
 
+    func setVolume(_ volume: Double) async throws -> ControlStatus {
+        try await asyncLifecycleGate.acquire()
+        defer { Task { await asyncLifecycleGate.release() } }
+        let config = try updateConfig { $0.volume = WallpaperAudioPolicy.normalized(volume) }
+        if daemonProcessManager.isRunning { try send(.updateVolume, config: config) }
+        return store.status()
+    }
+
     func setSpeed(_ speed: Double) async throws -> ControlStatus {
         try await asyncLifecycleGate.acquire()
         defer {
@@ -2204,6 +2217,10 @@ final class AppViewModel: ObservableObject {
     private let previewSelectionStore: WallpaperPreviewSelectionStore?
 
     @Published var autostartEnabled: Bool = false
+    @Published private(set) var wallpaperVolume: Double = 0
+    private var volumeUpdateTask: Task<Void, Never>?
+    private var volumeUpdateGeneration: UInt = 0
+    private var isEditingVolume = false
     @Published var blendInterpolationEnabled: Bool = false
     @Published private(set) var isPreparingBlendInterpolation = false
     private var blendInterpolationTask: Task<Void, Never>?
@@ -2389,6 +2406,7 @@ final class AppViewModel: ObservableObject {
     private let catalogRepository: CatalogRepository
     private let catalogDownloadService: CatalogDownloadService
     let catalogPreviewPipeline: CatalogPreviewPipeline
+    let catalogAudioMetadata: CatalogAudioMetadata
     private var featureViewModelCancellables = Set<AnyCancellable>()
     private let optimizer: VideoOptimizer
     private let optimizationStore: VideoOptimizationStore
@@ -2771,6 +2789,8 @@ final class AppViewModel: ObservableObject {
             catalogDirectoryURL: catalogDirectoryURL
         )
         let catalogTransferCoordinator = CatalogTransferCoordinator()
+        self.catalogAudioMetadata = CatalogAudioMetadata(provider: catalogProvider,
+            coordinator: catalogTransferCoordinator, cacheURL: catalogDirectoryURL.appendingPathComponent("audio-metadata.json"))
         self.catalogPreviewPipeline = CatalogPreviewPipeline(
             resolver: catalogProvider as? any WallpaperCatalogPreviewResolving,
             mediaResolver: catalogProvider as? any WallpaperCatalogMediaResolving,
@@ -2782,6 +2802,7 @@ final class AppViewModel: ObservableObject {
         if let data = try? Data(contentsOf: resolvedAppSupportURL.appendingPathComponent("config.json")),
            let saved = try? JSONDecoder().decode(ControlConfig.self, from: data) {
             autostartEnabled = saved.autostart ?? false
+            wallpaperVolume = WallpaperAudioPolicy.normalized(saved.volume ?? 0)
         }
         if let controller {
             self.controller = controller
@@ -2816,6 +2837,9 @@ final class AppViewModel: ObservableObject {
         catalogViewModel.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &featureViewModelCancellables)
+        catalogAudioMetadata.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &featureViewModelCancellables)
         previewViewModel.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &featureViewModelCancellables)
@@ -2829,7 +2853,10 @@ final class AppViewModel: ObservableObject {
             }
             .store(in: &featureViewModelCancellables)
         lifecycleViewModel.objectWillChange
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+                Task { @MainActor [weak self] in self?.syncPreviewAudio() }
+            }
             .store(in: &featureViewModelCancellables)
         terminationObserver = ObserverToken(NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -2970,6 +2997,7 @@ final class AppViewModel: ObservableObject {
     }
 
     deinit {
+        volumeUpdateTask?.cancel()
         healthMonitorTask?.cancel()
         monitoringTask?.cancel()
         catalogRefreshTask?.cancel()
@@ -3691,6 +3719,7 @@ final class AppViewModel: ObservableObject {
 
     func applyCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
         guard canDownloadCatalogWallpaper else { return }
+        catalogAudioMetadata.cancel()
         // A catalog transfer must not compete with native Lock Screen/Fit
         // warm-up work. This does not stop an already-running wallpaper.
         cancelLockScreenMediaPreparation()
@@ -3919,6 +3948,46 @@ final class AppViewModel: ObservableObject {
     func setSpeedEditing(_ editing: Bool) {
         guard previewSelectionStore?.kind == .terminal else { return }
         previewSelectionStore?.setAdjustingTerminalSpeed(editing)
+    }
+
+    var showsWallpaperVolumeControl: Bool {
+        (previewSelectionStore?.kind ?? .video) == .video
+    }
+
+    func setVolumeEditing(_ editing: Bool) { isEditingVolume = editing }
+
+    func updateVolume(_ volume: Double, immediately: Bool = false) {
+        wallpaperVolume = WallpaperAudioPolicy.normalized(volume)
+        syncPreviewAudio()
+        volumeUpdateGeneration &+= 1
+        let generation = volumeUpdateGeneration
+        let requested = wallpaperVolume
+        volumeUpdateTask?.cancel()
+        volumeUpdateTask = nil
+        guard let controller else { return }
+        volumeUpdateTask = Task { [weak self] in
+            do {
+                if !immediately { try await Task.sleep(nanoseconds: 80_000_000) }
+                try Task.checkCancellation()
+                let status = try await controller.setVolume(requested)
+                guard let self, generation == self.volumeUpdateGeneration else { return }
+                self.volumeUpdateTask = nil
+                self.apply(status: status, refreshPreview: false)
+            } catch {
+                guard !Task.isCancelled, let self, generation == self.volumeUpdateGeneration else { return }
+                self.volumeUpdateTask = nil
+                self.alertMessage = "Failed to update volume: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func syncPreviewAudio() {
+        let volume = WallpaperAudioPolicy.previewVolume(wallpaperVolume,
+            desktopOwnsAudio: (isRunning && !isPlaybackPaused && !isLockScreenOnlyActive) || isLifecycleBusy,
+            visible: previewWindowVisible && !previewRenderingSuspended && showsWallpaperVolumeControl,
+            systemLocked: LockScreenSession.currentIsLocked() == true)
+        previewPlayer?.volume = volume
+        previewPlayer?.isMuted = volume == 0
     }
 
     func toggleAutostart(_ enabled: Bool) {
@@ -4341,6 +4410,7 @@ final class AppViewModel: ObservableObject {
                     configurePreview(for: selectedVideoURL)
                 }
 
+                catalogAudioMetadata.clear()
                 try await catalogPreviewPipeline.clear()
                 try await catalogRepository.clearCache()
                 try clearOptimizedVideoCache()
@@ -4570,6 +4640,10 @@ final class AppViewModel: ObservableObject {
             to: lockScreenOnlyActive
         )
         Self.setIfChanged(&previewViewModel.playbackSpeed, to: status.config.playback_speed)
+        if !isEditingVolume && volumeUpdateTask == nil {
+            Self.setIfChanged(&wallpaperVolume, to: WallpaperAudioPolicy.normalized(status.config.volume ?? 0))
+        }
+        syncPreviewAudio()
         Self.setIfChanged(&autostartEnabled, to: status.config.autostart ?? status.autostart ?? false)
         if reportAutostartWarning, let warning = autostartWarning(for: status) {
             if backgroundUpdate {
@@ -5507,8 +5581,7 @@ final class AppViewModel: ObservableObject {
         // an item can never expose the layer's transient black surface.
         let player = AVPlayer(playerItem: item)
         previewPlayer = player
-        player.isMuted = true
-        player.volume = 0
+        syncPreviewAudio()
         player.automaticallyWaitsToMinimizeStalling = true
 
         previewItemStatusObservation = item.observe(
@@ -5683,6 +5756,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func applyPreviewPlaybackRate(to player: AVPlayer) {
+        syncPreviewAudio()
         guard !previewRenderingSuspended, previewWindowVisible,
               (previewSelectionStore?.kind ?? .video) == .video else {
             player.pause()
@@ -5843,6 +5917,7 @@ final class AppViewModel: ObservableObject {
         guard !isShuttingDown else { return }
         isShuttingDown = true
         blendInterpolationTask?.cancel()
+        volumeUpdateTask?.cancel()
         healthMonitorTask?.cancel()
         monitoringTask?.cancel()
         scaleModeUpdateTask?.cancel()

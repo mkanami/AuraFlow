@@ -411,7 +411,7 @@ struct ContentView: View {
                 window: window,
                 protectedCenterWidth: viewModel.isCatalogOpen || !viewModel.showsPreviewSpeedControl
                     ? nil
-                    : speedOverlayPillWidth(for: availableWidth),
+                    : WallpaperPlaybackOverlayLayout.width(available: availableWidth, includesVolume: viewModel.showsWallpaperVolumeControl),
                 onDragStateChange: { dragging in
                     if dragging {
                         beginWindowDrag()
@@ -488,7 +488,7 @@ struct ContentView: View {
             )
             .overlay(alignment: .top) {
             if !viewModel.isCatalogOpen && viewModel.showsPreviewSpeedControl {
-                SpeedOverlay(
+                WallpaperPlaybackOverlay(
                     viewModel: viewModel,
                     isAdjustingSpeed: $isAdjustingSpeed,
                     availableWidth: availableWidth
@@ -1343,6 +1343,9 @@ struct DownloadedWallpaperRow: View, Equatable {
                 Text("\(wallpaper.category) • \(wallpaper.attribution)")
                     .font(.caption)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
+                if viewModel.catalogAudioMetadata.audio[wallpaper.wallpaperID] == true {
+                    WallpaperAudioBadge()
+                }
                 Text(wallpaper.localURL.lastPathComponent)
                     .font(.caption2)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
@@ -1371,6 +1374,9 @@ struct DownloadedWallpaperRow: View, Equatable {
         }
         .padding(8)
         .modifier(AuraGlassInsetCardModifier())
+        .task(id: wallpaper.localURL) {
+            await viewModel.catalogAudioMetadata.inspectLocal(id: wallpaper.wallpaperID, url: wallpaper.localURL)
+        }
     }
 }
 
@@ -1632,7 +1638,7 @@ struct WallpaperCatalogGridView: View {
         let nearEndIDs = Set(wallpapers.suffix(6).map(\.id))
         return LazyVGrid(columns: columns, spacing: 12) {
             ForEach(wallpapers) { wallpaper in
-                CatalogWallpaperCard(wallpaper: wallpaper) {
+                CatalogWallpaperCard(wallpaper: wallpaper, audioMetadata: viewModel.catalogAudioMetadata) {
                     viewModel.openCatalogWallpaper(wallpaper)
                 }
                 .id(wallpaper.id)
@@ -1653,6 +1659,7 @@ struct WallpaperCatalogGridView: View {
 
 struct CatalogWallpaperCard: View {
     let wallpaper: CatalogWallpaper
+    @ObservedObject var audioMetadata: CatalogAudioMetadata
     let action: () -> Void
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
@@ -1666,6 +1673,9 @@ struct CatalogWallpaperCard: View {
                 )
                 .frame(height: 96)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(alignment: .topTrailing) {
+                    if audioMetadata.audio[wallpaper.id] == true { WallpaperAudioBadge().padding(6) }
+                }
 
                 Text(wallpaper.title)
                     .font(.subheadline.weight(.semibold))
@@ -1682,6 +1692,7 @@ struct CatalogWallpaperCard: View {
         }
         .buttonStyle(AuraPlainPressButtonStyle())
         .accessibilityIdentifier("catalog-card-\(wallpaper.id)")
+        .task(id: wallpaper.id) { await audioMetadata.inspect(wallpaper) }
     }
 }
 
@@ -1787,6 +1798,7 @@ struct WallpaperCatalogDetailView: View {
                             .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             .lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                        if viewModel.catalogAudioMetadata.audio[wallpaper.id] == true { WallpaperAudioBadge() }
 
                         Text(resolutionSummary ?? " ")
                             .font(.subheadline.monospacedDigit())
@@ -1877,6 +1889,7 @@ struct WallpaperCatalogDetailView: View {
                 resolvedMedia = enriched
             }
         }
+        .task(id: "audio-\(wallpaper.id)") { await viewModel.catalogAudioMetadata.inspect(wallpaper) }
     }
 
     private var preferredOriginalSource: CatalogVideoSource? {
@@ -2272,10 +2285,11 @@ struct SpeedOverlay: View {
     @ObservedObject var viewModel: AppViewModel
     @Binding var isAdjustingSpeed: Bool
     let availableWidth: CGFloat
+    var widthOverride: CGFloat? = nil
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
     private var pillWidth: CGFloat {
-        speedOverlayPillWidth(for: availableWidth)
+        widthOverride ?? speedOverlayPillWidth(for: availableWidth)
     }
 
     private var compactControlSize: ControlSize {
@@ -2319,19 +2333,7 @@ struct SpeedOverlay: View {
         .padding(.vertical, 10)
         .padding(.horizontal, 16)
         .frame(width: pillWidth)
-        .background(
-            AuraGlassCapsuleSurface(
-                material: .clear,
-                alphaMultiplier: adaptiveGlassAppearance.topGlassAlpha,
-                protectionOverlayOpacity: adaptiveGlassAppearance.topProtectionOverlayOpacity,
-                protectionOverlayColor: adaptiveGlassAppearance.topTextTone.contrastSurfaceColor
-            )
-        )
-        .overlay(
-            Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1.0)
-        )
-        .shadow(color: Color.black.opacity(0.16), radius: 4, x: 0, y: 2)
-        .environment(\.colorScheme, .dark)
+        .modifier(WallpaperPlaybackPillGlass())
     }
 
 }

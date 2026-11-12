@@ -69,6 +69,47 @@ private struct NativeRuntimeFixture {
     }
 }
 
+@Test(arguments: [false, true], [false, true])
+func wallpaperAudioVolumePreservesLoginAndLockPreferences(login: Bool, lock: Bool) async throws {
+    let fixture = try NativeRuntimeFixture("audio-preferences")
+    defer { fixture.cleanup() }
+    var expected = fixture.store.loadConfig()
+    expected.autostart = login
+    expected.show_on_lock_screen = lock
+    expected.volume = 0.42
+    var original = expected; original.volume = 0
+    try fixture.store.saveConfig(original)
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL, lockScreenSaverInstaller: installer)
+    let status = try await controller.setVolume(0.42)
+    #expect(status.config == expected)
+    #expect(installer.desktopAgentInstallCallCount == 0)
+    #expect(installer.installedLockScreenOnlyVideoURL == nil)
+    #expect(installer.uninstallCallCount == 0)
+    #expect(installer.playbackSpeedUpdates.isEmpty)
+    #expect(installer.scaleModeUpdates.isEmpty)
+}
+
+@Test func wallpaperAudioUpdatesRunningAgentWithoutReloadingVideo() async throws {
+    let fixture = try NativeRuntimeFixture("audio-running")
+    defer { fixture.cleanup() }
+    var config = fixture.store.loadConfig()
+    config.show_on_lock_screen = false
+    try fixture.store.saveConfig(config)
+    let installer = RecordingLockScreenSaverInstaller()
+    let controller = try NativeWallpaperController(store: fixture.store, helperURL: fixture.helperURL, lockScreenSaverInstaller: installer)
+    _ = try await controller.start(videoURL: fixture.videoURL, speed: 1.25)
+    let pid = fixture.store.loadPID()
+    let before = fixture.store.loadConfig()
+    let installsBeforeVolume = installer.desktopAgentInstallCallCount
+    _ = try await controller.setVolume(0.35)
+    var expected = before; expected.volume = 0.35
+    #expect(fixture.store.loadConfig() == expected)
+    #expect(fixture.store.loadPID() == pid)
+    #expect(fixture.store.loadCommand()?.action == .updateVolume)
+    #expect(installer.desktopAgentInstallCallCount == installsBeforeVolume)
+}
+
 private enum TestInstallerError: Error {
     case installFailed
     case uninstallFailed
