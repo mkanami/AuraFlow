@@ -1,4 +1,4 @@
-# Learned anime catalog APIs
+# Learned wallpaper catalog APIs
 
 AuraFlow's macOS Anime catalog now combines MoeWalls, DesktopHut and
 LiveWallpapers4Free. MotionBGS Anime Nature and Dareful remain separate categories.
@@ -90,3 +90,48 @@ search, original quality selection and unsupported media. The opt-in
 `AURAFLOW_LIVE_LEARNED_CATALOG=1` test checks real listing/search/pages and two
 preview/original MP4 pairs per site, reading at most 4 KiB of each video and
 checking the MP4 header. It never starts playback or changes wallpaper settings.
+
+## Music collection (2026-11-12)
+
+The **With Music** catalog tab combines verified videos from DesktopHut and
+LiveWallpapers4Free. Both sources now ship a fourth api-anything operation:
+
+| Site | Operation | Inputs | Output |
+| --- | --- | --- | --- |
+| DesktopHut | `musicList` | `page` (positive integer) | Candidates from the site's music search |
+| LiveWallpapers4Free | `musicList` | `tag` | Candidates from a public music/lofi tag |
+
+DesktopHut was learned from `/search/music?page=1` and page 2, then checked on
+page 3. LiveWallpapers4Free compared the `wallpaper-with-music` and `lofi` tags,
+then checked `music-live-wallpaper`. The existing search and detail operations
+are reused. Captures selected the first-party document request. Replay is tested
+in a fresh, isolated api-anything home with no browser session or cookies.
+The music operations are anonymous, read-only, HTTP tier 1; nothing is published
+to the shared registry. Node/browser tooling remains a development dependency.
+
+`MusicWallpaperCatalogProvider` decodes bounded samples from the **original**
+video before including a candidate. It processes four candidates per site per
+batch, with two sites running concurrently, and caches each original URL's result
+for seven days (inconclusive probes retry after ten minutes). A foreground
+wallpaper download cancels catalog discovery. A music tag, a song-related title,
+and an empty AAC track are insufficient for inclusion.
+
+Three public seed pages make confirmed tracks easy to find while preserving
+fresh media resolution through the site's learned detail operation:
+
+- DesktopHut: **Midnight Hour Music Live Wallpaper**.
+- LiveWallpapers4Free: **Girl Take a Rest LoFi** and **Darling the Franxx Anime
+  Wallpaper with Music**.
+
+Independent audio decoding of the first three seconds measured non-silent peaks
+of -0.9, -13.5 and -3.5 dBFS respectively. Only page metadata is bundled; no
+third-party media is redistributed with the app. Other candidates, including
+**Miku Music Theme**, had silent audio or no audio and are excluded automatically.
+Rare Gallery requires a download CAPTCHA; WallpaperWaifu sample downloads were
+silent or unavailable. Neither is advertised as a working music source.
+
+The music filter works across category and search results, preserves verified
+flags when duplicate cards merge, and lets a later local silence check override
+an older flag. Existing cached cards without a music field remain readable.
+`AURAFLOW_LIVE_MUSIC_CATALOG=1` enables the opt-in live source test; ordinary
+regressions use mocked providers and never change Desktop or Lock Screen playback.

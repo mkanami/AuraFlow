@@ -1449,6 +1449,7 @@ private func pngData(for image: CGImage) -> Data {
         animeProvider: MockCatalogProvider(wallpapers: [liveWallpaper, secondLiveWallpaper]),
         animeNatureProvider: MockCatalogProvider(wallpapers: []),
         scenicProvider: MockCatalogProvider(wallpapers: []),
+        musicProvider: MockCatalogProvider(wallpapers: []),
         curatedCatalog: [curatedWallpaper, secondCuratedWallpaper]
     )
 
@@ -1476,6 +1477,7 @@ private func pngData(for image: CGImage) -> Data {
         animeProvider: FailingCatalogProvider(),
         animeNatureProvider: MockCatalogProvider(wallpapers: []),
         scenicProvider: MockCatalogProvider(wallpapers: []),
+        musicProvider: MockCatalogProvider(wallpapers: []),
         curatedCatalog: [curatedWallpaper]
     )
 
@@ -1521,6 +1523,7 @@ private func pngData(for image: CGImage) -> Data {
         animeProvider: animeProvider,
         animeNatureProvider: animeNatureProvider,
         scenicProvider: MockCatalogProvider(wallpapers: []),
+        musicProvider: MockCatalogProvider(wallpapers: []),
         curatedCatalog: []
     )
 

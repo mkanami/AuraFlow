@@ -10,7 +10,7 @@ private func learnedFixture(_ name: String) throws -> String {
 @Test(arguments: LearnedAnimeSite.allCases)
 func learnedCatalogLoadsPublicOperationsAndListing(site: LearnedAnimeSite) async throws {
     let api = try LearnedCatalogAPI.load(site)
-    #expect(Set(api.operations.map(\.name)) == ["list", "search", "detail"])
+    #expect(Set(api.operations.map(\.name)) == ["list", "search", "detail", "musicList"])
     #expect(try api.operation("list").trigger.url.contains("{page}"))
     let html = try learnedFixture("\(site.rawValue)-listing")
     let http = LearnedFixtureHTTP { _ in html }

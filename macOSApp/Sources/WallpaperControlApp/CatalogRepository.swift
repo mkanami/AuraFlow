@@ -267,10 +267,8 @@ final class CatalogRepository: @unchecked Sendable {
         }
 
         let page = try await pagedProvider.fetchNextCatalogPage()
-        var seen = Set(existing.map(\.id))
-        let additions = page.wallpapers.filter { seen.insert($0.id).inserted }
-        let merged = existing + additions
-        let persistenceStatus = additions.isEmpty
+        let merged = Self.merging(existing: existing, additions: page.wallpapers)
+        let persistenceStatus = merged == existing
             ? .notAttempted
             : persistUnifiedCatalogCache(merged)
         return CatalogPageResult(
@@ -306,8 +304,7 @@ final class CatalogRepository: @unchecked Sendable {
         existing: [CatalogWallpaper],
         additions: [CatalogWallpaper]
     ) -> [CatalogWallpaper] {
-        var seen = Set(existing.map(\.id))
-        return existing + additions.filter { seen.insert($0.id).inserted }
+        CatalogWallpaperMerge.combining(existing, additions)
     }
 
     // MARK: Downloaded manifest
@@ -426,7 +423,8 @@ final class CatalogRepository: @unchecked Sendable {
                 localPreviewPath: repairedPreviewPath,
                 sourcePageURL: item.sourcePageURL,
                 localPath: item.localPath,
-                downloadedAt: item.downloadedAt
+                downloadedAt: item.downloadedAt,
+                hasMusic: item.hasMusic
             )
         }
 
@@ -499,7 +497,8 @@ final class CatalogRepository: @unchecked Sendable {
             localPreviewPath: localPreviewPath,
             sourcePageURL: wallpaper.sourcePageURL,
             localPath: normalizedPath,
-            downloadedAt: Date()
+            downloadedAt: Date(),
+            hasMusic: wallpaper.hasMusic
         )
 
         var updated = existing
@@ -557,7 +556,8 @@ final class CatalogRepository: @unchecked Sendable {
             localPreviewPath: previewURL.path,
             sourcePageURL: current.sourcePageURL,
             localPath: current.localPath,
-            downloadedAt: current.downloadedAt
+            downloadedAt: current.downloadedAt,
+            hasMusic: current.hasMusic
         )
         return UpdatedWallpapersResult(
             wallpapers: updated,
@@ -660,7 +660,8 @@ final class CatalogRepository: @unchecked Sendable {
             localPreviewPath: localPreviewPath,
             sourcePageURL: normalizedOriginalURL,
             localPath: normalizedCopiedURL.path,
-            downloadedAt: existingItem?.downloadedAt ?? Date()
+            downloadedAt: existingItem?.downloadedAt ?? Date(),
+            hasMusic: existingItem?.hasMusic
         )
 
         var updated = existing
@@ -1008,7 +1009,8 @@ final class CatalogRepository: @unchecked Sendable {
                 localPreviewPath: item.localPreviewPath,
                 sourcePageURL: item.sourcePageURL,
                 localPath: migratedPath,
-                downloadedAt: item.downloadedAt
+                downloadedAt: item.downloadedAt,
+                hasMusic: item.hasMusic
             )
         }
     }

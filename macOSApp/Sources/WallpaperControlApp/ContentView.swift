@@ -1406,6 +1406,7 @@ struct WallpaperCatalogView: View {
         if !query.isEmpty {
             return "\(filteredCount)"
         }
+        if catalogViewModel.showsMusicOnly { return "\(filteredCount) With Music" }
         if let selectedGroup = catalogViewModel.selectedGroup {
             let groupCount = catalogViewModel.count(in: selectedGroup)
             let moreSuffix = selectedGroup == .anime && catalogViewModel.hasMoreWallpapers ? "+" : ""
@@ -1498,12 +1499,16 @@ struct WallpaperCatalogView: View {
                 CatalogDownloadProgressView(viewModel: viewModel)
             }
 
-            HStack(spacing: 10) {
-                catalogGroupFilterButtons
-
-                Spacer(minLength: 8)
-
-                catalogSearchField
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    HStack(spacing: 10) { catalogGroupFilterButtons }.fixedSize()
+                    Spacer(minLength: 8)
+                    catalogSearchField.frame(minWidth: 130)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) { catalogGroupFilterButtons }
+                    catalogSearchField
+                }
             }
             .zIndex(9)
 
@@ -1537,6 +1542,18 @@ struct WallpaperCatalogView: View {
                 viewModel.toggleCatalogGroup(group)
             }
         }
+
+        Button {
+            viewModel.toggleCatalogMusic()
+        } label: {
+            Label("With Music", systemImage: "music.note")
+                .font(.caption2.weight(.semibold)).lineLimit(1)
+        }
+        .buttonStyle(AuraPanelButtonStyle(fillWidth: false, emphasized: catalogViewModel.showsMusicOnly,
+            selected: catalogViewModel.showsMusicOnly, region: .center))
+        .accessibilityLabel("Wallpapers with music")
+        .accessibilityValue(catalogViewModel.showsMusicOnly ? "Selected, \(catalogViewModel.musicCount)" : "\(catalogViewModel.musicCount)")
+        .accessibilityIdentifier("catalog.music")
 
         Button {
             viewModel.resetCatalogFilters()

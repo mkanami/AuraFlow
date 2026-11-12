@@ -236,6 +236,75 @@
           "expect": "result"
         }
       ]
+    },
+    {
+      "name": "musicList",
+      "description": "Browse public music-tagged wallpaper candidates; decode original audio before including a wallpaper in the music catalog.",
+      "request": {
+        "method": "GET",
+        "url": "https://livewallpapers4free.com/tag/%7Btag%7D/",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
+          "priority": "u=0, i",
+          "sec-ch-ua": "\"Chromium\";v=\"153\", \"Not_A Brand\";v=\"8\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\"",
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-user": "?1",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+        }
+      },
+      "slots": [
+        {
+          "param": "tag",
+          "at": [
+            "path:1"
+          ]
+        }
+      ],
+      "volatile": [],
+      "trigger": {
+        "url": "https://livewallpapers4free.com/tag/{tag}/"
+      },
+      "match": {
+        "method": "GET",
+        "host": "livewallpapers4free.com"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html; charset=UTF-8",
+        "html": {
+          "items": "#primary .post",
+          "fields": {
+            "title": "h2 a",
+            "url": "h2 a@href",
+            "image": "img@src"
+          }
+        }
+      },
+      "params": [
+        {
+          "name": "tag",
+          "type": "string",
+          "required": true,
+          "example": "wallpaper-with-music"
+        }
+      ],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {
+            "tag": "music-live-wallpaper"
+          },
+          "expect": "result"
+        }
+      ]
     }
   ]
 }

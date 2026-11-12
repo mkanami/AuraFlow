@@ -109,6 +109,8 @@ struct CatalogWallpaper: Identifiable, Hashable, Codable, Sendable {
     let previewImageURL: URL?
     let sourcePageURL: URL?
     let sources: [CatalogVideoSource]
+    /// Set after decoded audio has been detected, never from a title or tag.
+    var hasMusic: Bool? = nil
 
     static let defaultCatalog: [CatalogWallpaper] = []
 }
@@ -170,6 +172,7 @@ struct DownloadedCatalogWallpaper: Identifiable, Hashable, Codable, Sendable {
     let sourcePageURL: URL?
     let localPath: String
     let downloadedAt: Date
+    var hasMusic: Bool? = nil
 
     var localURL: URL {
         URL(fileURLWithPath: localPath)
@@ -2840,6 +2843,11 @@ final class AppViewModel: ObservableObject {
         catalogAudioMetadata.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &featureViewModelCancellables)
+        catalogAudioMetadata.$audio
+            .sink { [weak self] audio in
+                self?.catalogViewModel.audioStatus = audio
+            }
+            .store(in: &featureViewModelCancellables)
         previewViewModel.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &featureViewModelCancellables)
@@ -3669,8 +3677,16 @@ final class AppViewModel: ObservableObject {
         Task { await catalogPreviewPipeline.cancelPending() }
     }
 
+    func toggleCatalogMusic() {
+        catalogViewModel.toggleMusic()
+        lastCatalogPaginationTriggerID = nil
+        resetCatalogPreviewViewport()
+        Task { await catalogPreviewPipeline.cancelPending() }
+    }
+
     func resetCatalogFilters() {
         catalogViewModel.selectedGroup = nil
+        catalogViewModel.showsMusicOnly = false
         catalogSearchText = ""
         catalogViewModel.requestScroll(to: catalogViewModel.wallpapers.first?.id)
     }
@@ -3711,7 +3727,7 @@ final class AppViewModel: ObservableObject {
             guard catalogHasMoreWallpapers,
                   canLoadDeferredCatalogPage
                     || selectedCatalogGroup == nil
-                    || selectedCatalogGroup == .anime else { return }
+                    || selectedCatalogGroup == .anime || catalogViewModel.showsMusicOnly else { return }
         }
         lastCatalogPaginationTriggerID = wallpaperID
         loadNextCatalogPage()
@@ -3720,6 +3736,9 @@ final class AppViewModel: ObservableObject {
     func applyCatalogWallpaper(_ wallpaper: CatalogWallpaper) {
         guard canDownloadCatalogWallpaper else { return }
         catalogAudioMetadata.cancel()
+        catalogRefreshTask?.cancel()
+        catalogLoadMoreTask?.cancel()
+        catalogSearchTask?.cancel()
         // A catalog transfer must not compete with native Lock Screen/Fit
         // warm-up work. This does not stop an already-running wallpaper.
         cancelLockScreenMediaPreparation()
@@ -5043,10 +5062,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        var seen = Set(pendingCatalogSearchResults.map(\.id))
-        pendingCatalogSearchResults.append(
-            contentsOf: additions.filter { seen.insert($0.id).inserted }
-        )
+        pendingCatalogSearchResults = CatalogWallpaperMerge.combining(pendingCatalogSearchResults, additions)
         guard catalogSearchProgressTask == nil else { return }
 
         catalogSearchProgressTask = Task { [weak self] in
@@ -5121,7 +5137,8 @@ final class AppViewModel: ObservableObject {
                 attribution: wallpaper.attribution,
                 previewImageURL: wallpaper.effectivePreviewURL,
                 sourcePageURL: wallpaper.sourcePageURL,
-                sources: [CatalogVideoSource(url: wallpaper.localURL, width: 0, height: 0)]
+                sources: [CatalogVideoSource(url: wallpaper.localURL, width: 0, height: 0)],
+                hasMusic: wallpaper.hasMusic
             )
         }
         guard !additions.isEmpty else { return }

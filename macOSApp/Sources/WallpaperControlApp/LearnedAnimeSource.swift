@@ -114,6 +114,7 @@ actor LearnedAnimeSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wal
     private let api: Result<LearnedCatalogAPI, Error>
     private let session: URLSession
     private let cacheDirectory: URL?
+    private let musicCollection: Bool
     private var nextURL: URL?
     private var loaded: [CatalogWallpaper] = []
     private var visited = Set<URL>()
@@ -121,15 +122,17 @@ actor LearnedAnimeSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wal
 
     init(site: LearnedAnimeSite, session: URLSession = .shared,
          cacheDirectory: URL? = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("AuraFlow/LearnedCatalogs", isDirectory: true)) {
+            .appendingPathComponent("AuraFlow/LearnedCatalogs", isDirectory: true), musicCollection: Bool = false) {
         self.site = site
         self.api = Result { try LearnedCatalogAPI.load(site) }
         self.session = session
         self.cacheDirectory = cacheDirectory
+        self.musicCollection = musicCollection
     }
 
     private struct Cache: Codable { let wallpapers: [CatalogWallpaper]; let nextURL: URL? }
-    private var cacheURL: URL? { cacheDirectory?.appendingPathComponent("\(site.rawValue).json") }
+    private var cacheURL: URL? { cacheDirectory?.appendingPathComponent("\(site.rawValue)\(musicCollection ? "-music" : "").json") }
+    private var listOperation: String { musicCollection ? "musicList" : "list" }
 
     func loadCachedCatalog() async -> [CatalogWallpaper]? {
         guard let cacheURL, let data = try? Data(contentsOf: cacheURL),
@@ -143,8 +146,8 @@ actor LearnedAnimeSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wal
     }
 
     func fetchCatalog() async throws -> [CatalogWallpaper] {
-        let url = try operationURL("list", arguments: ["page": "1"])
-        let page = try await fetchPage(url, operation: "list")
+        let url = try operationURL(listOperation, arguments: ["page": "1", "tag": "wallpaper-with-music"])
+        let page = try await fetchPage(url, operation: listOperation)
         try Task.checkCancellation()
         loaded = page.items
         visited = [url]
@@ -155,7 +158,7 @@ actor LearnedAnimeSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wal
 
     func fetchNextCatalogPage() async throws -> CatalogPage {
         guard let url = nextURL, !visited.contains(url) else { return CatalogPage(wallpapers: [], hasMore: false) }
-        let page = try await fetchPage(url, operation: "list")
+        let page = try await fetchPage(url, operation: listOperation)
         try Task.checkCancellation()
         // A refresh can finish while the next-page request is in flight.
         guard nextURL == url, !visited.contains(url) else { return CatalogPage(wallpapers: [], hasMore: nextURL != nil) }
@@ -212,7 +215,7 @@ actor LearnedAnimeSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wal
         let labels = row["labels"] ?? []
         let originals = (row["original"] ?? []).enumerated().compactMap { index, value -> CatalogVideoSource? in
             guard let mediaURL = URL(string: value), site.accepts(mediaURL, media: true),
-                  mediaURL.pathExtension.lowercased() == "mp4" ||
+                  ["mp4", "m4v", "mov"].contains(mediaURL.pathExtension.lowercased()) ||
                     (site == .livewallpapers4free && mediaURL.path.range(of: #"^/download/\d+/?$"#, options: .regularExpression) != nil) else { return nil }
             let size = LearnedCatalogHTML.dimensions(labels.indices.contains(index) ? labels[index] : "")
             return CatalogVideoSource(url: mediaURL, width: size.0, height: size.1)
@@ -250,7 +253,7 @@ actor LearnedAnimeSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wal
                   pageURL.pathComponents.count == 2 else { return nil }
             // Scene ZIPs require Wallpaper Engine; they are not video downloads.
             if row["kind"]?.first?.lowercased() == "scene" { return nil }
-            if site == .livewallpapers4free, operation == "search",
+            if !musicCollection, site == .livewallpapers4free, operation == "search",
                row["categories"]?.first?.contains("category-anime-live-wallpapers") != true { return nil }
             let id = "\(site.rawValue)-\(pageURL.lastPathComponent)"
             guard ids.insert(id).inserted else { return nil }

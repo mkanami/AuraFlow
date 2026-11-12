@@ -8,17 +8,20 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
     private let animeProvider: WallpaperCatalogProviding
     private let animeNatureProvider: WallpaperCatalogProviding
     private let scenicProvider: WallpaperCatalogProviding
+    private let musicProvider: WallpaperCatalogProviding
     private let curatedCatalog: [CatalogWallpaper]
 
     init(
         animeProvider: WallpaperCatalogProviding = AnimeWallpaperCatalogProvider(),
         animeNatureProvider: WallpaperCatalogProviding = MotionBGSAnimeNatureSource(),
         scenicProvider: WallpaperCatalogProviding = DarefulSource(),
+        musicProvider: WallpaperCatalogProviding = MusicWallpaperCatalogProvider(),
         curatedCatalog: [CatalogWallpaper] = CatalogWallpaper.defaultCatalog
     ) {
         self.animeProvider = animeProvider
         self.animeNatureProvider = animeNatureProvider
         self.scenicProvider = scenicProvider
+        self.musicProvider = musicProvider
         self.curatedCatalog = curatedCatalog
     }
 
@@ -26,7 +29,8 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         let cachedAnime = await animeProvider.loadCachedCatalog() ?? []
         let cachedAnimeNature = await animeNatureProvider.loadCachedCatalog() ?? []
         let cachedScenic = await scenicProvider.loadCachedCatalog() ?? []
-        let merged = Self.mergeCatalogs(curated: curatedCatalog, catalogs: [cachedAnime, cachedAnimeNature, cachedScenic])
+        let cachedMusic = await musicProvider.loadCachedCatalog() ?? []
+        let merged = Self.mergeCatalogs(curated: curatedCatalog, catalogs: [cachedAnime, cachedAnimeNature, cachedScenic, cachedMusic])
         return merged.isEmpty ? nil : merged
     }
 
@@ -37,11 +41,12 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         async let animeResult = Self.fetchProviderCatalog(provider: animeProvider, cached: cachedAnime)
         async let animeNatureResult = Self.fetchProviderCatalog(provider: animeNatureProvider, cached: cachedAnimeNature)
         async let scenicResult = Self.fetchProviderCatalog(provider: scenicProvider, cached: cachedScenic)
-        let (animeCatalog, animeNatureCatalog, scenicCatalog) = await (animeResult, animeNatureResult, scenicResult)
+        async let musicResult = Self.fetchProviderCatalog(provider: musicProvider, cached: await musicProvider.loadCachedCatalog() ?? [])
+        let (animeCatalog, animeNatureCatalog, scenicCatalog, musicCatalog) = await (animeResult, animeNatureResult, scenicResult, musicResult)
 
         let merged = Self.mergeCatalogs(
             curated: curatedCatalog,
-            catalogs: [animeCatalog.wallpapers, animeNatureCatalog.wallpapers, scenicCatalog.wallpapers]
+            catalogs: [animeCatalog.wallpapers, animeNatureCatalog.wallpapers, scenicCatalog.wallpapers, musicCatalog.wallpapers]
         )
         if !merged.isEmpty {
             return merged
@@ -50,6 +55,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
             animeCatalog.failureMessage ??
                 animeNatureCatalog.failureMessage ??
                 scenicCatalog.failureMessage ??
+                musicCatalog.failureMessage ??
                 "Wallpaper catalog is unavailable."
         )
     }
@@ -59,8 +65,9 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         let cachedAnime = await animeProvider.loadCachedCatalog() ?? []
         let cachedAnimeNature = await animeNatureProvider.loadCachedCatalog() ?? []
         let cachedScenic = await scenicProvider.loadCachedCatalog() ?? []
+        let cachedMusic = await musicProvider.loadCachedCatalog() ?? []
         let progressState = CatalogProgressState(curated: curatedCatalog, progress: progress)
-        await progressState.prime(anime: cachedAnime, animeNature: cachedAnimeNature, scenic: cachedScenic)
+        await progressState.prime(anime: cachedAnime, animeNature: cachedAnimeNature, scenic: cachedScenic, music: cachedMusic)
 
         async let animeResult = Self.fetchProviderCatalog(
             provider: animeProvider,
@@ -84,11 +91,15 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
             }
         )
 
-        let (animeCatalog, animeNatureCatalog, scenicCatalog) = await (animeResult, animeNatureResult, scenicResult)
+        async let musicResult = Self.fetchProviderCatalog(provider: musicProvider, cached: cachedMusic,
+            progress: { partial in await progressState.replaceMusic(partial) })
+
+        let (animeCatalog, animeNatureCatalog, scenicCatalog, musicCatalog) = await (animeResult, animeNatureResult, scenicResult, musicResult)
         let merged = await progressState.finish(
             anime: animeCatalog.wallpapers,
             animeNature: animeNatureCatalog.wallpapers,
-            scenic: scenicCatalog.wallpapers
+            scenic: scenicCatalog.wallpapers,
+            music: musicCatalog.wallpapers
         )
         if !merged.isEmpty {
             return merged
@@ -97,6 +108,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
             animeCatalog.failureMessage ??
                 animeNatureCatalog.failureMessage ??
                 scenicCatalog.failureMessage ??
+                musicCatalog.failureMessage ??
                 "Wallpaper catalog is unavailable."
         )
     }
@@ -185,10 +197,27 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
     }
 
     func fetchNextCatalogPage() async throws -> CatalogPage {
-        guard let pagedAnimeProvider = animeProvider as? any WallpaperCatalogPaging else {
-            return CatalogPage(wallpapers: [], hasMore: false)
+        try await withThrowingTaskGroup(of: (CatalogPage?, String?).self) { group in
+            for provider in [animeProvider, musicProvider] {
+                guard let paging = provider as? any WallpaperCatalogPaging else { continue }
+                group.addTask {
+                    do { return (try await paging.fetchNextCatalogPage(), nil) }
+                    catch {
+                        try Task.checkCancellation()
+                        if error is CancellationError { throw error }
+                        return (nil, error.localizedDescription)
+                    }
+                }
+            }
+            var pages: [[CatalogWallpaper]] = [], hasMore = false
+            var failure: String?
+            for try await (page, error) in group {
+                if let page { pages.append(page.wallpapers); hasMore = hasMore || page.hasMore }
+                else { failure = error }
+            }
+            if pages.isEmpty, let failure { throw LearnedCatalogError.unavailable(failure) }
+            return CatalogPage(wallpapers: Self.mergeCatalogs(curated: [], catalogs: pages), hasMore: hasMore)
         }
-        return try await pagedAnimeProvider.fetchNextCatalogPage()
     }
 
     func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
@@ -215,8 +244,10 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
             query: query,
             progress: { partial in await progressState.replace(partial, at: 2) }
         )
-        let results = await (animeResults, animeNatureResults, scenicResults)
-        return await progressState.finish(with: [results.0, results.1, results.2])
+        async let musicResults = Self.searchProvider(musicProvider, query: query,
+            progress: { partial in await progressState.replace(partial, at: 3) })
+        let results = await (animeResults, animeNatureResults, scenicResults, musicResults)
+        return await progressState.finish(with: [results.0, results.1, results.2, results.3])
     }
 
     func clearCache() async {
@@ -229,13 +260,14 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         if let cacheClearingProvider = scenicProvider as? CatalogCacheClearing {
             await cacheClearingProvider.clearCache()
         }
+        await (musicProvider as? any CatalogCacheClearing)?.clearCache()
     }
 
     fileprivate static func mergeCatalogs(
         curated: [CatalogWallpaper],
         catalogs: [[CatalogWallpaper]]
     ) -> [CatalogWallpaper] {
-        var seen = Set<String>()
+        var indices: [String: Int] = [:]
         var merged: [CatalogWallpaper] = []
         let allCatalogs = [curated] + catalogs
         let maxCount = allCatalogs.map(\.count).max() ?? 0
@@ -243,7 +275,10 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         for index in 0..<maxCount {
             for catalog in allCatalogs where index < catalog.count {
                 let wallpaper = catalog[index]
-                if seen.insert(wallpaper.id).inserted {
+                if let existing = indices[wallpaper.id] {
+                    if wallpaper.hasMusic == true { merged[existing].hasMusic = true }
+                } else {
+                    indices[wallpaper.id] = merged.count
                     merged.append(wallpaper)
                 }
             }
@@ -285,8 +320,8 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
     }
 
     fileprivate static func mergeSearchResults(_ catalogs: [[CatalogWallpaper]]) -> [CatalogWallpaper] {
-        var seenIDs = Set<String>()
-        var seenTitles = Set<String>()
+        var ids: [String: Int] = [:]
+        var titles: [String: Int] = [:]
         var merged: [CatalogWallpaper] = []
         let maxCount = catalogs.map(\.count).max() ?? 0
 
@@ -301,10 +336,14 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
                     .lowercased()
                     .replacingOccurrences(of: " live wallpaper", with: "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard seenIDs.insert(wallpaper.id).inserted,
-                      seenTitles.insert(titleKey).inserted else {
+                if let existing = ids[wallpaper.id] ?? titles[titleKey] {
+                    // Keep the actual audible source, rather than labelling a
+                    // different site's silent copy of the same title as music.
+                    if wallpaper.hasMusic == true { merged[existing] = wallpaper }
+                    ids[wallpaper.id] = existing; titles[titleKey] = existing
                     continue
                 }
+                ids[wallpaper.id] = merged.count; titles[titleKey] = merged.count
                 merged.append(wallpaper)
             }
         }
@@ -315,7 +354,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
 
 private actor CatalogSearchProgressState {
     private let progress: @Sendable ([CatalogWallpaper]) async -> Void
-    private var catalogs = Array(repeating: [CatalogWallpaper](), count: 3)
+    private var catalogs = Array(repeating: [CatalogWallpaper](), count: 4)
     private var lastEmittedIDs: [String] = []
 
     init(progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) {
@@ -361,6 +400,7 @@ private actor CatalogProgressState {
     private var anime: [CatalogWallpaper] = []
     private var animeNature: [CatalogWallpaper] = []
     private var scenic: [CatalogWallpaper] = []
+    private var music: [CatalogWallpaper] = []
     private var lastEmittedIDs: [String] = []
 
     init(
@@ -371,10 +411,11 @@ private actor CatalogProgressState {
         self.progress = progress
     }
 
-    func prime(anime: [CatalogWallpaper], animeNature: [CatalogWallpaper], scenic: [CatalogWallpaper]) async {
+    func prime(anime: [CatalogWallpaper], animeNature: [CatalogWallpaper], scenic: [CatalogWallpaper], music: [CatalogWallpaper]) async {
         self.anime = anime
         self.animeNature = animeNature
         self.scenic = scenic
+        self.music = music
         await emitIfNeeded()
     }
 
@@ -393,13 +434,19 @@ private actor CatalogProgressState {
         await emitIfNeeded()
     }
 
-    func finish(anime: [CatalogWallpaper], animeNature: [CatalogWallpaper], scenic: [CatalogWallpaper]) async -> [CatalogWallpaper] {
+    func replaceMusic(_ wallpapers: [CatalogWallpaper]) async {
+        music = wallpapers
+        await emitIfNeeded()
+    }
+
+    func finish(anime: [CatalogWallpaper], animeNature: [CatalogWallpaper], scenic: [CatalogWallpaper], music: [CatalogWallpaper]) async -> [CatalogWallpaper] {
         self.anime = anime
         self.animeNature = animeNature
         self.scenic = scenic
+        self.music = music
         let merged = ManagedWallpaperCatalogProvider.mergeCatalogs(
             curated: curated,
-            catalogs: [anime, animeNature, scenic]
+            catalogs: [anime, animeNature, scenic, music]
         )
         await emitIfNeeded(merged)
         return merged
@@ -408,7 +455,7 @@ private actor CatalogProgressState {
     private func emitIfNeeded(_ merged: [CatalogWallpaper]? = nil) async {
         let merged = merged ?? ManagedWallpaperCatalogProvider.mergeCatalogs(
             curated: curated,
-            catalogs: [anime, animeNature, scenic]
+            catalogs: [anime, animeNature, scenic, music]
         )
         guard !merged.isEmpty else { return }
 

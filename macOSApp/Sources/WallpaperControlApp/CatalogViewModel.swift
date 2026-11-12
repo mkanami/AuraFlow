@@ -15,6 +15,8 @@ final class CatalogViewModel: ObservableObject {
     @Published private(set) var scrollRequestGeneration: UInt = 0
     @Published var searchText = ""
     @Published var selectedGroup: CatalogWallpaperGroup?
+    @Published var showsMusicOnly = false
+    @Published var audioStatus: [String: Bool] = [:]
     @Published var downloadID: String?
     @Published var downloadProgress: CatalogDownloadProgress?
     @Published var isDownloadCancelling = false
@@ -38,13 +40,11 @@ final class CatalogViewModel: ObservableObject {
         if query.isEmpty {
             availableWallpapers = wallpapers
         } else {
-            var seen = Set<String>()
-            availableWallpapers = (wallpapers + searchResults).filter {
-                seen.insert($0.id).inserted
-            }
+            availableWallpapers = Self.deduplicated(wallpapers + searchResults)
         }
 
         let groupFiltered = availableWallpapers.filter { wallpaper in
+            if showsMusicOnly { return containsMusic(wallpaper) }
             guard let selectedGroup else { return true }
             return wallpaper.catalogGroup == selectedGroup
         }
@@ -68,11 +68,27 @@ final class CatalogViewModel: ObservableObject {
         selectedWallpaper = nil
         scrollTargetID = nil
         selectedGroup = nil
+        showsMusicOnly = false
     }
 
     func toggleGroup(_ group: CatalogWallpaperGroup) {
+        showsMusicOnly = false
         selectedGroup = selectedGroup == group ? nil : group
         requestScroll(to: filteredWallpapers.first?.id)
+    }
+
+    func toggleMusic() {
+        showsMusicOnly.toggle()
+        selectedGroup = nil
+        requestScroll(to: filteredWallpapers.first?.id)
+    }
+
+    var musicCount: Int {
+        wallpapers.filter { containsMusic($0) }.count
+    }
+
+    private func containsMusic(_ wallpaper: CatalogWallpaper) -> Bool {
+        wallpaper.hasMusic == true && !wallpaper.explicitlyExcludesMusic && audioStatus[wallpaper.id] != false
     }
 
     func requestScroll(to wallpaperID: String?) {
@@ -105,14 +121,11 @@ final class CatalogViewModel: ObservableObject {
     }
 
     func appendSearchResults(_ additions: [CatalogWallpaper]) {
-        var seen = Set(searchResults.map(\.id))
-        seen.formUnion(deferredSearchResults.map(\.id))
-        let uniqueAdditions = additions.filter { seen.insert($0.id).inserted }
-        guard !uniqueAdditions.isEmpty else { return }
-
-        let availableSlots = max(0, searchDisplayPageSize - searchResults.count)
-        searchResults.append(contentsOf: uniqueAdditions.prefix(availableSlots))
-        deferredSearchResults.append(contentsOf: uniqueAdditions.dropFirst(availableSlots))
+        guard !additions.isEmpty else { return }
+        let merged = CatalogWallpaperMerge.combining(searchResults + deferredSearchResults, additions)
+        let displayedCount = max(searchDisplayPageSize, searchResults.count)
+        searchResults = Array(merged.prefix(displayedCount))
+        deferredSearchResults = Array(merged.dropFirst(displayedCount))
     }
 
     @discardableResult
@@ -152,9 +165,7 @@ final class CatalogViewModel: ObservableObject {
         mergedWallpapers: [CatalogWallpaper],
         hasMoreRemotePages: Bool
     ) {
-        var seen = Set(wallpapers.map(\.id))
-        let additions = mergedWallpapers.filter { seen.insert($0.id).inserted }
-        wallpapers.append(contentsOf: additions)
+        wallpapers = CatalogWallpaperMerge.combining(wallpapers, mergedWallpapers)
         deferredWallpapers = []
         hasMoreRemoteWallpapers = hasMoreRemotePages
         hasMoreWallpapers = hasMoreRemotePages
@@ -165,7 +176,6 @@ final class CatalogViewModel: ObservableObject {
     }
 
     private static func deduplicated(_ wallpapers: [CatalogWallpaper]) -> [CatalogWallpaper] {
-        var seen = Set<String>()
-        return wallpapers.filter { seen.insert($0.id).inserted }
+        CatalogWallpaperMerge.combining([], wallpapers)
     }
 }

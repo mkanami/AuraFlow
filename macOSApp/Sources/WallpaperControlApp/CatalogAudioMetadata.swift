@@ -210,6 +210,10 @@ final class CatalogAudioMetadata: ObservableObject {
             await inspectLocal(id: wallpaper.id, url: localURL, source: source)
             return
         }
+        if wallpaper.hasMusic == true {
+            audio[wallpaper.id] = true
+            return
+        }
         if let entry = cache[wallpaper.id], entry.source == source, entry.expires > Date() { return }
         if let job = jobs[wallpaper.id] {
             await job.value

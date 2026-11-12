@@ -157,6 +157,10 @@ music-note badge when sound is detected in the original video. Empty/silent
 audio tracks do not earn a badge; the Volume control shows **No audio** for
 confirmed silent wallpapers. Catalog checks use bounded audio-only samples.
 
+The **With Music** tab collects videos with confirmed sound from DesktopHut and
+LiveWallpapers4Free. Music and lofi listings are loaded through bundled
+api-anything operations, then checked against the original audio.
+
 On macOS, **Anime** combines MoeWalls, DesktopHut and LiveWallpapers4Free;
 **Anime Nature** uses MotionBGS and **Scenic** uses Dareful. New-site API
 operations and local verification commands are documented in
