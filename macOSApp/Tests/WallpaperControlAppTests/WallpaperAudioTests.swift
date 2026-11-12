@@ -113,6 +113,54 @@ private func audioFixture(_ audio: Bool) throws -> URL {
     try #require(Bundle.module.url(forResource: audio ? "wallpaper-with-audio" : "wallpaper-without-audio", withExtension: "mp4"))
 }
 
+@Test func wallpaperAudioContentDistinguishesSilentTracksAndDelayedMusic() async throws {
+    for (name, expected) in [("wallpaper-with-audio", WallpaperAudioContent.audible),
+                             ("wallpaper-with-silent-track", .silent),
+                             ("wallpaper-without-audio", .noTrack),
+                             ("wallpaper-with-delayed-audio", .audible)] {
+        let url = try #require(Bundle.module.url(forResource: name, withExtension: "mp4"))
+        let content = try await WallpaperAudioInspector.inspect(url: url)
+        #expect(content == expected)
+    }
+}
+
+@Test func wallpaperAudioSamplePlanRejectsMalformedTables() throws {
+    let data = try Data(contentsOf: audioFixture(true))
+    let tag = try #require(data.range(of: Data("moov".utf8)))
+    let start = tag.lowerBound - 4
+    let size = data[start..<(start + 4)].reduce(0) { ($0 << 8) | Int($1) }
+    let movie = data.subdata(in: start..<(start + size))
+    let plan = try #require(MP4AudioSamplePlan(movie: movie))
+    #expect(plan.chunks.count <= 6)
+    #expect(plan.chunks.reduce(0) { $0 + $1.size } <= MP4AudioSamplePlan.maximumAudioBytes)
+    for name in ["stsc", "stts"] {
+        var broken = movie
+        let field = try #require(broken.range(of: Data(name.utf8), options: .backwards))
+        broken.replaceSubrange((field.lowerBound + 8)..<(field.lowerBound + 12), with: repeatElement(UInt8(255), count: 4))
+        #expect(MP4AudioSamplePlan(movie: broken) == nil)
+    }
+}
+
+@Test @MainActor func wallpaperAudioSilentTrackDoesNotAdvertiseMusicOrTrustOldCache() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let cache = root.appendingPathComponent("audio.json")
+    let old: [String: Any] = ["empty-aac": ["hasAudio": true, "expires": Date().addingTimeInterval(86400).timeIntervalSinceReferenceDate, "source": "https://wallpaper.test/silent"]]
+    try JSONSerialization.data(withJSONObject: old).write(to: cache)
+    let metadata = CatalogAudioMetadata(provider: NoAudioNetworkProvider(), coordinator: CatalogTransferCoordinator(), cacheURL: cache)
+    #expect(metadata.audio["empty-aac"] == nil)
+    let url = try #require(Bundle.module.url(forResource: "wallpaper-with-silent-track", withExtension: "mp4"))
+    #expect(!(try await AVURLAsset(url: url).loadTracks(withMediaType: .audio)).isEmpty)
+    await metadata.inspectLocal(id: "empty-aac", url: url, source: "https://wallpaper.test/silent")
+    #expect(metadata.audio["empty-aac"] == false)
+    #expect(metadata.localContent[url.standardizedFileURL] == .silent)
+    let restored = CatalogAudioMetadata(provider: NoAudioNetworkProvider(), coordinator: CatalogTransferCoordinator(), cacheURL: cache)
+    #expect(restored.audio["empty-aac"] == false)
+    #expect(WallpaperAudioContent.silent.isSilent)
+    #expect(!WallpaperAudioContent.unknown.isSilent)
+}
+
 private func audioFFmpegURL() -> URL? {
     if let path = ProcessInfo.processInfo.environment["AURAFLOW_FFMPEG_PATH"], FileManager.default.isExecutableFile(atPath: path) {
         return URL(fileURLWithPath: path)

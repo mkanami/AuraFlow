@@ -1343,9 +1343,7 @@ struct DownloadedWallpaperRow: View, Equatable {
                 Text("\(wallpaper.category) • \(wallpaper.attribution)")
                     .font(.caption)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
-                if viewModel.catalogAudioMetadata.audio[wallpaper.wallpaperID] == true {
-                    WallpaperAudioBadge()
-                }
+                CatalogWallpaperAudioBadge(id: wallpaper.wallpaperID, metadata: viewModel.catalogAudioMetadata)
                 Text(wallpaper.localURL.lastPathComponent)
                     .font(.caption2)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
@@ -1375,7 +1373,8 @@ struct DownloadedWallpaperRow: View, Equatable {
         .padding(8)
         .modifier(AuraGlassInsetCardModifier())
         .task(id: wallpaper.localURL) {
-            await viewModel.catalogAudioMetadata.inspectLocal(id: wallpaper.wallpaperID, url: wallpaper.localURL)
+            await viewModel.catalogAudioMetadata.inspectLocal(id: wallpaper.wallpaperID, url: wallpaper.localURL,
+                source: wallpaper.sourcePageURL?.absoluteString ?? wallpaper.wallpaperID)
         }
     }
 }
@@ -1638,7 +1637,8 @@ struct WallpaperCatalogGridView: View {
         let nearEndIDs = Set(wallpapers.suffix(6).map(\.id))
         return LazyVGrid(columns: columns, spacing: 12) {
             ForEach(wallpapers) { wallpaper in
-                CatalogWallpaperCard(wallpaper: wallpaper, audioMetadata: viewModel.catalogAudioMetadata) {
+                CatalogWallpaperCard(wallpaper: wallpaper, audioMetadata: viewModel.catalogAudioMetadata,
+                    localURL: viewModel.downloadedCatalogWallpapers.first { $0.wallpaperID == wallpaper.id }?.localURL) {
                     viewModel.openCatalogWallpaper(wallpaper)
                 }
                 .id(wallpaper.id)
@@ -1660,6 +1660,7 @@ struct WallpaperCatalogGridView: View {
 struct CatalogWallpaperCard: View {
     let wallpaper: CatalogWallpaper
     @ObservedObject var audioMetadata: CatalogAudioMetadata
+    var localURL: URL? = nil
     let action: () -> Void
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
 
@@ -1692,7 +1693,7 @@ struct CatalogWallpaperCard: View {
         }
         .buttonStyle(AuraPlainPressButtonStyle())
         .accessibilityIdentifier("catalog-card-\(wallpaper.id)")
-        .task(id: wallpaper.id) { await audioMetadata.inspect(wallpaper) }
+        .task(id: localURL?.absoluteString ?? wallpaper.id) { await audioMetadata.inspect(wallpaper, localURL: localURL) }
     }
 }
 
@@ -1889,7 +1890,10 @@ struct WallpaperCatalogDetailView: View {
                 resolvedMedia = enriched
             }
         }
-        .task(id: "audio-\(wallpaper.id)") { await viewModel.catalogAudioMetadata.inspect(wallpaper) }
+        .task(id: "audio-\(wallpaper.id)") {
+            await viewModel.catalogAudioMetadata.inspect(wallpaper,
+                localURL: viewModel.downloadedCatalogWallpapers.first { $0.wallpaperID == wallpaper.id }?.localURL)
+        }
     }
 
     private var preferredOriginalSource: CatalogVideoSource? {

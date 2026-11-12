@@ -153,7 +153,9 @@ Video wallpapers can play their embedded audio. **Speed** and **Volume** share
 the preview's top row; the speaker button mutes/restores sound. Volume starts
 muted and is saved for Desktop playback. Preview and Desktop never play the
 soundtrack together. Catalog cards and downloaded wallpapers show an **Audio**
-music-note badge when an audio track is confirmed in the original video.
+music-note badge when sound is detected in the original video. Empty/silent
+audio tracks do not earn a badge; the Volume control shows **No audio** for
+confirmed silent wallpapers. Catalog checks use bounded audio-only samples.
 
 On macOS, **Anime** combines MoeWalls, DesktopHut and LiveWallpapers4Free;
 **Anime Nature** uses MotionBGS and **Scenic** uses Dareful. New-site API

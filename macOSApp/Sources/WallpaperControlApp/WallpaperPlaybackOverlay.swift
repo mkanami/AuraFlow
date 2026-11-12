@@ -37,6 +37,7 @@ struct WallpaperPlaybackOverlay: View {
 private struct WallpaperVolumeOverlay: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var lastAudibleVolume = 0.3
+    @State private var audioContent: WallpaperAudioContent = .unknown
     @Environment(\.adaptiveGlassAppearance) private var appearance
 
     var body: some View {
@@ -47,36 +48,51 @@ private struct WallpaperVolumeOverlay: View {
                     viewModel.updateVolume(0, immediately: true)
                 } else { viewModel.updateVolume(lastAudibleVolume, immediately: true) }
             } label: {
-                Image(systemName: viewModel.wallpaperVolume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                Image(systemName: viewModel.wallpaperVolume == 0 || audioContent.isSilent ? "speaker.slash.fill" : "speaker.wave.2.fill")
                     .frame(width: 22)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(viewModel.wallpaperVolume == 0 ? "Unmute wallpaper audio" : "Mute wallpaper audio")
+            .disabled(audioContent.isSilent)
+            .accessibilityLabel(audioContent.isSilent ? "No audio in this wallpaper" : (viewModel.wallpaperVolume == 0 ? "Unmute wallpaper audio" : "Mute wallpaper audio"))
             .accessibilityIdentifier("wallpaper.audio.mute")
 
             Text("Volume").font(.body.weight(.semibold)).lineLimit(1).fixedSize()
-            AuraLegacySpeedSlider(value: viewModel.wallpaperVolume, range: 0...1, step: 0.01,
-                onValueChanged: { viewModel.updateVolume($0) },
-                onEditingChanged: { editing in
-                    viewModel.setVolumeEditing(editing)
-                    if !editing { viewModel.updateVolume(viewModel.wallpaperVolume, immediately: true) }
-                })
-                .frame(maxWidth: .infinity)
-                .accessibilityLabel("Wallpaper volume")
-                .accessibilityValue("\(Int((viewModel.wallpaperVolume * 100).rounded())) percent")
-                .accessibilityAdjustableAction { direction in
-                    let delta = direction == .increment ? 0.05 : -0.05
-                    viewModel.updateVolume(viewModel.wallpaperVolume + delta, immediately: true)
-                }
-                .accessibilityIdentifier("wallpaper.audio.volume")
-            Text("\(Int((viewModel.wallpaperVolume * 100).rounded()))%")
-                .font(.body.weight(.semibold)).monospacedDigit().lineLimit(1)
-                .frame(minWidth: 38, alignment: .trailing)
+            if audioContent.isSilent {
+                Spacer(minLength: 0)
+                Text("No audio").font(.callout).lineLimit(1)
+                    .accessibilityIdentifier("wallpaper.audio.silent")
+            } else {
+                AuraLegacySpeedSlider(value: viewModel.wallpaperVolume, range: 0...1, step: 0.01,
+                    onValueChanged: { viewModel.updateVolume($0) },
+                    onEditingChanged: { editing in
+                        viewModel.setVolumeEditing(editing)
+                        if !editing { viewModel.updateVolume(viewModel.wallpaperVolume, immediately: true) }
+                    })
+                    .frame(maxWidth: .infinity)
+                    .accessibilityLabel("Wallpaper volume")
+                    .accessibilityValue("\(Int((viewModel.wallpaperVolume * 100).rounded())) percent")
+                    .accessibilityAdjustableAction { direction in
+                        let delta = direction == .increment ? 0.05 : -0.05
+                        viewModel.updateVolume(viewModel.wallpaperVolume + delta, immediately: true)
+                    }
+                    .accessibilityIdentifier("wallpaper.audio.volume")
+                Text("\(Int((viewModel.wallpaperVolume * 100).rounded()))%")
+                    .font(.body.weight(.semibold)).monospacedDigit().lineLimit(1)
+                    .frame(minWidth: 38, alignment: .trailing)
+            }
         }
         .foregroundStyle(appearance.topTextTone.primaryTextColor)
+        .frame(minHeight: 24)
         .padding(.vertical, 10).padding(.horizontal, 16)
         .modifier(WallpaperPlaybackPillGlass())
-        .help("Volume of the wallpaper's embedded audio. Zero mutes it.")
+        .help(audioContent.explanation)
+        .task(id: viewModel.currentVideoURL) {
+            audioContent = .unknown
+            guard let url = viewModel.currentVideoURL?.standardizedFileURL else { return }
+            await viewModel.catalogAudioMetadata.inspectLocal(url: url)
+            guard !Task.isCancelled else { return }
+            audioContent = viewModel.catalogAudioMetadata.localContent[url] ?? .unknown
+        }
     }
 }
 
