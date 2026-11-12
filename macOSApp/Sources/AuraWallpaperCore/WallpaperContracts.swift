@@ -165,6 +165,11 @@ public struct DaemonHealth: Codable, Equatable, Sendable {
     public var active_source_signature: String?
     public var applied_operation_id: UInt64?
     public var active_generation: UInt64?
+    public var audio_rate: Double?
+    public var audio_time: Double?
+    public var audio_paused_for_windows: Bool?
+    public var visible_application_windows: Int?
+    public var audio_prepared: Bool?
     public var effects: [WallpaperEffectsStatus]?
 
     public init(
@@ -202,6 +207,11 @@ public struct DaemonHealth: Codable, Equatable, Sendable {
         active_source_signature: String? = nil,
         applied_operation_id: UInt64? = nil,
         active_generation: UInt64? = nil,
+        audio_rate: Double? = nil,
+        audio_time: Double? = nil,
+        audio_paused_for_windows: Bool? = nil,
+        visible_application_windows: Int? = nil,
+        audio_prepared: Bool? = nil,
         effects: [WallpaperEffectsStatus]? = nil
     ) {
         self.contract_version = contract_version
@@ -238,6 +248,11 @@ public struct DaemonHealth: Codable, Equatable, Sendable {
         self.active_source_signature = active_source_signature
         self.applied_operation_id = applied_operation_id
         self.active_generation = active_generation
+        self.audio_rate = audio_rate
+        self.audio_time = audio_time
+        self.audio_paused_for_windows = audio_paused_for_windows
+        self.visible_application_windows = visible_application_windows
+        self.audio_prepared = audio_prepared
         self.effects = effects
     }
 }

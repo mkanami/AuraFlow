@@ -151,8 +151,11 @@ wallpaper playback. Saved wallpaper choices remain available for the next Start.
 
 Video wallpapers can play their embedded audio. **Speed** and **Volume** share
 the preview's top row; the speaker button mutes/restores sound. Volume starts
-muted and is saved for Desktop playback. Preview and Desktop never play the
-soundtrack together. Catalog cards and downloaded wallpapers show an **Audio**
+muted and is saved for Desktop playback. Music plays only when the Desktop has
+no visible application windows, including AuraFlow. Closing, hiding or minimizing
+the windows resumes music from its paused position. Video and music have separate
+timelines; video quality, speed and fullscreen behavior do not rewind the music.
+Preview audio stays muted. Catalog cards and downloaded wallpapers show an **Audio**
 music-note badge when sound is detected in the original video. Empty/silent
 audio tracks do not earn a badge; the Volume control shows **No audio** for
 confirmed silent wallpapers. Catalog checks use bounded audio-only samples.

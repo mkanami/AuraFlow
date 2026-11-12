@@ -569,7 +569,12 @@ public final class WallpaperRuntimeStore {
             native_lock_state: saved?.native_lock_state,
             active_source_signature: saved?.active_source_signature,
             applied_operation_id: saved?.applied_operation_id,
-            active_generation: saved?.active_generation
+            active_generation: saved?.active_generation,
+            audio_rate: saved?.audio_rate,
+            audio_time: saved?.audio_time,
+            audio_paused_for_windows: saved?.audio_paused_for_windows,
+            visible_application_windows: saved?.visible_application_windows,
+            audio_prepared: saved?.audio_prepared
         )
     }
 

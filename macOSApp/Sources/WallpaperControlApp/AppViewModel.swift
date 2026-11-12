@@ -4001,12 +4001,11 @@ final class AppViewModel: ObservableObject {
     }
 
     private func syncPreviewAudio() {
-        let volume = WallpaperAudioPolicy.previewVolume(wallpaperVolume,
-            desktopOwnsAudio: (isRunning && !isPlaybackPaused && !isLockScreenOnlyActive) || isLifecycleBusy,
-            visible: previewWindowVisible && !previewRenderingSuspended && showsWallpaperVolumeControl,
-            systemLocked: LockScreenSession.currentIsLocked() == true)
-        previewPlayer?.volume = volume
-        previewPlayer?.isMuted = volume == 0
+        // An open preview is an application window. Music belongs exclusively
+        // to the unobstructed Desktop, including when no wallpaper is running.
+        previewPlayer?.volume = WallpaperAudioPolicy.previewVolume(wallpaperVolume,
+            desktopOwnsAudio: isRunning, visible: previewWindowVisible)
+        previewPlayer?.isMuted = true
     }
 
     func toggleAutostart(_ enabled: Bool) {
@@ -4743,6 +4742,8 @@ final class AppViewModel: ObservableObject {
 
     private func autostartWarning(for status: ControlStatus) -> String? {
         guard status.config.autostart == true,
+              status.config.login_wallpaper_runtime != .removed,
+              status.config.login_wallpaper_runtime != .terminal,
               status.autostart_plist_exists != nil
                 || status.autostart_service_loaded != nil
         else {

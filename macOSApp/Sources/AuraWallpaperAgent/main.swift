@@ -302,7 +302,8 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let store: WallpaperRuntimeStore
     private let observesSystemEvents: Bool
     private let sessionIsLocked: () -> Bool?
-    private let fullscreenApplicationIsActive: @MainActor () -> Bool
+    private let fullscreenApplicationIsActive: (@MainActor () -> Bool)?
+    private let applicationWindows: @MainActor () -> DesktopApplicationWindows.State
     private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
     private let lockScreenPlatform: LockScreenPlatformOperating
     private let nativeLockScreenBridge: NativeLockScreenBridging
@@ -317,6 +318,9 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private(set) var playerLayers: [AVPlayerLayer] = []
     private var firstFrameObservers: [NSKeyValueObservation] = []
     private var audioScreenSaverActive = false
+    private var audioDisplaySleeping = false
+    private var applicationWindowState = DesktopApplicationWindows.State.unknown
+    private let music = WallpaperAudioPlayback()
     private var fallbackImage: CGImage?
     private(set) var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
@@ -388,12 +392,14 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens },
         observesSystemEvents: Bool = true,
         sessionIsLocked: @escaping () -> Bool? = { agentSystemSessionIsLocked() },
-        fullscreenApplicationIsActive: (@MainActor () -> Bool)? = nil
+        fullscreenApplicationIsActive: (@MainActor () -> Bool)? = nil,
+        applicationWindows: @escaping @MainActor () -> DesktopApplicationWindows.State = { DesktopApplicationWindows.currentState() }
     ) {
         self.store = store
         self.observesSystemEvents = observesSystemEvents
         self.sessionIsLocked = sessionIsLocked
-        self.fullscreenApplicationIsActive = fullscreenApplicationIsActive ?? Self.detectFullscreenApplication
+        self.fullscreenApplicationIsActive = fullscreenApplicationIsActive
+        self.applicationWindows = applicationWindows
         self.presentWindow = presentWindow
         self.screensProvider = screensProvider
         let nativeBridgeURL = Self.nativeBridgeURLFromArguments()
@@ -691,6 +697,11 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             name: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil
         )
+        for name in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.didHideApplicationNotification,
+                     NSWorkspace.didUnhideApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            NSWorkspace.shared.notificationCenter.addObserver(self,
+                selector: #selector(applicationWindowsDidChange), name: name, object: nil)
+        }
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
             selector: #selector(sessionDidResignActive),
@@ -732,6 +743,10 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func runtimeCommandDidChange(_ notification: Notification) {
         pollCommand()
+    }
+
+    @objc private func applicationWindowsDidChange(_ notification: Notification) {
+        applyFullscreenPolicy()
     }
 
     @objc private func screensChanged() {
@@ -1225,11 +1240,14 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
         sleeping = true
+        applyAudioSettings()
         player?.pause()
         writeHealth(reason: "sleeping")
     }
 
     @objc private func screensWillSleep() {
+        audioDisplaySleeping = true
+        applyAudioSettings()
         guard !isTerminating, lockScreenOnlyMode else { return }
         displaySleepRestorePending = true
         let lockConfirmed = isConfirmedLockScreenSession()
@@ -1256,6 +1274,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func recoverAfterWake(reason: String) {
         guard !isTerminating else { return }
         sleeping = false
+        audioDisplaySleeping = false
         // Sleep may swallow both distributed lock notifications. Establish
         // the current session intent before .wake can enqueue an idle repair
         // and hide the prepared secure surface.
@@ -1281,6 +1300,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             showWindows(forceOrder: true)
             applyPlaybackRate()
         }
+        applyFullscreenPolicy()
         writeHealth(reason: reason)
     }
 
@@ -1357,7 +1377,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
         switch command.action {
         case .updateVolume:
-            applyAudioSettings()
+            applyFullscreenPolicy()
         case .reload:
             _ = lockScreenState.apply(
                 .setEnabled(config.show_on_lock_screen ?? false)
@@ -2006,16 +2026,18 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildPlayback(from config: ControlConfig, keepPaused: Bool) {
-        tearDownPlayback()
+        tearDownPlayback(preserveMusic: true)
         let url: URL
         if lockScreenOnlyMode {
             guard let lockScreenURL = effectiveLockScreenVideoURL() else {
+                music.setSource(nil)
                 writeHealth(reason: "missing-lock-screen-video")
                 return
             }
             url = lockScreenURL
         } else {
             guard !config.video_path.isEmpty else {
+                music.setSource(nil)
                 writeHealth(reason: "missing-video")
                 return
             }
@@ -2023,11 +2045,14 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 for: URL(fileURLWithPath: config.video_path), enabled: config.blend_interpolation == true)
         }
         guard FileManager.default.fileExists(atPath: url.path) else {
+            music.setSource(nil)
             writeHealth(reason: "missing-video")
             return
         }
 
         prepareFallbackImage(from: url)
+        music.setSource(lockScreenOnlyMode || WallpaperMediaKind.forURL(url).isStaticImage
+            ? nil : URL(fileURLWithPath: config.video_path))
         if WallpaperMediaKind.forURL(url).isStaticImage {
             rebuildWindows()
             if keepPaused || manualPaused {
@@ -2042,6 +2067,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let player = AVQueuePlayer(items: [])
         player.actionAtItemEnd = .none
         player.volume = 0
+        player.isMuted = true
         player.automaticallyWaitsToMinimizeStalling = false
         looper = AVPlayerLooper(player: player, templateItem: item)
         self.player = player
@@ -2142,7 +2168,8 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func tearDownPlayback() {
+    private func tearDownPlayback(preserveMusic: Bool = false) {
+        if !preserveMusic { music.stop() }
         player?.pause()
         if let playbackTimeObserver, let player {
             player.removeTimeObserver(playbackTimeObserver)
@@ -2292,10 +2319,12 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func applyAudioSettings() {
         let volume = WallpaperAudioPolicy.desktopVolume(config.volume ?? 0,
             lockScreenOnly: lockScreenOnlyMode, sessionInactive: sessionInactive,
-            systemLocked: systemSessionIsLocked() == true, sleeping: sleeping,
-            screenSaverActive: audioScreenSaverActive, paused: manualPaused || autoPausedForFullscreen)
-        player?.volume = volume
-        player?.isMuted = volume == 0
+            systemLocked: systemSessionIsLocked() != false, sleeping: sleeping || audioDisplaySleeping,
+            screenSaverActive: audioScreenSaverActive, paused: manualPaused || autoPausedForFullscreen,
+            desktopObstructed: applicationWindowState.blocksMusic || windows.isEmpty || isTerminating)
+        music.update(volume: volume)
+        player?.volume = 0
+        player?.isMuted = true
     }
 
     private func applyPlaybackRate() {
@@ -2365,7 +2394,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var fullscreenPollingInterval: TimeInterval {
-        autoPausedForFullscreen && !manualPaused ? 0.2 : 1
+        ((config.volume ?? 0) > 0 && !manualPaused && !sleeping) || (autoPausedForFullscreen && !manualPaused) ? 0.2 : 1
     }
 
     func startFullscreenMonitoring() {
@@ -2381,6 +2410,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func applyFullscreenPolicy() {
         defer { applyAudioSettings() }
         guard !isTerminating, !lockScreenOnlyMode else { return }
+        applicationWindowState = applicationWindows()
         defer {
             if let fullscreenTimer, fullscreenTimer.timeInterval != fullscreenPollingInterval {
                 startFullscreenMonitoring()
@@ -2417,7 +2447,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let uptime = ProcessInfo.processInfo.systemUptime
         let canEnterPause = uptime - lastSpaceChangeUptime >= spaceTransitionGracePeriod
 
-        fullscreenAppDetected = fullscreenApplicationIsActive()
+        fullscreenAppDetected = fullscreenApplicationIsActive?() ?? applicationWindowState.fullscreen
         if fullscreenAppDetected {
             consecutiveFullscreenSamples = canEnterPause ? min(
                 consecutiveFullscreenSamples + 1,
@@ -2442,10 +2472,6 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             autoPausedForFullscreen = false
             applyPlaybackRate()
         }
-    }
-
-    private static func detectFullscreenApplication() -> Bool {
-        MainActor.assumeIsolated { FullscreenApplicationDetector.currentIsFullscreen() }
     }
 
     private func writeHealth(reason: String) {
@@ -2494,6 +2520,11 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             active_generation: lockScreenOnlyMode
                 ? lastLockScreenOnlyStatus.generation
                 : nil,
+            audio_rate: Double(music.rate),
+            audio_time: music.time,
+            audio_paused_for_windows: applicationWindowState.blocksMusic,
+            visible_application_windows: applicationWindowState.known ? applicationWindowState.count : nil,
+            audio_prepared: music.isPrepared,
             effects: windows.compactMap { ($0.contentView as? WallpaperEffectsView)?.status }
         )
         try? store.saveHealth(health)

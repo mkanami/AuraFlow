@@ -2649,6 +2649,7 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
     var lockScreenPlaybackRequests: [Bool] = []
     var statusLockScreenOnly = false
     var statusConfigAutostart: Bool? = false
+    var statusLoginRuntime: WallpaperLoginRuntime?
     var statusAutostartDeferredSessionID: String?
     var statusAutostart: Bool? = false
     var statusAutostartPlistExists: Bool?
@@ -2821,7 +2822,8 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
                 volume: 0.0,
                 autostart: statusConfigAutostart,
                 show_on_lock_screen: statusShowOnLockScreen,
-                autostart_deferred_session_id: statusAutostartDeferredSessionID
+                autostart_deferred_session_id: statusAutostartDeferredSessionID,
+                login_wallpaper_runtime: statusLoginRuntime
             ),
             pid: running ? 1234 : nil,
             autostart: statusAutostart,

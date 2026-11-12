@@ -10,7 +10,7 @@ enum WallpaperAudioContent: String, Codable, Sendable {
         switch self {
         case .silent: "This wallpaper's audio track contains silence."
         case .noTrack: "This wallpaper has no audio track."
-        case .audible, .unknown: "Volume of the wallpaper's embedded audio. Zero mutes it."
+        case .audible, .unknown: "Music plays only with all application windows closed, hidden or minimized. It resumes from the paused position. Zero mutes it."
         }
     }
 }
