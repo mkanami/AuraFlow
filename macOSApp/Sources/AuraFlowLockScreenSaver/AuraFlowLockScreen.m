@@ -54,7 +54,21 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 @implementation AuraFlowJSONCacheEntry
 @end
 
+// Implemented by the bundled Swift library, using the Desktop effects view.
+@interface AuraFlowSaverEffects : NSObject
+- (instancetype)initWithContent:(NSView *)content appSupportURL:(NSURL *)url isPreview:(BOOL)isPreview;
+@property(nonatomic, readonly) NSView *view;
+@property(nonatomic, readonly) NSDictionary *diagnostics;
+- (void)setPresenting:(BOOL)presenting paused:(BOOL)paused surfaceID:(nullable NSNumber *)surfaceID
+    sequence:(nullable NSNumber *)sequence imageURL:(nullable NSURL *)imageURL gravity:(NSString *)gravity;
+@end
+
 @interface AuraFlowLockScreen ()
+@property(nonatomic, strong) NSView *wallpaperContent;
+@property(nonatomic, strong) AuraFlowSaverEffects *effects;
+@property(nonatomic, copy) NSString *effectsVideoPath;
+@property(nonatomic) BOOL effectsStaticImage;
+@property(nonatomic, copy) NSString *terminalEffectsGravity;
 @property(nonatomic, strong) CALayer *fallbackLayer;
 @property(nonatomic, strong) CALayer *terminalLayer;
 @property(nonatomic, strong) AuraFlowTerminalSurfaceLayer *terminalSurfaceLayer;
@@ -64,6 +78,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 @property(nonatomic, strong) CALayer *webLayer;
 @property(nonatomic) BOOL webModeActive;
 @property(nonatomic, copy, nullable) NSString *webFrameRevision;
+@property(nonatomic, copy, nullable) NSString *webFramePath;
 @property(nonatomic, copy, nullable) NSString *terminalDiagnosticState;
 @property(nonatomic, strong, nullable) AVQueuePlayer *player;
 @property(nonatomic, strong, nullable) AVPlayerLayer *playerLayer;
@@ -128,16 +143,28 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     self.layer.backgroundColor = NSColor.blackColor.CGColor;
     self.layer.masksToBounds = YES;
 
+    self.wallpaperContent = [[NSView alloc] initWithFrame:self.bounds];
+    self.wallpaperContent.wantsLayer = YES;
+    Class effectsClass = NSClassFromString(@"AuraFlowSaverEffects");
+    if (effectsClass != Nil) {
+        self.effects = [[effectsClass alloc] initWithContent:self.wallpaperContent appSupportURL:[self applicationSupportURL] isPreview:self.isPreview];
+        self.effects.view.frame = self.bounds;
+        self.effects.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [self addSubview:self.effects.view];
+    } else {
+        self.wallpaperContent.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [self addSubview:self.wallpaperContent];
+    }
     self.fallbackLayer = [CALayer layer];
     self.fallbackLayer.backgroundColor = NSColor.blackColor.CGColor;
     self.fallbackLayer.contentsGravity = kCAGravityResizeAspectFill;
     self.fallbackLayer.masksToBounds = YES;
-    [self.layer addSublayer:self.fallbackLayer];
+    [self.wallpaperContent.layer addSublayer:self.fallbackLayer];
     self.terminalLayer = [CALayer layer];
     self.terminalLayer.backgroundColor = NSColor.blackColor.CGColor;
     self.terminalLayer.contentsGravity = kCAGravityResizeAspectFill;
     self.terminalLayer.hidden = YES;
-    [self.layer addSublayer:self.terminalLayer];
+    [self.wallpaperContent.layer addSublayer:self.terminalLayer];
     // Image frames must replace one another, not cross-fade for the default
     // quarter-second Core Animation transaction duration.
     self.terminalLayer.actions = @{@"contents":NSNull.null, @"hidden":NSNull.null};
@@ -145,7 +172,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     self.webLayer.contentsGravity = kCAGravityResizeAspect;
     self.webLayer.backgroundColor = NSColor.blackColor.CGColor;
     self.webLayer.hidden = YES;
-    [self.layer addSublayer:self.webLayer];
+    [self.wallpaperContent.layer addSublayer:self.webLayer];
     [self layoutVideoLayers];
 }
 
@@ -167,6 +194,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         [self.player playImmediatelyAtRate:self.playbackRate];
     }
     self.animationTicks = 0;
+    [self updateEffectsPresentation];
     [self logPresentationEvent:"start"];
 }
 
@@ -174,6 +202,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     [self logPresentationEvent:"stop"];
     [self.player pause];
     [super stopAnimation];
+    [self updateEffectsPresentation];
 }
 
 - (void)animateOneFrame {
@@ -194,8 +223,35 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         [self syncRuntimePauseState];
         if (!self.runtimePaused) [self.player playImmediatelyAtRate:self.playbackRate];
     }
+    [self updateEffectsPresentation];
     self.animationTicks += 1;
     if (self.animationTicks == 1) [self logPresentationEvent:"first-tick"];
+}
+
+- (void)updateEffectsPresentation {
+    NSNumber *surfaceID = nil;
+    NSNumber *sequence = nil;
+    NSURL *imageURL = nil;
+    if (self.terminalModeActive) {
+        NSDictionary *surface = [self JSONDictionaryAtURL:[self terminalRuntimeURLForFile:@"shared-frame.json"]];
+        surfaceID = surface[@"surfaceID"];
+        sequence = surface[@"sequence"];
+        if (surfaceID == nil) {
+            imageURL = [self terminalRuntimeURLForFile:@"lock-screen-frame.png"];
+            sequence = @(self.terminalFrameRevision.hash);
+        }
+    } else if (self.webModeActive) {
+        imageURL = self.webFramePath == nil ? nil : [NSURL fileURLWithPath:self.webFramePath];
+        sequence = @(self.webFrameRevision.hash);
+    } else if (self.effectsStaticImage && self.effectsVideoPath.length > 0) {
+        imageURL = [NSURL fileURLWithPath:self.effectsVideoPath];
+    }
+    BOOL hasAura = self.terminalModeActive || self.webModeActive || self.effectsVideoPath.length > 0;
+    NSString *gravity = self.terminalModeActive ? (self.terminalEffectsGravity ?: AVLayerVideoGravityResizeAspect)
+        : (self.webModeActive ? AVLayerVideoGravityResizeAspect : (self.playerLayer.videoGravity ?: AVLayerVideoGravityResizeAspectFill));
+    [self.effects setPresenting:self.isAnimating && hasAura paused:self.runtimePaused
+        surfaceID:surfaceID sequence:sequence imageURL:imageURL
+        gravity:gravity];
 }
 
 - (void)logPresentationEvent:(const char *)event {
@@ -358,6 +414,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         return;
     }
     NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+    self.webFramePath = path;
     if (![self.webFrameRevision hasPrefix:[generation stringByAppendingString:@":"]]) {
         self.webLayer.contents = nil; self.webLayer.hidden = YES;
         self.webModeActive = NO;
@@ -407,6 +464,8 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     id render = terminalConfig[@"render"];
     id configuredMode = [render isKindOfClass:NSDictionary.class] ? render[@"scaleMode"] : nil;
     NSString *mode = [configuredMode isKindOfClass:NSString.class] ? configuredMode : @"fill";
+    self.terminalEffectsGravity = [mode isEqualToString:@"stretch"] ? AVLayerVideoGravityResize
+        : ([mode isEqualToString:@"fill"] ? AVLayerVideoGravityResizeAspectFill : AVLayerVideoGravityResizeAspect);
     id fps = [render isKindOfClass:NSDictionary.class] ? render[@"maxFPS"] : nil;
     if ([fps isKindOfClass:NSNumber.class]) self.animationTimeInterval = 1.0 / MAX(1, MIN(60, [fps integerValue]));
     NSDictionary *heartbeat = [self JSONDictionaryAtURL:[self terminalRuntimeURLForFile:@"lock-screen-heartbeat.json"]];
@@ -418,7 +477,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         [surface[@"agentPID"] intValue] == [heartbeat[@"pid"] intValue]) {
         self.terminalSurfaceLayer = [AuraFlowTerminalSurfaceLayer layer];
         self.terminalSurfaceLayer.hidden = YES;
-        [self.layer insertSublayer:self.terminalSurfaceLayer below:self.webLayer];
+        [self.wallpaperContent.layer insertSublayer:self.terminalSurfaceLayer below:self.webLayer];
         [self layoutVideoLayers];
     }
     NSDictionary *background = [render isKindOfClass:NSDictionary.class] && [render[@"background"] isKindOfClass:NSDictionary.class]
@@ -768,6 +827,9 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 - (void)applyResolvedConfiguration:(NSDictionary<NSString *, NSString *> *)configuration
                              force:(BOOL)force {
     self.configurationCheckedAt = CACurrentMediaTime();
+    self.effectsVideoPath = configuration[@"video_path"];
+    self.effectsStaticImage = [@[@"jpg", @"jpeg", @"png", @"webp", @"heic", @"heif", @"tiff", @"tif", @"bmp", @"gif", @"avif"]
+        containsObject:self.effectsVideoPath.pathExtension.lowercaseString];
     float requestedPlaybackRate = [configuration[@"playback_rate"] floatValue];
     if (requestedPlaybackRate < 0.1 || requestedPlaybackRate > 4.0) {
         requestedPlaybackRate = 1.0;
@@ -823,7 +885,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
                                                   templateItem:templateItem];
     [self applyScaleMode];
 
-    [self.layer insertSublayer:playerLayer below:self.fallbackLayer];
+    [self.wallpaperContent.layer insertSublayer:playerLayer below:self.fallbackLayer];
     [self layoutVideoLayers];
     self.fallbackLayer.hidden = NO;
 

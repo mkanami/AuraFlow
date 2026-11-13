@@ -112,7 +112,7 @@ public final class WallpaperSessionRecovery {
         ["terminal-wallpaper", "wallpaper-engine/runtime"].map {
             store.appSupportURL.appendingPathComponent($0)
                 .appendingPathComponent("screen-saver-wallpaper-store-backup.json")
-        }
+        } + [store.appSupportURL.appendingPathComponent("live-lock-screen-route.json")]
     }
 
     private var hasManagedInstallation: Bool {

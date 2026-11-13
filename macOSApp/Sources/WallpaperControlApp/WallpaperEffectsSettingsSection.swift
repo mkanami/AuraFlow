@@ -30,7 +30,7 @@ struct WallpaperEffectsSettingsSection: View {
         VStack(alignment: .leading, spacing: 12) {
             Toggle("Enable wallpaper effects", isOn: binding(\.enabled))
                 .toggleStyle(.switch)
-            Text("Applies immediately to the Desktop and this preview, for photos, videos, terminal and web wallpapers.")
+            Text("Applies to the Desktop, Lock Screen and this preview, for photos, videos, terminal and web wallpapers.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

@@ -8,6 +8,9 @@ public final class WallpaperEffectsView: NSView {
     private static let logger = Logger(subsystem: "com.andrijvergeles.auraflow", category: "WallpaperEffects")
     public let wallpaperContent: NSView
     public var playbackIsPaused: () -> Bool = { false }
+    /// The native provider can prewarm a saver while Desktop is visible.
+    /// Such a host must not run a second effects/GPU loop in the background.
+    public var screenSaverPresentationIsVisible: () -> Bool = { WallpaperScreenSaverActivity.currentIsVisible() }
     public var rainLightingSurfaceID: UInt32? {
         didSet { if oldValue != rainLightingSurfaceID { rainLightingSampler.stop(); glassFrameSource.stop(); overlay.rainLighting = .neutral } }
     }
@@ -22,6 +25,9 @@ public final class WallpaperEffectsView: NSView {
     private let rainLightingSampler = WallpaperRainLightingSampler()
     private let store: WallpaperEffectsStore?
     private let isPreview: Bool
+    private let isScreenSaver: Bool
+    private var screenSaverPresenting = false
+    private var screenSaverPlaybackPaused = false
     private let motionContainer = NSView()
     private let overlay = WallpaperEffectsOverlay()
     private(set) var settings = WallpaperEffectsSettings()
@@ -41,7 +47,7 @@ public final class WallpaperEffectsView: NSView {
 
     public var status: WallpaperEffectsStatus {
         let transform = motionContainer.layer?.affineTransform() ?? .identity
-        return WallpaperEffectsStatus(surface: isPreview ? "preview" : "desktop", enabled: settings.enabled,
+        return WallpaperEffectsStatus(surface: isScreenSaver ? "lockScreen" : (isPreview ? "preview" : "desktop"), enabled: settings.enabled,
             active: presentationActive, pauseReason: pauseReason,
             framesPerSecond: frameClock?.framesPerSecond ?? 0, renderedFrames: renderedFrames,
             cursorX: Double(motion.pointer.x), cursorY: Double(motion.pointer.y),
@@ -54,10 +60,11 @@ public final class WallpaperEffectsView: NSView {
             glassDropCount: glassRenderer.map { $0.simulation.beads.count + $0.simulation.runners.count } ?? 0)
     }
 
-    public init(content: NSView, store: WallpaperEffectsStore? = WallpaperEffectsStore(), isPreview: Bool = false) {
+    public init(content: NSView, store: WallpaperEffectsStore? = WallpaperEffectsStore(), isPreview: Bool = false, isScreenSaver: Bool = false) {
         wallpaperContent = content
         self.store = store
         self.isPreview = isPreview
+        self.isScreenSaver = isScreenSaver
         super.init(frame: content.frame)
         wantsLayer = true
         layer?.masksToBounds = true
@@ -86,6 +93,13 @@ public final class WallpaperEffectsView: NSView {
     }
 
     public override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    public func setScreenSaverPresenting(_ presenting: Bool, paused: Bool = false) {
+        guard isScreenSaver, screenSaverPresenting != presenting || screenSaverPlaybackPaused != paused else { return }
+        screenSaverPresenting = presenting
+        screenSaverPlaybackPaused = paused
+        refreshActivity()
+    }
 
     public override func layout() {
         super.layout()
@@ -150,7 +164,11 @@ public final class WallpaperEffectsView: NSView {
 
     private func refreshActivity() {
         var activity = WallpaperEffectsActivity()
-        activity.windowVisible = window?.isVisible == true && window?.occlusionState.contains(.visible) == true && !isHiddenOrHasHiddenAncestor
+        let saverVisible = isScreenSaver && screenSaverPresenting && screenSaverPresentationIsVisible()
+        activity.screenSaverPresentation = saverVisible
+        // Protected saver windows do not report ordinary AppKit occlusion.
+        activity.windowVisible = isScreenSaver ? saverVisible && !isHiddenOrHasHiddenAncestor
+            : window?.isVisible == true && window?.occlusionState.contains(.visible) == true && !isHiddenOrHasHiddenAncestor
         // These reasons take precedence over every system state below. A
         // dormant surface needs no WindowServer, power or accessibility query.
         guard settings.enabled, settings.hasVisibleEffects, activity.windowVisible else {
@@ -160,14 +178,14 @@ public final class WallpaperEffectsView: NSView {
         let session = CGSessionCopyCurrentDictionary() as? [String: Any]
         activity.sessionActive = (session?["kCGSSessionOnConsoleKey"] as? NSNumber)?.boolValue == true
             && (!isPreview || NSApp.isActive)
-        activity.sleeping = suspensionHints.systemSuspended(at: CACurrentMediaTime())
+        activity.sleeping = !isScreenSaver && suspensionHints.systemSuspended(at: CACurrentMediaTime())
         if let number = window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
             activity.sleeping = activity.sleeping || CGDisplayIsAsleep(number.uint32Value) != 0
         }
         // The visible saver also occludes the desktop; the hint only bridges its first compositor frame.
         activity.screenSaverActive = suspensionHints.saverSuspended(at: CACurrentMediaTime())
         activity.sessionLocked = LockScreenSession.isLocked(in: session)
-        activity.playbackPaused = playbackIsPaused()
+        activity.playbackPaused = playbackIsPaused() || (isScreenSaver && screenSaverPlaybackPaused)
         activity.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         activity.lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
         applyActivity(activity)

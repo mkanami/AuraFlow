@@ -98,7 +98,7 @@ installed wallpaper, it updates the selected preview. The default is **Fill**;
 Lock Screen playback is enabled by default. Scale is unavailable for web projects.
 
 Expand **Wallpaper Effects** in Playback Settings to enable effects for the
-Desktop and main preview. Effects work with images, videos, terminal wallpapers,
+Desktop, Lock Screen and main preview. Effects work with images, videos, terminal wallpapers,
 and web projects. Choose **Subtle**, **Cinematic**, or **Dreamy**, or adjust each
 effect separately. Controls include depth, smoothing, light color, glow size,
 blur, bloom, particle density, rain color, speed, and wind. **Falling Rain** is blue by
@@ -136,10 +136,11 @@ own view (at most 8 per second). Glass rendering is capped at 30 fps and a
 Metal leaves the original wallpaper visible. No screen capture is used.
 
 Effects are off by default and preferences survive restarting AuraFlow. They
-pause when playback is paused, the desktop is hidden, the session is locked,
-the display sleeps, or Reduce Motion is enabled. Low Power Mode keeps cursor
-effects responsive at 30 fps instead of 60 fps. Lock Screen
-frames keep their original appearance. Effects do not change media files,
+pause when playback is paused, the display sleeps, or Reduce Motion is enabled.
+The Desktop renderer also pauses while hidden or locked; the visible Lock Screen
+uses its own instance of the shared renderer. Prewarmed, hidden saver hosts do
+not run effects. Low Power Mode keeps cursor effects at 30 fps instead of 60 fps.
+Effects do not change media files,
 Launch at Login, or the saved macOS wallpaper.
 
 When launch at login is disabled or playback fails to start, AuraFlow restores
@@ -159,6 +160,13 @@ Preview audio stays muted. Catalog cards and downloaded wallpapers show an **Aud
 music-note badge when sound is detected in the original video. Empty/silent
 audio tracks do not earn a badge; the Volume control shows **No audio** for
 confirmed silent wallpapers. Catalog checks use bounded audio-only samples.
+
+Wallpaper effects also render on the Lock Screen with the same settings and
+strength as the Desktop, including falling rain and rain on glass together.
+Effects-enabled installations use AuraFlow's live Screen Saver provider so
+refraction can sample the actual wallpaper and cursor effects stay interactive.
+The idle saver before password lock uses the same renderer. Effects stop while
+the display sleeps or playback is paused; the Lock Screen never plays music.
 
 The **With Music** tab collects videos with confirmed sound from DesktopHut and
 LiveWallpapers4Free. Music and lofi listings are loaded through bundled

@@ -21,7 +21,8 @@ private final class SessionRecoveryFixture {
         store = WallpaperRuntimeStore(appSupportURL: root.appendingPathComponent("AuraFlow"),
             launchAgentURL: root.appendingPathComponent("LaunchAgents/media.plist"))
         index = root.appendingPathComponent("Index.plist")
-        journal = store.appSupportURL.appendingPathComponent(runtime).appendingPathComponent("screen-saver-wallpaper-store-backup.json")
+        journal = runtime == "live-effects" ? store.appSupportURL.appendingPathComponent("live-lock-screen-route.json")
+            : store.appSupportURL.appendingPathComponent(runtime).appendingPathComponent("screen-saver-wallpaper-store-backup.json")
         try FileManager.default.createDirectory(at: journal.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("{\"routes\":[]}".utf8).write(to: journal)
         try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -60)], ofItemAtPath: journal.path)
@@ -75,7 +76,7 @@ private final class SessionRecoveryFixture {
     #expect(f.refreshes == 0)
 }
 
-@Test(arguments: ["terminal-wallpaper", "wallpaper-engine/runtime"])
+@Test(arguments: ["terminal-wallpaper", "wallpaper-engine/runtime", "live-effects"])
 func inactiveSessionRestoresEachUserProviderAcrossDisplaysAndSpaces(runtime: String) throws {
     let f = try SessionRecoveryFixture(runtime: runtime)
     let photo = f.mode("custom-photo-provider"), dynamic = f.mode("custom-dynamic-provider"), aura = try f.auraMode()

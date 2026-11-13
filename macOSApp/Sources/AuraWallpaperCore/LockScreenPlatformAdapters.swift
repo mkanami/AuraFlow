@@ -8,7 +8,7 @@ public final class ModernMacOS26Adapter: LockScreenSaverInstalling {
     private let operatingSystemVersion: OperatingSystemVersion
 
     public init(
-        installer: ModernLockScreenInstalling = AerialLockScreenInstaller(),
+        installer: ModernLockScreenInstalling = LiveEffectsLockScreenInstaller(),
         operatingSystemVersion: OperatingSystemVersion = ProcessInfo.processInfo
             .operatingSystemVersion
     ) {
@@ -293,7 +293,7 @@ public enum LockScreenPlatformFactory {
         }
 
         let adapter = ModernMacOS26Adapter(
-            installer: modernInstaller ?? AerialLockScreenInstaller(),
+            installer: modernInstaller ?? LiveEffectsLockScreenInstaller(),
             operatingSystemVersion: operatingSystemVersion
         )
         guard adapter.capabilities.supportsSecureLockScreen else {

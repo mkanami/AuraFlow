@@ -3,6 +3,9 @@ import Foundation
 
 /// Read-only presentation policy. Saver activity only suspends effects; it never establishes a secure lock.
 public struct WallpaperEffectsActivity: Equatable {
+    /// The installed saver's start/stop lifecycle, including idle before lock.
+    /// Rendering that surface never establishes a secure lock.
+    public var screenSaverPresentation = false
     public var windowVisible = true
     public var sessionActive = true
     public var sleeping = false
@@ -22,11 +25,13 @@ public struct WallpaperEffectsActivity: Equatable {
 
     public var pauseReason: String? {
         if !windowVisible { return "hidden" }
-        if !sessionActive { return "inactiveSession" }
+        if !sessionActive && !screenSaverPresentation { return "inactiveSession" }
         if sleeping { return "sleeping" }
-        if screenSaverActive { return "screenSaver" }
-        if sessionLocked == nil { return "unknownSession" }
-        if sessionLocked == true { return "locked" }
+        if !screenSaverPresentation {
+            if screenSaverActive { return "screenSaver" }
+            if sessionLocked == nil { return "unknownSession" }
+            if sessionLocked == true { return "locked" }
+        }
         if playbackPaused { return "playbackPaused" }
         if reduceMotion { return "reduceMotion" }
         return nil

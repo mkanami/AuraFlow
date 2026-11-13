@@ -64,6 +64,8 @@ CONTENTS_DIR="$STAGED_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
+mkdir -p "$FRAMEWORKS_DIR"
 
 cat >"$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -154,6 +156,13 @@ esac
 compile_architecture() {
   local architecture="$1"
   local output="$2"
+  local swift_bin effects_bin
+  swift_bin="$(xcrun --sdk macosx --find swift)"
+  "$swift_bin" build --package-path "$ROOT_DIR/macOSApp" --configuration release --product AuraWallpaperEffects \
+    --arch "$architecture" --sdk "$SDK_PATH" >&2
+  effects_bin="$("$swift_bin" build --package-path "$ROOT_DIR/macOSApp" --configuration release --arch "$architecture" \
+    --sdk "$SDK_PATH" --show-bin-path)"
+  cp "$effects_bin/libAuraWallpaperEffects.dylib" "$WORK_DIR/libAuraWallpaperEffects.$architecture.dylib"
   "$CLANG" \
     -x objective-c \
     -fobjc-arc \
@@ -167,6 +176,8 @@ compile_architecture() {
     -I"$SOURCE_DIR" \
     -I"$ROOT_DIR/macOSApp/Sources/AuraLockScreenRendering/include" \
     -bundle \
+    -L"$effects_bin" -lAuraWallpaperEffects \
+    -Wl,-rpath,@loader_path/../Frameworks \
     -framework AppKit \
     -framework AVFoundation \
     -framework ImageIO \
@@ -212,6 +223,14 @@ if [[ ${#ARCHITECTURES[@]} -eq 2 ]]; then
 else
   cp "$HOST_OUTPUT" "$EXECUTABLE_PATH"
 fi
+EFFECTS_PATH="$FRAMEWORKS_DIR/libAuraWallpaperEffects.dylib"
+if [[ ${#ARCHITECTURES[@]} -eq 2 ]]; then
+  lipo -create "$WORK_DIR/libAuraWallpaperEffects.$HOST_ARCH.dylib" \
+    "$WORK_DIR/libAuraWallpaperEffects.$OPTIONAL_ARCH.dylib" -output "$EFFECTS_PATH"
+else
+  cp "$WORK_DIR/libAuraWallpaperEffects.$HOST_ARCH.dylib" "$EFFECTS_PATH"
+fi
+codesign --force --sign - --timestamp=none "$EFFECTS_PATH"
 chmod 0755 "$EXECUTABLE_PATH"
 
 plutil -lint "$CONTENTS_DIR/Info.plist"

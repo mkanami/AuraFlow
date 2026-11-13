@@ -91,6 +91,7 @@ final class NativeLockScreenWallpaperBridge {
             self.presentationAssertion = surface.presentation
             self.window = surface.window
             self.lockedPresentationReady = request.locked
+            Self.logger.notice("Native presentation committed locked=\(request.locked, privacy: .public) reloaded=\(request.reloadRoute, privacy: .public)")
             self.consecutivePresentationFailures = 0
             if self.paused {
                 self.pauseLayer(surface.layer)
@@ -370,7 +371,13 @@ final class NativeLockScreenWallpaperBridge {
         // saver before its Locked replacement commits can resolve the user's
         // image or a blank first frame instead of the prepared Aura route.
         restartSaverWhenReady = true
-        presentationQueue.request(locked: true)
+        // loginwindow's Desktop route was promoted to the live saver at the
+        // secure edge. A display bound before that promotion may retain the
+        // user's Desktop image even after taking a Locked assertion. Resolve
+        // the promoted route in a fresh display, keeping the warm host until
+        // its replacement commits. Plain Aerial retains its fast warm path.
+        presentationQueue.request(locked: true,
+            reloadRoute: LiveEffectsLockScreenInstaller.usesLiveRenderer(appSupportURL: store.appSupportURL))
     }
 
     private func finishShowRequests(
@@ -514,6 +521,8 @@ final class NativeLockScreenWallpaperBridge {
             Self.logger.error(
                 "SACScreenSaverStartNow failed: \(result, privacy: .public)"
             )
+        } else {
+            Self.logger.notice("System saver presented for confirmed locked session")
         }
     }
 

@@ -17,6 +17,7 @@ let canBuildNativeBridge = !nativeBridgeIsDisabled && nativeBridgeFrameworks.all
 }
 
 var products: [Product] = [
+    .library(name: "AuraWallpaperEffects", type: .dynamic, targets: ["AuraWallpaperCore"]),
     .executable(name: "WallpaperControlApp", targets: ["WallpaperControlApp"]),
     .executable(name: "AuraWallpaperAgent", targets: ["AuraWallpaperAgent"]),
     .executable(name: "AuraTerminalWallpaperAgent", targets: ["AuraTerminalWallpaperAgent"]),

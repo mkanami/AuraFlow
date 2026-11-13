@@ -90,6 +90,10 @@ final class WallpaperGlassFrameSource {
             if let imageLayer, let frame, frame.gravity != Self.gravity(imageLayer.contentsGravity) {
                 publish(frame.image, label: frame.label, gravity: Self.gravity(imageLayer.contentsGravity))
             }
+        case .file:
+            if let frame, let surfaceGravity, frame.gravity != surfaceGravity {
+                publish(frame.image, label: frame.label, gravity: surfaceGravity)
+            }
         default: break
         }
         return frame

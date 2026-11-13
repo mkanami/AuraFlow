@@ -63,6 +63,25 @@ private final class SecurePresentationFixture {
 @Suite(.serialized)
 struct NativeLockScreenSessionRegressionTests {
     @Test(arguments: [false, true]) @MainActor
+    func liveEffectsResolveThePromotedRouteBeforeManualAndAutomaticSecurePresentation(automatic: Bool) async throws {
+        let fixture = try SecurePresentationFixture()
+        defer { fixture.cleanup() }
+        let marker: [String: Any] = ["path": "fixture.mp4", "signature": "fixture", "generation": 1]
+        try JSONSerialization.data(withJSONObject: marker).write(to: fixture.root.appendingPathComponent("live-lock-screen-effects.json"))
+        try await fixture.prepare()
+        #expect(fixture.requests.last?.locked == false && fixture.saverStarts.isEmpty)
+        fixture.locked = true
+        if automatic { fixture.bridge.recoverAfterSystemChange() }
+        else { fixture.bridge.showForLockTransition() }
+        try await eventually { fixture.bridge.hasLockedPresentation && fixture.saverStarts.count == 1 }
+        #expect(fixture.requests.last?.locked == true && fixture.requests.last?.reload == true)
+        fixture.locked = false
+        fixture.bridge.hideAfterUnlock()
+        fixture.bridge.showForLockTransition()
+        #expect(fixture.saverStarts == [true] && !fixture.window.isVisible)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
     func manualAndIdleLocksRecoverThroughUnknownSessionSleepWakeAndUnlock(automatic: Bool) async throws {
         let fixture = try SecurePresentationFixture()
         defer { fixture.cleanup() }

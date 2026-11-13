@@ -56,7 +56,14 @@ private struct WallpaperAgentRearmGuardState: Sendable {
 /// only read this value and never reach into AppKit or the delegate itself.
 private final class WallpaperAgentRearmGuard: @unchecked Sendable {
     private let lock = NSLock()
+    private let store: WallpaperRuntimeStore
+    private let sessionIsLocked: () -> Bool?
     private var state = WallpaperAgentRearmGuardState()
+
+    init(store: WallpaperRuntimeStore, sessionIsLocked: @escaping () -> Bool?) {
+        self.store = store
+        self.sessionIsLocked = sessionIsLocked
+    }
 
     func update(_ newState: WallpaperAgentRearmGuardState) {
         lock.lock()
@@ -82,9 +89,9 @@ private final class WallpaperAgentRearmGuard: @unchecked Sendable {
               snapshot.wallpaperRevision == token.wallpaperRevision,
               !snapshot.sessionInactive,
               snapshot.showOnLockScreen,
-              WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false,
+              store.loadConfig().show_on_lock_screen != false,
               videoURL.path == token.videoPath,
-              agentSystemSessionIsLocked() == false
+              sessionIsLocked() == false
         else {
             return false
         }
@@ -103,9 +110,9 @@ private final class WallpaperAgentRearmGuard: @unchecked Sendable {
             && snapshot.wallpaperRevision == token.wallpaperRevision
             && !snapshot.sessionInactive
             && snapshot.showOnLockScreen
-            && WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false
+            && store.loadConfig().show_on_lock_screen != false
             && videoURL.path == token.videoPath
-            && agentSystemSessionIsLocked() == false
+            && sessionIsLocked() == false
     }
 
     func canRestoreDesktop(sessionGeneration: UInt64) -> Bool {
@@ -114,8 +121,8 @@ private final class WallpaperAgentRearmGuard: @unchecked Sendable {
             && snapshot.sessionGeneration == sessionGeneration
             && !snapshot.sessionInactive
             && snapshot.showOnLockScreen
-            && WallpaperRuntimeStore().loadConfig().show_on_lock_screen != false
-            && agentSystemSessionIsLocked() == false
+            && store.loadConfig().show_on_lock_screen != false
+            && sessionIsLocked() == false
     }
 }
 
@@ -311,7 +318,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let screensProvider: () -> [NSScreen]
     private let lockScreenRepairGate = LockScreenRepairGate()
     private let lockScreenPlatformExecutor: LockScreenPlatformExecutor
-    private let rearmGuard = WallpaperAgentRearmGuard()
+    private let rearmGuard: WallpaperAgentRearmGuard
     private let lifecycleGuard = WallpaperAgentLifecycleGuard()
     private var config: ControlConfig
     private(set) var windows: [NSWindow] = []
@@ -398,6 +405,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         self.store = store
         self.observesSystemEvents = observesSystemEvents
         self.sessionIsLocked = sessionIsLocked
+        self.rearmGuard = WallpaperAgentRearmGuard(store: store, sessionIsLocked: sessionIsLocked)
         self.fullscreenApplicationIsActive = fullscreenApplicationIsActive
         self.applicationWindows = applicationWindows
         self.presentWindow = presentWindow
@@ -2670,8 +2678,9 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             let repairError: Error?
+            var didRepair = false
             do {
-                _ = try await platformExecutor.repair(
+                didRepair = try await platformExecutor.repair(
                     videoURL: videoURL,
                     allowCachedSignatures: !force,
                     shouldProceed: {
@@ -2688,6 +2697,15 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             }
             await self.lockScreenRepairGate.release()
             self.lockScreenRepairInProgress = false
+            if didRepair, !self.isTerminating, !self.sessionInactive,
+               self.config.show_on_lock_screen == true,
+               self.systemSessionIsLocked() == false,
+               self.lockScreenPlatform.lockScreenOnlyStatus(videoURL: videoURL).assetID == "AuraFlowLiveEffects" {
+                // Migration replaced the provider behind the warm display.
+                // Retire that assertion; Desktop decoding remains untouched.
+                self.nativeLockScreenBridge.invalidatePreparation()
+                self.prepareNativeLockScreenBridgeForStart()
+            }
             if let repairError {
                 self.writeHealth(
                     reason:
