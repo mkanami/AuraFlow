@@ -277,3 +277,28 @@ private final class EffectsBridgeTrace: NativeLockScreenBridging {
     #expect(agent.player === player && f.restarts == 1)
     #expect(agent.windows.allSatisfy { !$0.isVisible })
 }
+
+private struct MigratingEffectsMedia: NativeEffectsMediaPreparing {
+    let output: URL
+    func prepare(source: URL, settings: WallpaperEffectsSettings, speed: Double,
+        scaleMode: WallpaperScaleMode, shouldProceed: @escaping () -> Bool) async throws -> URL {
+        guard shouldProceed() else { throw CancellationError() }
+        return output
+    }
+}
+
+@Test func nativeEffectsMigrationRestoresEveryOriginalDescriptorBeforeSelectingAerial() async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let old = f.installer()
+    try await old.installForDesktopAgent(videoURL: f.source, playbackSpeed: 1, scaleMode: .fill)
+    #expect(try f.load() != f.original)
+    let output = f.root.appendingPathComponent("native-effects.mov")
+    try Data("rendered".utf8).write(to: output)
+    let installer = AerialEffectsLockScreenInstaller(native: f.native, appSupportURL: f.root,
+        media: MigratingEffectsMedia(output: output), legacyInstaller: old)
+    try await installer.installForDesktopAgent(videoURL: f.source, playbackSpeed: 1, scaleMode: .fill)
+    #expect(try f.load() == f.original)
+    #expect(!LiveEffectsLockScreenInstaller.usesLiveRenderer(appSupportURL: f.root))
+    #expect(f.native.desktopInstalls == 1 && f.restarts == 2)
+    #expect(FileManager.default.isReadableFile(atPath: f.root.appendingPathComponent("native-effects-source.json").path))
+}

@@ -28,8 +28,11 @@ directly; no screen capture is used. Its actual start/stop lifecycle controls
 animation, including the idle saver before password lock. Sleep, Stop and
 Reduce Motion still suspend effects. Music remains muted.
 
-On macOS 26, effects-enabled video/photo installations select this live saver
-provider instead of the Aerial video-only provider. The existing native secure
-presentation bridge is retained. Complete native wallpaper choices are journaled
-and restored by the same route coordinator used for terminal/web wallpapers.
-Turning effects off keeps the live route, avoiding a player/provider restart.
+On macOS 26, video/photo installations use the native Aerial provider with a
+cached HEVC loop composited by the shared effects renderer. The third-party
+saver remains available for older systems and terminal/web wallpapers, but is
+not used for modern video/photo manual locks: loginwindow can resolve the
+Desktop source before a custom Idle provider is promoted. Migration restores
+the custom provider's saved native descriptors before installing the native
+source. Native loops are silent, at most 30 seconds, with ambient rather than
+interactive cursor motion. The Desktop source file is never modified.

@@ -135,11 +135,10 @@ own view (at most 8 per second). Glass rendering is capped at 30 fps and a
 1920-pixel longest edge, with one GPU frame in flight. Unavailable media or
 Metal leaves the original wallpaper visible. No screen capture is used.
 
-Effects are off by default and preferences survive restarting AuraFlow. They
-pause when playback is paused, the display sleeps, or Reduce Motion is enabled.
-The Desktop renderer also pauses while hidden or locked; the visible Lock Screen
-uses its own instance of the shared renderer. Prewarmed, hidden saver hosts do
-not run effects. Low Power Mode keeps cursor effects at 30 fps instead of 60 fps.
+Effects are off by default and preferences survive restarting AuraFlow. Live
+renderers pause when playback is paused, the display sleeps, or Reduce Motion is enabled.
+The Desktop renderer also pauses while hidden or locked. Prewarmed, hidden
+saver hosts do not run effects. Low Power Mode keeps cursor effects at 30 fps instead of 60 fps.
 Effects do not change media files,
 Launch at Login, or the saved macOS wallpaper.
 
@@ -163,10 +162,14 @@ confirmed silent wallpapers. Catalog checks use bounded audio-only samples.
 
 Wallpaper effects also render on the Lock Screen with the same settings and
 strength as the Desktop, including falling rain and rain on glass together.
-Effects-enabled installations use AuraFlow's live Screen Saver provider so
-refraction can sample the actual wallpaper and cursor effects stay interactive.
-The idle saver before password lock uses the same renderer. Effects stop while
-the display sleeps or playback is paused; the Lock Screen never plays music.
+On macOS 26, AuraFlow prepares a silent native HEVC loop using the shared
+effects renderer, including refraction of the actual wallpaper frames. Both
+manual locks and the automatic idle saver use this native source. Preparing a
+new combination of wallpaper and effects takes time; matching results are
+cached. The Lock Screen loop is limited to 30 seconds and uses ambient motion
+instead of live cursor input. Desktop playback keeps the complete original
+media and interactive cursor effects. Older macOS versions use the live saver.
+The Lock Screen never plays music.
 
 The **With Music** tab collects videos with confirmed sound from DesktopHut and
 LiveWallpapers4Free. Music and lofi listings are loaded through bundled

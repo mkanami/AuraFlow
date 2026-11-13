@@ -2697,9 +2697,8 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             self.lockScreenRepairInProgress = false
             if didRepair, !self.isTerminating, !self.sessionInactive,
                self.config.show_on_lock_screen == true,
-               self.systemSessionIsLocked() == false,
-               self.lockScreenPlatform.lockScreenOnlyStatus(videoURL: videoURL).assetID == "AuraFlowLiveEffects" {
-                // Migration replaced the provider behind the warm display.
+               self.systemSessionIsLocked() == false {
+                // Repair may replace either the provider or its rendered asset.
                 // Retire that assertion; Desktop decoding remains untouched.
                 self.nativeLockScreenBridge.invalidatePreparation()
                 self.prepareNativeLockScreenBridgeForStart()
