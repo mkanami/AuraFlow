@@ -6,6 +6,10 @@ import CryptoKit
 import Darwin
 import Foundation
 
+/// Bump when shared effect pixels change, so prepared Lock-only movies do not
+/// retain a previous shader/simulation after an app update.
+enum WallpaperEffectsRenderRevision { static let current = 2 }
+
 public protocol NativeEffectsMediaPreparing {
     func prepare(source: URL, settings: WallpaperEffectsSettings, speed: Double,
         scaleMode: WallpaperScaleMode, shouldProceed: @escaping () -> Bool) async throws -> URL
@@ -32,7 +36,7 @@ actor NativeEffectsMediaPreparer: NativeEffectsMediaPreparing {
         let size = await Self.renderSize(override: canvas)
         let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
         let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        let values = "v1:\(source.standardizedFileURL.path):\(attributes[.size] ?? 0):\(modified):\(size.width):\(size.height):\(speed):\(scaleMode.rawValue):\(maximumDuration)"
+        let values = "v\(WallpaperEffectsRenderRevision.current):\(source.standardizedFileURL.path):\(attributes[.size] ?? 0):\(modified):\(size.width):\(size.height):\(speed):\(scaleMode.rawValue):\(maximumDuration)"
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         var input = Data(values.utf8); input.append(try encoder.encode(settings.normalized()))
         let key = SHA256.hash(data: input).map { String(format: "%02x", $0) }.joined()
@@ -52,7 +56,7 @@ actor NativeEffectsMediaPreparer: NativeEffectsMediaPreparing {
                 guard shouldProceed() else { throw CancellationError() }
                 try await Task.sleep(for: .milliseconds(50))
             }
-            let output = directory.appendingPathComponent("native-effects-v1-" + key + ".mov")
+            let output = directory.appendingPathComponent("native-effects-v\(WallpaperEffectsRenderRevision.current)-" + key + ".mov")
             if FileManager.default.isReadableFile(atPath: output.path),
                (try? await AVURLAsset(url: output).load(.isPlayable)) == true { return output }
             let temporary = directory.appendingPathComponent(".render-\(UUID()).mov")
@@ -151,7 +155,7 @@ actor NativeEffectsMediaPreparer: NativeEffectsMediaPreparing {
         let active = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["renderedPath"] as? String
         let files = (try? FileManager.default.contentsOfDirectory(at: directory,
             includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-        let movies = files.filter { $0.lastPathComponent.hasPrefix("native-effects-v1-") && $0.pathExtension == "mov" }
+        let movies = files.filter { $0.lastPathComponent.hasPrefix("native-effects-v") && $0.pathExtension == "mov" }
             .sorted { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
                 > ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
         for old in movies.dropFirst(6) where old != output && old.path != active { try? FileManager.default.removeItem(at: old) }

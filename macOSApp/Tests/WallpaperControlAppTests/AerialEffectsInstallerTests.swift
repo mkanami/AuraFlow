@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Testing
 @testable import AuraWallpaperCore
 
@@ -70,6 +71,26 @@ private final class NativeEffectsFixture {
     }
     func installer() -> AerialEffectsLockScreenInstaller { .init(native: native, appSupportURL: root, media: media) }
     func cleanup() { try? FileManager.default.removeItem(at: root) }
+}
+
+@Test func nativeEffectsRebuildsThePreviousRigidDropRendererWithoutChangingItsScope() async throws {
+    let f = try NativeEffectsFixture(); defer { f.cleanup() }
+    let installer = f.installer()
+    try await installer.installLockScreenOnly(videoURL: f.original, playbackSpeed: 1.5, scaleMode: .fit)
+    let record = f.root.appendingPathComponent("native-effects-source.json")
+    var mapping = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: record)) as? [String: Any])
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+    var legacy = try encoder.encode(WallpaperEffectsPreset.cinematic.settings.normalized())
+    legacy.append(Data("1.5:fit".utf8))
+    mapping["effectsSignature"] = SHA256.hash(data: legacy).map { String(format: "%02x", $0) }.joined()
+    try JSONSerialization.data(withJSONObject: mapping).write(to: record, options: .atomic)
+    #expect(!installer.lockScreenOnlyStatus(videoURL: f.original).sourceMatches)
+    let config = f.store.loadConfig(), original = try Data(contentsOf: f.original)
+    #expect(try await installer.repair(videoURL: f.original, shouldProceed: { true }))
+    #expect(f.native.calls.last?.0 == "lockOnly" && f.native.calls.last?.1 == f.rendered)
+    #expect(installer.lockScreenOnlyStatus(videoURL: f.original).sourceMatches)
+    #expect(f.store.loadConfig() == config)
+    #expect(try Data(contentsOf: f.original) == original)
 }
 
 @Test(arguments: ["shared", "desktop", "lockOnly"], [false, true])

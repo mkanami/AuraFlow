@@ -119,7 +119,11 @@ rates, without separating objects in the source image.
 Small beads have individual, fixed asymmetrical contours, proportions and
 orientations. **Sliding drops** independently enables large drops that release
 from the glass, accelerate and bend along the pane. Their bodies gradually
-stretch, lean and settle. Collected beads attach through a water neck, stretch
+stretch, lean and settle. A damped contact-line model deforms the rear neck,
+leading bulge and shoulders as each drop crosses uneven glass adhesion, so its
+contour keeps changing at steady speed. Acceleration, braking, turns and absorbed
+water drive the deformation; pinned drops relax instead of looping a wobble.
+Collected beads attach through a water neck, stretch
 toward the live receiver and transfer their volume progressively. Depositing
 water in the trail reduces a flowing drop's size; off-center collection can
 bend its course. Colliding drops converge smoothly as they merge, leaving

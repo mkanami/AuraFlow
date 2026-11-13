@@ -26,16 +26,18 @@ struct WallpaperGlassRainSimulation {
         var mergeReceiver = -1
         var mergeReceiverSeed = 0.0
         var courseBias = 0.0, absorptionPulse = 0.0
+        var body = WallpaperGlassDropBody()
         var depositedVolume = 0.0
     }
     struct Trail {
         var x: Double, y: Double, width: Double, length: Double, angle: Double, life: Double
     }
-    /// Three float4s match the Metal instance layout. Radii are in logical pane units.
+    /// Four float4s match the Metal instance layout. Radii are in logical pane units.
     struct Instance: Equatable {
         var ellipse: SIMD4<Float>
         var optics: SIMD4<Float> // strength, rotation, kind, seed
         var shape = SIMD4<Float>(repeating: 0) // phase, shear, lobes, continuous flow
+        var body = SIMD4<Float>(repeating: 0) // rear neck, leading bulge, bend, shoulder
     }
     private(set) var beads: [Drop] = []
     private(set) var runners: [Drop] = []
@@ -223,7 +225,7 @@ struct WallpaperGlassRainSimulation {
                     mergeCount += 1
                 }
             }
-            animateBody(index: i, dt: dt)
+            animateBody(index: i, previous: old, dt: dt)
             if runners[i].y > 1110 || runners[i].x < -30 || runners[i].x > paneWidth + 30 {
                 runners[i] = makeDrop(moving: true, anywhere: false)
             }
@@ -320,11 +322,15 @@ struct WallpaperGlassRainSimulation {
         drop.y += (drop.mergeTarget.y - drop.y) * follow
     }
 
-    private mutating func animateBody(index: Int, dt: Double) {
+    private mutating func animateBody(index: Int, previous: Drop, dt: Double) {
         var drop = runners[index]
+        drop.body.advance(position: SIMD2(drop.x, drop.y), speed: SIMD2(drop.velocityX, drop.velocityY),
+            acceleration: SIMD2(drop.velocityX - previous.velocityX, drop.velocityY - previous.velocityY) / dt,
+            radius: drop.radius, seed: drop.seed, absorption: drop.absorptionPulse, deltaTime: dt)
         // Damped capillary response: the body stretches after release, leans into
         // turns and settles after pinning instead of switching rigid silhouettes.
-        let targetStretch = 1 + min(0.8, drop.velocityY / 155) - min(0.12, drop.absorptionPulse * 0.6)
+        let targetStretch = 1 + min(0.8, drop.velocityY / 155) + drop.body.shape.x * 0.16
+            - min(0.12, drop.absorptionPulse * 0.6)
         let targetTilt = atan2(drop.velocityX, max(8, drop.velocityY))
         spring(value: &drop.stretch, velocity: &drop.stretchVelocity, target: targetStretch,
             frequency: 9 + drop.seed * 3, damping: 0.78, dt: dt)
@@ -399,9 +405,10 @@ struct WallpaperGlassRainSimulation {
             let angle = drop.restingAngle * (1 - drop.flow) - drop.tilt
             let shear = drop.contour.y + (atan2(drop.velocityX, max(8, drop.velocityY)) - drop.tilt) * drop.flow * 0.45
             result.append(Instance(ellipse: SIMD4(Float(drop.x + drop.visualOffset.x), Float(drop.y + drop.visualOffset.y),
-                    Float(radius * aspect / sqrt(drop.stretch) * 1.28), Float(radius / aspect * drop.stretch * 1.28)),
+                    Float(radius * aspect / sqrt(drop.stretch) * 1.6), Float(radius / aspect * drop.stretch * 1.6)),
                 optics: SIMD4(Float(min(1, fade * 3)), Float(angle), 2, Float(drop.seed)),
-                shape: SIMD4(Float(drop.contour.x), Float(shear), Float(drop.contour.z), Float(drop.flow))))
+                shape: SIMD4(Float(drop.contour.x), Float(shear), Float(drop.contour.z), Float(drop.flow)),
+                body: SIMD4<Float>(drop.body.shape)))
         }
         return result
     }

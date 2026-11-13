@@ -203,7 +203,7 @@ public final class AerialEffectsLockScreenInstaller: ModernLockScreenInstalling 
     private func effectsSignature(_ settings: WallpaperEffectsSettings, speed: Double, mode: WallpaperScaleMode) -> String {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         var data = (try? encoder.encode(settings.normalized())) ?? Data()
-        data.append(Data("\(speed):\(mode.rawValue)".utf8))
+        data.append(Data("\(speed):\(mode.rawValue):renderer-v\(WallpaperEffectsRenderRevision.current)".utf8))
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
     private func fileSignature(_ url: URL) -> String {

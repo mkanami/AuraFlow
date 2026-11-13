@@ -4,6 +4,7 @@ import CoreImage
 import IOSurface
 import Metal
 import Testing
+import simd
 @testable import AuraWallpaperCore
 
 @Suite(.serialized)
@@ -128,6 +129,78 @@ struct WallpaperGlassRainTests {
         #expect(directions.values.filter { ($0.max() ?? 0) - ($0.min() ?? 0) > 0.12 }.count > 5)
         #expect(mergingFrames > 0, "Coalescing drops should converge over multiple frames")
         #expect(collectedBeadFrames > 0, "Collected beads should shrink into the flowing drop instead of disappearing")
+    }
+
+    @Test func slidingMeniscusChangesAcrossGlassEvenAtSteadySpeedAndSettlesWhenPinned() {
+        var body = WallpaperGlassDropBody()
+        var shapes: [SIMD4<Double>] = []
+        for frame in 0..<720 {
+            body.advance(position: SIMD2(900, 100 + Double(frame) * 1.2), speed: SIMD2(0, 72),
+                acceleration: .zero, radius: 10, seed: 0.37, absorption: 0, deltaTime: 1.0/60)
+            if frame > 120 { shapes.append(body.shape) }
+        }
+        #expect((shapes.map(\.x).max() ?? 0) - (shapes.map(\.x).min() ?? 0) > 0.15,
+            "A runner at terminal speed must not become one rigid translated teardrop")
+        #expect(zip(shapes, shapes.dropFirst()).allSatisfy { simd_length($1 - $0) < 0.035 })
+        for _ in 0..<600 {
+            body.advance(position: SIMD2(900, 964), speed: .zero, acceleration: .zero,
+                radius: 10, seed: 0.37, absorption: 0, deltaTime: 1.0/60)
+        }
+        #expect(simd_length(body.shape) < 0.0001, "Pinned water relaxes instead of continuing a looping wobble")
+    }
+
+    @Test func capillaryBodyRespondsSmoothlyToReleaseBrakingTurningAndAbsorption() {
+        var cruising = WallpaperGlassDropBody()
+        for _ in 0..<180 {
+            cruising.advance(position: SIMD2(900, 500), speed: SIMD2(0, 75), acceleration: .zero,
+                radius: 10, seed: 0.37, absorption: 0, deltaTime: 1.0/60)
+        }
+        var accelerating = cruising, braking = cruising, turning = cruising, collecting = cruising
+        let initial = cruising.shape
+        for _ in 0..<18 {
+            accelerating.advance(position: SIMD2(900, 500), speed: SIMD2(0, 75), acceleration: SIMD2(0, 100),
+                radius: 10, seed: 0.37, absorption: 0, deltaTime: 1.0/60)
+            braking.advance(position: SIMD2(900, 500), speed: SIMD2(0, 75), acceleration: SIMD2(0, -100),
+                radius: 10, seed: 0.37, absorption: 0, deltaTime: 1.0/60)
+            turning.advance(position: SIMD2(900, 500), speed: SIMD2(0, 75), acceleration: SIMD2(80, 0),
+                radius: 10, seed: 0.37, absorption: 0, deltaTime: 1.0/60)
+            collecting.advance(position: SIMD2(900, 500), speed: SIMD2(0, 75), acceleration: .zero,
+                radius: 10, seed: 0.37, absorption: 0.25, deltaTime: 1.0/60)
+        }
+        #expect(accelerating.shape.x > initial.x + 0.08 && braking.shape.x < initial.x - 0.08)
+        #expect(braking.shape.y > accelerating.shape.y + 0.12)
+        #expect(turning.shape.z < initial.z - 0.07, "The rear neck must lag behind a turn")
+        #expect(collecting.shape.y > initial.y + 0.07)
+    }
+
+    @Test @MainActor func flowingMetalContourDeformsItsNeckAndLeadingBodyWithoutClipping() throws {
+        let renderer = try #require(WallpaperGlassRainRenderer())
+        let queue = try #require(renderer.device.makeCommandQueue())
+        let width=512, height=288, size=CGSize(width: 512,height: 288), rect=CGRect(x: 0,y: 0,width: 512,height: 288)
+        let descriptor=MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,width: width,height: height,mipmapped: false)
+        descriptor.storageMode = .shared; descriptor.usage = [.renderTarget,.shaderRead]
+        let target=try #require(renderer.device.makeTexture(descriptor: descriptor))
+        func silhouette(_ body: SIMD4<Float>) throws -> [UInt8] {
+            let command=try #require(queue.makeCommandBuffer())
+            let drop=WallpaperGlassRainSimulation.Instance(ellipse: SIMD4(960,540,300,360),optics: SIMD4(1,0,2,0.37),
+                shape: SIMD4(0.5,0.03,0.06,0.8),body: body)
+            try renderer.encode(command: command,target: target,
+                source: .init(image: CIImage(color: .black).cropped(to: rect),gravity: .resize,revision: 1,label: "body"),
+                settings: settings(),size: size,contentFrame: rect,instances: [drop])
+            command.commit(); command.waitUntilCompleted(); #expect(command.status == .completed)
+            var bytes=[UInt8](repeating: 0,count: width*height*4)
+            target.getBytes(&bytes,bytesPerRow: width*4,from: MTLRegionMake2D(0,0,width,height),mipmapLevel: 0)
+            return stride(from: 3,to: bytes.count,by: 4).map { bytes[$0] > 100 ? 1 : 0 }
+        }
+        let steady=try silhouette(SIMD4(0.25,0.08,0,0)), stretched=try silhouette(SIMD4(0.8,-0.08,-0.2,-0.05))
+        let braking=try silhouette(SIMD4(0.15,0.35,0.18,0.08))
+        #expect(zip(steady,stretched).filter { $0 != $1 }.count > 300)
+        #expect(zip(stretched,braking).filter { $0 != $1 }.count > 600)
+        for mask in [steady,stretched,braking] {
+            let occupied=mask.indices.filter { mask[$0] == 1 }
+            #expect(occupied.allSatisfy { abs(($0 % width) - width/2) < 79 && abs(($0 / width) - height/2) < 95 },
+                "The deformed body must stay inside its padded quad")
+        }
     }
 
     @Test func suctionStretchesConnectsAndTransfersVolumeGraduallyTowardALiveReceiver() {
