@@ -1615,23 +1615,22 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private func handleNativeLockScreenBridgeFailure(reason: String) {
         guard ownsRuntimeState(), !isTerminating else { return }
         let healthReason = "native-lock-bridge-unavailable: " + reason
+        wallpaperAgentLifecycleLogger.error("Native bridge failed in agent pid=\(getpid(), privacy: .public): \(reason, privacy: .public)")
         writeHealth(reason: healthReason)
         if lockScreenOnlyMode {
             terminateLockScreenOnlyAgent(
                 reason: healthReason,
                 notifyController: true
             )
-        } else {
+        } else if observesSystemEvents {
             // Desktop playback can continue, but the controller must get an
             // immediate chance to retry the native route and refresh UI state.
             DistributedNotificationCenter.default().post(
                 name: WallpaperRuntimeNotifications
                     .lockScreenProviderBecameUnavailable,
                 object: nil,
-                userInfo: [
-                    WallpaperRuntimeNotifications.lockScreenFallbackReasonKey:
-                        healthReason
-                ]
+                userInfo: WallpaperRuntimeNotifications.lockScreenFailureInfo(
+                    reason: healthReason, appSupportURL: store.appSupportURL)
             )
         }
     }
@@ -1952,14 +1951,13 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         lifecycleGuard.markTerminating()
         store.markLockScreenAgentReady(false)
         writeHealth(reason: reason)
-        if notifyController {
+        if notifyController && observesSystemEvents {
             DistributedNotificationCenter.default().post(
                 name: WallpaperRuntimeNotifications
                     .lockScreenProviderBecameUnavailable,
                 object: nil,
-                userInfo: [
-                    WallpaperRuntimeNotifications.lockScreenFallbackReasonKey: reason
-                ]
+                userInfo: WallpaperRuntimeNotifications.lockScreenFailureInfo(
+                    reason: reason, appSupportURL: store.appSupportURL)
             )
         }
         NSApp.terminate(nil)

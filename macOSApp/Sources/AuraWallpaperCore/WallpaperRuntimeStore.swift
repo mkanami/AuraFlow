@@ -11,6 +11,24 @@ public enum WallpaperRuntimeNotifications {
         "com.andrijvergeles.auraflow.lock-screen-provider-became-unavailable"
     )
     public static let lockScreenFallbackReasonKey = "reason"
+    public static let lockScreenFallbackRootKey = "runtimeRoot"
+    public static let lockScreenFallbackPIDKey = "agentPID"
+
+    public static func lockScreenFailureInfo(reason: String, appSupportURL: URL, pid: Int = Int(getpid())) -> [AnyHashable: Any] {
+        [lockScreenFallbackReasonKey: reason,
+         lockScreenFallbackRootKey: appSupportURL.standardizedFileURL.resolvingSymlinksInPath().path,
+         lockScreenFallbackPIDKey: pid]
+    }
+
+    /// Distributed notifications are shared by all installed/test runtimes.
+    /// An unscoped or retired helper must not downgrade the active provider.
+    public static func lockScreenFailureBelongsToRuntime(sourceRoot: String?, sourcePID: Int?,
+        appSupportURL: URL, currentPID: Int?) -> Bool {
+        guard let sourceRoot, let sourcePID, sourcePID > 0,
+              URL(fileURLWithPath: sourceRoot).standardizedFileURL.resolvingSymlinksInPath()
+                == appSupportURL.standardizedFileURL.resolvingSymlinksInPath() else { return false }
+        return currentPID == nil || currentPID == sourcePID
+    }
 }
 
 public enum DaemonTerminationResult: Equatable, Sendable {

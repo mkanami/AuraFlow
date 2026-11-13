@@ -2885,10 +2885,11 @@ final class AppViewModel: ObservableObject {
                 let reason = notification.userInfo?[
                     WallpaperRuntimeNotifications.lockScreenFallbackReasonKey
                 ] as? String
+                let sourceRoot = notification.userInfo?[WallpaperRuntimeNotifications.lockScreenFallbackRootKey] as? String
+                let sourcePID = notification.userInfo?[WallpaperRuntimeNotifications.lockScreenFallbackPIDKey] as? Int
                 Task { @MainActor [weak self] in
-                    await self?.handleLockScreenProviderBecameUnavailable(
-                        reason: reason
-                    )
+                    await self?.handleLockScreenProviderUnavailableNotification(
+                        reason: reason, sourceRoot: sourceRoot, sourcePID: sourcePID)
                 }
             }
         )
@@ -3096,6 +3097,17 @@ final class AppViewModel: ObservableObject {
         } catch {
             recordBridgeFailure(error, context: "status")
         }
+    }
+
+    func handleLockScreenProviderUnavailableNotification(reason: String?, sourceRoot: String?, sourcePID: Int?) async {
+        let runtime = WallpaperRuntimeStore(appSupportURL: appSupportDirectoryURL)
+        guard WallpaperRuntimeNotifications.lockScreenFailureBelongsToRuntime(
+            sourceRoot: sourceRoot, sourcePID: sourcePID,
+            appSupportURL: appSupportDirectoryURL, currentPID: runtime.loadPID()) else {
+            lockScreenLifecycleLogger.debug("Ignored foreign or unscoped native failure source_pid=\(sourcePID ?? -1, privacy: .public) active_pid=\(runtime.loadPID() ?? -1, privacy: .public)")
+            return
+        }
+        await handleLockScreenProviderBecameUnavailable(reason: reason)
     }
 
     private func handleLockScreenProviderBecameUnavailable(

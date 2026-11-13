@@ -2663,6 +2663,11 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
     var prepareLockScreenMediaCallCount = 0
     var prepareLockScreenMediaCancellationCount = 0
     var prepareLockScreenMediaDelay: UInt64 = 0
+    var nativeBridgeFailureReasons: [String] = []
+
+    func markNativeLockScreenBridgeUnavailable(reason: String) {
+        nativeBridgeFailureReasons.append(reason)
+    }
 
     func status() throws -> ControlStatus {
         statusPayload(running: statusRunning, paused: statusPaused, health: statusHealth)

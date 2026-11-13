@@ -210,6 +210,9 @@ final class NativeLockScreenWallpaperBridge: NativeLockScreenBridging, @unchecke
     }
 
     private func startIfNeeded() -> Bool {
+        // Runtime binaries can be replaced atomically while their process is
+        // alive. An existing transport does not need the pathname to launch.
+        if process?.isRunning == true { return true }
         // Platform adapters gate native operations by OS version. Keeping
         // this transport client OS-agnostic lets the client be tested with a
         // fixture process and keeps the executable boundary responsible for
@@ -218,13 +221,10 @@ final class NativeLockScreenWallpaperBridge: NativeLockScreenBridging, @unchecke
               FileManager.default.isExecutableFile(atPath: executableURL.path)
         else {
             state = .failed
+            Self.logger.error("Native executable unavailable: configured=\(self.executableURL != nil, privacy: .public) client_pid=\(getpid(), privacy: .public)")
             reportFailure("Native Lock Screen bridge executable is unavailable.")
             return false
         }
-        if process?.isRunning == true {
-            return true
-        }
-
         // An exited process may not have delivered its termination callback
         // yet. Invalidate its generation before creating a replacement.
         if process != nil {
