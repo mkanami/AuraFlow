@@ -61,7 +61,6 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 @property(nonatomic, readonly) NSDictionary *diagnostics;
 @property(nonatomic, readonly) BOOL presentationVisible;
 @property(nonatomic, readonly) double frameInterval;
-- (void)advanceFrame;
 - (void)setPresenting:(BOOL)presenting paused:(BOOL)paused surfaceID:(nullable NSNumber *)surfaceID
     sequence:(nullable NSNumber *)sequence imageURL:(nullable NSURL *)imageURL gravity:(NSString *)gravity;
 @end
@@ -227,7 +226,6 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         if (!self.runtimePaused) [self syncVideoPlayback];
     }
     [self updateEffectsPresentation];
-    if ([self.effects respondsToSelector:@selector(advanceFrame)]) [self.effects advanceFrame];
     self.animationTicks += 1;
     if (self.animationTicks == 1) [self logPresentationEvent:"first-tick"];
 }

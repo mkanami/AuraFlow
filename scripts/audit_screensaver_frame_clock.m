@@ -12,6 +12,14 @@
 
 static NSURL *fixture;
 static BOOL lowPower;
+static CFTimeInterval lastNative;
+static void (*nativeFrame)(id, SEL);
+static void throttledNativeFrame(id view, SEL selector) {
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - lastNative < 0.2) return;
+    lastNative = now;
+    nativeFrame(view, selector);
+}
 static NSURL *supportRoot(id object, SEL selector) { return fixture; }
 static BOOL powerMode(id object, SEL selector) { return lowPower; }
 static void spin(double seconds) {
@@ -40,7 +48,7 @@ static BOOL measure(ScreenSaverView *view, double target) {
     double fps = count / elapsed;
     printf("target=%.0f fps=%.2f glass_fps=%.2f native_ticks=%llu effect_frames=%llu cpu_percent=%.2f\n",
         target, fps, glassCount / elapsed, ticks, count, 100 * (cpu() - cpuStart) / elapsed);
-    return fps >= target * 0.85 && fps <= target * 1.1 && llabs((long long)count - (long long)ticks) <= 1;
+    return fps >= target * 0.85 && fps <= target * 1.1 && ticks <= 16;
 }
 
 int main(int argc, const char *argv[]) { @autoreleasepool {
@@ -60,6 +68,10 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     if (![bundle loadAndReturnError:&error]) { NSLog(@"%@", error); return 5; }
     Class saverClass = bundle.principalClass;
     method_setImplementation(class_getInstanceMethod(saverClass, NSSelectorFromString(@"applicationSupportURL")), (IMP)supportRoot);
+    // Reproduce legacyScreenSaver's observed 2–5 Hz protected-host callback
+    // cadence. Interactive effects must keep their own 60/30 Hz clock.
+    nativeFrame = (void (*)(id, SEL))method_setImplementation(
+        class_getInstanceMethod(saverClass, @selector(animateOneFrame)), (IMP)throttledNativeFrame);
     // Vary only this probe's policy sample, never the machine's power setting.
     method_setImplementation(class_getInstanceMethod(object_getClass(NSProcessInfo.processInfo), @selector(isLowPowerModeEnabled)), (IMP)powerMode);
     NSSize size = NSScreen.mainScreen.frame.size;

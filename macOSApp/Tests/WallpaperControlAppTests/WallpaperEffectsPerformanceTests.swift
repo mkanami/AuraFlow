@@ -6,6 +6,30 @@ import Testing
 
 @Suite(.serialized)
 struct WallpaperEffectsPerformanceTests {
+    @Test @MainActor func exhaustedDrawablePoolNeverBlocksTheMainThreadOrQueuesMoreWaiters() async throws {
+        let started = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        let source = WallpaperGlassDrawableSource { _ in
+            started.signal()
+            _ = release.wait(timeout: .now() + 2)
+            finished.signal()
+            return nil
+        }
+        defer { release.signal(); source.stop() }
+        let layer = CAMetalLayer()
+        let start = CACurrentMediaTime()
+        #expect(source.take(from: layer) == nil)
+        try #require(CACurrentMediaTime() - start < 0.15, "A busy Metal drawable pool must never wait on the main thread")
+        let didStart = await Task.detached { started.wait(timeout: .now() + 1) == .success }.value
+        try #require(didStart)
+        for _ in 0..<1_000 { source.stop(); #expect(source.take(from: layer) == nil) }
+        #expect(started.wait(timeout: .now()) == .timedOut, "Hide/show must retain only one in-flight drawable request")
+        release.signal()
+        let didFinish = await Task.detached { finished.wait(timeout: .now() + 1) == .success }.value
+        #expect(didFinish)
+        source.stop()
+    }
+
     @Test func glassCadenceDoesNotAccumulateNativeTimerJitterOrCatchUpAfterSleep() {
         for fps in [30.0, 60.0] {
             var cadence = WallpaperGlassRainCadence()
@@ -23,43 +47,48 @@ struct WallpaperEffectsPerformanceTests {
         }
     }
 
-    @Test @MainActor func nativeSaverClockAdvancesExactlyOncePerHostFrameAndStopsForPauseSleepAndUnlock() async throws {
+    @Test @MainActor func saverClockRunsWithoutNativeHostFramesAndStopsForPauseSleepAndUnlock() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraSaverClock-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         try WallpaperEffectsStore(appSupportURL: root).save(WallpaperEffectsPreset.cinematic.settings)
         let bridge = ScreenSaverEffectsBridge(content: NSView(frame: CGRect(x: 0, y: 0, width: 960, height: 600)), appSupportURL: root, isPreview: true)
         let view = try #require(bridge.view as? WallpaperEffectsView)
+        // The window stays hidden. No ordering or system saver/lock action.
+        let window = NSWindow(contentRect: view.bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        defer { window.contentView = nil }
         var reads = 0
         view.screenSaverPresentationIsVisible = { reads += 1; return true }
         bridge.setPresenting(true, paused: false, surfaceID: nil, sequence: nil, imageURL: nil, gravity: AVLayerVideoGravity.resizeAspectFill.rawValue)
         var active = WallpaperEffectsActivity(); active.screenSaverPresentation = true
         view.applyActivity(active)
-        let initial = view.status.renderedFrames, visibilityReads = reads
-        try await Task.sleep(for: .milliseconds(70))
-        #expect(view.status.renderedFrames == initial, "There must be no independent timer competing with ScreenSaver.framework")
-        for _ in 0..<120 { _ = bridge.presentationVisible; _ = bridge.frameInterval }
-        #expect(reads == visibilityReads, "Playback checks must use the sampled visibility instead of polling system IPC each frame")
-        let start = CACurrentMediaTime()
-        for frame in 0..<120 {
-            view.advanceScreenSaverFrame(at: start + Double(frame)/60, cursor: CGPoint(x: frame < 60 ? -0.8 : 0.8, y: 0.3))
-        }
-        #expect(view.status.renderedFrames == initial + 120 && view.status.cursorX > 0.7)
         #expect(abs(bridge.frameInterval - 1.0/60) < 0.00001)
+        let initial = view.status.renderedFrames, visibilityReads = reads
+        for _ in 0..<120 { _ = bridge.presentationVisible; _ = bridge.frameInterval }
+        #expect(reads == visibilityReads, "Playback checks must use cached visibility instead of system IPC each frame")
+        // Do not deliver any ScreenSaver.framework frame. Its protected host
+        // can tick at 2–5 Hz and must never gate the interactive renderer.
+        for _ in 0..<40 {
+            try await Task.sleep(for: .milliseconds(50))
+            if view.status.renderedFrames > initial { break }
+        }
+        #expect(view.status.renderedFrames > initial)
         active.lowPower = true; view.applyActivity(active)
         #expect(abs(bridge.frameInterval - 1.0/30) < 0.00001)
         active.sleeping = true; view.applyActivity(active)
         let asleep = view.status.renderedFrames
-        view.advanceScreenSaverFrame(at: start + 5)
+        try await Task.sleep(for: .milliseconds(70))
         #expect(view.status.renderedFrames == asleep && !view.isAnimating)
         active.sleeping = false; active.lowPower = false; view.applyActivity(active)
-        view.advanceScreenSaverFrame(at: start + 10)
-        #expect(view.status.renderedFrames == asleep + 1)
+        try await Task.sleep(for: .milliseconds(70))
+        #expect(view.status.renderedFrames > asleep)
         bridge.setPresenting(true, paused: true, surfaceID: nil, sequence: nil, imageURL: nil, gravity: AVLayerVideoGravity.resizeAspectFill.rawValue)
         let paused = view.status.renderedFrames
-        bridge.advanceFrame()
+        try await Task.sleep(for: .milliseconds(70))
         #expect(view.status.renderedFrames == paused && !view.isAnimating)
         bridge.setPresenting(false, paused: false, surfaceID: nil, sequence: nil, imageURL: nil, gravity: AVLayerVideoGravity.resizeAspectFill.rawValue)
-        bridge.advanceFrame()
+        try await Task.sleep(for: .milliseconds(70))
         #expect(!bridge.presentationVisible && view.status.framesPerSecond == 0 && view.status.renderedFrames == paused)
     }
 

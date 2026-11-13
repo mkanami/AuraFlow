@@ -1,7 +1,6 @@
 import AppKit
 import AVFoundation
 import OSLog
-import QuartzCore
 
 /// Objective-C boundary used by the signed ScreenSaver bundle. The view and
 /// all GPU simulation code are shared with the Desktop, not approximated here.
@@ -45,7 +44,6 @@ import QuartzCore
         healthURL = appSupportURL.appendingPathComponent("ScreenSaverEffects")
             .appendingPathComponent("saver-\(ProcessInfo.processInfo.processIdentifier)-\(UUID()).json")
         super.init()
-        effects.useScreenSaverFrameClock()
         if isPreview { effects.screenSaverPresentationIsVisible = { true } }
         effects.playbackIsPaused = { [weak self] in self?.paused ?? true }
     }
@@ -89,10 +87,6 @@ import QuartzCore
 
     @objc public var frameInterval: Double {
         effects.animationFramesPerSecond > 0 ? 1 / effects.animationFramesPerSecond : 1.0 / 30
-    }
-
-    @objc public func advanceFrame() {
-        effects.advanceScreenSaverFrame(at: CACurrentMediaTime())
     }
 
     /// At most one small record per second, per real saver instance. This

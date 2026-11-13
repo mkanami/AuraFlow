@@ -33,9 +33,6 @@ public final class WallpaperEffectsView: NSView {
     private(set) var settings = WallpaperEffectsSettings()
     private var motion = WallpaperEffectsMotion()
     private var frameClock: WallpaperEffectsFrameClock?
-    private var externallyDriven = false
-    private var externalFramesPerSecond = 0.0
-    private var externalActivity: NSObjectProtocol?
     private(set) var screenSaverVisible = false
     private var statusTimer: Timer?
     private var lastFrameTime: CFTimeInterval?
@@ -47,8 +44,8 @@ public final class WallpaperEffectsView: NSView {
     private var pauseReason: String? = "hidden"
     private var renderedFrames: UInt64 = 0
     private var loggedActivity: String?
-    var isAnimating: Bool { frameClock != nil || externalFramesPerSecond > 0 }
-    var animationFramesPerSecond: Double { frameClock?.framesPerSecond ?? externalFramesPerSecond }
+    var isAnimating: Bool { frameClock != nil }
+    var animationFramesPerSecond: Double { frameClock?.framesPerSecond ?? 0 }
 
     public var status: WallpaperEffectsStatus {
         let transform = motionContainer.layer?.affineTransform() ?? .identity
@@ -104,22 +101,6 @@ public final class WallpaperEffectsView: NSView {
         screenSaverPresenting = presenting
         screenSaverPlaybackPaused = paused
         refreshActivity()
-    }
-
-    /// ScreenSaver.framework already supplies a display clock. A second
-    /// screen-bound display link is independently throttled in its XPC host.
-    func useScreenSaverFrameClock() {
-        guard isScreenSaver, !externallyDriven else { return }
-        stopAnimation()
-        externallyDriven = true
-        refreshActivity()
-    }
-
-    func advanceScreenSaverFrame(at time: Double, cursor: CGPoint? = nil) {
-        guard externallyDriven, externalFramesPerSecond > 0, presentationActive else { return }
-        let delta = lastFrameTime.map { time - $0 } ?? 1 / externalFramesPerSecond
-        lastFrameTime = time
-        renderFrame(deltaTime: delta, cursor: cursor ?? currentCursor(), at: time)
     }
 
     private func currentCursor() -> CGPoint? {
@@ -253,19 +234,11 @@ public final class WallpaperEffectsView: NSView {
             renderFrame(deltaTime: 0, cursor: nil)
             return
         }
-        if externallyDriven {
-            externalFramesPerSecond = activity.framesPerSecond
-            if externalActivity == nil {
-                externalActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
-                    reason: "Render visible Screen Saver effects on the system clock")
-            }
-            return
-        }
         if frameClock?.framesPerSecond == activity.framesPerSecond,
            frameClock?.screen === (window?.screen ?? NSScreen.main) { return }
         stopAnimation()
         lastFrameTime = nil
-        frameClock = WallpaperEffectsFrameClock(view: self, framesPerSecond: activity.framesPerSecond) { [weak self] now in
+        frameClock = WallpaperEffectsFrameClock(view: self, framesPerSecond: activity.framesPerSecond, isScreenSaver: isScreenSaver) { [weak self] now in
             guard let self, self.window != nil else { return }
             let delta = self.lastFrameTime.map { now - $0 } ?? 1 / activity.framesPerSecond
             self.lastFrameTime = now
@@ -301,12 +274,15 @@ public final class WallpaperEffectsView: NSView {
             stopGlass()
         }
         CATransaction.commit()
+        // The XPC host's own transaction clock can be throttled. Publish our
+        // completed layer changes now so presented drawables can be retired.
+        if isScreenSaver { CATransaction.flush() }
     }
 
     private func renderGlass(contentFrame: CGRect, at now: CFTimeInterval) {
         guard settings.glassRainEnabled, settings.glassRainIntensity > 0, !glassUnavailable else { stopGlass(restoreRain: true); return }
         if glassRenderer == nil {
-            glassRenderer = WallpaperGlassRainRenderer()
+            glassRenderer = WallpaperGlassRainRenderer(isScreenSaver: isScreenSaver)
             guard let glassRenderer else { glassUnavailable = true; return }
             glassRenderer.layer.zPosition = 1.5
             layer?.addSublayer(glassRenderer.layer)
@@ -359,9 +335,6 @@ public final class WallpaperEffectsView: NSView {
         frameClock?.stop()
         frameClock = nil
         lastFrameTime = nil
-        externalFramesPerSecond = 0
-        if let externalActivity { ProcessInfo.processInfo.endActivity(externalActivity) }
-        externalActivity = nil
     }
 
     private func stopMonitoring() {
@@ -378,7 +351,6 @@ public final class WallpaperEffectsView: NSView {
     }
 
     deinit {
-        if let externalActivity { ProcessInfo.processInfo.endActivity(externalActivity) }
         statusTimer?.invalidate()
         for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         for observer in distributedObservers { DistributedNotificationCenter.default().removeObserver(observer) }

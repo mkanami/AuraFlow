@@ -139,8 +139,11 @@ Effects are off by default and preferences survive restarting AuraFlow. Live
 renderers pause when playback is paused, the display sleeps, or Reduce Motion is enabled.
 The Desktop renderer also pauses while hidden or locked. Prewarmed, hidden
 saver hosts do not run effects. Low Power Mode keeps cursor effects at 30 fps instead of 60 fps.
-The live saver uses the system's single animation clock, rearmed when its rate
-changes. Glass keeps a stable 30 fps cadence despite timer jitter. When Metal
+The live saver uses a visible-only dispatch clock, independent of the protected
+host's throttled timers and screen-bound display links. Glass keeps a stable
+30 fps cadence despite timer jitter. Drawable acquisition runs off the main
+thread, with one bounded request, so a busy protected compositor cannot freeze
+cursor motion. When Metal
 composes falling rain with glass, unused particle layers and sprite textures
 are skipped; sprite fallback preserves the same particle positions and optics.
 Effects do not change media files,

@@ -40,12 +40,13 @@ final class WallpaperGlassRainRenderer {
     private var uploadedSettings: WallpaperEffectsSettings?
     private var loggedSource: String?
     private let gate = GlassFrameGate()
+    private let drawables = WallpaperGlassDrawableSource()
     private(set) var completedFrames: UInt64 = 0
     private(set) var simulation = WallpaperGlassRainSimulation()
     private var cadence = WallpaperGlassRainCadence()
     private var lastTime: Double?
 
-    init?() {
+    init?(isScreenSaver: Bool = false) {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
         do {
             let library = try device.makeLibrary(source: Self.shader, options: nil)
@@ -81,13 +82,18 @@ final class WallpaperGlassRainRenderer {
         context = CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
         layer.device = device; layer.pixelFormat = .bgra8Unorm
         layer.isOpaque = false; layer.framebufferOnly = true
-        layer.maximumDrawableCount = 2; layer.allowsNextDrawableTimeout = true
+        // One presented image, one prefetched drawable and one GPU frame.
+        layer.maximumDrawableCount = 3; layer.allowsNextDrawableTimeout = true
+        // The protected host's display clock can be throttled independently
+        // of the monitor. Our bounded 30 Hz cadence already paces this layer.
+        layer.displaySyncEnabled = !isScreenSaver
         layer.name = "rain-on-glass"; layer.isHidden = true
     }
 
     func wantsFrame(at time: Double) -> Bool { cadence.wantsFrame(at: time) }
 
     func stop() {
+        drawables.stop()
         let hadResources = background != nil || water != nil || lastTime != nil || !layer.isHidden
         lastTime = nil; cadence = WallpaperGlassRainCadence()
         guard hadResources else { return }
@@ -106,16 +112,16 @@ final class WallpaperGlassRainRenderer {
             lastTime = nil; cadence.sourceUnavailable(at: time); return
         }
         guard wantsFrame(at: time), gate.acquire() else { return }
-        cadence.submitted(at: time)
-        let dt = lastTime.map { min(0.1, max(0, time - $0)) } ?? 0
-        lastTime = time
-        simulation.advance(deltaTime: dt, aspect: size.width / size.height, settings: settings)
         let layerFrame = CGRect(origin: .zero, size: size)
         if layer.frame != layerFrame { layer.frame = layerFrame }
         if layer.contentsScale != scale { layer.contentsScale = scale }
         let target = Self.renderSize(size: size, scale: scale)
         if layer.drawableSize != target { layer.drawableSize = target }
-        guard let drawable = layer.nextDrawable(), let command = queue.makeCommandBuffer() else { gate.release(); return }
+        guard let drawable = drawables.take(from: layer), let command = queue.makeCommandBuffer() else { gate.release(); return }
+        cadence.submitted(at: time)
+        let dt = lastTime.map { min(0.1, max(0, time - $0)) } ?? 0
+        lastTime = time
+        simulation.advance(deltaTime: dt, aspect: size.width / size.height, settings: settings)
         do {
             try encode(command: command, target: drawable.texture, source: source, settings: settings,
                 size: size, contentFrame: contentFrame, instances: simulation.instances, airRain: airRain)
