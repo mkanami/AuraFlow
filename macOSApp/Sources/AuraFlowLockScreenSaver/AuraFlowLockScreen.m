@@ -59,6 +59,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 - (instancetype)initWithContent:(NSView *)content appSupportURL:(NSURL *)url isPreview:(BOOL)isPreview;
 @property(nonatomic, readonly) NSView *view;
 @property(nonatomic, readonly) NSDictionary *diagnostics;
+@property(nonatomic, readonly) BOOL presentationVisible;
 - (void)setPresenting:(BOOL)presenting paused:(BOOL)paused surfaceID:(nullable NSNumber *)surfaceID
     sequence:(nullable NSNumber *)sequence imageURL:(nullable NSURL *)imageURL gravity:(NSString *)gravity;
 @end
@@ -191,7 +192,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     }
     [self syncRuntimePauseState];
     if (!self.runtimePaused && !self.terminalModeActive && !self.webModeActive) {
-        [self.player playImmediatelyAtRate:self.playbackRate];
+        [self syncVideoPlayback];
     }
     self.animationTicks = 0;
     [self updateEffectsPresentation];
@@ -221,14 +222,33 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         // and a removed video or changed user wallpaper cannot leave a stale view.
         [self applyResolvedConfiguration:[self resolvedConfiguration] force:NO];
         [self syncRuntimePauseState];
-        if (!self.runtimePaused) [self.player playImmediatelyAtRate:self.playbackRate];
+        if (!self.runtimePaused) [self syncVideoPlayback];
     }
     [self updateEffectsPresentation];
     self.animationTicks += 1;
     if (self.animationTicks == 1) [self logPresentationEvent:"first-tick"];
 }
 
+- (void)syncVideoPlayback {
+    // WallpaperAgent also prewarms Desktop/Idle instances. Decode only for
+    // a visible saver session, including the unlocked idle password grace.
+    BOOL visible = self.isAnimating;
+    if ([self.effects respondsToSelector:@selector(presentationVisible)]) {
+        visible = visible && self.effects.presentationVisible;
+    }
+    if (visible && !self.runtimePaused && !self.terminalModeActive && !self.webModeActive) {
+        if (fabsf(self.player.rate - self.playbackRate) > 0.001f) {
+            [self.player playImmediatelyAtRate:self.playbackRate];
+        }
+    } else if (self.player.rate != 0) {
+        [self.player pause];
+    }
+    NSTimeInterval interval = visible ? 1.0/30.0 : 0.2;
+    if (fabs(self.animationTimeInterval - interval) > 0.001) self.animationTimeInterval = interval;
+}
+
 - (void)updateEffectsPresentation {
+    [self syncVideoPlayback];
     NSNumber *surfaceID = nil;
     NSNumber *sequence = nil;
     NSURL *imageURL = nil;
@@ -275,7 +295,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         }
         [self syncRuntimePauseState];
         if (!self.runtimePaused && !self.terminalModeActive && !self.webModeActive) {
-            [self.player playImmediatelyAtRate:self.playbackRate];
+            [self syncVideoPlayback];
         }
     });
 }
@@ -409,7 +429,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         if (self.webModeActive) {
             self.webLayer.hidden = YES; self.webLayer.contents = nil;
             self.webModeActive = NO; self.webFrameRevision = nil;
-            if (!self.runtimePaused && !self.terminalModeActive) [self.player playImmediatelyAtRate:self.playbackRate];
+            if (!self.runtimePaused && !self.terminalModeActive) [self syncVideoPlayback];
         }
         return;
     }
@@ -454,7 +474,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
             self.terminalLayer.hidden = YES;
             self.terminalFrameRevision = nil;
             if (!self.runtimePaused && self.player != nil) {
-                [self.player playImmediatelyAtRate:self.playbackRate];
+                [self syncVideoPlayback];
             }
         }
         return;
@@ -708,7 +728,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     self.runtimePaused = NO;
     [self resumePlayerLayer];
     if (!self.terminalModeActive && !self.webModeActive) {
-        [self.player playImmediatelyAtRate:self.playbackRate];
+        [self syncVideoPlayback];
     }
 }
 
@@ -846,7 +866,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
                                    [self fileRevisionAtPath:configuration[@"fallback_path"]]];
     if (!force && [signature isEqualToString:self.configurationSignature]) {
         if (playbackRateChanged && !self.runtimePaused && !self.terminalModeActive && !self.webModeActive && self.player != nil) {
-            [self.player playImmediatelyAtRate:self.playbackRate];
+            [self syncVideoPlayback];
         }
         return;
     }

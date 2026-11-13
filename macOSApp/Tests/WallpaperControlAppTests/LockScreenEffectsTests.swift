@@ -13,6 +13,7 @@ private final class EffectsNativeInstaller: ModernLockScreenInstalling {
     var removes = 0
     var desktopInstalls = 0
     var lockInstalls = 0
+    var requiresLockScreenSessionPromotion: Bool { isInstalled && lockInstalls > 0 && desktopInstalls == 0 && installs == 0 }
     func install(videoURL: URL) async throws { installs += 1; isInstalled = true }
     func installForDesktopAgent(videoURL: URL, playbackSpeed: Double, scaleMode: WallpaperScaleMode) async throws {
         desktopInstalls += 1; isInstalled = true
@@ -88,19 +89,26 @@ func lockEffectsManualAndAutomaticSessionsPreserveCompleteNativeDescriptors(lock
     #expect(try installer.activateLockScreenForCurrentSession() == false)
     #expect(try f.load() == idle)
     f.locked = true
-    #expect(try installer.activateLockScreenForCurrentSession())
+    #expect(try installer.activateLockScreenForCurrentSession() == false)
     let secure = try f.load()
-    #expect(secure != idle)
+    #expect(secure == idle, "Both sources must already be selected before the manual or OS lock edge")
+    if !lockOnly {
+        let coordinator = LiveScreenSaverStoreCoordinator(storeURL: f.storeURL,
+            journalURL: f.root.appendingPathComponent("live-lock-screen-route.json"), saverURL: f.saverURL,
+            stopWallpaperAgent: {}, startWallpaperAgent: {})
+        #expect(coordinator.isSharedSelected)
+        #expect(!installer.requiresLockScreenSessionPromotion)
+    }
     // Sleep/wake while still locked and duplicate notifications retain source.
     #expect(try installer.activateLockScreenForCurrentSession() == false)
     #expect(try await installer.repair(videoURL: f.source, shouldProceed: { true }) == false)
     #expect(try f.load() == secure)
     f.locked = false // Unlock recovered by polling; no notification required.
-    #expect(try await installer.restoreDesktopAfterLockScreenSessionAsync())
+    #expect(try await installer.restoreDesktopAfterLockScreenSessionAsync() == false)
     #expect(try f.load() == idle)
     try await installer.uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
     #expect(try f.load() == f.original)
-    #expect(!installer.isInstalled && f.restarts == 2)
+    #expect(!installer.isInstalled && f.restarts == (lockOnly ? 0 : 2))
 }
 
 @Test func lockEffectsCanMigrateExistingNativePlaybackAndStayLiveWhenSettingsToggle() async throws {
@@ -301,4 +309,93 @@ private struct MigratingEffectsMedia: NativeEffectsMediaPreparing {
     #expect(!LiveEffectsLockScreenInstaller.usesLiveRenderer(appSupportURL: f.root))
     #expect(f.native.desktopInstalls == 1 && f.restarts == 2)
     #expect(FileManager.default.isReadableFile(atPath: f.root.appendingPathComponent("native-effects-source.json").path))
+}
+
+@Test func lockEffectsSharedChoiceRestoresDistinctNativeDescriptorsAndMissingDesktopFields() throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    var original = f.original as! [String: Any]
+    let night: [String: Any] = ["Content": ["Choices": [["Provider": "com.apple.wallpaper.choice.sequoia",
+        "Files": [], "Configuration": Data([9, 8, 7]), "Options": ["appearance": "night"]]]],
+        "Appearance": ["mode": "dark", "color": [0.7, 0.2, 0.1]]]
+    var system = original["SystemDefault"] as! [String: Any]; system["Idle"] = night
+    original["SystemDefault"] = system
+    var displays = original["Displays"] as! [String: Any]
+    displays["inheriting-display"] = ["Idle": night]
+    original["Displays"] = displays
+    try PropertyListSerialization.data(fromPropertyList: original, format: .binary, options: 0).write(to: f.storeURL)
+    let routes = LiveScreenSaverStoreCoordinator(storeURL: f.storeURL,
+        journalURL: f.root.appendingPathComponent("shared.json"), saverURL: f.saverURL,
+        stopWallpaperAgent: {}, startWallpaperAgent: {})
+    try routes.activate(includeDesktop: true)
+    #expect(routes.isSharedSelected)
+    try routes.activate(includeDesktop: true)
+    try routes.restoreCurrentDesktopIfOwned()
+    #expect(try f.load() == original as NSDictionary)
+}
+
+@Test func lockEffectsSharedSuspendAndResumePreserveRealNativeChoicesAfterARuntimeExit() throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let journal = f.root.appendingPathComponent("shared.json")
+    let routes = LiveScreenSaverStoreCoordinator(storeURL: f.storeURL, journalURL: journal,
+        saverURL: f.saverURL, stopWallpaperAgent: {}, startWallpaperAgent: {})
+    let recovery = ScreenSaverRouteRecovery(storeURL: f.storeURL, journalURL: journal, saverURL: f.saverURL)
+    try routes.activate(includeDesktop: true)
+    let selected = try f.load()
+    #expect(try recovery.suspendIfNeeded(shouldProceed: { false }) == false)
+    #expect(try f.load() == selected)
+    #expect(try recovery.suspendIfNeeded(shouldProceed: { true }))
+    #expect(!routes.isSelected && !routes.isSharedSelected)
+    let root = try f.load() as! [String: Any]
+    let all = root["AllSpacesAndDisplays"] as! [String: Any]
+    let expected = (f.original["AllSpacesAndDisplays"] as! [String: Any])["Linked"] as! NSDictionary
+    #expect(all["Desktop"] as? NSDictionary == expected && all["Idle"] as? NSDictionary == expected)
+    #expect(try recovery.recoverIfNeeded())
+    #expect(routes.isSharedSelected)
+    try routes.restoreIfOwned()
+    #expect(try f.load() == f.original)
+}
+
+@Test func lockEffectsSharedRemovePreservesAnExplicitNewIdleOrDesktopChoice() throws {
+    for changed in ["Desktop", "Idle"] {
+        let f = try EffectsRouteFixture(); defer { f.cleanup() }
+        let routes = LiveScreenSaverStoreCoordinator(storeURL: f.storeURL,
+            journalURL: f.root.appendingPathComponent("shared.json"), saverURL: f.saverURL,
+            stopWallpaperAgent: {}, startWallpaperAgent: {})
+        try routes.activate(includeDesktop: true)
+        var root = try f.load() as! [String: Any]
+        var all = root["SystemDefault"] as! [String: Any]
+        let explicit: [String: Any] = ["Content": ["Choices": [["Provider": WallpaperPlatformConstants.imageProviderID,
+            "Files": ["new-user-photo"], "Configuration": Data([99])]]], "Appearance": ["mode": "light"]]
+        all[changed] = explicit; root["SystemDefault"] = all
+        try PropertyListSerialization.data(fromPropertyList: root, format: .binary, options: 0).write(to: f.storeURL)
+        try routes.restoreIfOwned()
+        let restored = (try f.load()["SystemDefault"]) as! [String: Any]
+        #expect(restored[changed] as? NSDictionary == explicit as NSDictionary)
+        let other = changed == "Desktop" ? "Idle" : "Desktop"
+        #expect(restored[other] as? NSDictionary == (f.original["SystemDefault"] as! [String: Any])[other] as? NSDictionary)
+    }
+}
+
+@Test @MainActor func lockEffectsHealthRecordsTheSaverCursorAndParallaxAndStopsItsClock() throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let bridge = ScreenSaverEffectsBridge(content: NSView(frame: CGRect(x: 0, y: 0, width: 960, height: 600)), appSupportURL: f.root)
+    let effects = try #require(bridge.view as? WallpaperEffectsView)
+    effects.screenSaverPresentationIsVisible = { true }
+    bridge.setPresenting(true, paused: false, surfaceID: nil, sequence: nil, imageURL: nil, gravity: AVLayerVideoGravity.resizeAspectFill.rawValue)
+    for index in 0..<120 {
+        effects.renderFrame(deltaTime: 1.0/60, cursor: CGPoint(x: index < 60 ? -0.9 : 0.9, y: 0.2))
+        bridge.setPresenting(true, paused: false, surfaceID: nil, sequence: nil, imageURL: nil, gravity: AVLayerVideoGravity.resizeAspectFill.rawValue)
+    }
+    bridge.setPresenting(false, paused: false, surfaceID: nil, sequence: nil, imageURL: nil, gravity: AVLayerVideoGravity.resizeAspectFill.rawValue)
+    let files = try FileManager.default.contentsOfDirectory(at: f.root.appendingPathComponent("ScreenSaverEffects"), includingPropertiesForKeys: nil)
+    let file = try #require(files.first)
+    let record = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+    #expect(try #require(record["cursorMinX"] as? Double) < -0.7)
+    #expect(try #require(record["cursorMaxX"] as? Double) > 0.7)
+    let low = try #require(record["parallaxMinX"] as? Double)
+    let high = try #require(record["parallaxMaxX"] as? Double)
+    #expect(high - low > 10, "Cursor motion must move the rendered content, including its crop offset")
+    let status = try #require(record["status"] as? [String: Any])
+    #expect(status["surface"] as? String == "lockScreen")
+    #expect(status["active"] as? Bool == false && status["framesPerSecond"] as? Double == 0)
 }

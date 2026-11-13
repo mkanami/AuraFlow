@@ -162,14 +162,18 @@ confirmed silent wallpapers. Catalog checks use bounded audio-only samples.
 
 Wallpaper effects also render on the Lock Screen with the same settings and
 strength as the Desktop, including falling rain and rain on glass together.
-On macOS 26, AuraFlow prepares a silent native HEVC loop using the shared
-effects renderer, including refraction of the actual wallpaper frames. Both
-manual locks and the automatic idle saver use this native source. Preparing a
-new combination of wallpaper and effects takes time; matching results are
-cached. The Lock Screen loop is limited to 30 seconds and uses ambient motion
-instead of live cursor input. Desktop playback keeps the complete original
-media and interactive cursor effects. Older macOS versions use the live saver.
-The Lock Screen never plays music.
+On macOS 26, **Start** preselects AuraFlow's signed live Screen Saver provider
+for both Desktop and Idle before a manual or automatic lock. The provider uses
+the original media and the same effects view, cursor smoothing and Metal water
+renderer as the Desktop; playback is not limited to a prepared 30-second loop.
+The unlocked Desktop keeps its own renderer. Hidden system instances pause
+video decoding and effects. Native wallpaper descriptors and appearance settings
+are restored when the installation is removed.
+
+The separate **Lock** action preserves the user's native Desktop and uses the
+native Aerial fallback: a cached, silent effects loop of at most 30 seconds with
+ambient motion. Older macOS versions use the live saver. The Lock Screen never
+plays music.
 
 The **With Music** tab collects videos with confirmed sound from DesktopHut and
 LiveWallpapers4Free. Music and lofi listings are loaded through bundled

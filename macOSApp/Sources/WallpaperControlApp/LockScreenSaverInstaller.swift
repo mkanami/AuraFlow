@@ -459,14 +459,17 @@ final class LockScreenSaverInstaller: LockScreenSaverInstalling {
         let installedExecutable = destinationURL
             .appendingPathComponent("Contents/MacOS/AuraFlowLockScreen")
         guard fileManager.fileExists(atPath: templateExecutable.path),
-              fileManager.fileExists(atPath: installedExecutable.path),
-              !fileManager.contentsEqual(
-                  atPath: templateExecutable.path,
-                  andPath: installedExecutable.path
-              )
+              fileManager.fileExists(atPath: installedExecutable.path)
         else {
             return
         }
+        let components = ["Contents/MacOS/AuraFlowLockScreen", "Contents/Frameworks/libAuraWallpaperEffects.dylib"]
+        guard components.contains(where: { relative in
+            let source = templateURL.appendingPathComponent(relative)
+            let installed = destinationURL.appendingPathComponent(relative)
+            return fileManager.fileExists(atPath: source.path)
+                && !fileManager.contentsEqual(atPath: source.path, andPath: installed.path)
+        }) else { return }
 
         let parentURL = destinationURL.deletingLastPathComponent()
         let stagingURL = parentURL.appendingPathComponent(

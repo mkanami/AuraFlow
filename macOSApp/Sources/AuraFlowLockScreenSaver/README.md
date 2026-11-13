@@ -28,11 +28,18 @@ directly; no screen capture is used. Its actual start/stop lifecycle controls
 animation, including the idle saver before password lock. Sleep, Stop and
 Reduce Motion still suspend effects. Music remains muted.
 
-On macOS 26, video/photo installations use the native Aerial provider with a
-cached HEVC loop composited by the shared effects renderer. The third-party
-saver remains available for older systems and terminal/web wallpapers, but is
-not used for modern video/photo manual locks: loginwindow can resolve the
-Desktop source before a custom Idle provider is promoted. Migration restores
-the custom provider's saved native descriptors before installing the native
-source. Native loops are silent, at most 30 seconds, with ambient rather than
-interactive cursor motion. The Desktop source file is never modified.
+On macOS 26, effects-enabled Start installations preselect this provider for
+both Desktop and Idle before loginwindow resolves the manual Lock Screen.
+The provider plays the original media and uses the shared interactive effects
+renderer. The unlocked Desktop continues to use AuraFlow's own windows; dormant
+system instances suspend video and effects. Removal restores the complete saved
+native descriptors, including per-display/Space appearance and linked layouts.
+Interrupted sessions suspend to those actual user choices, and resume only
+choices that still match the suspension record.
+
+The dedicated Lock-only action retains the native Aerial fallback to preserve
+the user's Desktop route. That silent effects loop is cached, limited to 30
+seconds and uses ambient motion. Neither renderer changes the source media.
+The system host has read-only access to account media. Bounded diagnostics try
+the host cache when the shared support directory is not writable; activity and
+cursor changes also go to the unified log. Updating the saver refreshes both its executable and the effects dylib.

@@ -9,12 +9,18 @@ public final class ScreenSaverRouteRecovery {
     private struct SavedRoute: Decodable {
         let path: String
         let idle: Data?
+        let desktop: Data?
+        let linked: Data?
+        let sharedDesktop: Bool?
     }
     private struct Journal: Decodable { let routes: [SavedRoute] }
     private struct SuspendedRoute: Codable {
         let path: String
-        let auraIdle: Data
-        let fallbackIdle: Data
+        let auraIdle: Data?
+        let fallbackIdle: Data?
+        var auraDesktop: Data? = nil
+        var fallbackDesktop: Data? = nil
+        var desktopChanged: Bool? = nil
     }
     private struct LockSessionRoute: Codable {
         let path: String
@@ -59,14 +65,19 @@ public final class ScreenSaverRouteRecovery {
             guard let root = try PropertyListSerialization.propertyList(from: original, format: nil) as? [String: Any] else { return false }
             var changed = false
             let resumed = mapRoutes(root) { path, route in
-                guard route["Linked"] == nil, let saved = suspended.first(where: { $0.path == path }),
-                      let fallback = try? PropertyListSerialization.propertyList(from: saved.fallbackIdle, format: nil),
-                      self.sameChoice(route["Idle"], fallback),
-                      let aura = try? PropertyListSerialization.propertyList(from: saved.auraIdle, format: nil)
-                else { return route }
+                guard route["Linked"] == nil, let saved = suspended.first(where: { $0.path == path }) else { return route }
                 var updated = route
-                updated["Idle"] = aura
-                changed = true
+                if let fallback = self.decodedMode(saved.fallbackIdle), self.sameChoice(route["Idle"], fallback),
+                   let aura = self.decodedMode(saved.auraIdle) {
+                    updated["Idle"] = aura
+                    changed = true
+                }
+                if saved.desktopChanged == true,
+                   self.sameChoice(route["Desktop"], self.decodedMode(saved.fallbackDesktop)),
+                   let aura = self.decodedMode(saved.auraDesktop) {
+                    updated["Desktop"] = aura
+                    changed = true
+                }
                 return updated
             }
             guard shouldProceed(), (try? Data(contentsOf: storeURL)) == original else { return false }
@@ -196,19 +207,32 @@ public final class ScreenSaverRouteRecovery {
             var suspended = (try? Data(contentsOf: suspensionURL)).flatMap {
                 try? JSONDecoder().decode([SuspendedRoute].self, from: $0)
             } ?? []
+            let journal = try JSONDecoder().decode(Journal.self, from: Data(contentsOf: journalURL))
             var changed = false
             let updated = mapRoutes(root) { path, route in
-                guard route["Linked"] == nil, self.isAura(route["Idle"]),
-                      let idle = route["Idle"], let desktop = route["Desktop"] ?? fallbackDesktop,
-                      self.isUserDesktop(desktop),
-                      let auraData = try? PropertyListSerialization.data(fromPropertyList: idle, format: .binary, options: 0),
-                      let fallbackData = try? PropertyListSerialization.data(fromPropertyList: desktop, format: .binary, options: 0)
-                else { return route }
+                guard route["Linked"] == nil else { return route }
+                let saved = journal.routes.first { $0.path == path }
+                let ownsIdle = self.isAura(route["Idle"])
+                let ownsDesktop = saved?.sharedDesktop == true && self.isAura(route["Desktop"])
+                guard ownsIdle || ownsDesktop else { return route }
+                let savedDesktop = self.decodedMode(saved?.desktop ?? saved?.linked)
+                let desktop = [route["Desktop"], savedDesktop, self.decodedMode(saved?.idle), fallbackDesktop]
+                    .compactMap { $0 }.first(where: self.isUserDesktop)
+                guard !ownsIdle || desktop != nil else { return route }
                 suspended.removeAll { $0.path == path }
-                suspended.append(SuspendedRoute(path: path, auraIdle: auraData, fallbackIdle: fallbackData))
+                suspended.append(SuspendedRoute(path: path,
+                    auraIdle: ownsIdle ? self.encodedMode(route["Idle"]) : nil,
+                    fallbackIdle: ownsIdle ? self.encodedMode(desktop) : nil,
+                    auraDesktop: ownsDesktop ? self.encodedMode(route["Desktop"]) : nil,
+                    fallbackDesktop: ownsDesktop ? self.encodedMode(savedDesktop) : nil,
+                    desktopChanged: ownsDesktop ? true : nil))
                 changed = true
                 var result = route
-                result["Idle"] = desktop
+                if ownsIdle { result["Idle"] = desktop }
+                if ownsDesktop {
+                    if let savedDesktop { result["Desktop"] = savedDesktop }
+                    else { result.removeValue(forKey: "Desktop") }
+                }
                 return result
             }
             guard changed, shouldProceed(), (try? Data(contentsOf: storeURL)) == original else { return restoredDesktop }
@@ -255,6 +279,12 @@ public final class ScreenSaverRouteRecovery {
     private func choice(_ mode: Any?) -> [String: Any]? {
         let content = (mode as? [String: Any])?["Content"] as? [String: Any]
         return (content?["Choices"] as? [[String: Any]])?.first
+    }
+    private func decodedMode(_ data: Data?) -> Any? {
+        data.flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) }
+    }
+    private func encodedMode(_ mode: Any?) -> Data? {
+        mode.flatMap { try? PropertyListSerialization.data(fromPropertyList: $0, format: .binary, options: 0) }
     }
     private func isAura(_ mode: Any?) -> Bool {
         guard let choice = choice(mode), choice["Provider"] as? String == WallpaperPlatformConstants.screenSaverProviderID,

@@ -25,6 +25,7 @@ public final class LiveScreenSaverStoreCoordinator {
         let linked: Data?
         let idle: Data?
         let desktop: Data?
+        var sharedDesktop: Bool?
     }
 
     private struct Journal: Codable {
@@ -68,26 +69,43 @@ public final class LiveScreenSaverStoreCoordinator {
         return selected
     }
 
-    public func activate() throws {
-        try routeRecovery.withExclusiveAccess { try activateLocked() }
+    /// A manual lock can resolve Desktop before any notification is delivered.
+    /// Every applicable route must already select the live provider.
+    public var isSharedSelected: Bool {
+        guard let data = try? readStore(), let root = try? dictionary(data) else { return false }
+        var found = false, valid = true
+        _ = mapContainers(in: root) { _, route in
+            guard route["Linked"] != nil || route["Desktop"] != nil || route["Idle"] != nil else { return route }
+            found = true
+            valid = valid && route["Linked"] == nil && self.isSelected(route["Idle"]) && self.isSelected(route["Desktop"])
+            return route
+        }
+        return found && valid
+    }
+
+    public func activate() throws { try activate(includeDesktop: false) }
+
+    public func activate(includeDesktop: Bool) throws {
+        if includeDesktop { try routeRecovery.restoreDesktopAfterLockSession() }
+        try routeRecovery.withExclusiveAccess { try activateLocked(includeDesktop: includeDesktop) }
     }
 
     private var routeRecovery: ScreenSaverRouteRecovery {
         ScreenSaverRouteRecovery(storeURL: storeURL, journalURL: journalURL, saverURL: saverURL)
     }
 
-    private func activateLocked() throws {
+    private func activateLocked(includeDesktop: Bool) throws {
         let existingJournal = try loadJournal()
         // Validate the store before interrupting WallpaperAgent, but do not
         // return early when our saver is already selected. Like the regular
         // wallpaper Start path, every real activation must re-arm the system
         // agent because it can keep a stale secure-surface provider in memory.
-        _ = try activationPlan(from: readStore(), journal: existingJournal)
+        _ = try activationPlan(from: readStore(), journal: existingJournal, includeDesktop: includeDesktop)
         try withStoppedWallpaperAgent {
             // WallpaperAgent may rewrite Index.plist while exiting. Build the
             // new Idle choice from the *post-exit* store, not the stale copy.
             let original = try readStore()
-            guard let (updated, journal) = try activationPlan(from: original, journal: existingJournal) else {
+            guard let (updated, journal) = try activationPlan(from: original, journal: existingJournal, includeDesktop: includeDesktop) else {
                 // The desired route is already present. The deliberate stop /
                 // start above is still required to refresh WallpaperAgent.
                 return
@@ -137,7 +155,8 @@ public final class LiveScreenSaverStoreCoordinator {
 
     private func activationPlan(
         from original: Data,
-        journal: Journal?
+        journal: Journal?,
+        includeDesktop: Bool
     ) throws -> (Data, Journal)? {
         var root = try dictionary(original)
         var saved = journal?.routes ?? []
@@ -148,20 +167,25 @@ public final class LiveScreenSaverStoreCoordinator {
             guard result["Linked"] != nil || result["Desktop"] != nil || result["Idle"] != nil else {
                 return result
             }
-            if isSelected(result["Idle"]), result["Linked"] == nil { return result }
+            if isSelected(result["Idle"]), result["Linked"] == nil,
+               !includeDesktop || isSelected(result["Desktop"]) { return result }
             if !saved.contains(where: { $0.path == path }) {
                 saved.append(SavedRoute(
                     path: path,
                     type: result["Type"] as? String,
                     linked: optionalPlistData(result["Linked"]),
                     idle: optionalPlistData(result["Idle"]),
-                    desktop: optionalPlistData(result["Desktop"])
+                    desktop: optionalPlistData(result["Desktop"]),
+                    sharedDesktop: includeDesktop ? true : nil
                 ))
+            } else if includeDesktop, let index = saved.firstIndex(where: { $0.path == path }) {
+                saved[index].sharedDesktop = true
             }
             if let linked = result.removeValue(forKey: "Linked") {
                 result["Desktop"] = linked
             }
             result["Idle"] = saverMode
+            if includeDesktop { result["Desktop"] = saverMode }
             result["Type"] = "individual"
             changed = true
             return result
@@ -180,8 +204,37 @@ public final class LiveScreenSaverStoreCoordinator {
             return mode
         }.first
         root = mapContainers(in: root) { path, container in
-            guard isSelected(container["Idle"]), container["Linked"] == nil else { return container }
+            let ownsIdle = isSelected(container["Idle"]), ownsDesktop = isSelected(container["Desktop"])
+            guard (ownsIdle || ownsDesktop), container["Linked"] == nil else { return container }
             var result = container
+            if let saved = journal.routes.first(where: { $0.path == path }), saved.sharedDesktop == true, ownsDesktop {
+                if ownsIdle {
+                    // Both choices are still ours: restore the complete original
+                    // structure, including distinct Idle/Desktop appearances.
+                    for (key, data) in [("Linked", saved.linked), ("Desktop", saved.desktop), ("Idle", saved.idle)] {
+                        if let data {
+                            guard let mode = propertyList(data), WallpaperDesktopSupport.isUserWallpaperMode(mode) else {
+                                missingUserSelection = true; return container
+                            }
+                            result[key] = mode
+                        } else { result.removeValue(forKey: key) }
+                    }
+                    if let type = saved.type { result["Type"] = type } else { result.removeValue(forKey: "Type") }
+                    changed = true
+                    return result
+                }
+                // An explicit new Idle choice wins, while the still-owned
+                // Desktop returns to its exact saved selection.
+                if let data = saved.desktop ?? saved.linked {
+                    guard let desktop = propertyList(data), WallpaperDesktopSupport.isUserWallpaperMode(desktop) else {
+                        missingUserSelection = true; return container
+                    }
+                    result["Desktop"] = desktop
+                } else { result.removeValue(forKey: "Desktop") }
+                changed = true
+                return result
+            }
+            guard ownsIdle else { return container }
             if preferCurrentDesktop, let desktop = result["Desktop"], WallpaperDesktopSupport.isUserWallpaperMode(desktop) {
                 result["Idle"] = desktop
                 result["Type"] = "individual"

@@ -302,3 +302,26 @@ func missingOrCorruptSaverBackupNeverSelectsAnUnrequestedSystemSaver(corrupt: Bo
     #expect(fixture.preferences.selectedModule == selected)
     #expect(fixture.preferences.idleTime == 0)
 }
+
+@Test func screenSaverRefreshInstallsANewEffectsLibraryWithoutChangingTheSelectedWallpaper() throws {
+    let fixture = try ScreenSaverSelectionFixture(); defer { fixture.cleanup() }
+    let template = fixture.root.appendingPathComponent("Template.saver", isDirectory: true)
+    for bundle in [template, fixture.destinationURL] {
+        try FileManager.default.createDirectory(at: bundle.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bundle.appendingPathComponent("Contents/Frameworks"), withIntermediateDirectories: true)
+        try Data("same-objc-saver".utf8).write(to: bundle.appendingPathComponent("Contents/MacOS/AuraFlowLockScreen"))
+    }
+    let relative = "Contents/Frameworks/libAuraWallpaperEffects.dylib"
+    try Data("old-effects".utf8).write(to: fixture.destinationURL.appendingPathComponent(relative))
+    try Data("new-interactive-effects".utf8).write(to: template.appendingPathComponent(relative))
+    let movie = fixture.root.appendingPathComponent("user-original.mp4")
+    try Data("original-media".utf8).write(to: movie)
+    let selected = fixture.preferences.selectedModule
+    let installer = LockScreenSaverInstaller(fileManager: .default, templateURL: template,
+        destinationURL: fixture.destinationURL, preferences: fixture.preferences,
+        preferenceBackupURL: fixture.backupURL, terminalWallpaperStore: NoopTerminalWallpaperStore(), signatureVerifier: { _ in })
+    installer.refreshInstalledCompatibilityComponentIfNeeded()
+    #expect(try Data(contentsOf: fixture.destinationURL.appendingPathComponent(relative)) == Data("new-interactive-effects".utf8))
+    #expect(fixture.preferences.selectedModule == selected && fixture.preferences.idleTime == 0)
+    #expect(try Data(contentsOf: movie) == Data("original-media".utf8))
+}

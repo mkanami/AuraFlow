@@ -10,6 +10,7 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
         var path: String
         var signature: String
         var generation: UInt64
+        var desktopIncluded: Bool?
     }
     private let native: ModernLockScreenInstalling
     private let root: URL
@@ -36,7 +37,7 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
         return rendererAvailable && settings.enabled && settings.hasVisibleEffects
     }
 
-    public init(native: ModernLockScreenInstalling = AerialLockScreenInstaller(),
+    public init(native: ModernLockScreenInstalling = AerialEffectsLockScreenInstaller(),
                 appSupportURL: URL = WallpaperRuntimeStore.defaultAppSupportURL(),
                 saverURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Screen Savers/AuraFlowLockScreen.saver"),
                 storeURL: URL = WallpaperPlatformConstants.wallpaperStoreURL(homeURL: FileManager.default.homeDirectoryForCurrentUser),
@@ -57,7 +58,9 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
     public var isAvailable: Bool { native.isAvailable || rendererAvailable }
     public var isInstalled: Bool { usesLiveEffects || native.isInstalled }
     public var installationConfirmed: Bool { usesLiveEffects ? lockScreenOnlyStatus(videoURL: nil).isReady : native.installationConfirmed }
-    public var requiresLockScreenSessionPromotion: Bool { usesLiveEffects || native.requiresLockScreenSessionPromotion }
+    public var requiresLockScreenSessionPromotion: Bool {
+        usesLiveEffects ? installation?.desktopIncluded != true : native.requiresLockScreenSessionPromotion
+    }
 
     public func install(videoURL: URL) async throws {
         try await mutations.withExclusiveAsync {
@@ -76,8 +79,14 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
     }
     public func installLockScreenOnly(videoURL: URL, playbackSpeed: Double, scaleMode: WallpaperScaleMode) async throws {
         try await mutations.withExclusiveAsync {
-            if self.wantsLiveEffects || self.usesLiveEffects { try await self.installLive(videoURL: videoURL) }
-            else { try await self.native.installLockScreenOnly(videoURL: videoURL, playbackSpeed: playbackSpeed, scaleMode: scaleMode) }
+            // A dedicated Lock installation must retain the user's native
+            // Desktop. Keep its existing native fallback rather than selecting
+            // a shared live provider underneath an unrelated Desktop.
+            if self.usesLiveEffects {
+                try self.routes.restoreIfOwned()
+                try FileManager.default.removeItem(at: self.markerURL)
+            }
+            try await self.native.installLockScreenOnly(videoURL: videoURL, playbackSpeed: playbackSpeed, scaleMode: scaleMode)
         }
     }
     private func installLive(videoURL: URL) async throws {
@@ -86,10 +95,13 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
         // transaction. The custom route journals the restored user choices.
         if native.isInstalled { try await native.uninstallLockScreenOnlyPreservingCurrentDesktopAsync() }
         let generation = (installation?.generation ?? 0) &+ 1
-        let next = Installation(path: videoURL.standardizedFileURL.path, signature: signature(videoURL), generation: generation)
+        let next = Installation(path: videoURL.standardizedFileURL.path, signature: signature(videoURL), generation: generation,
+            desktopIncluded: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try JSONEncoder().encode(next).write(to: markerURL, options: .atomic)
-        do { try routes.activate() }
+        // Manual loginwindow resolution may run before any lock notification.
+        // Bind the same live provider to Desktop and Idle while still unlocked.
+        do { try routes.activate(includeDesktop: true) }
         catch {
             try? routes.restoreIfOwned()
             try? FileManager.default.removeItem(at: markerURL)
@@ -108,7 +120,7 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
         guard let installation else { return native.lockScreenOnlyStatus(videoURL: videoURL) }
         let url = URL(fileURLWithPath: installation.path)
         let matches = videoURL.map { $0.standardizedFileURL == url } ?? true
-        let selected = routes.isSelected
+        let selected = installation.desktopIncluded == true ? routes.isSharedSelected : routes.isSelected
         return LockScreenOnlyGenerationStatus(installed: true, sourceMatches: matches,
             assetValid: FileManager.default.isReadableFile(atPath: url.path) && signature(url) == installation.signature,
             providerAvailable: rendererAvailable,
@@ -122,11 +134,17 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
     public func repair(videoURL: URL, shouldProceed: @escaping () -> Bool) async throws -> Bool {
         try await mutations.withExclusiveAsync {
             guard shouldProceed() else { return false }
-            if !self.usesLiveEffects && self.wantsLiveEffects && self.native.isInstalled {
+            if !self.usesLiveEffects && self.wantsLiveEffects && self.native.isInstalled,
+               !self.native.requiresLockScreenSessionPromotion {
                 try await self.installLive(videoURL: videoURL)
                 return true
             }
             if self.usesLiveEffects {
+                if self.installation?.desktopIncluded != true,
+                   WallpaperRuntimeStore(appSupportURL: self.root).loadLockScreenOnlySource() == nil {
+                    try await self.installLive(videoURL: videoURL)
+                    return true
+                }
                 var changed = false
                 if var installed = self.installation, installed.path == videoURL.standardizedFileURL.path,
                    installed.signature != self.signature(videoURL), shouldProceed() {
@@ -141,7 +159,7 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
         }
     }
     public func rearmForNextLock(videoURL: URL, shouldProceed: @escaping () -> Bool) async throws -> Bool {
-        if usesLiveEffects || wantsLiveEffects {
+        if usesLiveEffects || (wantsLiveEffects && !native.requiresLockScreenSessionPromotion) {
             _ = try await repair(videoURL: videoURL, shouldProceed: shouldProceed)
             // Ready is not the same as changed. The agent must bind a fresh
             // presentation and acknowledge the current command even when the
@@ -152,6 +170,7 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
     }
     public func activateLockScreenForCurrentSession() throws -> Bool {
         if usesLiveEffects {
+            guard installation?.desktopIncluded != true else { return false }
             return try mutations.withExclusive {
                 try recovery.activateDesktopForLockSession { self.sessionIsLocked() == true && self.usesLiveEffects }
             }
@@ -160,12 +179,14 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
     }
     public func restoreDesktopAfterLockScreenSession() throws -> Bool {
         if usesLiveEffects {
+            guard installation?.desktopIncluded != true else { return false }
             return try mutations.withExclusive { try recovery.restoreDesktopAfterLockSession() }
         }
         return try native.restoreDesktopAfterLockScreenSession()
     }
     public func restoreDesktopAfterLockScreenSessionAsync() async throws -> Bool {
         if usesLiveEffects {
+            guard installation?.desktopIncluded != true else { return false }
             return try await mutations.withExclusiveAsync { try self.recovery.restoreDesktopAfterLockSession() }
         }
         return try await native.restoreDesktopAfterLockScreenSessionAsync()
@@ -177,10 +198,10 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
         usesLiveEffects ? false : try await native.resumeLockScreenOnlyPlayback(videoURL: videoURL)
     }
     public func updatePlaybackSpeed(videoURL: URL, speed: Double) async throws -> Bool {
-        usesLiveEffects ? false : try await native.updatePlaybackSpeed(videoURL: videoURL, speed: speed)
+        usesLiveEffects ? true : try await native.updatePlaybackSpeed(videoURL: videoURL, speed: speed)
     }
     public func updateScaleMode(videoURL: URL, mode: WallpaperScaleMode) async throws -> Bool {
-        usesLiveEffects ? false : try await native.updateScaleMode(videoURL: videoURL, mode: mode)
+        usesLiveEffects ? true : try await native.updateScaleMode(videoURL: videoURL, mode: mode)
     }
     public func uninstall() throws {
         try mutations.withExclusive {

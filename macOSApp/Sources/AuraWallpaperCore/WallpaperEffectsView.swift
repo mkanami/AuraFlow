@@ -196,7 +196,7 @@ public final class WallpaperEffectsView: NSView {
         let nextActivity = pauseReason ?? "active-\(activity.framesPerSecond)"
         if loggedActivity != nextActivity {
             loggedActivity = nextActivity
-            Self.logger.debug("Effects surface=\(self.isPreview ? "preview" : "desktop", privacy: .public) state=\(nextActivity, privacy: .public)")
+            Self.logger.debug("Effects surface=\(self.isScreenSaver ? "lockScreen" : (self.isPreview ? "preview" : "desktop"), privacy: .public) state=\(nextActivity, privacy: .public)")
         }
         guard pauseReason == nil else {
             rainLightingSampler.stop()
