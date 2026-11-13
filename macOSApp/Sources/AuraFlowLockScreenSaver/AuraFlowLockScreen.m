@@ -60,6 +60,8 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
 @property(nonatomic, readonly) NSView *view;
 @property(nonatomic, readonly) NSDictionary *diagnostics;
 @property(nonatomic, readonly) BOOL presentationVisible;
+@property(nonatomic, readonly) double frameInterval;
+- (void)advanceFrame;
 - (void)setPresenting:(BOOL)presenting paused:(BOOL)paused surfaceID:(nullable NSNumber *)surfaceID
     sequence:(nullable NSNumber *)sequence imageURL:(nullable NSURL *)imageURL gravity:(NSString *)gravity;
 @end
@@ -225,6 +227,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         if (!self.runtimePaused) [self syncVideoPlayback];
     }
     [self updateEffectsPresentation];
+    if ([self.effects respondsToSelector:@selector(advanceFrame)]) [self.effects advanceFrame];
     self.animationTicks += 1;
     if (self.animationTicks == 1) [self logPresentationEvent:"first-tick"];
 }
@@ -244,11 +247,20 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
         [self.player pause];
     }
     NSTimeInterval interval = visible ? 1.0/30.0 : 0.2;
-    if (fabs(self.animationTimeInterval - interval) > 0.001) self.animationTimeInterval = interval;
+    if (visible && [self.effects respondsToSelector:@selector(frameInterval)]) interval = self.effects.frameInterval;
+    if (interval <= 0) interval = 1.0/30.0;
+    if (fabs(self.animationTimeInterval - interval) > 0.001) {
+        // ScreenSaverView snapshots the interval when it creates its timer.
+        // Changing the property alone leaves a prewarmed 5/30 Hz timer running.
+        // Rearm only this view's existing clock; never start a system saver.
+        BOOL rearm = self.isAnimating;
+        if (rearm) [super stopAnimation];
+        self.animationTimeInterval = interval;
+        if (rearm) [super startAnimation];
+    }
 }
 
 - (void)updateEffectsPresentation {
-    [self syncVideoPlayback];
     NSNumber *surfaceID = nil;
     NSNumber *sequence = nil;
     NSURL *imageURL = nil;
@@ -272,6 +284,7 @@ static BOOL AuraFlowJSONMetadataEqual(AuraFlowJSONMetadata a, AuraFlowJSONMetada
     [self.effects setPresenting:self.isAnimating && hasAura paused:self.runtimePaused
         surfaceID:surfaceID sequence:sequence imageURL:imageURL
         gravity:gravity];
+    [self syncVideoPlayback];
 }
 
 - (void)logPresentationEvent:(const char *)event {

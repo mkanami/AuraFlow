@@ -24,8 +24,7 @@ struct WallpaperRainTexture {
         let width = plane.strokeWidth * unit
         let length = plane.referenceLength * unit
         let halo = Self.softness(plane: plane, amount: softness)
-        let padding = ceil(3 * unit + halo * 2 * unit)
-        let size = CGSize(width: ceil(width + padding * 2), height: ceil(length + padding * 2))
+        let size = spriteSize(plane: plane, unit: unit, softness: softness)
         let pixelWidth = Int(ceil(size.width * scale)), pixelHeight = Int(ceil(size.height * scale))
         var pixels = [UInt8](repeating: 0, count: pixelWidth * pixelHeight * 4)
         for y in 0..<pixelHeight {
@@ -52,5 +51,13 @@ struct WallpaperRainTexture {
                 bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                 provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) else { return nil }
         return Self(image: image, size: size)
+    }
+
+    /// Metal uses this geometry directly; it does not need a CPU sprite image.
+    static func spriteSize(plane: WallpaperRainPlane, unit: CGFloat, softness: Double) -> CGSize {
+        let halo = Self.softness(plane: plane, amount: softness)
+        let padding = ceil(3 * unit + halo * 2 * unit)
+        return CGSize(width: ceil(plane.strokeWidth * unit + padding * 2),
+            height: ceil(plane.referenceLength * unit + padding * 2))
     }
 }

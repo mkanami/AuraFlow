@@ -12,6 +12,7 @@ enum WallpaperScreenSaverActivity {
         locked == true || saverRunning == true
     }
     static func currentIsVisible() -> Bool {
-        isVisible(locked: LockScreenSession.currentIsLocked(), saverRunning: running?())
+        if LockScreenSession.currentIsLocked() == true { return true }
+        return running?() == true
     }
 }

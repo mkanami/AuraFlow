@@ -5,6 +5,18 @@ import Metal
 import QuartzCore
 import OSLog
 
+/// Keep a stable phase when a native timer arrives a little early or late.
+/// Scheduling relative to each callback accumulates jitter and drops glass frames.
+struct WallpaperGlassRainCadence {
+    private(set) var next = -Double.infinity
+    private static let interval = 1.0 / 30
+    func wantsFrame(at time: Double) -> Bool { time + 0.004 >= next }
+    mutating func submitted(at time: Double) {
+        next = next.isFinite && time - next < Self.interval ? next + Self.interval : time + Self.interval
+    }
+    mutating func sourceUnavailable(at time: Double) { next = time + 0.1 }
+}
+
 /// Falling rain, water normal map, then a shared refracted scene.
 /// The transparent dry area leaves the original media renderer untouched.
 @MainActor
@@ -30,7 +42,7 @@ final class WallpaperGlassRainRenderer {
     private let gate = GlassFrameGate()
     private(set) var completedFrames: UInt64 = 0
     private(set) var simulation = WallpaperGlassRainSimulation()
-    private var nextFrame = -Double.infinity
+    private var cadence = WallpaperGlassRainCadence()
     private var lastTime: Double?
 
     init?() {
@@ -73,11 +85,11 @@ final class WallpaperGlassRainRenderer {
         layer.name = "rain-on-glass"; layer.isHidden = true
     }
 
-    func wantsFrame(at time: Double) -> Bool { time >= nextFrame }
+    func wantsFrame(at time: Double) -> Bool { cadence.wantsFrame(at: time) }
 
     func stop() {
         let hadResources = background != nil || water != nil || lastTime != nil || !layer.isHidden
-        lastTime = nil; nextFrame = -.infinity
+        lastTime = nil; cadence = WallpaperGlassRainCadence()
         guard hadResources else { return }
         layer.isHidden = true
         uploadedRevision = nil; loggedSource = nil
@@ -91,10 +103,10 @@ final class WallpaperGlassRainRenderer {
         guard settings.enabled, settings.glassRainEnabled, settings.glassRainIntensity > 0,
               size.width > 0, size.height > 0, let source else {
             if !layer.isHidden { layer.isHidden = true }
-            lastTime = nil; nextFrame = time + 0.1; return
+            lastTime = nil; cadence.sourceUnavailable(at: time); return
         }
-        guard time >= nextFrame, gate.acquire() else { return }
-        nextFrame = time + 1.0 / 30 - 0.001
+        guard wantsFrame(at: time), gate.acquire() else { return }
+        cadence.submitted(at: time)
         let dt = lastTime.map { min(0.1, max(0, time - $0)) } ?? 0
         lastTime = time
         simulation.advance(deltaTime: dt, aspect: size.width / size.height, settings: settings)

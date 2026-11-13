@@ -33,6 +33,10 @@ public final class WallpaperEffectsView: NSView {
     private(set) var settings = WallpaperEffectsSettings()
     private var motion = WallpaperEffectsMotion()
     private var frameClock: WallpaperEffectsFrameClock?
+    private var externallyDriven = false
+    private var externalFramesPerSecond = 0.0
+    private var externalActivity: NSObjectProtocol?
+    private(set) var screenSaverVisible = false
     private var statusTimer: Timer?
     private var lastFrameTime: CFTimeInterval?
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -43,13 +47,14 @@ public final class WallpaperEffectsView: NSView {
     private var pauseReason: String? = "hidden"
     private var renderedFrames: UInt64 = 0
     private var loggedActivity: String?
-    var isAnimating: Bool { frameClock != nil }
+    var isAnimating: Bool { frameClock != nil || externalFramesPerSecond > 0 }
+    var animationFramesPerSecond: Double { frameClock?.framesPerSecond ?? externalFramesPerSecond }
 
     public var status: WallpaperEffectsStatus {
         let transform = motionContainer.layer?.affineTransform() ?? .identity
         return WallpaperEffectsStatus(surface: isScreenSaver ? "lockScreen" : (isPreview ? "preview" : "desktop"), enabled: settings.enabled,
             active: presentationActive, pauseReason: pauseReason,
-            framesPerSecond: frameClock?.framesPerSecond ?? 0, renderedFrames: renderedFrames,
+            framesPerSecond: animationFramesPerSecond, renderedFrames: renderedFrames,
             cursorX: Double(motion.pointer.x), cursorY: Double(motion.pointer.y),
             parallaxX: Double(transform.tx), parallaxY: Double(transform.ty),
             glowX: Double(overlay.glowPosition.x), glowY: Double(overlay.glowPosition.y), glowOpacity: Double(overlay.glowOpacity),
@@ -99,6 +104,28 @@ public final class WallpaperEffectsView: NSView {
         screenSaverPresenting = presenting
         screenSaverPlaybackPaused = paused
         refreshActivity()
+    }
+
+    /// ScreenSaver.framework already supplies a display clock. A second
+    /// screen-bound display link is independently throttled in its XPC host.
+    func useScreenSaverFrameClock() {
+        guard isScreenSaver, !externallyDriven else { return }
+        stopAnimation()
+        externallyDriven = true
+        refreshActivity()
+    }
+
+    func advanceScreenSaverFrame(at time: Double, cursor: CGPoint? = nil) {
+        guard externallyDriven, externalFramesPerSecond > 0, presentationActive else { return }
+        let delta = lastFrameTime.map { time - $0 } ?? 1 / externalFramesPerSecond
+        lastFrameTime = time
+        renderFrame(deltaTime: delta, cursor: cursor ?? currentCursor(), at: time)
+    }
+
+    private func currentCursor() -> CGPoint? {
+        guard let window else { return nil }
+        let local = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        return WallpaperEffectsMotion.normalizedCursor(local, in: bounds)
     }
 
     public override func layout() {
@@ -165,6 +192,11 @@ public final class WallpaperEffectsView: NSView {
     private func refreshActivity() {
         var activity = WallpaperEffectsActivity()
         let saverVisible = isScreenSaver && screenSaverPresenting && screenSaverPresentationIsVisible()
+        var displayAsleep = false
+        if saverVisible, let number = window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+            displayAsleep = CGDisplayIsAsleep(number.uint32Value) != 0
+        }
+        screenSaverVisible = saverVisible && !displayAsleep && !isHiddenOrHasHiddenAncestor
         activity.screenSaverPresentation = saverVisible
         // Protected saver windows do not report ordinary AppKit occlusion.
         activity.windowVisible = isScreenSaver ? saverVisible && !isHiddenOrHasHiddenAncestor
@@ -178,8 +210,8 @@ public final class WallpaperEffectsView: NSView {
         let session = CGSessionCopyCurrentDictionary() as? [String: Any]
         activity.sessionActive = (session?["kCGSSessionOnConsoleKey"] as? NSNumber)?.boolValue == true
             && (!isPreview || NSApp.isActive)
-        activity.sleeping = !isScreenSaver && suspensionHints.systemSuspended(at: CACurrentMediaTime())
-        if let number = window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+        activity.sleeping = displayAsleep || (!isScreenSaver && suspensionHints.systemSuspended(at: CACurrentMediaTime()))
+        if !isScreenSaver, let number = window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
             activity.sleeping = activity.sleeping || CGDisplayIsAsleep(number.uint32Value) != 0
         }
         // The visible saver also occludes the desktop; the hint only bridges its first compositor frame.
@@ -221,18 +253,23 @@ public final class WallpaperEffectsView: NSView {
             renderFrame(deltaTime: 0, cursor: nil)
             return
         }
+        if externallyDriven {
+            externalFramesPerSecond = activity.framesPerSecond
+            if externalActivity == nil {
+                externalActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
+                    reason: "Render visible Screen Saver effects on the system clock")
+            }
+            return
+        }
         if frameClock?.framesPerSecond == activity.framesPerSecond,
            frameClock?.screen === (window?.screen ?? NSScreen.main) { return }
         stopAnimation()
         lastFrameTime = nil
         frameClock = WallpaperEffectsFrameClock(view: self, framesPerSecond: activity.framesPerSecond) { [weak self] now in
-            guard let self, let window = self.window else { return }
+            guard let self, self.window != nil else { return }
             let delta = self.lastFrameTime.map { now - $0 } ?? 1 / activity.framesPerSecond
             self.lastFrameTime = now
-            let screenPoint = NSEvent.mouseLocation
-            let localPoint = self.convert(window.convertPoint(fromScreen: screenPoint), from: nil)
-            let cursor = WallpaperEffectsMotion.normalizedCursor(localPoint, in: self.bounds)
-            self.renderFrame(deltaTime: delta, cursor: cursor, at: now)
+            self.renderFrame(deltaTime: delta, cursor: self.currentCursor(), at: now)
         }
     }
 
@@ -240,7 +277,7 @@ public final class WallpaperEffectsView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if settings.hasVisibleEffects && presentationActive {
-            if frameClock != nil {
+            if isAnimating {
                 motion.advance(settings: settings, cursor: cursor, deltaTime: deltaTime)
                 if deltaTime > 0 { renderedFrames &+= 1 }
             }
@@ -267,7 +304,7 @@ public final class WallpaperEffectsView: NSView {
     }
 
     private func renderGlass(contentFrame: CGRect, at now: CFTimeInterval) {
-        guard settings.glassRainEnabled, settings.glassRainIntensity > 0, !glassUnavailable else { stopGlass(); return }
+        guard settings.glassRainEnabled, settings.glassRainIntensity > 0, !glassUnavailable else { stopGlass(restoreRain: true); return }
         if glassRenderer == nil {
             glassRenderer = WallpaperGlassRainRenderer()
             guard let glassRenderer else { glassUnavailable = true; return }
@@ -284,8 +321,8 @@ public final class WallpaperEffectsView: NSView {
             scale: window?.backingScaleFactor ?? 1, at: now, airRain: overlay.airRainInstances)
     }
 
-    private func stopGlass() {
-        overlay.setRainComposited(false)
+    private func stopGlass(restoreRain: Bool = false) {
+        overlay.setRainComposited(false, restoreSprites: restoreRain)
         glassFrameSource.stop()
         glassRenderer?.stop()
     }
@@ -322,9 +359,13 @@ public final class WallpaperEffectsView: NSView {
         frameClock?.stop()
         frameClock = nil
         lastFrameTime = nil
+        externalFramesPerSecond = 0
+        if let externalActivity { ProcessInfo.processInfo.endActivity(externalActivity) }
+        externalActivity = nil
     }
 
     private func stopMonitoring() {
+        screenSaverVisible = false
         rainLightingSampler.stop()
         stopGlass()
         stopAnimation()
@@ -337,6 +378,7 @@ public final class WallpaperEffectsView: NSView {
     }
 
     deinit {
+        if let externalActivity { ProcessInfo.processInfo.endActivity(externalActivity) }
         statusTimer?.invalidate()
         for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         for observer in distributedObservers { DistributedNotificationCenter.default().removeObserver(observer) }
