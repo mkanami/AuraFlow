@@ -733,6 +733,7 @@ struct SettingsPopupCard: View {
         .onPreferenceChange(SettingsPopupContentHeightKey.self) { height in
             if abs(contentHeight - height) > 0.5 { contentHeight = height }
         }
+        .font(.system(size: 15, weight: .medium))
         .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
         .background(
             AuraGlassRoundedSurface(
@@ -756,7 +757,7 @@ struct SettingsPopupCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("Playback Settings", systemImage: "gearshape.2.fill")
-                    .font(.headline.weight(.semibold))
+                    .font(.system(size: 18, weight: .semibold))
                 Spacer()
                 Button {
                     viewModel.closeSettings()
@@ -814,7 +815,7 @@ struct SettingsPopupCard: View {
             if viewModel.isPreparingBlendInterpolation {
                 HStack {
                     ProgressView().controlSize(.small)
-                    Text("Preparing blended video frames…").font(.caption)
+                    Text("Preparing blended video frames…").font(.system(size: 13))
                     Button("Cancel") { viewModel.cancelBlendInterpolation() }
                 }
             }
@@ -836,11 +837,11 @@ struct SettingsPopupCard: View {
             Divider().padding(.vertical, 4)
 
             Text("Video Optimization")
-                .font(.subheadline.weight(.semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
 
             Text("Applies to newly imported local videos. Does not change terminal wallpapers or re-encode the currently installed wallpaper.")
-                .font(.caption)
+                .font(.system(size: 13))
                 .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
 
             Toggle(isOn: Binding(
@@ -903,13 +904,13 @@ struct SettingsPopupCard: View {
                 Text(UserFacingMessageFormatter.format(
                     "AV1 hardware encode is unavailable on Mac. Force AV1 uses software ffmpeg and can be CPU intensive."
                 ))
-                    .font(.caption2)
+                    .font(.system(size: 12))
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             } else {
                 Text(UserFacingMessageFormatter.format(
                     "Force AV1 encode is disabled because this Mac has no hardware AV1 decode."
                 ))
-                    .font(.caption2)
+                    .font(.system(size: 12))
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             }
 
@@ -927,7 +928,7 @@ struct SettingsPopupCard: View {
                 VStack(alignment: .leading, spacing: 6) {
                     if let label = viewModel.optimizationLabel {
                         Text(UserFacingMessageFormatter.format(label))
-                            .font(.caption)
+                            .font(.system(size: 13))
                             .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                     }
                     ProgressView(value: viewModel.optimizationProgress)

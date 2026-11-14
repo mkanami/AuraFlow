@@ -17,22 +17,23 @@ struct WallpaperEffectsSettingsSection: View {
         } label: {
             HStack {
                 Label("Wallpaper Effects", systemImage: "sparkles")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.system(size: 16, weight: .semibold))
                 Spacer()
                 Text(viewModel.wallpaperEffects.enabled ? "On" : "Off")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
             }
         }
         .accessibilityIdentifier("wallpaper-effects-settings")
     }
 
     private var effectControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             Toggle("Enable wallpaper effects", isOn: binding(\.enabled))
                 .toggleStyle(.switch)
             Text("Applies to the Desktop, Lock Screen and this preview, for photos, videos, terminal and web wallpapers.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 13))
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
 
             if viewModel.wallpaperEffects.enabled {
                 AuraGlassContentGroup(spacing: 8) {
@@ -58,7 +59,7 @@ struct WallpaperEffectsSettingsSection: View {
                 if viewModel.wallpaperEffects.parallaxEnabled {
                     effectSlider("Depth", value: \.parallaxAmount)
                     Text("Adds a slight crop so movement keeps the edges covered.")
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(.system(size: 13)).foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 }
 
                 Toggle("Soft glow", isOn: binding(\.glowEnabled))
@@ -101,7 +102,7 @@ struct WallpaperEffectsSettingsSection: View {
                     effectSlider("Wind direction", value: \.rainAngle)
                     effectSlider("Rain blur", value: \.rainBlur)
                     Text("Three depth layers, gentle wind gusts and lighting sampled from the wallpaper. Cursor movement adds a small parallax.")
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(.system(size: 13)).foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 }
 
                 Toggle("Rain on Glass", isOn: binding(\.glassRainEnabled))
@@ -116,19 +117,20 @@ struct WallpaperEffectsSettingsSection: View {
                     effectSlider("Glass blur", value: \.glassRainBlur)
                     effectSlider("Refraction", value: \.glassRainRefraction)
                     Text("Wet glass refracts both the wallpaper and Falling Rain. Sliding drops collect beads, merge and leave connected water trails.")
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(.system(size: 13)).foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 }
 
                 Text("Parallax moves the wallpaper, distant light and foreground particles at different depths. Flat media uses simulated depth.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.system(size: 13)).foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
 
-                Text("Effects rest during playback pauses, sleep and Reduce Motion. Low Power Mode reduces effects to 30 fps. Lock Screen keeps the original wallpaper.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("Effects pause with playback, sleep and Reduce Motion. Low Power Mode uses 30 fps. The Desktop and Lock Screen share these settings.")
+                    .font(.system(size: 13)).foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 Button("Reset effects") { viewModel.resetWallpaperEffects() }
                     .modifier(WallpaperEffectsGlassButtons())
                     .controlSize(.small)
             }
         }
+        .font(.system(size: 15, weight: .medium))
         .toggleStyle(.checkbox)
         .padding(.top, 8)
         .padding(.leading, 4)
@@ -176,11 +178,14 @@ struct WallpaperEffectsSettingsSection: View {
     }
 
     private func effectSlider(_ title: String, value key: WritableKeyPath<WallpaperEffectsSettings, Double>) -> some View {
-        HStack(spacing: 10) {
-            Text(title).font(.caption).frame(width: 100, alignment: .leading)
+        HStack(spacing: 12) {
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 128, alignment: .leading)
+                .shadow(color: adaptiveGlassAppearance.centerTextTone.textShadowColor, radius: 0.6)
             AuraLegacySpeedSlider(value: viewModel.wallpaperEffects[keyPath: key], range: 0...1, step: 0.01,
                 onValueChanged: { viewModel.setWallpaperEffect(key, $0) }, onEditingChanged: { _ in },
-                textTone: adaptiveGlassAppearance.centerTextTone)
+                textTone: adaptiveGlassAppearance.centerTextTone, isEmphasized: true)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(title)
                 .accessibilityValue(Text(viewModel.wallpaperEffects[keyPath: key], format: .percent.precision(.fractionLength(0))))
@@ -200,9 +205,10 @@ struct WallpaperEffectsSettingsSection: View {
                     }
                 }
             Text(viewModel.wallpaperEffects[keyPath: key], format: .percent.precision(.fractionLength(0)))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 38, alignment: .trailing)
+                .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                .foregroundStyle(adaptiveGlassAppearance.centerTextTone.primaryTextColor)
+                .shadow(color: adaptiveGlassAppearance.centerTextTone.textShadowColor, radius: 0.6)
+                .frame(width: 48, alignment: .trailing)
         }
     }
 

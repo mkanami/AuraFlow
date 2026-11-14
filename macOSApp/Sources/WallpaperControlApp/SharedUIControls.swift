@@ -145,6 +145,8 @@ struct AuraLegacySpeedSlider: View {
     let onValueChanged: (Double) -> Void
     let onEditingChanged: (Bool) -> Void
     var textTone: AdaptiveTextTone? = nil
+    /// Larger, higher-contrast settings use the same dashed track and glass thumb.
+    var isEmphasized = false
 
     @Environment(\.adaptiveGlassAppearance) private var adaptiveGlassAppearance
     @State private var isDragging = false
@@ -157,14 +159,15 @@ struct AuraLegacySpeedSlider: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let trackHeight: CGFloat = 4
-            let knobSize = CGSize(width: 10, height: 24)
+            let trackHeight: CGFloat = isEmphasized ? 8 : 4
+            let knobSize = isEmphasized ? CGSize(width: 14, height: 30) : CGSize(width: 10, height: 24)
             let knobShape = RoundedRectangle(cornerRadius: knobSize.width * 0.5, style: .continuous)
             let usableWidth = max(proxy.size.width - knobSize.width, 1)
             let knobX = normalizedValue * usableWidth
 
             ZStack(alignment: .leading) {
-                AuraLegacySliderDashes(tone: textTone ?? adaptiveGlassAppearance.topTextTone)
+                AuraLegacySliderDashes(tone: textTone ?? adaptiveGlassAppearance.topTextTone,
+                    isEmphasized: isEmphasized)
                     .mask(
                         Capsule()
                             .frame(height: trackHeight)
@@ -187,14 +190,19 @@ struct AuraLegacySpeedSlider: View {
                     #endif
                 }
                 .frame(width: knobSize.width, height: knobSize.height)
-                .shadow(color: Color.black.opacity(0.20), radius: 2, x: 0, y: 1)
+                .shadow(color: Color.black.opacity(isEmphasized ? 0.34 : 0.20), radius: isEmphasized ? 3 : 2, x: 0, y: 1)
+                .overlay {
+                    if isEmphasized {
+                        knobShape.strokeBorder(Color.white.opacity(0.55), lineWidth: 0.6).padding(1)
+                    }
+                }
                 .overlay(
                     knobShape
                         .stroke(
                             (textTone ?? adaptiveGlassAppearance.topTextTone).primaryTextColor.opacity(
-                                isDragging ? 0.34 : 0.24
+                                isEmphasized ? (isDragging ? 0.64 : 0.48) : (isDragging ? 0.34 : 0.24)
                             ),
-                            lineWidth: 0.8
+                            lineWidth: isEmphasized ? 1.1 : 0.8
                         )
                 )
                 .offset(x: knobX, y: 0)
@@ -217,7 +225,7 @@ struct AuraLegacySpeedSlider: View {
                     }
             )
         }
-        .frame(height: 24)
+        .frame(height: isEmphasized ? 34 : 24)
     }
 
     private func value(at location: CGFloat, usableWidth: CGFloat, knobWidth: CGFloat) -> Double {
@@ -236,10 +244,11 @@ struct AuraLegacySpeedSlider: View {
 
 private struct AuraLegacySliderDashes: View {
     let tone: AdaptiveTextTone
+    var isEmphasized = false
 
     var body: some View {
         GeometryReader { proxy in
-            let dashWidth: CGFloat = 1
+            let dashWidth: CGFloat = isEmphasized ? 1.4 : 1
             let dashCount = max(38, Int(proxy.size.width / 4.2))
             let dashHeight = max(proxy.size.height + 4, 8)
             let spacing = max(
@@ -250,11 +259,13 @@ private struct AuraLegacySliderDashes: View {
             HStack(spacing: spacing) {
                 ForEach(0..<dashCount, id: \.self) { _ in
                     Capsule()
-                        .fill(tone.primaryTextColor.opacity(0.28))
+                        .fill(tone.primaryTextColor.opacity(isEmphasized ? 0.64 : 0.28))
                         .frame(width: dashWidth, height: dashHeight)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .shadow(color: tone.contrastSurfaceColor.opacity(isEmphasized ? 0.75 : 0),
+                radius: isEmphasized ? 0.8 : 0, x: 0, y: 0)
         }
         .allowsHitTesting(false)
     }
