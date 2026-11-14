@@ -217,3 +217,38 @@ For a subsequent audit, set `AURAFLOW_MUSIC_AUDIT_EXCLUDE_CURRENT=1` along with
 the input/output variables. This resolves the current selection with four
 requests at most and rejects matching originals before decoding candidate audio.
 An explicitly supplied empty input fails before making network requests.
+
+## Music pagination repair (2026-11-14)
+
+The visible music collection previously depended on the last cards receiving
+another `onAppear`. Already-visible rows could miss that event after a page or
+refresh completed, and a filtered page containing only silent or duplicate
+candidates could leave the same trailing ID and stop pagination. The grid now
+tracks visible IDs and checks the end again after loading, refresh and item-list
+changes. A glass **Load more** button provides an explicit path; failures offer
+**Try again**. Counts include `+` while more music pages remain.
+
+`WallpaperCatalogMusicPaging` routes music-only requests through the repository
+to the music provider without advancing unrelated sites. Music and ordinary
+end-of-list state are independent. Up to three pages that add no visible results
+are skipped per request, after which automatic loading pauses for an explicit
+retry; unavailable or duplicate-only sources cannot produce a busy request loop.
+Initial refresh owns provider cursors: local cached cards may expand during it,
+but remote pagination waits until refresh finishes.
+
+Music refresh preserves the previously verified catalog, including its progress
+callbacks, and prioritizes not-yet-loaded candidates. A confirmed silent original
+can still remove an old cached music claim. Cancelled verification batches are
+restored to their queues instead of permanently skipping candidate wallpapers.
+Poster loading remains tied to visible rows and a small lookahead; no videos are
+resolved merely to draw catalog cards.
+
+Regression coverage includes steady visible rows receiving several small pages,
+filtered empty pages, scoped source routing, bounded retries, initial-refresh
+cursor ownership, preserving an expanded cache, confirmed silence and cancelled
+batch recovery. The targeted catalog suite passed 135 tests.
+
+Live UI acceptance reached 210 verified music cards through ordinary scrolling.
+The persisted music catalog contained all 209 bundled selections, plus one
+additional discovered wallpaper. Closing and reopening the catalog retained all
+210 entries. No collection accessibility instant-jump action was used.

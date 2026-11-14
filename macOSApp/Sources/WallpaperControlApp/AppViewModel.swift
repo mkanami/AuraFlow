@@ -3684,6 +3684,8 @@ final class AppViewModel: ObservableObject {
 
     func toggleCatalogGroup(_ group: CatalogWallpaperGroup) {
         catalogViewModel.toggleGroup(group)
+        catalogViewModel.automaticPaginationPaused = false
+        catalogViewModel.loadMoreFailed = false
         lastCatalogPaginationTriggerID = nil
         resetCatalogPreviewViewport()
         Task { await catalogPreviewPipeline.cancelPending() }
@@ -3691,6 +3693,8 @@ final class AppViewModel: ObservableObject {
 
     func toggleCatalogMusic() {
         catalogViewModel.toggleMusic()
+        catalogViewModel.automaticPaginationPaused = false
+        catalogViewModel.loadMoreFailed = false
         lastCatalogPaginationTriggerID = nil
         resetCatalogPreviewViewport()
         Task { await catalogPreviewPipeline.cancelPending() }
@@ -3729,6 +3733,7 @@ final class AppViewModel: ObservableObject {
         guard selectedCatalogWallpaper == nil,
               filteredCatalogWallpapers.last?.id == wallpaperID,
               lastCatalogPaginationTriggerID != wallpaperID,
+              !catalogViewModel.automaticPaginationPaused,
               (!catalogIsRefreshing || canLoadDeferredCatalogPage || catalogViewModel.hasDeferredSearchResults),
               catalogLoadMoreTask == nil else {
             return
@@ -3736,12 +3741,22 @@ final class AppViewModel: ObservableObject {
         if isSearching {
             guard catalogViewModel.hasDeferredSearchResults else { return }
         } else {
-            guard catalogHasMoreWallpapers,
+            guard catalogViewModel.canLoadMore,
                   canLoadDeferredCatalogPage
                     || selectedCatalogGroup == nil
                     || selectedCatalogGroup == .anime || catalogViewModel.showsMusicOnly else { return }
         }
         lastCatalogPaginationTriggerID = wallpaperID
+        loadNextCatalogPage()
+    }
+
+    func loadMoreCatalogWallpapers() {
+        guard selectedCatalogWallpaper == nil, catalogViewModel.canLoadMore,
+              catalogLoadMoreTask == nil,
+              !catalogIsRefreshing || catalogViewModel.hasDeferredWallpapers else { return }
+        catalogViewModel.automaticPaginationPaused = false
+        catalogViewModel.loadMoreFailed = false
+        lastCatalogPaginationTriggerID = filteredCatalogWallpapers.last?.id
         loadNextCatalogPage()
     }
 
@@ -4896,6 +4911,9 @@ final class AppViewModel: ObservableObject {
         catalogRefreshTask = Task { [weak self] in
             guard let self else { return }
             catalogIsRefreshing = true
+            catalogViewModel.hasMoreMusicWallpapers = true
+            catalogViewModel.loadMoreFailed = false
+            catalogViewModel.automaticPaginationPaused = false
             defer {
                 catalogIsRefreshing = false
                 catalogRefreshTask = nil
@@ -4949,39 +4967,62 @@ final class AppViewModel: ObservableObject {
     }
 
     private func loadNextCatalogPage() {
+        let musicOnly = catalogViewModel.showsMusicOnly
+        let group = selectedCatalogGroup
+        let query = catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let visibleBefore = Set(filteredCatalogWallpapers.map(\.id))
         catalogLoadMoreTask = Task { [weak self] in
             guard let self else { return }
             catalogIsLoadingMore = true
+            catalogViewModel.loadMoreFailed = false
             defer {
                 catalogIsLoadingMore = false
                 catalogLoadMoreTask = nil
             }
 
             do {
-                if !catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   catalogViewModel.loadNextSearchPage() {
-                    return
+                // A filtered page can add no visible cards (silent candidates,
+                // duplicates, or another category). Advance a few pages without
+                // depending on the same trailing card appearing a second time.
+                for _ in 0..<3 {
+                    try Task.checkCancellation()
+                    guard selectedCatalogWallpaper == nil,
+                          catalogViewModel.showsMusicOnly == musicOnly,
+                          selectedCatalogGroup == group,
+                          catalogSearchText.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+                    if !query.isEmpty {
+                        guard catalogViewModel.loadNextSearchPage() else { return }
+                    } else if !catalogViewModel.loadNextDeferredPage() {
+                        // Initial refresh owns the providers' cursors. Expanding
+                        // local cards is safe, advancing those cursors is not.
+                        guard !catalogIsRefreshing else {
+                            lastCatalogPaginationTriggerID = nil
+                            return
+                        }
+                        let result = try await catalogRepository.loadNextCatalogPage(
+                            existing: catalogWallpapers, musicOnly: musicOnly
+                        )
+                        try Task.checkCancellation()
+                        catalogViewModel.appendCatalogPage(
+                            mergedWallpapers: result.wallpapers,
+                            hasMoreRemotePages: result.hasMore,
+                            musicOnly: musicOnly
+                        )
+                        if let warningMessage = result.persistenceStatus.warningMessage {
+                            statusMessage = warningMessage
+                        }
+                    }
+                    if filteredCatalogWallpapers.contains(where: { !visibleBefore.contains($0.id) })
+                        || !catalogViewModel.canLoadMore { return }
                 }
-                if catalogViewModel.loadNextDeferredPage() {
-                    return
-                }
-                let result = try await catalogRepository.loadNextCatalogPage(
-                    existing: catalogWallpapers
-                )
-                guard !Task.isCancelled else { return }
-                catalogViewModel.appendCatalogPage(
-                    mergedWallpapers: result.wallpapers,
-                    hasMoreRemotePages: result.hasMore
-                )
-                if let warningMessage = result.persistenceStatus.warningMessage {
-                    statusMessage = warningMessage
-                }
+                // Keep retrying under explicit user control after three empty
+                // pages; broken sites must not create an automatic request loop.
+                catalogViewModel.automaticPaginationPaused = true
             } catch {
                 guard !Task.isCancelled else { return }
-                // A transient page failure must not discard already loaded
-                // cards or permanently close pagination. The next scroll can
-                // retry the same source page.
                 lastCatalogPaginationTriggerID = nil
+                catalogViewModel.loadMoreFailed = true
+                catalogViewModel.automaticPaginationPaused = true
                 statusMessage = "More wallpapers could not be loaded: \(error.localizedDescription)"
             }
         }

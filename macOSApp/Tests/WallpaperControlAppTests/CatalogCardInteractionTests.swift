@@ -6,6 +6,32 @@ import Testing
 @Suite(.serialized)
 struct CatalogCardInteractionTests {
 @MainActor
+@Test func musicPaginationContinuesWhileTrailingRowsStayVisible() async throws {
+    let source = MusicPagingFixtureSource(initial: (0..<2).map { musicPagingCard("initial-\($0)") }, pages: [
+        .init(wallpapers: (0..<2).map { musicPagingCard("page-one-\($0)") }, hasMore: true),
+        .init(wallpapers: (0..<2).map { musicPagingCard("page-two-\($0)") }, hasMore: true),
+        .init(wallpapers: (0..<8).map { musicPagingCard("page-three-\($0)") }, hasMore: false),
+    ])
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = AppViewModel(controller: MockNativeWallpaperController(), catalogProvider: source, appSupportDirectoryURL: root)
+    try await waitForMusicPagingModel(model)
+    model.toggleCatalogMusic()
+    let hosting = NSHostingView(rootView: WallpaperCatalogGridView(viewModel: model,
+        catalogViewModel: model.catalogViewModel).frame(width: 500, height: 320))
+    hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 320)
+    let window = makeInteractionWindow(contentView: hosting, size: hosting.frame.size)
+    defer { window.orderOut(nil); window.close() }
+    for _ in 0..<200 where model.catalogViewModel.musicCount < 14 {
+        hosting.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.catalogViewModel.musicCount == 14)
+    #expect(await source.musicRequests == 3)
+    #expect(await source.ordinaryRequests == 0)
+}
+
+@MainActor
 @Test func cachedNextPageArrivesBeforeScrollingToTheLastRow() async throws {
     let wallpapers = (0..<36).map { index in
         CatalogWallpaper(id: "early-\(index)", title: "Wallpaper \(index)", category: "Anime",

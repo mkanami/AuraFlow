@@ -26,6 +26,9 @@ final class CatalogViewModel: ObservableObject {
     @Published var isLoadingMore = false
     @Published var isSearching = false
     @Published var hasMoreWallpapers = true
+    @Published var hasMoreMusicWallpapers = true
+    @Published var loadMoreFailed = false
+    @Published var automaticPaginationPaused = false
     @Published var downloadedWallpapers: [DownloadedCatalogWallpaper] = []
 
     private let catalogDisplayPageSize = 12
@@ -110,10 +113,19 @@ final class CatalogViewModel: ObservableObject {
         !deferredSearchResults.isEmpty
     }
 
+    var canLoadMore: Bool {
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return hasDeferredSearchResults
+        }
+        if showsMusicOnly { return hasMoreMusicWallpapers || deferredWallpapers.contains(where: containsMusic) }
+        return hasMoreWallpapers && (hasDeferredWallpapers || selectedGroup == nil || selectedGroup == .anime)
+    }
+
     func setWallpapersDirectly(_ wallpapers: [CatalogWallpaper]) {
         self.wallpapers = wallpapers
         deferredWallpapers = []
         hasMoreRemoteWallpapers = false
+        hasMoreMusicWallpapers = false
     }
 
     func setSearchResultsDirectly(_ results: [CatalogWallpaper]) {
@@ -172,12 +184,17 @@ final class CatalogViewModel: ObservableObject {
 
     func appendCatalogPage(
         mergedWallpapers: [CatalogWallpaper],
-        hasMoreRemotePages: Bool
+        hasMoreRemotePages: Bool,
+        musicOnly: Bool = false
     ) {
         wallpapers = CatalogWallpaperMerge.combining(wallpapers, mergedWallpapers)
         deferredWallpapers = []
-        hasMoreRemoteWallpapers = hasMoreRemotePages
-        hasMoreWallpapers = hasMoreRemotePages
+        if musicOnly {
+            hasMoreMusicWallpapers = hasMoreRemotePages
+        } else {
+            hasMoreRemoteWallpapers = hasMoreRemotePages
+            hasMoreWallpapers = hasMoreRemotePages
+        }
     }
 
     private func revealDeferredMusic() {

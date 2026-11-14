@@ -19,6 +19,11 @@ protocol WallpaperCatalogPaging: Sendable {
     func fetchNextCatalogPage() async throws -> CatalogPage
 }
 
+/// Music browsing must advance the music queue independently of ordinary sites.
+protocol WallpaperCatalogMusicPaging: Sendable {
+    func fetchNextMusicCatalogPage() async throws -> CatalogPage
+}
+
 /// Optional targeted search for catalogs that are intentionally loaded in
 /// pages. This lets search find older entries without downloading every card.
 protocol WallpaperCatalogSearching: Sendable {

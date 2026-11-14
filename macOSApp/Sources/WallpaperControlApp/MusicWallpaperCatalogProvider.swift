@@ -61,7 +61,11 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
     func fetchCatalog(progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
         generation &+= 1
         let revision = generation
-        loaded = []
+        let cached = await loadCachedCatalog() ?? []
+        try Task.checkCancellation()
+        guard generation == revision else { throw CancellationError() }
+        loaded = cached
+        if !cached.isEmpty { await progress(cached) }
         let lists = await withTaskGroup(of: (Int, [CatalogWallpaper]).self) { group in
             for (index, entry) in entries.enumerated() {
                 group.addTask { (index, (try? await entry.provider.fetchCatalog()) ?? []) }
@@ -72,10 +76,16 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
         }
         try Task.checkCancellation()
         guard generation == revision else { throw CancellationError() }
-        queues = entries.indices.map { Self.unique(entries[$0].seeds + lists[$0]) }
+        let cachedIDs = Set(cached.map(\.id))
+        queues = entries.indices.map {
+            let candidates = Self.unique(entries[$0].seeds + lists[$0])
+            return candidates.filter { !cachedIDs.contains($0.id) } + candidates.filter { cachedIDs.contains($0.id) }
+        }
         more = Array(repeating: true, count: entries.count)
-        let batch = try await nextBatch(revision: revision, progress: progress)
-        loaded = batch
+        let batch = try await nextBatch(revision: revision, progress: { await progress(Self.unique(cached + $0)) })
+        try Task.checkCancellation()
+        guard generation == revision else { throw CancellationError() }
+        loaded = Self.unique(loaded + batch)
         persist()
         return loaded
     }
@@ -117,7 +127,15 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
     private func nextBatch(revision: UInt, progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
         let candidates = queues.map { Array($0.prefix(batchSize)) }
         for index in queues.indices { queues[index].removeFirst(candidates[index].count) }
-        return try await verifyCandidates(candidates, revision: revision, progress: progress)
+        do { return try await verifyCandidates(candidates, revision: revision, progress: progress) }
+        catch {
+            // Foreground downloads cancel discovery. Restore this batch so
+            // reopening the catalog cannot permanently skip those wallpapers.
+            if revision == generation {
+                for index in queues.indices { queues[index] = Self.unique(candidates[index] + queues[index]) }
+            }
+            throw error
+        }
     }
 
     /// Four probes total, shared by all sites. A larger page must not create a
@@ -202,10 +220,14 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
                     audioCache[url.absoluteString] = AudioEntry(content: content,
                         expires: Date().addingTimeInterval(content == .unknown ? 600 : 7 * 86400))
                 }
+                try Task.checkCancellation()
+                guard revision == generation else { throw CancellationError() }
                 if content == .audible {
                     var verified = item
                     verified.hasMusic = true
                     result.append(verified)
+                } else if content == .silent || content == .noTrack {
+                    loaded.removeAll { $0.id == item.id }
                 }
             } catch {
                 try Task.checkCancellation()

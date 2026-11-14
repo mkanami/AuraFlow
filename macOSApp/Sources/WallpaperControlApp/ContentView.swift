@@ -1407,7 +1407,7 @@ struct WallpaperCatalogView: View {
         if !query.isEmpty {
             return "\(filteredCount)"
         }
-        if catalogViewModel.showsMusicOnly { return "\(filteredCount) With Music" }
+        if catalogViewModel.showsMusicOnly { return "\(filteredCount)\(catalogViewModel.canLoadMore ? "+" : "") With Music" }
         if let selectedGroup = catalogViewModel.selectedGroup {
             let groupCount = catalogViewModel.count(in: selectedGroup)
             let moreSuffix = selectedGroup == .anime && catalogViewModel.hasMoreWallpapers ? "+" : ""
@@ -1601,7 +1601,7 @@ struct WallpaperCatalogGridView: View {
     let viewModel: AppViewModel
     @ObservedObject var catalogViewModel: CatalogViewModel
     @StateObject private var posterPrefetcher = CatalogPosterPrefetcher()
-    @State private var paginationAnchorID: String?
+    @State private var visibleIDs = Set<String>()
 
     private let columns = [GridItem(.adaptive(minimum: 220), spacing: 12)]
 
@@ -1616,6 +1616,16 @@ struct WallpaperCatalogGridView: View {
                         .controlSize(.small)
                         .frame(maxWidth: .infinity, minHeight: 28)
                 }
+                if catalogViewModel.canLoadMore {
+                    Button(action: viewModel.loadMoreCatalogWallpapers) {
+                        Label(catalogViewModel.loadMoreFailed ? "Try again" : "Load more", systemImage: "arrow.down.circle")
+                    }
+                    .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+                    .disabled(catalogViewModel.isLoadingMore || catalogViewModel.isRefreshing)
+                    .accessibilityIdentifier("catalog.loadMore")
+                    .padding(.vertical, 8)
+                    .onAppear { requestMoreIfNearEnd() }
+                }
             }
             .onChange(of: catalogViewModel.scrollRequestGeneration) { _ in
                 guard let targetID = catalogViewModel.scrollTargetID else { return }
@@ -1624,13 +1634,21 @@ struct WallpaperCatalogGridView: View {
                 }
             }
             .onChange(of: catalogViewModel.isRefreshing) { refreshing in
-                if !refreshing, let paginationAnchorID {
-                    viewModel.catalogTrailingWallpaperBecameVisible(paginationAnchorID)
-                }
+                if !refreshing { requestMoreIfNearEnd() }
             }
-            .onChange(of: catalogViewModel.searchText) { _ in paginationAnchorID = nil }
-            .onChange(of: catalogViewModel.selectedGroup) { _ in paginationAnchorID = nil }
-            .onDisappear { posterPrefetcher.cancel() }
+            .onChange(of: catalogViewModel.isLoadingMore) { loading in
+                if !loading { requestMoreIfNearEnd() }
+            }
+            .onChange(of: catalogViewModel.filteredWallpapers.map(\.id)) { ids in
+                visibleIDs.formIntersection(ids)
+                requestMoreIfNearEnd()
+            }
+            .onChange(of: catalogViewModel.showsMusicOnly) { _ in requestMoreIfNearEnd() }
+            .onChange(of: catalogViewModel.selectedGroup) { _ in requestMoreIfNearEnd() }
+            .onChange(of: catalogViewModel.selectedWallpaper?.id) { id in
+                if id == nil { requestMoreIfNearEnd() }
+            }
+            .onDisappear { visibleIDs = []; posterPrefetcher.cancel() }
         }
     }
 
@@ -1651,8 +1669,6 @@ struct WallpaperCatalogGridView: View {
 
     private var wallpaperCards: some View {
         let wallpapers = catalogViewModel.filteredWallpapers
-        let trailingID = wallpapers.last?.id
-        let nearEndIDs = Set(wallpapers.suffix(6).map(\.id))
         return LazyVGrid(columns: columns, spacing: 12) {
             ForEach(wallpapers) { wallpaper in
                 CatalogWallpaperCard(wallpaper: wallpaper, audioMetadata: viewModel.catalogAudioMetadata,
@@ -1661,17 +1677,31 @@ struct WallpaperCatalogGridView: View {
                 }
                 .id(wallpaper.id)
                 .onAppear {
+                    visibleIDs.insert(wallpaper.id)
                     posterPrefetcher.setVisible(wallpaper.id, true)
-                    if nearEndIDs.contains(wallpaper.id), let trailingID {
-                        paginationAnchorID = trailingID
-                        viewModel.catalogTrailingWallpaperBecameVisible(trailingID)
-                    }
+                    requestMoreIfNearEnd()
                 }
-                .onDisappear { posterPrefetcher.setVisible(wallpaper.id, false) }
+                .onDisappear {
+                    visibleIDs.remove(wallpaper.id)
+                    posterPrefetcher.setVisible(wallpaper.id, false)
+                }
             }
         }
         .onAppear { posterPrefetcher.update(wallpapers: wallpapers) }
         .onChange(of: wallpapers) { posterPrefetcher.update(wallpapers: $0) }
+    }
+
+    private func requestMoreIfNearEnd() {
+        guard catalogViewModel.canLoadMore, !catalogViewModel.isLoadingMore,
+              !catalogViewModel.automaticPaginationPaused, !catalogViewModel.loadMoreFailed else { return }
+        let items = catalogViewModel.filteredWallpapers
+        guard let trailingID = items.last?.id else {
+            viewModel.loadMoreCatalogWallpapers()
+            return
+        }
+        if !visibleIDs.isDisjoint(with: items.suffix(6).map(\.id)) {
+            viewModel.catalogTrailingWallpaperBecameVisible(trailingID)
+        }
     }
 }
 

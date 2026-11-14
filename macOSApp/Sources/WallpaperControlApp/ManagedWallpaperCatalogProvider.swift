@@ -4,7 +4,7 @@ protocol CatalogCacheClearing: Sendable {
     func clearCache() async
 }
 
-actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPaging, WallpaperCatalogSearching, WallpaperCatalogPreviewResolving, WallpaperCatalogMediaResolving, WallpaperCatalogMediaMetadataEnriching {
+actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheClearing, WallpaperCatalogPaging, WallpaperCatalogMusicPaging, WallpaperCatalogSearching, WallpaperCatalogPreviewResolving, WallpaperCatalogMediaResolving, WallpaperCatalogMediaMetadataEnriching {
     private let animeProvider: WallpaperCatalogProviding
     private let animeNatureProvider: WallpaperCatalogProviding
     private let scenicProvider: WallpaperCatalogProviding
@@ -218,6 +218,13 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
             if pages.isEmpty, let failure { throw LearnedCatalogError.unavailable(failure) }
             return CatalogPage(wallpapers: Self.mergeCatalogs(curated: [], catalogs: pages), hasMore: hasMore)
         }
+    }
+
+    func fetchNextMusicCatalogPage() async throws -> CatalogPage {
+        guard let paging = musicProvider as? any WallpaperCatalogPaging else {
+            return CatalogPage(wallpapers: [], hasMore: false)
+        }
+        return try await paging.fetchNextCatalogPage()
     }
 
     func searchCatalog(query: String) async throws -> [CatalogWallpaper] {

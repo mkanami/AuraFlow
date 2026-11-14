@@ -257,8 +257,13 @@ final class CatalogRepository: @unchecked Sendable {
         )
     }
 
-    func loadNextCatalogPage(existing: [CatalogWallpaper]) async throws -> CatalogPageResult {
-        guard let pagedProvider = provider as? any WallpaperCatalogPaging else {
+    func loadNextCatalogPage(existing: [CatalogWallpaper], musicOnly: Bool = false) async throws -> CatalogPageResult {
+        let page: CatalogPage
+        if musicOnly, let music = provider as? any WallpaperCatalogMusicPaging {
+            page = try await music.fetchNextMusicCatalogPage()
+        } else if let pagedProvider = provider as? any WallpaperCatalogPaging {
+            page = try await pagedProvider.fetchNextCatalogPage()
+        } else {
             return CatalogPageResult(
                 wallpapers: existing,
                 hasMore: false,
@@ -266,7 +271,6 @@ final class CatalogRepository: @unchecked Sendable {
             )
         }
 
-        let page = try await pagedProvider.fetchNextCatalogPage()
         let merged = Self.merging(existing: existing, additions: page.wallpapers)
         let persistenceStatus = merged == existing
             ? .notAttempted
