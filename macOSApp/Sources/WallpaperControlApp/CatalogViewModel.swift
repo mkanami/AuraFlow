@@ -31,6 +31,10 @@ final class CatalogViewModel: ObservableObject {
     @Published var automaticPaginationPaused = false
     @Published var downloadedWallpapers: [DownloadedCatalogWallpaper] = []
 
+    var visibleDownloadedWallpapers: [DownloadedCatalogWallpaper] {
+        downloadedWallpapers.filter(CatalogContentPolicy.allows)
+    }
+
     private let catalogDisplayPageSize = 12
     private let searchDisplayPageSize = 24
     private var deferredWallpapers: [CatalogWallpaper] = []

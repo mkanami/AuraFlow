@@ -114,6 +114,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
     }
 
     func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
+        try CatalogContentPolicy.validate(wallpaper)
         if let source = wallpaper.sources.first {
             return source.url
         }
@@ -132,6 +133,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
     }
 
     func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
+        try CatalogContentPolicy.validate(wallpaper)
         let provider: WallpaperCatalogProviding
         switch wallpaper.catalogGroup {
         case .anime:
@@ -224,7 +226,8 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         guard let paging = musicProvider as? any WallpaperCatalogPaging else {
             return CatalogPage(wallpapers: [], hasMore: false)
         }
-        return try await paging.fetchNextCatalogPage()
+        let page = try await paging.fetchNextCatalogPage()
+        return CatalogPage(wallpapers: page.wallpapers.filter(CatalogContentPolicy.allows), hasMore: page.hasMore)
     }
 
     func searchCatalog(query: String) async throws -> [CatalogWallpaper] {
@@ -282,6 +285,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         for index in 0..<maxCount {
             for catalog in allCatalogs where index < catalog.count {
                 let wallpaper = catalog[index]
+                guard CatalogContentPolicy.allows(wallpaper) else { continue }
                 if let existing = indices[wallpaper.id] {
                     if wallpaper.hasMusic == true { merged[existing].hasMusic = true }
                 } else {
@@ -335,6 +339,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         for index in 0..<maxCount {
             for catalog in catalogs where index < catalog.count {
                 let wallpaper = catalog[index]
+                guard CatalogContentPolicy.allows(wallpaper) else { continue }
                 let titleKey = wallpaper.title
                     .folding(
                         options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],

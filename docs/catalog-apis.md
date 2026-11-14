@@ -116,20 +116,18 @@ for seven days (inconclusive probes retry after ten minutes). A foreground
 wallpaper download cancels catalog discovery. A music tag, a song-related title,
 and an empty AAC track are insufficient for inclusion.
 
-The bundled selection now contains 209 unique public music pages, including
-lo-fi anime scenes, game soundtracks and orchestral backgrounds. All media is
-resolved and audio-checked again at runtime. The original three selections remain:
+The current bundled music selection contains **60 visually reviewed pages**.
+The earlier audio-only expansion and its historical counts are documented below;
+audio presence alone did not reject branded channel covers. The content-policy
+cleanup now supersedes those counts and removes two of the original three
+anchors. Midnight Hour remains; the underwater Medusa scene supplies a reviewed
+LiveWallpapers4Free selection. Only metadata is bundled; third-party media is
+resolved and audio-checked at runtime.
 
-- DesktopHut: **Midnight Hour Music Live Wallpaper**.
-- LiveWallpapers4Free: **Girl Take a Rest LoFi** and **Darling the Franxx Anime
-  Wallpaper with Music**.
-
-Independent audio decoding of the first three seconds measured non-silent peaks
-of -0.9, -13.5 and -3.5 dBFS respectively. Only page metadata is bundled; no
-third-party media is redistributed with the app. Other candidates, including
-**Miku Music Theme**, had silent audio or no audio and are excluded automatically.
-Rare Gallery requires a download CAPTCHA; WallpaperWaifu sample downloads were
-silent or unavailable. Neither is advertised as a working music source.
+Other candidates, including **Miku Music Theme**, had silent audio or no audio
+and are excluded automatically. Rare Gallery requires a download CAPTCHA;
+WallpaperWaifu sample downloads were silent or unavailable. Neither is advertised
+as a working music source.
 
 The music filter works across category and search results, preserves verified
 flags when duplicate cards merge, and lets a later local silence check override
@@ -252,3 +250,45 @@ Live UI acceptance reached 210 verified music cards through ordinary scrolling.
 The persisted music catalog contained all 209 bundled selections, plus one
 additional discovered wallpaper. Closing and reopening the catalog retained all
 210 entries. No collection accessibility instant-jump action was used.
+
+
+## Watermark and channel-cover cleanup (2026-11-14)
+
+A visual audit examined 676 current catalog posters and sampled preview-video
+frames for the 97 music candidates outside the 113-entry channel-cover family.
+Corner enlargements exposed DesktopHut marks and channel signatures that were
+not apparent in the listing thumbnails. The exclusion registry records **163**
+entries: 113 channel covers/bumpers, 41 other branded/promotional entries, and
+9 music videos withheld because a complete frame sample could not be reviewed.
+The 210-card music cache therefore has 60 accepted pages. These are sampled
+visual reviews, not a claim of automatic recognition of every possible watermark
+in every frame or future source upload.
+
+`CatalogContentPolicy` rejects reviewed IDs, source-page aliases and poster
+aliases (including tracking-query variants), plus the HDsoundi/music-cover
+family. Managed refresh/progress, cached catalogs, search, ordinary and music
+pagination, UI merges and remote media resolution share the same policy.
+Old unified caches are pruned and rewritten. Downloaded branded cards are hidden
+from the catalog; their manifests and personal media files are preserved.
+The app neither crops nor paints over marks, and source attribution links remain.
+
+The default music sources now consume only the reviewed bundled pages, including
+when searching and reopening an older cache. A cached audio flag cannot approve
+an unreviewed page or a changed poster. Once the reviewed queues end, pagination
+finishes without requesting arbitrary channel-cover search results. Original
+audio decoding and the four-probe limit remain in place. Ordinary site discovery
+continues with the shared exclusions; newly encountered visual marks need review
+and a registry update.
+
+`CatalogArtworkAuditTests.catalogArtworkAuditResolvesPreviewVideos` is an opt-in
+read-only developer helper using `AURAFLOW_ARTWORK_AUDIT_INPUT` and
+`AURAFLOW_ARTWORK_AUDIT_OUTPUT`. It resolves at most four public previews at once
+without playing media or changing Desktop/Lock Screen preferences.
+
+Validation: 142 targeted catalog tests passed, followed by the opt-in live
+original-audio check against both music sites. The rebuilt app launched and its
+native interface showed zero HDsoundi search results, 60 music cards, a completed
+end of list after ordinary scrolling, and the same 60 cards after reopening.
+The rewritten unified cache held 513 cards and the music cache 60; neither
+contained any excluded IDs or channel-cover titles. Screen capture was
+unavailable, so UI verification used the native accessibility tree.

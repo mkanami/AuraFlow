@@ -7,6 +7,10 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
         let site: LearnedAnimeSite
         let provider: WallpaperCatalogProviding
         let seeds: [CatalogWallpaper]
+        let curatedOnly: Bool
+        init(site: LearnedAnimeSite, provider: WallpaperCatalogProviding, seeds: [CatalogWallpaper], curatedOnly: Bool = false) {
+            self.site = site; self.provider = provider; self.seeds = seeds; self.curatedOnly = curatedOnly
+        }
     }
     typealias VerifyAudio = @Sendable (URL, URL?) async throws -> WallpaperAudioContent
     private struct AudioEntry: Codable { let content: WallpaperAudioContent; let expires: Date }
@@ -28,12 +32,12 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
         let seeds = Self.bundledSelections()
         let sources = entries ?? [LearnedAnimeSite.desktophut, .livewallpapers4free].map { site in
             Entry(site: site, provider: LearnedAnimeSource(site: site, musicCollection: true),
-                seeds: seeds.filter { $0.sourcePageURL.map { site.accepts($0) } == true })
+                seeds: seeds.filter { $0.sourcePageURL.map { site.accepts($0) } == true }, curatedOnly: true)
         }
         self.entries = sources; self.directory = directory; self.verifyAudio = verifyAudio
         self.batchSize = max(1, min(batchSize, 32))
         queues = Array(repeating: [], count: sources.count)
-        more = Array(repeating: true, count: sources.count)
+        more = sources.map { !$0.curatedOnly }
         audioCache = directory.flatMap { try? Data(contentsOf: $0.appendingPathComponent("verification.json")) }
             .flatMap { try? JSONDecoder().decode([String: AudioEntry].self, from: $0) } ?? [:]
     }
@@ -41,7 +45,7 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
     static func bundledSelections() -> [CatalogWallpaper] {
         Bundle.module.url(forResource: "music-catalog-seeds", withExtension: "json")
             .flatMap { try? Data(contentsOf: $0) }
-            .flatMap { try? JSONDecoder().decode([CatalogWallpaper].self, from: $0) } ?? []
+            .flatMap { try? JSONDecoder().decode([CatalogWallpaper].self, from: $0) }?.filter(CatalogContentPolicy.allows) ?? []
     }
 
     static func verifyOriginalAudio(_ url: URL, _ referer: URL?) async throws -> WallpaperAudioContent {
@@ -53,7 +57,11 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
     func loadCachedCatalog() async -> [CatalogWallpaper]? {
         guard let directory, let data = try? Data(contentsOf: directory.appendingPathComponent("catalog.json")),
               let items = try? JSONDecoder().decode([CatalogWallpaper].self, from: data), !items.isEmpty else { return nil }
-        return items.filter { $0.hasMusic == true }
+        return Self.unique(items).filter { item in
+            item.hasMusic == true && entries.contains { entry in
+                item.sourcePageURL.map { entry.site.accepts($0) } == true && Self.isReviewed(item, entry: entry)
+            }
+        }
     }
 
     func fetchCatalog() async throws -> [CatalogWallpaper] { try await fetchCatalog(progress: { _ in }) }
@@ -68,7 +76,10 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
         if !cached.isEmpty { await progress(cached) }
         let lists = await withTaskGroup(of: (Int, [CatalogWallpaper]).self) { group in
             for (index, entry) in entries.enumerated() {
-                group.addTask { (index, (try? await entry.provider.fetchCatalog()) ?? []) }
+                group.addTask {
+                    if entry.curatedOnly { return (index, []) }
+                    return (index, (try? await entry.provider.fetchCatalog()) ?? [])
+                }
             }
             var result = Array(repeating: [CatalogWallpaper](), count: entries.count)
             for await (index, items) in group { result[index] = items }
@@ -81,7 +92,7 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
             let candidates = Self.unique(entries[$0].seeds + lists[$0])
             return candidates.filter { !cachedIDs.contains($0.id) } + candidates.filter { cachedIDs.contains($0.id) }
         }
-        more = Array(repeating: true, count: entries.count)
+        more = entries.map { !$0.curatedOnly }
         let batch = try await nextBatch(revision: revision, progress: { await progress(Self.unique(cached + $0)) })
         try Task.checkCancellation()
         guard generation == revision else { throw CancellationError() }
@@ -186,7 +197,8 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
                         $0.sourcePageURL.map { entry.site.accepts($0) } == true &&
                         WallpaperSearchMatcher.matches(query: query, fields: [$0.title, $0.id])
                     }
-                    let remote = (try? await (entry.provider as? any WallpaperCatalogSearching)?.searchCatalog(query: query)) ?? []
+                    let remote = entry.curatedOnly ? [] :
+                        (try? await (entry.provider as? any WallpaperCatalogSearching)?.searchCatalog(query: query)) ?? []
                     return (index, Array(Self.unique(local + remote).prefix(self.batchSize)))
                 }
             }
@@ -203,7 +215,8 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
         var result: [CatalogWallpaper] = []
         for item in candidates {
             try Task.checkCancellation()
-            guard !item.explicitlyExcludesMusic, let page = item.sourcePageURL, entry.site.accepts(page) else { continue }
+            guard CatalogContentPolicy.allows(item), Self.isReviewed(item, entry: entry),
+                  !item.explicitlyExcludesMusic, let page = item.sourcePageURL, entry.site.accepts(page) else { continue }
             do {
                 let url: URL
                 if let resolver = entry.provider as? any WallpaperCatalogMediaResolving {
@@ -241,7 +254,9 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
     }
 
     func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
+        try CatalogContentPolicy.validate(wallpaper)
         guard let page = wallpaper.sourcePageURL, let entry = entries.first(where: { $0.site.accepts(page) }) else { throw URLError(.badURL) }
+        guard Self.isReviewed(wallpaper, entry: entry) else { throw URLError(.resourceUnavailable) }
         return try await entry.provider.resolveDownloadURL(for: wallpaper)
     }
 
@@ -266,6 +281,12 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
 
     private static func unique(_ items: [CatalogWallpaper]) -> [CatalogWallpaper] {
         var ids = Set<String>()
-        return items.filter { ids.insert($0.id).inserted }
+        return items.filter { CatalogContentPolicy.allows($0) && ids.insert($0.id).inserted }
+    }
+
+    private static func isReviewed(_ item: CatalogWallpaper, entry: Entry) -> Bool {
+        !entry.curatedOnly || entry.seeds.contains {
+            $0.id == item.id && $0.sourcePageURL == item.sourcePageURL && $0.previewImageURL == item.previewImageURL
+        }
     }
 }

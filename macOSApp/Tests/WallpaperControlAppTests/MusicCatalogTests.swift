@@ -135,7 +135,7 @@ import Testing
     let result = try await provider.fetchCatalog()
     #expect(result.allSatisfy { $0.hasMusic == true })
     #expect(Set(result.map(\.attribution)) == ["DesktopHut", "LiveWallpapers4Free"])
-    for fragment in ["Midnight-Hour", "girl-take-a-rest-lofi", "darling-the-franxx-anime-wallpaper-with-music"] {
+    for fragment in ["Midnight-Hour", "anime-medusa-girl-underwater-with-music-animated-desktop"] {
         #expect(result.contains { $0.id.contains(fragment) }, "Missing verified music selection: \(fragment)")
     }
     for item in result { print("[verified-music] \(item.attribution) | \(item.title)") }
@@ -189,9 +189,10 @@ private actor MusicFixtureSource: WallpaperCatalogProviding, WallpaperCatalogPag
     }
 }
 
-@Test func musicCatalogShipsLargeUniqueSelectionsWithoutTrustingBundledFlags() throws {
+@Test func musicCatalogShipsReviewedUniqueSelectionsWithoutTrustingBundledFlags() throws {
     let seeds = MusicWallpaperCatalogProvider.bundledSelections()
-    #expect(seeds.count >= 205)
+    #expect(seeds.count >= 60)
+    #expect(seeds.allSatisfy(CatalogContentPolicy.allows))
     #expect(Set(seeds.map(\.id)).count == seeds.count)
     #expect(seeds.allSatisfy { $0.hasMusic == nil && $0.sources.isEmpty && $0.previewImageURL != nil && !$0.explicitlyExcludesMusic })
     #expect(seeds.allSatisfy { item in item.sourcePageURL.map { url in

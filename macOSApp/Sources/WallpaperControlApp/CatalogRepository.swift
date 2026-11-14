@@ -210,7 +210,9 @@ final class CatalogRepository: @unchecked Sendable {
         var cacheReadReason: String?
         if FileManager.default.fileExists(atPath: catalogCacheURL.path) {
             do {
-                let cached = try loadUnifiedCatalogCache()
+                let original = try loadUnifiedCatalogCache()
+                let cached = original.filter(CatalogContentPolicy.allows)
+                if cached != original { persistenceStatus = persistUnifiedCatalogCache(cached) }
                 if !cached.isEmpty {
                     return CatalogCacheLoadResult(
                         wallpapers: cached,
@@ -228,7 +230,7 @@ final class CatalogRepository: @unchecked Sendable {
                 )
             }
         }
-        let providerCatalog = await provider.loadCachedCatalog()
+        let providerCatalog = await provider.loadCachedCatalog()?.filter(CatalogContentPolicy.allows)
         if let cacheReadReason, let providerCatalog, !providerCatalog.isEmpty {
             return CatalogCacheLoadResult(
                 wallpapers: providerCatalog,
@@ -247,7 +249,8 @@ final class CatalogRepository: @unchecked Sendable {
     func refreshCatalog(
         progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void
     ) async throws -> CatalogRefreshResult {
-        let wallpapers = try await provider.fetchCatalog(progress: progress)
+        let wallpapers = try await provider.fetchCatalog(progress: { await progress($0.filter(CatalogContentPolicy.allows)) })
+            .filter(CatalogContentPolicy.allows)
         let persistenceStatus = wallpapers.isEmpty
             ? .notAttempted
             : persistUnifiedCatalogCache(wallpapers)

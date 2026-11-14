@@ -1262,7 +1262,7 @@ struct DownloadedWallpapersCard: View {
                 Label("Downloaded Wallpapers", systemImage: "arrow.down.circle.fill")
                     .font(.headline.weight(.semibold))
                 Spacer()
-                Text("\(viewModel.wallpaperEngine.libraryIsSelected ? viewModel.wallpaperEngine.libraryCount : viewModel.downloadedCatalogWallpapers.count)")
+                Text("\(viewModel.wallpaperEngine.libraryIsSelected ? viewModel.wallpaperEngine.libraryCount : viewModel.catalogViewModel.visibleDownloadedWallpapers.count)")
                     .font(.caption)
                     .foregroundStyle(adaptiveGlassAppearance.centerTextTone.secondaryTextColor)
                 Button {
@@ -1278,7 +1278,7 @@ struct DownloadedWallpapersCard: View {
 
             if viewModel.wallpaperEngine.libraryIsSelected {
                 WallpaperEngineLibraryRows(model: viewModel.wallpaperEngine)
-            } else if viewModel.downloadedCatalogWallpapers.isEmpty {
+            } else if viewModel.catalogViewModel.visibleDownloadedWallpapers.isEmpty {
                 Text(UserFacingMessageFormatter.format(
                     "No downloaded wallpapers yet. Use Download to Preview in the catalog."
                 ))
@@ -1287,7 +1287,7 @@ struct DownloadedWallpapersCard: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(viewModel.downloadedCatalogWallpapers) { wallpaper in
+                        ForEach(viewModel.catalogViewModel.visibleDownloadedWallpapers) { wallpaper in
                             DownloadedWallpaperRow(wallpaper: wallpaper, viewModel: viewModel)
                                 .equatable()
                         }

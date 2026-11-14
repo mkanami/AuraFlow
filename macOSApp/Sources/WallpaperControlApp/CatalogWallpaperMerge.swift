@@ -7,6 +7,7 @@ enum CatalogWallpaperMerge {
         var indices: [String: Int] = [:]
         var result: [CatalogWallpaper] = []
         for wallpaper in existing + additions {
+            guard CatalogContentPolicy.allows(wallpaper) else { continue }
             if let index = indices[wallpaper.id] {
                 if wallpaper.hasMusic == true { result[index].hasMusic = true }
             } else {
