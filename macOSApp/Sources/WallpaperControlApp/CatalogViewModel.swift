@@ -38,9 +38,9 @@ final class CatalogViewModel: ObservableObject {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let availableWallpapers: [CatalogWallpaper]
         if query.isEmpty {
-            availableWallpapers = wallpapers
+            availableWallpapers = showsMusicOnly ? Self.deduplicated(wallpapers + deferredWallpapers) : wallpapers
         } else {
-            availableWallpapers = Self.deduplicated(wallpapers + searchResults)
+            availableWallpapers = Self.deduplicated(wallpapers + (showsMusicOnly ? deferredWallpapers : []) + searchResults)
         }
 
         let groupFiltered = availableWallpapers.filter { wallpaper in
@@ -79,12 +79,13 @@ final class CatalogViewModel: ObservableObject {
 
     func toggleMusic() {
         showsMusicOnly.toggle()
+        if showsMusicOnly { revealDeferredMusic() }
         selectedGroup = nil
         requestScroll(to: filteredWallpapers.first?.id)
     }
 
     var musicCount: Int {
-        wallpapers.filter { containsMusic($0) }.count
+        Self.deduplicated(wallpapers + deferredWallpapers).filter { containsMusic($0) }.count
     }
 
     private func containsMusic(_ wallpaper: CatalogWallpaper) -> Bool {
@@ -148,12 +149,20 @@ final class CatalogViewModel: ObservableObject {
         wallpapers = Array(uniqueWallpapers.prefix(displayedCount))
         deferredWallpapers = Array(uniqueWallpapers.dropFirst(displayedCount))
         hasMoreRemoteWallpapers = hasMoreRemotePages
+        if showsMusicOnly { revealDeferredMusic() }
         hasMoreWallpapers = !deferredWallpapers.isEmpty || hasMoreRemotePages
     }
 
     @discardableResult
     func loadNextDeferredPage() -> Bool {
         guard !deferredWallpapers.isEmpty else { return false }
+        if showsMusicOnly {
+            revealDeferredMusic()
+            wallpapers = Self.deduplicated(wallpapers + deferredWallpapers)
+            deferredWallpapers = []
+            hasMoreWallpapers = hasMoreRemoteWallpapers
+            return false
+        }
         let page = Array(deferredWallpapers.prefix(catalogDisplayPageSize))
         deferredWallpapers.removeFirst(page.count)
         wallpapers.append(contentsOf: page)
@@ -169,6 +178,13 @@ final class CatalogViewModel: ObservableObject {
         deferredWallpapers = []
         hasMoreRemoteWallpapers = hasMoreRemotePages
         hasMoreWallpapers = hasMoreRemotePages
+    }
+
+    private func revealDeferredMusic() {
+        let music = deferredWallpapers.filter { containsMusic($0) }
+        wallpapers = Self.deduplicated(wallpapers + music)
+        let ids = Set(music.map(\.id))
+        deferredWallpapers.removeAll { ids.contains($0.id) }
     }
 
     func isDownloading(_ wallpaper: CatalogWallpaper) -> Bool {

@@ -4,18 +4,32 @@ import SwiftSoup
 /// Public, read-only operations learned with api-anything. Only the HTTP URL
 /// templates and HTML extraction recipes are used; no browser/session is shipped.
 enum LearnedAnimeSite: String, CaseIterable, Sendable {
-    case desktophut, livewallpapers4free
+    case desktophut, livewallpapers4free, livelywallpaper
 
-    var title: String { self == .desktophut ? "DesktopHut" : "LiveWallpapers4Free" }
+    var title: String {
+        switch self {
+        case .desktophut: return "DesktopHut"
+        case .livewallpapers4free: return "LiveWallpapers4Free"
+        case .livelywallpaper: return "Lively Wallpaper"
+        }
+    }
     var baseURL: URL {
-        URL(string: self == .desktophut ? "https://www.desktophut.com/" : "https://livewallpapers4free.com/")!
+        switch self {
+        case .desktophut: return URL(string: "https://www.desktophut.com/")!
+        case .livewallpapers4free: return URL(string: "https://livewallpapers4free.com/")!
+        case .livelywallpaper: return URL(string: "https://livelywallpaper.app/")!
+        }
     }
 
     func accepts(_ url: URL, media: Bool = false) -> Bool {
         guard url.scheme == "https", url.user == nil, url.password == nil,
               url.port == nil || url.port == 443 else { return false }
-        let hosts = self == .desktophut && media
-            ? ["www.desktophut.com", "media.desktophut.com"] : [baseURL.host!]
+        let hosts: [String]
+        switch self {
+        case .desktophut where media: hosts = ["www.desktophut.com", "media.desktophut.com"]
+        case .livelywallpaper where media: hosts = ["livelywallpaper.app", "cdn.livelywallpaper.app"]
+        default: hosts = [baseURL.host!]
+        }
         return hosts.contains(url.host?.lowercased() ?? "")
     }
 }
@@ -28,7 +42,11 @@ struct LearnedCatalogAPI: Decodable, Sendable {
     }
     struct Operation: Decodable, Sendable {
         struct Trigger: Decodable, Sendable { let url: String }
-        struct Response: Decodable, Sendable { let html: Recipe }
+        struct Response: Decodable, Sendable { let html: Recipe? }
+        func htmlRecipe() throws -> Recipe {
+            guard let recipe = response.html else { throw LearnedCatalogError.unavailable("Missing HTML extraction recipe: \(name).") }
+            return recipe
+        }
         let name: String
         let trigger: Trigger
         let response: Response
@@ -142,12 +160,18 @@ actor LearnedAnimeSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wal
 
     func clearCache() async {
         if let cacheURL { try? FileManager.default.removeItem(at: cacheURL) }
-        resolved.removeAll()
+        resolved.removeAll(); index = nil
     }
 
     func fetchCatalog() async throws -> [CatalogWallpaper] {
-        let url = try operationURL(listOperation, arguments: ["page": "1", "tag": "wallpaper-with-music"])
-        let page = try await fetchPage(url, operation: listOperation)
+        if musicCollection, site == .livelywallpaper {
+            loaded = try await indexCatalog(query: nil)
+            nextURL = nil; visited = []; persist()
+            return loaded
+        }
+        let firstOperation = site == .livelywallpaper ? "firstPage" : listOperation
+        let url = try operationURL(firstOperation, arguments: ["page": "1", "tag": "wallpaper-with-music"])
+        let page = try await fetchPage(url, operation: firstOperation)
         try Task.checkCancellation()
         loaded = page.items
         visited = [url]
@@ -178,6 +202,11 @@ actor LearnedAnimeSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wal
     func searchCatalog(query: String, progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return [] }
+        if site == .livelywallpaper {
+            let items = try await indexCatalog(query: query)
+            await progress(items)
+            return items
+        }
         var url: URL? = try operationURL("search", arguments: ["query": query, "page": "1"])
         var pages = Set<URL>()
         var items: [CatalogWallpaper] = []
@@ -207,9 +236,10 @@ actor LearnedAnimeSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wal
     func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
         if let cached = resolved[wallpaper.id], cached.validUntil > Date() { return cached }
         guard let url = wallpaper.sourcePageURL, site.accepts(url) else { throw URLError(.badURL) }
-        let html = try await fetchHTML(url)
-        let recipe = try api.get().operation("detail").response.html
-        guard let row = try LearnedCatalogHTML.extract(html, recipe: recipe, baseURL: url).first else {
+        let document = try await fetchHTML(url)
+        let html = document.html
+        let recipe = try api.get().operation("detail").htmlRecipe()
+        guard let row = try LearnedCatalogHTML.extract(html, recipe: recipe, baseURL: document.url).first else {
             throw URLError(.cannotParseResponse)
         }
         let labels = row["labels"] ?? []
@@ -243,14 +273,17 @@ actor LearnedAnimeSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wal
     }
 
     private func fetchPage(_ url: URL, operation: String) async throws -> (items: [CatalogWallpaper], next: URL?) {
-        let html = try await fetchHTML(url)
-        let recipe = try api.get().operation(operation).response.html
-        let rows = try LearnedCatalogHTML.extract(html, recipe: recipe, baseURL: url)
+        let document = try await fetchHTML(url)
+        let html = document.html
+        let recipe = try api.get().operation(operation).htmlRecipe()
+        let rows = try LearnedCatalogHTML.extract(html, recipe: recipe, baseURL: document.url)
         var ids = Set<String>()
         let items = rows.compactMap { row -> CatalogWallpaper? in
             guard let title = row["title"]?.first, !title.isEmpty,
                   let value = row["url"]?.first, let pageURL = URL(string: value), site.accepts(pageURL),
-                  pageURL.pathComponents.count == 2 else { return nil }
+                  (site == .livelywallpaper
+                    ? pageURL.pathComponents.count == 3 && pageURL.pathComponents[1] == "live-wallpapers"
+                    : pageURL.pathComponents.count == 2) else { return nil }
             // Scene ZIPs require Wallpaper Engine; they are not video downloads.
             if row["kind"]?.first?.lowercased() == "scene" { return nil }
             if !musicCollection, site == .livewallpapers4free, operation == "search",
@@ -261,21 +294,69 @@ actor LearnedAnimeSource: WallpaperCatalogProviding, WallpaperCatalogPaging, Wal
             return CatalogWallpaper(id: id, title: title, category: "Anime", attribution: site.title,
                 previewImageURL: image, sourcePageURL: pageURL, sources: [])
         }
-        return (items, try LearnedCatalogHTML.nextURL(html, baseURL: url, site: site))
+        return (items, try LearnedCatalogHTML.nextURL(html, baseURL: document.url, site: site))
     }
 
-    private func fetchHTML(_ url: URL) async throws -> String {
+    private struct Index: Decodable { let wallpapers: [IndexItem] }
+    private struct IndexItem: Decodable {
+        let slug: String
+        let title: String
+        let categories: [String]
+        let search: String
+        let cover_url: URL
+        let preview_url: URL
+        let download_url: URL
+        let width: Int
+        let height: Int
+    }
+    private var index: [IndexItem]?
+
+    /// This site's search filters its public JSON index in the browser. Use the
+    /// same index, so matches on later pages are included without crawling them.
+    private func indexCatalog(query: String?) async throws -> [CatalogWallpaper] {
+        let rows: [IndexItem]
+        if let index { rows = index }
+        else {
+            let url = try operationURL("search", arguments: [:])
+            let data = try await fetchData(url, mime: "application/json").data
+            rows = try JSONDecoder().decode(Index.self, from: data).wallpapers
+            index = rows
+        }
+        return rows.compactMap { row in
+            guard row.categories.contains("anime"),
+                  row.slug.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil,
+                  site.accepts(row.cover_url, media: true), site.accepts(row.preview_url, media: true),
+                  site.accepts(row.download_url, media: true), row.download_url.pathExtension == "mp4",
+                  query.map({ WallpaperSearchMatcher.matches(query: $0, fields: [row.title, row.search]) }) ?? true else { return nil }
+            let page = site.baseURL.appendingPathComponent("live-wallpapers/\(row.slug)/")
+            let card = CatalogWallpaper(id: "\(site.rawValue)-\(row.slug)", title: row.title, category: "Anime",
+                attribution: site.title, previewImageURL: row.cover_url, sourcePageURL: page, sources: [])
+            resolved[card.id] = CatalogResolvedMedia(
+                previewSources: [.init(url: row.preview_url, width: 640, height: 360)],
+                originalSources: [.init(url: row.download_url, width: row.width, height: row.height)],
+                provider: site.title, validUntil: Date().addingTimeInterval(3600))
+            return card
+        }
+    }
+
+    private func fetchHTML(_ url: URL) async throws -> (html: String, url: URL) {
+        let document = try await fetchData(url, mime: "text/html")
+        guard let html = String(data: document.data, encoding: .utf8) else { throw URLError(.cannotParseResponse) }
+        return (html, document.url)
+    }
+
+    private func fetchData(_ url: URL, mime: String) async throws -> (data: Data, url: URL) {
         guard site.accepts(url) else { throw URLError(.badURL) }
         var request = URLRequest(url: url, timeoutInterval: 25)
-        request.setValue("text/html", forHTTPHeaderField: "Accept")
+        request.setValue(mime, forHTTPHeaderField: "Accept")
         request.setValue("AuraFlow/1.0 (wallpaper catalog)", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: request)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard (200..<300).contains(http.statusCode) else { throw CatalogDownloadError.badStatus(url: url, statusCode: http.statusCode) }
         guard let final = http.url, site.accepts(final), data.count <= 4 * 1024 * 1024,
-              http.mimeType == "text/html", let html = String(data: data, encoding: .utf8) else { throw URLError(.cannotParseResponse) }
-        return html
+              http.mimeType == mime else { throw URLError(.cannotParseResponse) }
+        return (data, final)
     }
 
     private func persist() {

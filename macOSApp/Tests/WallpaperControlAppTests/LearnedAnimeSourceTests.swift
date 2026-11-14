@@ -10,7 +10,8 @@ private func learnedFixture(_ name: String) throws -> String {
 @Test(arguments: LearnedAnimeSite.allCases)
 func learnedCatalogLoadsPublicOperationsAndListing(site: LearnedAnimeSite) async throws {
     let api = try LearnedCatalogAPI.load(site)
-    #expect(Set(api.operations.map(\.name)) == ["list", "search", "detail", "musicList"])
+    let expected: Set<String> = site == .livelywallpaper ? ["firstPage", "list", "search", "detail"] : ["list", "search", "detail", "musicList"]
+    #expect(Set(api.operations.map(\.name)) == expected)
     #expect(try api.operation("list").trigger.url.contains("{page}"))
     let html = try learnedFixture("\(site.rawValue)-listing")
     let http = LearnedFixtureHTTP { _ in html }
@@ -110,9 +111,9 @@ func learnedMediaSeparatesPreviewFromOriginalAndInvalidatesCache(site: LearnedAn
     let wallpaper = learnedCard(site: site)
     let media = try await source.resolveMedia(for: wallpaper)
     #expect(media.previewSources.count == 1)
-    #expect(media.originalSources.count == (site == .desktophut ? 1 : 3))
+    #expect(media.originalSources.count == (site == .livewallpapers4free ? 3 : 1))
     #expect(media.previewSources.first?.url != media.originalSources.first?.url)
-    #expect(media.originalSources.first?.width == (site == .desktophut ? 4096 : 7680))
+    #expect(media.originalSources.first?.width == (site == .livewallpapers4free ? 7680 : site == .livelywallpaper ? 3840 : 4096))
     #expect(try await source.resolveDownloadURL(for: wallpaper) == media.originalSources.first?.url)
     #expect(http.requests.count == 1)
     await source.invalidateResolvedMedia(for: wallpaper)
@@ -158,7 +159,7 @@ func learnedMediaSeparatesPreviewFromOriginalAndInvalidatesCache(site: LearnedAn
 
 private func learnedCard(site: LearnedAnimeSite, page: String? = nil) -> CatalogWallpaper {
     CatalogWallpaper(id: "\(site.rawValue)-wallpaper", title: "Wallpaper", category: "Anime", attribution: site.title,
-        previewImageURL: nil, sourcePageURL: URL(string: page ?? site.baseURL.appendingPathComponent("wallpaper").absoluteString), sources: [])
+        previewImageURL: nil, sourcePageURL: URL(string: page ?? site.baseURL.appendingPathComponent(site == .livelywallpaper ? "live-wallpapers/wallpaper/" : "wallpaper").absoluteString), sources: [])
 }
 
 @Test func learnedAnimeAggregatePreservesCachedMoeWallsCardsWithoutPageURLs() async throws {
@@ -209,11 +210,46 @@ private final class LearnedFixtureProtocol: URLProtocol, @unchecked Sendable {
         do {
             guard let fixture, let url = request.url else { throw URLError(.badURL) }
             let html = try fixture.respond(to: request)
-            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": url.pathExtension == "json" ? "application/json" : "text/html; charset=utf-8"])!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data(html.utf8))
             client?.urlProtocolDidFinishLoading(self)
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
     override func stopLoading() {}
+}
+
+@Test func learnedPublicIndexSearchIncludesLaterPagesAndKeepsBrowsePagingIndependent() async throws {
+    let json = """
+    {"wallpapers":[
+      {"slug":"last-page-miku","title":"Miku Last Page","categories":["anime"],"search":"Miku vocaloid blue",
+       "cover_url":"https://cdn.livelywallpaper.app/miku.webp","preview_url":"https://cdn.livelywallpaper.app/miku-preview.mp4",
+       "download_url":"https://cdn.livelywallpaper.app/miku.mp4","width":3840,"height":2160},
+      {"slug":"game","title":"Miku Game","categories":["games"],"search":"Miku",
+       "cover_url":"https://cdn.livelywallpaper.app/game.webp","preview_url":"https://cdn.livelywallpaper.app/game-preview.mp4",
+       "download_url":"https://cdn.livelywallpaper.app/game.mp4","width":1920,"height":1080},
+      {"slug":"evil","title":"Miku External","categories":["anime"],"search":"Miku",
+       "cover_url":"https://cdn.livelywallpaper.app/evil.webp","preview_url":"https://cdn.livelywallpaper.app/preview.mp4",
+       "download_url":"https://cdn.livelywallpaper.app.attacker.test/file.mp4","width":1920,"height":1080}
+    ]}
+    """
+    let http = LearnedFixtureHTTP { request in
+        if request.url?.pathExtension == "json" { return json }
+        let html = try learnedFixture("livelywallpaper-listing")
+        return request.url?.path.contains("/2/") == true ? html : html + "<link rel=next href='/live-wallpapers/anime/2/'>"
+    }
+    defer { http.close() }
+    let source = LearnedAnimeSource(site: .livelywallpaper, session: http.session, cacheDirectory: nil)
+    _ = try await source.fetchCatalog()
+    let result = try await source.searchCatalog(query: "vocaloid")
+    #expect(result.map(\.title) == ["Miku Last Page"])
+    #expect(try await source.searchCatalog(query: "auraflownoresults9x7z").isEmpty)
+    let media = try await source.resolveMedia(for: #require(result.first))
+    #expect(media.originalSources.first?.width == 3840)
+    #expect(media.originalSources.first?.url.lastPathComponent == "miku.mp4")
+    #expect(media.previewSources.first?.url.lastPathComponent == "miku-preview.mp4")
+    _ = try await source.fetchNextCatalogPage()
+    #expect(http.requests.last?.url?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == "live-wallpapers/anime/2")
+    #expect(http.requests.filter { $0.url?.pathExtension == "json" }.count == 1)
+    #expect(http.requests.count == 3)
 }

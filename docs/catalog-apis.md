@@ -1,7 +1,7 @@
 # Learned wallpaper catalog APIs
 
-AuraFlow's macOS Anime catalog now combines MoeWalls, DesktopHut and
-LiveWallpapers4Free. MotionBGS Anime Nature and Dareful remain separate categories.
+AuraFlow's macOS Anime catalog now combines MoeWalls, DesktopHut,
+LiveWallpapers4Free and Lively Wallpaper. MotionBGS Anime Nature and Dareful remain separate categories.
 
 The two new public, read-only adapters were learned with
 [api-anything](https://github.com/goodnight000/api-anything), version 0.4.0,
@@ -110,14 +110,15 @@ The music operations are anonymous, read-only, HTTP tier 1; nothing is published
 to the shared registry. Node/browser tooling remains a development dependency.
 
 `MusicWallpaperCatalogProvider` decodes bounded samples from the **original**
-video before including a candidate. It processes four candidates per site per
-batch, with two sites running concurrently, and caches each original URL's result
+video before including a candidate. It processes sixteen candidates per site per
+batch, with at most four original-audio probes in flight across all sites, and caches each original URL's result
 for seven days (inconclusive probes retry after ten minutes). A foreground
 wallpaper download cancels catalog discovery. A music tag, a song-related title,
 and an empty AAC track are insufficient for inclusion.
 
-Three public seed pages make confirmed tracks easy to find while preserving
-fresh media resolution through the site's learned detail operation:
+The bundled selection now contains 105 unique public music pages, including
+lo-fi anime scenes, game soundtracks and orchestral backgrounds. All media is
+resolved and audio-checked again at runtime. The original three selections remain:
 
 - DesktopHut: **Midnight Hour Music Live Wallpaper**.
 - LiveWallpapers4Free: **Girl Take a Rest LoFi** and **Darling the Franxx Anime
@@ -135,3 +136,55 @@ flags when duplicate cards merge, and lets a later local silence check override
 an older flag. Existing cached cards without a music field remain readable.
 `AURAFLOW_LIVE_MUSIC_CATALOG=1` enables the opt-in live source test; ordinary
 regressions use mocked providers and never change Desktop or Lock Screen playback.
+
+## Expansion (2026-11-14)
+
+The selection grew from 3 to **105** metadata-only music pages. A bounded audit
+read 236 candidates from DesktopHut music/lofi/chill/sound search pages and
+LiveWallpapers4Free music/lofi tags, decoding the actual originals. It confirmed
+107 audible videos; unrelated birthday editing templates and phone-only releases
+were removed, and the original selections retained. A music title or container
+track alone is still insufficient: the production provider checks decoded audio.
+Normal browsing loads sixteen candidates per source on demand, with four probes
+total; it does not crawl or download this entire audit at startup. Music search
+uses the same limit rather than the old four-result cap. A failed source page
+can be retried without hiding another site's successful page.
+
+The **With Music** tab reveals all already-known music selections independently
+of the ordinary catalog's twelve-card display window. Reaching its end requests
+new remote pages rather than consuming an unrelated hidden page and stopping on
+the same trailing music card. Poster loading remains limited to the viewport.
+
+**Lively Wallpaper** adds a public Anime library of **237** entries at the time of
+verification. Its operations were learned and exported with api-anything 0.4.0
+in an isolated, signed-out, local-only profile:
+
+| Operation | Input | Output / verification |
+| --- | --- | --- |
+| `firstPage` | none | Canonical initial Anime page (this static site has no `/anime/1/` route) |
+| `list` | `page` | Anime cards and pagination; learned pages 2/3, checked page 4 |
+| `search` | none | The site's public `data/wallpaper-cards.json` index; the app applies the query and Anime filter locally, as the site's own search does |
+| `detail` | `slug` | Small preview and full original MP4; learned two Gojo pages, checked Tanjiro |
+
+All 8 api-anything checks passed at plain HTTP tier 1. The native search includes
+matches from later pages, rejects non-Anime rows and unexpected media hosts, and
+caches the index for the current source instance. Relative links resolve against
+the final canonical response URL. The media allowlist adds only
+`cdn.livelywallpaper.app`, and attribution links back to each source page.
+The 237-original audio audit found no audio tracks, so this source belongs in the
+ordinary Anime catalog and is not advertised as music. No media files, browser
+profile, advertising requests, credentials or capture data ship with the app.
+
+`MusicCatalogAuditTests.musicCatalogAuditCandidateAudio` is an opt-in metadata
+refresh tool. Set `AURAFLOW_MUSIC_AUDIT_INPUT` to an absolute JSON array of
+`CatalogWallpaper` candidates and `AURAFLOW_MUSIC_AUDIT_OUTPUT` to an absolute
+output JSON path, then run only that test. It emits confirmed metadata and reads
+bounded audio samples with four probes total. It never starts wallpaper playback,
+orders windows, changes preferences or touches Desktop/Lock Screen descriptors.
+
+During UI acceptance on macOS 27, the system collection action
+`AXScrollToBottom` trapped inside SwiftUI's `AGAttribute.syncMainIfReferences` →
+`ForEachState.item` → `AccessibilityLazyLayoutNode.accessibilityPerformAction`.
+Use ordinary scroll-area scrolling for this verification. The catalog tests and
+ordinary scrolling use stable card IDs; the collection's instant accessibility
+jump is not used by the application itself.

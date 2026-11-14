@@ -74,7 +74,7 @@ import Testing
     let provider = MusicWallpaperCatalogProvider(entries: [
         .init(site: .desktophut, provider: good, seeds: []),
         .init(site: .livewallpapers4free, provider: bad, seeds: []),
-    ], directory: nil, verifyAudio: { url, _ in await recorder.inspect(url) })
+    ], directory: nil, batchSize: 4, verifyAudio: { url, _ in await recorder.inspect(url) })
     #expect(try await provider.fetchCatalog().isEmpty)
     let next = try await provider.fetchNextCatalogPage()
     #expect(next.wallpapers.map(\.id) == ["sound-next"])
@@ -161,9 +161,10 @@ private actor MusicAudioRecorder {
 private actor MusicFixtureSource: WallpaperCatalogProviding, WallpaperCatalogPaging, WallpaperCatalogSearching, WallpaperCatalogMediaResolving {
     let items: [CatalogWallpaper]
     let fails: Bool
+    let failsNext: Bool
     private var next: [CatalogWallpaper]
-    init(items: [CatalogWallpaper], fails: Bool = false, next: [CatalogWallpaper] = []) {
-        self.items = items; self.fails = fails; self.next = next
+    init(items: [CatalogWallpaper], fails: Bool = false, next: [CatalogWallpaper] = [], failsNext: Bool = false) {
+        self.items = items; self.fails = fails; self.next = next; self.failsNext = failsNext
     }
     func loadCachedCatalog() async -> [CatalogWallpaper]? { nil }
     func fetchCatalog() async throws -> [CatalogWallpaper] {
@@ -171,6 +172,7 @@ private actor MusicFixtureSource: WallpaperCatalogProviding, WallpaperCatalogPag
         return items
     }
     func fetchNextCatalogPage() async throws -> CatalogPage {
+        if failsNext { throw URLError(.timedOut) }
         let items = next; next = []
         return CatalogPage(wallpapers: items, hasMore: false)
     }
@@ -185,4 +187,69 @@ private actor MusicFixtureSource: WallpaperCatalogProviding, WallpaperCatalogPag
             originalSources: [.init(url: try await resolveDownloadURL(for: wallpaper), width: 1920, height: 1080)],
             provider: "DesktopHut", validUntil: Date().addingTimeInterval(3600))
     }
+}
+
+@Test func musicCatalogShipsLargeUniqueSelectionsWithoutTrustingBundledFlags() throws {
+    let seeds = MusicWallpaperCatalogProvider.bundledSelections()
+    #expect(seeds.count >= 100)
+    #expect(Set(seeds.map(\.id)).count == seeds.count)
+    #expect(seeds.allSatisfy { $0.hasMusic == nil && $0.sources.isEmpty && $0.previewImageURL != nil && !$0.explicitlyExcludesMusic })
+    #expect(seeds.allSatisfy { item in item.sourcePageURL.map { url in
+        LearnedAnimeSite.allCases.contains { $0.accepts(url) }
+    } == true })
+}
+
+@Test @MainActor func musicTabRevealsVerifiedSelectionsBeyondTheFirstDisplayPage() {
+    let model = CatalogViewModel()
+    let unrelated = (0..<30).map { musicCard("ordinary-\($0)") }
+    let music = (0..<32).map { index -> CatalogWallpaper in var item = musicCard("sound-\(index)"); item.hasMusic = true; return item }
+    model.replaceCatalogForDisplay(with: unrelated + music, hasMoreRemotePages: true)
+    #expect(model.wallpapers.count == 12)
+    #expect(model.musicCount == 32)
+    model.toggleMusic()
+    #expect(model.filteredWallpapers == music)
+    #expect(model.wallpapers.contains { $0.id == "sound-31" })
+    // The remaining ordinary cached cards must not swallow a remote music-page
+    // request while leaving the same music trailing card on screen.
+    #expect(!model.loadNextDeferredPage())
+    #expect(!model.hasDeferredWallpapers)
+    #expect(model.hasMoreWallpapers)
+    model.replaceCatalogForDisplay(with: unrelated + music, hasMoreRemotePages: true)
+    #expect(model.filteredWallpapers == music)
+}
+
+@Test func musicCatalogChecksLargerPagesWithFourConcurrentProbesAtMost() async throws {
+    let items = (0..<30).map { musicCard("sound-\($0)") }
+    let tracker = MusicConcurrencyTracker()
+    let provider = MusicWallpaperCatalogProvider(entries: [.init(site: .desktophut,
+        provider: MusicFixtureSource(items: items), seeds: [])], directory: nil,
+        verifyAudio: { _, _ in await tracker.inspect() })
+    #expect(try await provider.fetchCatalog().count == 16)
+    #expect(try await provider.fetchNextCatalogPage().wallpapers.count == 14)
+    #expect(await tracker.peak <= 4)
+    #expect(await tracker.peak > 1)
+    #expect(await tracker.total == 30)
+}
+
+private actor MusicConcurrencyTracker {
+    var active = 0, peak = 0, total = 0
+    func inspect() async -> WallpaperAudioContent {
+        active += 1; total += 1; peak = max(peak, active)
+        try? await Task.sleep(for: .milliseconds(10))
+        active -= 1
+        return .audible
+    }
+}
+
+@Test func musicCatalogNextPageKeepsWorkingWhenOneSiteTimesOut() async throws {
+    let good = MusicFixtureSource(items: [], next: [musicCard("sound-page")])
+    let bad = MusicFixtureSource(items: [], failsNext: true)
+    let provider = MusicWallpaperCatalogProvider(entries: [
+        .init(site: .desktophut, provider: good, seeds: []),
+        .init(site: .livewallpapers4free, provider: bad, seeds: []),
+    ], directory: nil, verifyAudio: { _, _ in .audible })
+    #expect(try await provider.fetchCatalog().isEmpty)
+    let page = try await provider.fetchNextCatalogPage()
+    #expect(page.wallpapers.map(\.id) == ["sound-page"])
+    #expect(page.hasMore) // the failed source can be retried on the next request
 }

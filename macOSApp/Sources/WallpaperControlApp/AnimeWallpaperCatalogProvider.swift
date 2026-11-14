@@ -14,6 +14,7 @@ actor AnimeWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
         Entry(hosts: ["moewalls.com", "www.moewalls.com"], provider: MoeWallsSource()),
         Entry(hosts: ["www.desktophut.com"], provider: LearnedAnimeSource(site: .desktophut)),
         Entry(hosts: ["livewallpapers4free.com"], provider: LearnedAnimeSource(site: .livewallpapers4free)),
+        Entry(hosts: ["livelywallpaper.app"], provider: LearnedAnimeSource(site: .livelywallpaper)),
     ]) { self.entries = entries }
 
     func loadCachedCatalog() async -> [CatalogWallpaper]? {

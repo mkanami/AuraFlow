@@ -1,0 +1,255 @@
+{
+  "name": "livelywallpaper",
+  "baseUrl": "https://livelywallpaper.app",
+  "operations": [
+    {
+      "name": "search",
+      "request": {
+        "method": "GET",
+        "url": "https://livelywallpaper.app/data/wallpaper-cards.json",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
+          "priority": "u=0, i",
+          "sec-ch-ua": "\"Chromium\";v=\"153\", \"Not_A Brand\";v=\"8\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\"",
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-user": "?1",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+        }
+      },
+      "slots": [],
+      "volatile": [],
+      "trigger": {
+        "url": "https://livelywallpaper.app/data/wallpaper-cards.json"
+      },
+      "match": {
+        "method": "GET",
+        "host": "livelywallpaper.app",
+        "path": "/data/wallpaper-cards.json"
+      },
+      "response": {
+        "format": "json",
+        "contentType": "application/json",
+        "extract": "wallpapers",
+        "pick": [
+          "slug",
+          "title",
+          "categories",
+          "search",
+          "cover_url",
+          "preview_url",
+          "download_url",
+          "width",
+          "height"
+        ],
+        "shape": {
+          "wallpapers[].slug": "string",
+          "wallpapers[].title": "string",
+          "wallpapers[].categories": "array",
+          "wallpapers[].search": "string",
+          "wallpapers[].width": "number",
+          "wallpapers[].height": "number",
+          "wallpapers[].preview_url": "string",
+          "wallpapers[].cover_url": "string",
+          "wallpapers[].download_url": "string"
+        }
+      },
+      "params": [],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {},
+          "expect": "result"
+        }
+      ]
+    },
+    {
+      "name": "detail",
+      "request": {
+        "method": "GET",
+        "url": "https://livelywallpaper.app/live-wallpapers/%7Bslug%7D/",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
+          "priority": "u=0, i",
+          "sec-ch-ua": "\"Chromium\";v=\"153\", \"Not_A Brand\";v=\"8\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\"",
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-user": "?1",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+        }
+      },
+      "slots": [
+        {
+          "param": "slug",
+          "at": [
+            "path:1"
+          ]
+        }
+      ],
+      "volatile": [],
+      "trigger": {
+        "url": "https://livelywallpaper.app/live-wallpapers/{slug}/"
+      },
+      "match": {
+        "method": "GET",
+        "host": "livelywallpaper.app"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html",
+        "html": {
+          "items": "main",
+          "fields": {
+            "preview": "all:video source@src",
+            "original": "all:a[href$=\"/download.mp4\"]@href",
+            "labels": "all:a[href$=\"/download.mp4\"]"
+          }
+        }
+      },
+      "params": [
+        {
+          "name": "slug",
+          "type": "string",
+          "required": true,
+          "example": "gojo-satoru-train"
+        }
+      ],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {
+            "slug": "tanjiro-kamado-crimson-moon"
+          },
+          "expect": "result"
+        }
+      ]
+    },
+    {
+      "name": "list",
+      "request": {
+        "method": "GET",
+        "url": "https://livelywallpaper.app/live-wallpapers/anime/%7Bpage%7D/",
+        "headers": {
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+          "sec-ch-ua": "\"Chromium\";v=\"153\", \"Not_A Brand\";v=\"8\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\""
+        }
+      },
+      "slots": [
+        {
+          "param": "page",
+          "at": [
+            "path:2"
+          ]
+        }
+      ],
+      "volatile": [],
+      "trigger": {
+        "url": "https://livelywallpaper.app/live-wallpapers/anime/{page}/"
+      },
+      "match": {
+        "method": "GET",
+        "host": "livelywallpaper.app",
+        "path": "/live-wallpapers/anime/*/"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html",
+        "html": {
+          "items": "article.wallpaper-card",
+          "fields": {
+            "title": "h2",
+            "url": "a.wallpaper-card-media@href",
+            "image": "img@src"
+          }
+        }
+      },
+      "params": [
+        {
+          "name": "page",
+          "type": "string",
+          "required": true,
+          "example": "2",
+          "min": 1
+        }
+      ],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {
+            "page": "4"
+          },
+          "expect": "result"
+        }
+      ],
+      "paging": {
+        "param": "page"
+      }
+    },
+    {
+      "name": "firstPage",
+      "request": {
+        "method": "GET",
+        "url": "https://livelywallpaper.app/live-wallpapers/anime/",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
+          "priority": "u=0, i",
+          "sec-ch-ua": "\"Chromium\";v=\"153\", \"Not_A Brand\";v=\"8\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\"",
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-user": "?1",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+        }
+      },
+      "slots": [],
+      "volatile": [],
+      "trigger": {
+        "url": "https://livelywallpaper.app/live-wallpapers/anime/"
+      },
+      "match": {
+        "method": "GET",
+        "host": "livelywallpaper.app",
+        "path": "/live-wallpapers/anime/"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html",
+        "html": {
+          "items": "article.wallpaper-card",
+          "fields": {
+            "title": "h2",
+            "url": "a.wallpaper-card-media@href",
+            "image": "img@src"
+          }
+        }
+      },
+      "params": [],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false
+    }
+  ]
+}

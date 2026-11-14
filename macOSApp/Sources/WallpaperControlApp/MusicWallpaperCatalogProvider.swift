@@ -18,24 +18,30 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
     private var more: [Bool]
     private var loaded: [CatalogWallpaper] = []
     private var generation: UInt = 0
-    private let batchSize = 4
+    private let batchSize: Int
 
     init(entries: [Entry]? = nil,
          directory: URL? = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("AuraFlow/MusicCatalog", isDirectory: true),
+         batchSize: Int = 16,
          verifyAudio: @escaping VerifyAudio = { url, referer in try await MusicWallpaperCatalogProvider.verifyOriginalAudio(url, referer) }) {
-        let seeds = Bundle.module.url(forResource: "music-catalog-seeds", withExtension: "json")
-            .flatMap { try? Data(contentsOf: $0) }
-            .flatMap { try? JSONDecoder().decode([CatalogWallpaper].self, from: $0) } ?? []
-        let sources = entries ?? LearnedAnimeSite.allCases.map { site in
+        let seeds = Self.bundledSelections()
+        let sources = entries ?? [LearnedAnimeSite.desktophut, .livewallpapers4free].map { site in
             Entry(site: site, provider: LearnedAnimeSource(site: site, musicCollection: true),
                 seeds: seeds.filter { $0.sourcePageURL.map { site.accepts($0) } == true })
         }
         self.entries = sources; self.directory = directory; self.verifyAudio = verifyAudio
+        self.batchSize = max(1, min(batchSize, 32))
         queues = Array(repeating: [], count: sources.count)
         more = Array(repeating: true, count: sources.count)
         audioCache = directory.flatMap { try? Data(contentsOf: $0.appendingPathComponent("verification.json")) }
             .flatMap { try? JSONDecoder().decode([String: AudioEntry].self, from: $0) } ?? [:]
+    }
+
+    static func bundledSelections() -> [CatalogWallpaper] {
+        Bundle.module.url(forResource: "music-catalog-seeds", withExtension: "json")
+            .flatMap { try? Data(contentsOf: $0) }
+            .flatMap { try? JSONDecoder().decode([CatalogWallpaper].self, from: $0) } ?? []
     }
 
     static func verifyOriginalAudio(_ url: URL, _ referer: URL?) async throws -> WallpaperAudioContent {
@@ -76,14 +82,32 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
 
     func fetchNextCatalogPage() async throws -> CatalogPage {
         let revision = generation
-        for index in entries.indices where queues[index].isEmpty && more[index] {
-            guard let paging = entries[index].provider as? any WallpaperCatalogPaging else { more[index] = false; continue }
-            let page = try await paging.fetchNextCatalogPage()
-            try Task.checkCancellation()
-            guard revision == generation else { throw CancellationError() }
-            queues[index] = Self.unique(page.wallpapers).filter { item in !loaded.contains { $0.id == item.id } }
-            more[index] = page.hasMore
+        let pending = entries.indices.filter { queues[$0].isEmpty && more[$0] }
+        let pages = try await withThrowingTaskGroup(of: (Int, CatalogPage?, String?).self) { group in
+            for index in pending {
+                let provider = entries[index].provider
+                group.addTask {
+                    guard let paging = provider as? any WallpaperCatalogPaging else {
+                        return (index, CatalogPage(wallpapers: [], hasMore: false), nil)
+                    }
+                    do { return (index, try await paging.fetchNextCatalogPage(), nil) }
+                    catch { try Task.checkCancellation(); return (index, nil, error.localizedDescription) }
+                }
+            }
+            var result: [(Int, CatalogPage?, String?)] = []
+            for try await page in group { result.append(page) }
+            return result
         }
+        try Task.checkCancellation()
+        guard revision == generation else { throw CancellationError() }
+        for (index, page, _) in pages {
+            if let page {
+                queues[index] = Self.unique(page.wallpapers).filter { item in !loaded.contains { $0.id == item.id } }
+                more[index] = page.hasMore
+            }
+        }
+        if !pages.isEmpty, pages.allSatisfy({ $0.1 == nil }), queues.allSatisfy(\.isEmpty),
+           let failure = pages.compactMap({ $0.2 }).first { throw LearnedCatalogError.unavailable(failure) }
         let additions = try await nextBatch(revision: revision, progress: { _ in })
         loaded = Self.unique(loaded + additions)
         persist()
@@ -93,18 +117,39 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
     private func nextBatch(revision: UInt, progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
         let candidates = queues.map { Array($0.prefix(batchSize)) }
         for index in queues.indices { queues[index].removeFirst(candidates[index].count) }
-        return try await withThrowingTaskGroup(of: [CatalogWallpaper].self) { group in
-            for index in entries.indices {
-                let entry = entries[index], items = candidates[index]
-                group.addTask { try await self.verified(items, entry: entry) }
+        return try await verifyCandidates(candidates, revision: revision, progress: progress)
+    }
+
+    /// Four probes total, shared by all sites. A larger page must not create a
+    /// burst of dozens of audio requests or delay a foreground download.
+    private func verifyCandidates(_ batches: [[CatalogWallpaper]], revision: UInt,
+                                  progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
+        var candidates: [(Entry, CatalogWallpaper)] = []
+        for row in 0..<(batches.map(\.count).max() ?? 0) {
+            for index in entries.indices where row < batches[index].count {
+                candidates.append((entries[index], batches[index][row]))
             }
-            var result: [CatalogWallpaper] = []
-            for try await items in group {
+        }
+        return try await withThrowingTaskGroup(of: (Int, CatalogWallpaper?).self) { group in
+            var cursor = 0
+            func schedule() {
+                guard cursor < candidates.count else { return }
+                let index = cursor, (entry, item) = candidates[cursor]
+                cursor += 1
+                group.addTask { (index, try await self.verified([item], entry: entry, revision: revision).first) }
+            }
+            for _ in 0..<4 { schedule() }
+            var result: [Int: CatalogWallpaper] = [:]
+            while let (index, item) = try await group.next() {
+                try Task.checkCancellation()
                 guard revision == generation else { throw CancellationError() }
-                result = Self.unique(result + items)
-                if !result.isEmpty { await progress(result) }
+                if let item {
+                    result[index] = item
+                    await progress(Self.unique(result.keys.sorted().compactMap { result[$0] }))
+                }
+                schedule()
             }
-            return result
+            return Self.unique(result.keys.sorted().compactMap { result[$0] })
         }
     }
 
@@ -115,28 +160,28 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
     func searchCatalog(query: String, progress: @escaping @Sendable ([CatalogWallpaper]) async -> Void) async throws -> [CatalogWallpaper] {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
         let known = loaded
-        return try await withThrowingTaskGroup(of: [CatalogWallpaper].self) { group in
-            for entry in entries {
+        let revision = generation
+        let batches = await withTaskGroup(of: (Int, [CatalogWallpaper]).self) { group in
+            for (index, entry) in entries.enumerated() {
                 group.addTask {
                     let local = (entry.seeds + known).filter {
                         $0.sourcePageURL.map { entry.site.accepts($0) } == true &&
                         WallpaperSearchMatcher.matches(query: query, fields: [$0.title, $0.id])
                     }
                     let remote = (try? await (entry.provider as? any WallpaperCatalogSearching)?.searchCatalog(query: query)) ?? []
-                    return try await self.verified(Array(Self.unique(local + remote).prefix(4)), entry: entry)
+                    return (index, Array(Self.unique(local + remote).prefix(self.batchSize)))
                 }
             }
-            var result: [CatalogWallpaper] = []
-            for try await items in group {
-                result = Self.unique(result + items)
-                await progress(result)
-            }
-            return result
+            var batches = Array(repeating: [CatalogWallpaper](), count: entries.count)
+            for await (index, items) in group { batches[index] = items }
+            return batches
         }
+        try Task.checkCancellation()
+        guard revision == generation else { throw CancellationError() }
+        return try await verifyCandidates(batches, revision: revision, progress: progress)
     }
 
-    private func verified(_ candidates: [CatalogWallpaper], entry: Entry) async throws -> [CatalogWallpaper] {
-        let revision = generation
+    private func verified(_ candidates: [CatalogWallpaper], entry: Entry, revision: UInt) async throws -> [CatalogWallpaper] {
         var result: [CatalogWallpaper] = []
         for item in candidates {
             try Task.checkCancellation()
