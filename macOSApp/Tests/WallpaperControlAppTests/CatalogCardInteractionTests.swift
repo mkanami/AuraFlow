@@ -190,6 +190,54 @@ struct CatalogCardInteractionTests {
 }
 
 @MainActor
+@Test func scrollingStaysPosterOnlyAndLoadingDoesNotResizeTheDocument() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let items = (0..<120).map { index in
+        CatalogWallpaper(id: "poster-only-\(index)", title: "Wallpaper \(index)", category: "Anime",
+            attribution: "Test", previewImageURL: nil, sourcePageURL: nil, sources: [])
+    }
+    let source = PosterOnlyCatalogFixtureSource(items: items)
+    let model = AppViewModel(controller: MockNativeWallpaperController(), catalogProvider: source, appSupportDirectoryURL: root)
+    for _ in 0..<100 where model.catalogWallpapers.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+    model.catalogWallpapers = items
+    model.catalogViewModel.automaticPaginationPaused = true
+    model.catalogHasMoreWallpapers = true
+    let hosting = NSHostingView(rootView: WallpaperCatalogGridView(viewModel: model,
+        catalogViewModel: model.catalogViewModel).frame(width: 500, height: 320))
+    hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 320)
+    let window = makeInteractionWindow(contentView: hosting, size: hosting.frame.size)
+    defer { window.orderOut(nil); window.close() }
+    hosting.layoutSubtreeIfNeeded()
+    try await Task.sleep(for: .milliseconds(300))
+    func findScroll(_ view: NSView) -> NSScrollView? {
+        if let scroll = view as? NSScrollView { return scroll }
+        return view.subviews.lazy.compactMap(findScroll).first
+    }
+    let scroll = try #require(findScroll(hosting))
+    for y in [1_200.0, 3_600.0, 2_400.0] {
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        hosting.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(300))
+    }
+    #expect(await source.resolutions == 0)
+    let height = try #require(scroll.documentView?.frame.height)
+    let offset = scroll.contentView.bounds.origin.y
+    model.catalogViewModel.isLoadingMore = true
+    hosting.layoutSubtreeIfNeeded()
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(abs((scroll.documentView?.frame.height ?? 0) - height) < 1)
+    #expect(abs(scroll.contentView.bounds.origin.y - offset) < 1)
+    model.catalogViewModel.isLoadingMore = false
+    hosting.layoutSubtreeIfNeeded()
+    #expect(abs((scroll.documentView?.frame.height ?? 0) - height) < 1)
+    // Explicit detail inspection retains the audio-discovery path.
+    await model.catalogAudioMetadata.inspect(items[0])
+    #expect(await source.resolutions == 1)
+}
+
+@MainActor
 @Test func respondsToFirstPhysicalClickAcrossFullWidth() async throws {
     let wallpaper = CatalogWallpaper(
         id: "first-click",
@@ -387,4 +435,16 @@ private func makeMouseEvent(
         clickCount: 1,
         pressure: pressure
     )
+}
+
+private actor PosterOnlyCatalogFixtureSource: WallpaperCatalogProviding {
+    let items: [CatalogWallpaper]
+    var resolutions = 0
+    init(items: [CatalogWallpaper]) { self.items = items }
+    func loadCachedCatalog() async -> [CatalogWallpaper]? { items }
+    func fetchCatalog() async throws -> [CatalogWallpaper] { items }
+    func resolveDownloadURL(for wallpaper: CatalogWallpaper) async throws -> URL {
+        resolutions += 1
+        throw URLError(.notConnectedToInternet)
+    }
 }

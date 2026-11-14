@@ -292,3 +292,37 @@ end of list after ordinary scrolling, and the same 60 cards after reopening.
 The rewritten unified cache held 513 cards and the music cache 60; neither
 contained any excluded IDs or channel-cover titles. Screen capture was
 unavailable, so UI verification used the native accessibility tree.
+
+## Scroll responsiveness (2026-11-14)
+
+A live process sample during scrolling found repeated `musicCount` reads running
+full metadata deduplication and content-policy regex matching inside the catalog
+header. A 600-card presentation benchmark reproduced the cost: one set of header
+and grid reads took a median 126.94 ms before the fix.
+
+Catalog presentation values now cache their results until the underlying list,
+filter or audio evidence changes. Content-policy decisions use a bounded,
+thread-safe cache keyed by the inspected metadata, with precompiled matching
+rules. Changed IDs/titles/pages/posters still receive independent decisions.
+The same benchmark's repeated reads were below 0.01 ms after the fix. Its initial
+cold read was 60.72 ms; this is a CPU benchmark of derived data, not a display-FPS
+measurement.
+
+Visibility bookkeeping no longer publishes a SwiftUI state change for each card
+entering or leaving the viewport. Stable cards have an Equatable boundary, and
+the audio badge observes metadata independently. Repeated inspection of an
+already-known music card does not republish the same value across the app.
+The footer retains the same height while loading, avoiding a document-size jump.
+Native Liquid Glass styling remains unchanged.
+
+Browsing now loads posters only. Unknown remote audio is checked in the detail
+view rather than resolving original videos for passing grid cards. Known music
+badges remain available; local-download audio inspection waits briefly so a fast
+scroll can cancel it. Existing bounded image loading, shared requests and poster
+lookahead remain in place.
+
+Validation: 147 targeted catalog tests passed, including continuous two-way
+scrolling, steady trailing rows receiving additional pages, first-click handling,
+cache invalidation after search/paging/audio changes, no remote-video resolution
+while browsing, and stable document height/offset while loading. The new app
+bundle built and launched successfully through `script/build_and_run.sh --verify`.

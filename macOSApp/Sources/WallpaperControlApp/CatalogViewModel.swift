@@ -13,15 +13,15 @@ final class CatalogViewModel: ObservableObject {
     @Published var selectedWallpaper: CatalogWallpaper?
     @Published var scrollTargetID: String?
     @Published private(set) var scrollRequestGeneration: UInt = 0
-    @Published var searchText = ""
-    @Published var selectedGroup: CatalogWallpaperGroup?
-    @Published var showsMusicOnly = false
-    @Published var audioStatus: [String: Bool] = [:]
+    @Published var searchText = "" { didSet { filteredCache = nil } }
+    @Published var selectedGroup: CatalogWallpaperGroup? { didSet { filteredCache = nil } }
+    @Published var showsMusicOnly = false { didSet { filteredCache = nil } }
+    @Published var audioStatus: [String: Bool] = [:] { didSet { filteredCache = nil; musicCountCache = nil } }
     @Published var downloadID: String?
     @Published var downloadProgress: CatalogDownloadProgress?
     @Published var isDownloadCancelling = false
-    @Published var wallpapers: [CatalogWallpaper] = []
-    @Published var searchResults: [CatalogWallpaper] = []
+    @Published var wallpapers: [CatalogWallpaper] = [] { didSet { invalidateCatalogIndex() } }
+    @Published var searchResults: [CatalogWallpaper] = [] { didSet { invalidateCatalogIndex() } }
     @Published var isRefreshing = false
     @Published var isLoadingMore = false
     @Published var isSearching = false
@@ -37,15 +37,50 @@ final class CatalogViewModel: ObservableObject {
 
     private let catalogDisplayPageSize = 12
     private let searchDisplayPageSize = 24
-    private var deferredWallpapers: [CatalogWallpaper] = []
-    private var deferredSearchResults: [CatalogWallpaper] = []
+    private var deferredWallpapers: [CatalogWallpaper] = [] { didSet { invalidateCatalogIndex() } }
+    private var deferredSearchResults: [CatalogWallpaper] = [] { didSet { invalidateCatalogIndex() } }
     private var hasMoreRemoteWallpapers = false
 
+    // Cache presentation values between actual catalog/filter changes. These
+    // getters run many times during SwiftUI layout and must not rescan media
+    // metadata or execute content-policy matching on every scroll update.
+    private var filteredCache: [CatalogWallpaper]?
+    private var displayedCache: [CatalogWallpaper]?
+    private var knownCache: [CatalogWallpaper]?
+    private var musicCountCache: Int?
+    private var groupCountsCache: [CatalogWallpaperGroup: Int]?
+
+    private func invalidateCatalogIndex() {
+        filteredCache = nil; displayedCache = nil; knownCache = nil
+        musicCountCache = nil; groupCountsCache = nil
+    }
+
+    private var displayedCatalog: [CatalogWallpaper] {
+        if let displayedCache { return displayedCache }
+        let result = Self.deduplicated(wallpapers)
+        displayedCache = result
+        return result
+    }
+
+    private var knownCatalog: [CatalogWallpaper] {
+        if let knownCache { return knownCache }
+        let result = Self.deduplicated(wallpapers + deferredWallpapers)
+        knownCache = result
+        return result
+    }
+
     var filteredWallpapers: [CatalogWallpaper] {
+        if let filteredCache { return filteredCache }
+        let result = makeFilteredWallpapers()
+        filteredCache = result
+        return result
+    }
+
+    private func makeFilteredWallpapers() -> [CatalogWallpaper] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let availableWallpapers: [CatalogWallpaper]
         if query.isEmpty {
-            availableWallpapers = showsMusicOnly ? Self.deduplicated(wallpapers + deferredWallpapers) : wallpapers
+            availableWallpapers = showsMusicOnly ? knownCatalog : displayedCatalog
         } else {
             availableWallpapers = Self.deduplicated(wallpapers + (showsMusicOnly ? deferredWallpapers : []) + searchResults)
         }
@@ -92,7 +127,10 @@ final class CatalogViewModel: ObservableObject {
     }
 
     var musicCount: Int {
-        Self.deduplicated(wallpapers + deferredWallpapers).filter { containsMusic($0) }.count
+        if let musicCountCache { return musicCountCache }
+        let result = knownCatalog.filter { containsMusic($0) }.count
+        musicCountCache = result
+        return result
     }
 
     private func containsMusic(_ wallpaper: CatalogWallpaper) -> Bool {
@@ -106,7 +144,11 @@ final class CatalogViewModel: ObservableObject {
     }
 
     func count(in group: CatalogWallpaperGroup) -> Int {
-        wallpapers.filter { $0.catalogGroup == group }.count
+        if let groupCountsCache { return groupCountsCache[group, default: 0] }
+        var counts: [CatalogWallpaperGroup: Int] = [:]
+        for item in displayedCatalog { counts[item.catalogGroup, default: 0] += 1 }
+        groupCountsCache = counts
+        return counts[group, default: 0]
     }
 
     var hasDeferredWallpapers: Bool {

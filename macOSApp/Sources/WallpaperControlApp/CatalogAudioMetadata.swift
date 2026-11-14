@@ -211,7 +211,7 @@ final class CatalogAudioMetadata: ObservableObject {
             return
         }
         if wallpaper.hasMusic == true {
-            audio[wallpaper.id] = true
+            if audio[wallpaper.id] != true { audio[wallpaper.id] = true }
             return
         }
         if let entry = cache[wallpaper.id], entry.source == source, entry.expires > Date() { return }
@@ -276,7 +276,7 @@ final class CatalogAudioMetadata: ObservableObject {
         }
         guard !Task.isCancelled, generation == cacheGeneration else { return }
         if result != .unknown { localCache[signature] = result }
-        localContent[url] = result
+        if localContent[url] != result { localContent[url] = result }
         if let id, result != .unknown { store(result, id: id, source: source ?? cache[id]?.source ?? signature) }
     }
 
@@ -292,7 +292,7 @@ final class CatalogAudioMetadata: ObservableObject {
     }
 
     private func store(_ result: WallpaperAudioContent, id: String, source: String) {
-        audio[id] = result.containsSound
+        if audio[id] != result.containsSound { audio[id] = result.containsSound }
         cache[id] = Entry(content: result, expires: Date().addingTimeInterval(7 * 86400), source: source)
         guard let data = try? JSONEncoder().encode(cache) else { return }
         try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)

@@ -16,6 +16,17 @@ enum CatalogContentPolicy {
     private static let ids = Set(exclusions.map { normalized($0.id) })
     private static let pages = Set(exclusions.compactMap { $0.sourcePageURL.map(urlKey) })
     private static let posters = Set(exclusions.compactMap { $0.previewImageURL.map(urlKey) })
+    // Rules and the bundled registry are immutable for the life of the app.
+    // Include all inspected metadata, so changing a title/page/poster cannot
+    // reuse an old approval. NSCache bounds memory and supports provider tasks.
+    private static let decisions: NSCache<NSString, NSNumber> = {
+        let cache = NSCache<NSString, NSNumber>()
+        cache.countLimit = 2048
+        cache.totalCostLimit = 4 * 1024 * 1024
+        return cache
+    }()
+    private static let watermarkFree = try! NSRegularExpression(pattern: #"\b(?:no|without)[\s-]+watermarks?\b|\bwatermark[\s-]+free\b"#)
+    private static let branded = try! NSRegularExpression(pattern: #"[♬♫♪][\s-]*live[\s-]*wallpaper|\bwatermark(?:ed)?\b|\bnightcore\b"#)
 
     static func allows(_ wallpaper: CatalogWallpaper) -> Bool {
         allows(id: wallpaper.id, title: wallpaper.title, page: wallpaper.sourcePageURL, poster: wallpaper.previewImageURL)
@@ -26,16 +37,25 @@ enum CatalogContentPolicy {
     }
 
     private static func allows(id: String, title: String, page: URL?, poster: URL?) -> Bool {
-        let fields = [id, title, page?.absoluteString ?? "", poster?.absoluteString ?? ""].map(normalized)
+        let raw = [id, title, page?.absoluteString ?? "", poster?.absoluteString ?? ""]
+        let key = raw.joined(separator: "\u{0}") as NSString
+        if let decision = decisions.object(forKey: key) { return decision.boolValue }
+        let allowed = evaluate(id: id, page: page, poster: poster, fields: raw.map(normalized))
+        decisions.setObject(NSNumber(value: allowed), forKey: key, cost: key.length * 2)
+        return allowed
+    }
+
+    private static func evaluate(id: String, page: URL?, poster: URL?, fields: [String]) -> Bool {
         let text = fields.joined(separator: " ")
         let compact = text.filter { $0.isLetter || $0.isNumber }
         if compact.contains("hdsoundi") || compact.contains("wherewordsfailmusicspeaks") { return false }
         // This entire upload family consists of music-channel covers and
         // bumpers. Renaming one page must not bring the family back via search.
-        let brandingText = text.replacingOccurrences(of: #"\b(?:no|without)[\s-]+watermarks?\b|\bwatermark[\s-]+free\b"#,
-                                                     with: "", options: .regularExpression)
-        if brandingText.range(of: #"[♬♫♪][\s-]*live[\s-]*wallpaper|\bwatermark(?:ed)?\b|\bnightcore\b"#,
-                      options: .regularExpression) != nil { return false }
+        if text.contains("watermark") || text.contains("nightcore") || text.contains(where: { "♬♫♪".contains($0) }) {
+            let brandingText = watermarkFree.stringByReplacingMatches(in: text,
+                range: NSRange(text.startIndex..., in: text), withTemplate: "")
+            if branded.firstMatch(in: brandingText, range: NSRange(brandingText.startIndex..., in: brandingText)) != nil { return false }
+        }
         if ids.contains(normalized(id)) { return false }
         if let page, pages.contains(urlKey(page)) { return false }
         if let poster, posters.contains(urlKey(poster)) { return false }
