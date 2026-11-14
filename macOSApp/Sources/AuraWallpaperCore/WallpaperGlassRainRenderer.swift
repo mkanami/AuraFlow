@@ -258,8 +258,8 @@ final class WallpaperGlassRainRenderer {
     private static let shader = """
     #include <metal_stdlib>
     using namespace metal;
-    struct Drop { float4 ellipse; float4 optics; float4 shape; float4 body; };
-    struct WaterVertex { float4 position [[position]]; float2 local; float strength; float angle; float trail; float radius; float length; float seed; float4 shape; float4 body; };
+    struct Drop { float4 ellipse; float4 optics; float4 shape; float4 body; float4 contact; };
+    struct WaterVertex { float4 position [[position]]; float2 local; float strength; float angle; float trail; float radius; float length; float seed; float4 shape; float4 body; float4 contact; };
     vertex WaterVertex dropVertex(uint v [[vertex_id]], uint i [[instance_id]],
         constant Drop *drops [[buffer(0)]], constant float4 &pane [[buffer(1)]]) {
         const float2 corners[6] = {float2(-1,-1),float2(1,-1),float2(-1,1),float2(-1,1),float2(1,-1),float2(1,1)};
@@ -268,26 +268,38 @@ final class WallpaperGlassRainRenderer {
         float c = cos(d.optics.y), s = sin(d.optics.y);
         p = float2(c*p.x-s*p.y,s*p.x+c*p.y) + d.ellipse.xy;
         WaterVertex o; o.position = float4(p.x/pane.x*2-1,1-p.y/pane.y*2,0,1);
-        float padding=d.optics.z>1.5f && d.optics.z<2.5f?1.6f:(d.shape.z>0?1.28f:1.0f);
-        o.local=q; o.strength=d.optics.x; o.angle=d.optics.y; o.trail=d.optics.z; o.radius=d.ellipse.z/padding; o.length=d.ellipse.w; o.seed=d.optics.w; o.shape=d.shape; o.body=d.body; return o;
+        float padding=d.optics.z>1.5f && d.optics.z<2.5f?\(WallpaperGlassRainSimulation.runnerPadding)f:(d.shape.z>0?1.28f:1.0f);
+        o.local=q; o.strength=d.optics.x; o.angle=d.optics.y; o.trail=d.optics.z; o.radius=d.ellipse.z/padding; o.length=d.ellipse.w; o.seed=d.optics.w; o.shape=d.shape; o.body=d.body; o.contact=d.contact; return o;
     }
     fragment float4 dropMap(WaterVertex in [[stage_in]]) {
         float2 q=in.local;
-        float2 n; float h; float edge;
+        float2 n; float h; float edge; float opticalRadius=in.radius;
         if((in.trail>0.5f && in.trail<1.5f) || in.trail>3.5f) {
-            if(in.trail>3.5f) q.x/=mix(0.42f,1.0f,smoothstep(0.0f,0.9f,abs(q.y)));
-            // A capsule's straight middle joins neighboring water segments without beads.
+            float radius=in.radius, slope=0;
             float2 p=q*float2(in.radius,in.length);
-            float2 cap=float2(p.x,sign(p.y)*max(0.0f,abs(p.y)-max(0.0f,in.length-in.radius)));
-            float r=length(cap)/max(0.1f,in.radius);
+            if(in.trail>3.5f && in.body.y>0) {
+                // A continuous curved liquid neck, narrow in the middle and
+                // widening into both menisci. It is not a chain of rigid tubes.
+                float t=clamp((q.y+1)*0.5f,0.0f,1.0f);
+                float center=in.body.x*4*t*(1-t);
+                radius=max(0.35f,mix(in.body.y,in.body.z,t)*(1-in.body.w*sin(M_PI_F*t)));
+                p.x-=center;
+                slope=2*in.body.x*(1-2*t)/max(0.1f,in.length);
+                opticalRadius=radius;
+            } else if(in.trail>3.5f) {
+                p.x/=mix(0.42f,1.0f,smoothstep(0.0f,0.9f,abs(q.y)));
+            }
+            // A capsule's straight middle joins neighboring water segments without beads.
+            float2 cap=float2(p.x,sign(p.y)*max(0.0f,abs(p.y)-max(0.0f,in.length-radius)));
+            float r=length(cap)/max(0.1f,radius);
             if(r>=1) discard_fragment();
             h=sqrt(max(0.0f,1-r*r)); edge=1-smoothstep(0.65f,1.0f,r);
-            n=-cap/max(0.1f,in.radius)*(0.35f+0.65f*h);
+            n=-float2(cap.x,cap.y-cap.x*slope)/max(0.1f,radius)*(0.35f+0.65f*h);
         } else {
             // Each contact patch has its own fixed asymmetry and lobes. Padding
             // contains its full outline, so irregular beads never get clipped flat.
             if(in.shape.z>0) {
-                q*=in.trail>1.5f && in.trail<2.5f?1.6f:1.28f;
+                q*=in.trail>1.5f && in.trail<2.5f?\(WallpaperGlassRainSimulation.runnerPadding)f:1.28f;
                 q.x+=in.shape.y*q.y+sin(in.shape.x)*q.y*q.y*0.06f;
                 float angle=atan2(q.y,q.x);
                 float boundary=1+cos(angle*2+in.shape.x)*0.075f
@@ -298,7 +310,10 @@ final class WallpaperGlassRainRenderer {
             float flow=in.trail>1.5f?clamp(in.shape.w,0.0f,1.0f):0.0f;
             if(in.trail>2.5f) {
                 // The attached lobe stretches a narrowing neck toward the receiver.
-                q.x/=mix(1+0.06f*flow,1-0.65f*flow,smoothstep(-0.6f,0.9f,q.y));
+                float front=smoothstep(-0.55f,0.8f,q.y);
+                q.x-=in.body.z*(1-clamp(q.y*q.y,0.0f,1.0f))*flow;
+                q.x/=mix(1-in.body.y*0.2f,mix(1.0f,0.18f,flow),front);
+                q.y+=in.body.y*0.12f*(1-clamp(q.y*q.y,0.0f,1.0f));
             } else {
                 q.x/=mix(1-0.38f*flow,1+0.04f*flow,smoothstep(-0.9f,0.6f,q.y));
             }
@@ -309,17 +324,23 @@ final class WallpaperGlassRainRenderer {
                 float waist=exp(-pow((y+0.15f)*2.6f,2.0f));
                 // The rear contact line stretches into a neck; the leading
                 // meniscus carries the mass and rounds out during braking.
-                float width=clamp(1-in.body.x*rear*0.42f+in.body.y*front*0.65f+in.body.w*waist,0.52f,1.3f);
+                float width=clamp(1-in.body.x*rear*0.7f+in.body.y*front*0.85f+in.body.w*waist,0.25f,1.55f);
                 q.x-=in.body.z*((1-y*y)+rear*0.35f);
                 q.x/=width;
-                q.y+=in.body.x*0.12f*rear*(1-y*y)-in.body.y*0.07f*front;
+                q.y+=in.body.x*0.2f*rear*(1-y*y)-in.body.y*0.12f*front;
+                float pullLength=length(in.contact.xy);
+                if(pullLength>0.0001f) {
+                    float2 direction=in.contact.xy/pullLength;
+                    float facing=smoothstep(-0.6f,0.9f,dot(q,direction));
+                    q-=in.contact.xy*(0.75f*facing);
+                }
             }
             float r2=dot(q,q); if(r2>=1) discard_fragment();
             h=sqrt(max(0.0f,1-r2)); edge=1-smoothstep(0.84f,1.0f,sqrt(r2));
             n=-q*(0.3f+0.7f*h);
         }
         float c=cos(in.angle),s=sin(in.angle); n=float2(c*n.x-s*n.y,s*n.x+c*n.y);
-        return float4(n*in.strength*in.radius,h*in.strength,edge*in.strength);
+        return float4(n*in.strength*opticalRadius,h*in.strength,edge*in.strength);
     }
     struct AirDrop { float4 ellipse; float4 color; float4 optics; };
     struct AirVertex { float4 position [[position]]; float2 q; float4 color; float3 optics; };
@@ -352,6 +373,11 @@ final class WallpaperGlassRainRenderer {
         texture2d<float> water [[texture(1)]], texture2d<float> rain [[texture(2)]], constant float4 &pane [[buffer(0)]]) {
         constexpr sampler linearSampler(coord::normalized,address::clamp_to_edge,filter::linear);
         float4 wet=water.sample(linearSampler,in.uv);
+        // Joined lobes share one meniscus instead of adding two hard optical
+        // ridges at contact. Coverage still supplies the continuous wet mask.
+        float overlap=max(1.0f,wet.a);
+        wet.rg/=overlap;
+        wet.b/=sqrt(overlap);
         // Lighting needs the curved surface slope, not a normalized XY direction:
         // the latter creates a bright triangular sector across the whole drop.
         float3 surfaceNormal=normalize(float3(-dfdx(wet.b)*8,-dfdy(wet.b)*8,0.5f));

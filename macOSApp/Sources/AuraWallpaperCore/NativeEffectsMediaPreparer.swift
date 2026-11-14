@@ -8,7 +8,7 @@ import Foundation
 
 /// Bump when shared effect pixels change, so prepared Lock-only movies do not
 /// retain a previous shader/simulation after an app update.
-enum WallpaperEffectsRenderRevision { static let current = 2 }
+enum WallpaperEffectsRenderRevision { static let current = 3 }
 
 public protocol NativeEffectsMediaPreparing {
     func prepare(source: URL, settings: WallpaperEffectsSettings, speed: Double,

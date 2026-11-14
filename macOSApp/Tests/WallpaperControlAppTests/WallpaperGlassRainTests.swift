@@ -141,7 +141,8 @@ struct WallpaperGlassRainTests {
         }
         #expect((shapes.map(\.x).max() ?? 0) - (shapes.map(\.x).min() ?? 0) > 0.15,
             "A runner at terminal speed must not become one rigid translated teardrop")
-        #expect(zip(shapes, shapes.dropFirst()).allSatisfy { simd_length($1 - $0) < 0.035 })
+        let maxStep=zip(shapes,shapes.dropFirst()).map { simd_length($1 - $0) }.max() ?? 0
+        #expect(maxStep < 0.06, "The more visible contour must still change continuously: \(maxStep)")
         for _ in 0..<600 {
             body.advance(position: SIMD2(900, 964), speed: .zero, acceleration: .zero,
                 radius: 10, seed: 0.37, absorption: 0, deltaTime: 1.0/60)
@@ -171,6 +172,101 @@ struct WallpaperGlassRainTests {
         #expect(braking.shape.y > accelerating.shape.y + 0.12)
         #expect(turning.shape.z < initial.z - 0.07, "The rear neck must lag behind a turn")
         #expect(collecting.shape.y > initial.y + 0.07)
+    }
+
+    @Test @MainActor func slowDropHasClearlyDifferentSilhouettesAtNativePixelSize() throws {
+        let renderer = try #require(WallpaperGlassRainRenderer())
+        let queue = try #require(renderer.device.makeCommandQueue())
+        let width=240, size=CGSize(width: 240,height: 240), rect=CGRect(x: 0,y: 0,width: 240,height: 240)
+        let descriptor=MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,width: width,height: width,mipmapped: false)
+        descriptor.storageMode = .shared; descriptor.usage = [.renderTarget,.shaderRead]
+        let target=try #require(renderer.device.makeTexture(descriptor: descriptor))
+        var body=WallpaperGlassDropBody(), masks: [Set<Int>] = []
+        // An actual 14-pixel radius: this deliberately does not use the large
+        // droplets of the close-up test, nor translate/resize the test mesh.
+        let radius=Float(14 * 1080.0 / Double(width) * WallpaperGlassRainSimulation.runnerPadding)
+        for frame in 0..<600 {
+            body.advance(position: SIMD2(900,100+Double(frame)*0.4),speed: SIMD2(0,24),acceleration: .zero,
+                radius: 10,seed: 0.37,absorption: 0,deltaTime: 1.0/60)
+            guard frame >= 120 && frame % 30 == 0 else { continue }
+            let command=try #require(queue.makeCommandBuffer())
+            let drop=WallpaperGlassRainSimulation.Instance(ellipse: SIMD4(540,540,radius,radius),optics: SIMD4(1,0,2,0.37),
+                shape: SIMD4(0.5,0.03,0.06,0.4),body: SIMD4<Float>(body.shape))
+            try renderer.encode(command: command,target: target,
+                source: .init(image: CIImage(color: .black).cropped(to: rect),gravity: .resize,revision: 1,label: "native-body"),
+                settings: settings(),size: size,contentFrame: rect,instances: [drop])
+            command.commit(); command.waitUntilCompleted(); try #require(command.status == .completed)
+            var bytes=[UInt8](repeating: 0,count: width*width*4)
+            target.getBytes(&bytes,bytesPerRow: width*4,from: MTLRegionMake2D(0,0,width,width),mipmapLevel: 0)
+            let pixels=(0..<width*width).filter { bytes[$0*4+3] > 100 }
+            try #require(!pixels.isEmpty)
+            // Align centroids so the assertion measures contour deformation,
+            // not a sideways shift masquerading as a changing shape.
+            let cx=Int((Double(pixels.reduce(0) { $0+$1%width })/Double(pixels.count)).rounded())
+            let cy=Int((Double(pixels.reduce(0) { $0+$1/width })/Double(pixels.count)).rounded())
+            masks.append(Set(pixels.map { ($0/width-cy+120)*width+($0%width-cx+120) }))
+        }
+        var difference=0.0
+        for a in masks { for b in masks {
+            difference=max(difference,Double(a.symmetricDifference(b).count)/Double(a.union(b).count))
+        } }
+        #expect(difference > 0.25, "Slow sliding must visibly reshape at least a quarter of the native-size silhouette after alignment: \(difference)")
+        if let directory=ProcessInfo.processInfo.environment["AURAFLOW_DROP_BODY_ARTIFACTS"] {
+            try FileManager.default.createDirectory(atPath: directory,withIntermediateDirectories: true)
+            let context=try #require(CGContext(data: nil,width: 384,height: 96,bitsPerComponent: 8,bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.setFillColor(CGColor(gray: 0.07,alpha: 1));context.fill(CGRect(x: 0,y: 0,width: 384,height: 96))
+            context.setFillColor(CGColor(red: 0.55,green: 0.85,blue: 1,alpha: 1))
+            for (panel,index) in [0,3,6,9,12,15].enumerated() {
+                for p in masks[index] { context.fill(CGRect(x: panel*64+32+p%width-120,y: 48-p/width+120,width: 1,height: 1)) }
+            }
+            let image=NSBitmapImageRep(cgImage: try #require(context.makeImage()))
+            try image.representation(using: .png,properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("native-drop-silhouettes.png"))
+        }
+    }
+
+    @Test func coalescencePullsBothMenisciBeforeThePinnedLobeDrainsAndRelaxesAfterwards() {
+        let s=settings()
+        var scene=contactScene(s)
+        let origin=SIMD2(scene.beads[0].x,scene.beads[0].y)
+        var earlyContact=0.0, peakContact=0.0, maxStep=0.0, previous=SIMD2<Double>(repeating: 0)
+        for frame in 0..<180 {
+            scene.advance(deltaTime: 1.0/60,aspect: 16.0/9,settings: s)
+            let receiver=scene.runners[0], contact=receiver.contact
+            peakContact=max(peakContact,simd_length(contact))
+            maxStep=max(maxStep,simd_length(contact-previous));previous=contact
+            if let suction=scene.beads[0].suction, suction.transferredFraction < 0.2 {
+                earlyContact=max(earlyContact,simd_length(contact))
+                if frame < 7 { #expect(simd_length(SIMD2(scene.beads[0].x,scene.beads[0].y)-origin) < 0.1) }
+            }
+        }
+        #expect(earlyContact > 0.1 && peakContact > 0.2, "The receiver must reach toward the attached lobe, not wait for a rigid bead to disappear")
+        #expect(maxStep < 0.05 && simd_length(scene.runners[0].contact) < 0.001)
+        #expect(scene.beads[0].suction?.transferredFraction == 1)
+    }
+
+    @Test @MainActor func curvedCapillaryNeckRefractsAContinuousBentConnection() throws {
+        let renderer=try #require(WallpaperGlassRainRenderer())
+        let queue=try #require(renderer.device.makeCommandQueue())
+        let width=512,height=288,size=CGSize(width: 512,height: 288),rect=CGRect(x: 0,y: 0,width: 512,height: 288)
+        let descriptor=MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,width: width,height: height,mipmapped: false)
+        descriptor.storageMode = .shared;descriptor.usage = [.renderTarget,.shaderRead]
+        let target=try #require(renderer.device.makeTexture(descriptor: descriptor))
+        let neck=WallpaperGlassRainSimulation.Instance(ellipse: SIMD4(960,540,60,150),optics: SIMD4(0.95,0,4,0),
+            body: SIMD4(38,12,20,0.3))
+        let command=try #require(queue.makeCommandBuffer())
+        try renderer.encode(command: command,target: target,
+            source: .init(image: CIImage(color: .black).cropped(to: rect),gravity: .resize,revision: 1,label: "curved-neck"),
+            settings: settings(),size: size,contentFrame: rect,instances: [neck])
+        command.commit();command.waitUntilCompleted();try #require(command.status == .completed)
+        var pixels=[UInt8](repeating: 0,count: width*height*4)
+        target.getBytes(&pixels,bytesPerRow: width*4,from: MTLRegionMake2D(0,0,width,height),mipmapLevel: 0)
+        for t in stride(from: 0.2,through: 0.8,by: 0.1) {
+            let x=Int(((960+38*4*t*(1-t))/1920*Double(width)).rounded())
+            let y=Int(((540+(t*2-1)*150)/1080*Double(height)).rounded())
+            #expect(pixels[(y*width+x)*4+3] > 100, "The curved liquid bridge must have no gaps")
+        }
+        #expect(pixels[((height/2)*width+width/2)*4+3] == 0, "The bridge must bend, not remain a straight capsule")
     }
 
     @Test @MainActor func flowingMetalContourDeformsItsNeckAndLeadingBodyWithoutClipping() throws {
@@ -319,9 +415,9 @@ struct WallpaperGlassRainTests {
         let descriptor=MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,width: width,height: height,mipmapped: false)
         descriptor.storageMode = .shared; descriptor.usage = [.renderTarget,.shaderRead]
         let target=try #require(renderer.device.makeTexture(descriptor: descriptor))
-        func render(_ shape: SIMD4<Float>) throws -> [UInt8] {
+        func render(_ shape: SIMD4<Float>, kind: Float = 0) throws -> [UInt8] {
             let command=try #require(queue.makeCommandBuffer())
-            let drop=WallpaperGlassRainSimulation.Instance(ellipse: SIMD4(960,540,300,300),optics: SIMD4(1,0,0,0),shape: shape)
+            let drop=WallpaperGlassRainSimulation.Instance(ellipse: SIMD4(960,540,300,300),optics: SIMD4(1,0,kind,0),shape: shape)
             try renderer.encode(command: command,target: target,
                 source: .init(image: CIImage(color: .black).cropped(to: rect),gravity: .resize,revision: 1,label: "contour"),
                 settings: settings(),size: size,contentFrame: rect,instances: [drop])
@@ -334,7 +430,9 @@ struct WallpaperGlassRainTests {
         let b=try render(SIMD4(3.8,0.14,0.075,0))
         let repeated=try render(SIMD4(0.5,-0.15,0.09,0))
         let circle=try render(.zero)
+        let firstContact=try render(SIMD4(0.5,-0.15,0.09,0),kind: 3)
         #expect(a == repeated)
+        #expect(a == firstContact, "Attaching to another drop must not pop into a different silhouette in one frame")
         #expect(zip(a,b).filter { $0 != $1 }.count > 800)
         #expect(zip(a,circle).filter { $0 != $1 }.count > 1000)
     }

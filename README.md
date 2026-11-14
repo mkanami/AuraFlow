@@ -121,10 +121,15 @@ orientations. **Sliding drops** independently enables large drops that release
 from the glass, accelerate and bend along the pane. Their bodies gradually
 stretch, lean and settle. A damped contact-line model deforms the rear neck,
 leading bulge and shoulders as each drop crosses uneven glass adhesion, so its
-contour keeps changing at steady speed. Acceleration, braking, turns and absorbed
+contour visibly changes even during slow, steady sliding. The rear contact patch
+stretches into a narrow tail, while the leading body widens and rounds back out.
+Acceleration, braking, turns and absorbed
 water drive the deformation; pinned drops relax instead of looping a wobble.
 Collected beads attach through a water neck, stretch
-toward the live receiver and transfer their volume progressively. Depositing
+toward the live receiver and transfer their volume progressively. Both menisci
+deform into the contact; the curved neck widens gradually while the rear lobe
+stays pinned, then drains. Joined water shares a softened optical surface and
+the receiving bulge relaxes after absorption. Depositing
 water in the trail reduces a flowing drop's size; off-center collection can
 bend its course. Colliding drops converge smoothly as they merge, leaving
 connected fading water trails. Turn it off to

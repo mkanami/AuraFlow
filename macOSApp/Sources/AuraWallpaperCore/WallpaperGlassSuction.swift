@@ -14,16 +14,27 @@ struct WallpaperGlassSuction: Equatable {
 
     var progress: Double { min(1, max(0, elapsed / duration)) }
     var volumeFraction: Double {
-        let t = min(1, max(0, (progress - 0.12) / 0.88))
-        return t * t * (3 - 2 * t)
+        Self.ease((progress - 0.14) / 0.86)
     }
     var pull: Double {
-        let t = min(1, max(0, (progress - 0.06) / 0.94))
+        Self.ease((progress - 0.18) / 0.82)
+    }
+    var neck: Double { Self.ease(progress / 0.18) * (1 - Self.ease((progress - 0.72) / 0.28)) }
+
+    func bend(toward target: SIMD2<Double>, velocity: SIMD2<Double>) -> Double {
+        let span = target - origin, length = max(0.001, simd_length(span))
+        let sideways = SIMD2(span.y, -span.x) / length
+        return min(length * 0.28, max(-length * 0.28, -simd_dot(velocity, sideways) * duration * 0.16)) * neck
+    }
+
+    private static func ease(_ value: Double) -> Double {
+        let t = min(1, max(0, value))
         return t * t * t * (t * (t * 6 - 15) + 10)
     }
-    var neck: Double { sin(.pi * progress) }
 
     func elongation(toward target: SIMD2<Double>) -> Double {
-        1 + neck * min(2.1, simd_length(target - origin) / max(1, initialRadius * 1.8))
+        // Leave space for the fluid neck between the two lobes. Extending the
+        // entire gap put the source center inside the receiver immediately.
+        1 + neck * min(2.1, simd_length(target - origin) / max(1, initialRadius * 1.8) * 0.3)
     }
 }

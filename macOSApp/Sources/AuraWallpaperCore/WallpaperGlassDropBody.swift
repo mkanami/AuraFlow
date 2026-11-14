@@ -12,21 +12,23 @@ struct WallpaperGlassDropBody: Equatable {
                           radius: Double, seed: Double, absorption: Double, deltaTime: Double) {
         let dt = min(1.0 / 30, max(0, deltaTime))
         guard dt > 0 else { return }
-        let movement = min(1, simd_length(speed) / 95)
+        // A slow runner is still flowing water. The old linear /95 ramp
+        // attenuated all contour changes to subpixel motion at normal speeds.
+        let movement = min(1, simd_length(speed) / 32)
         // Spatial adhesion follows the patch of glass the drop is crossing,
         // rather than a time-based oscillation shared by all drops.
-        let rear = Self.adhesion((position.y - radius) / 29 + seed * 113)
-        let front = Self.adhesion((position.y + radius) / 29 + seed * 113)
-        let left = Self.adhesion(position.y / 37 + position.x / 53 + seed * 193)
-        let right = Self.adhesion(position.y / 37 + (position.x + radius * 2) / 53 + seed * 193)
+        let rear = Self.adhesion((position.y - radius) / 18 + seed * 113)
+        let front = Self.adhesion((position.y + radius) / 18 + seed * 113)
+        let left = Self.adhesion(position.y / 24 + position.x / 35 + seed * 193)
+        let right = Self.adhesion(position.y / 24 + (position.x + radius * 2) / 35 + seed * 193)
         let accelerationY = min(1, max(-1, acceleration.y / 140))
         let accelerationX = min(1, max(-1, acceleration.x / 90))
         let target = SIMD4<Double>(
-            min(0.95, max(0, movement * (0.26 + rear * 0.55) + accelerationY * 0.2)),
-            min(0.42, max(-0.12, movement * (0.06 + front * 0.13) - accelerationY * 0.19 + absorption * 0.65)),
-            min(0.32, max(-0.32, movement * (left - right) * 0.5 - accelerationX * 0.22)),
-            movement * (front - rear) * 0.22)
-        let frequency = 10 / sqrt(max(0.55, radius / 8))
+            min(1, max(0, movement * (rear - 0.1) * 1.3 + accelerationY * 0.24)),
+            min(0.65, max(-0.28, movement * (0.13 + (front - 0.5) * 0.75) - accelerationY * 0.3 + absorption * 0.8)),
+            min(0.45, max(-0.45, movement * (left - right) * 0.85 - accelerationX * 0.3)),
+            movement * (front - rear) * 0.45)
+        let frequency = 9 / sqrt(max(0.55, radius / 8))
         let rates = SIMD4<Double>(frequency * 0.8, frequency, frequency * 0.85, frequency * 0.7)
         for axis in 0..<4 {
             let rate = rates[axis]
