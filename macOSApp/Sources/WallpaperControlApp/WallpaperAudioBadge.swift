@@ -2,13 +2,28 @@ import SwiftUI
 
 struct WallpaperAudioBadge: View {
     var body: some View {
-        Label("Audio", systemImage: "music.note")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 7).padding(.vertical, 4)
-            .background(.black.opacity(0.65), in: Capsule())
+        glassBadge
             .accessibilityLabel("Wallpaper includes sound")
             .help("Sound was detected in this wallpaper. Use Volume to hear it.")
+    }
+
+    private var label: some View {
+        Label("Audio", systemImage: "music.note")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 7).padding(.vertical, 4)
+    }
+
+    @ViewBuilder private var glassBadge: some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            label.glassEffect(.regular, in: Capsule())
+        } else {
+            label.background(.ultraThinMaterial, in: Capsule())
+        }
+        #else
+        label.background(.ultraThinMaterial, in: Capsule())
+        #endif
     }
 }
 
