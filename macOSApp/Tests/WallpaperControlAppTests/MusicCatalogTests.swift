@@ -191,12 +191,17 @@ private actor MusicFixtureSource: WallpaperCatalogProviding, WallpaperCatalogPag
 
 @Test func musicCatalogShipsLargeUniqueSelectionsWithoutTrustingBundledFlags() throws {
     let seeds = MusicWallpaperCatalogProvider.bundledSelections()
-    #expect(seeds.count >= 100)
+    #expect(seeds.count >= 205)
     #expect(Set(seeds.map(\.id)).count == seeds.count)
     #expect(seeds.allSatisfy { $0.hasMusic == nil && $0.sources.isEmpty && $0.previewImageURL != nil && !$0.explicitlyExcludesMusic })
     #expect(seeds.allSatisfy { item in item.sourcePageURL.map { url in
         LearnedAnimeSite.allCases.contains { $0.accepts(url) }
     } == true })
+    for item in seeds {
+        let page = try #require(item.sourcePageURL)
+        let site = try #require(LearnedAnimeSite.allCases.first { $0.accepts(page) })
+        #expect(item.id == "\(site.rawValue)-\(page.lastPathComponent)")
+    }
 }
 
 @Test @MainActor func musicTabRevealsVerifiedSelectionsBeyondTheFirstDisplayPage() {

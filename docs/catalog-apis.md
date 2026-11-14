@@ -116,7 +116,7 @@ for seven days (inconclusive probes retry after ten minutes). A foreground
 wallpaper download cancels catalog discovery. A music tag, a song-related title,
 and an empty AAC track are insufficient for inclusion.
 
-The bundled selection now contains 105 unique public music pages, including
+The bundled selection now contains 209 unique public music pages, including
 lo-fi anime scenes, game soundtracks and orchestral backgrounds. All media is
 resolved and audio-checked again at runtime. The original three selections remain:
 
@@ -188,3 +188,32 @@ During UI acceptance on macOS 27, the system collection action
 Use ordinary scroll-area scrolling for this verification. The catalog tests and
 ordinary scrolling use stable card IDs; the collection's instant accessibility
 jump is not used by the application itself.
+
+## Another 104 music wallpapers (2026-11-14)
+
+The music selection increased from **105 to 209** pages, retaining every existing
+entry. Additional listings came from the already-learned, anonymous api-anything
+search operations: later DesktopHut music/lofi/sound pages plus soundtrack,
+piano, synthwave and song searches, and LiveWallpapers4Free music/lofi/soundtrack/
+song searches. Forty-eight bounded listing calls ran at HTTP tier 1; missing
+pages were skipped without bypassing challenges or increasing request budgets.
+
+The native audit checked 273 previously untested candidates and confirmed
+111 audible originals. It first resolved all 105 current originals, excluded
+matching original URLs, and counted each newly confirmed original URL once.
+Seven technical event backgrounds and ambiguous ambient or long-form
+releases were removed, leaving **104 additions**. The audit exports a
+companion `.proof.json` containing the original URL and check time for each
+confirmed card; these developer artifacts and media files are not bundled.
+
+New and previous selections are interleaved, keeping the original three anchor
+pages easy to find while making additions visible in the first music pages.
+Identifiers use the decoded source-page slug, matching native site parsing;
+percent-encoded Unicode must not create a second card for the same page.
+Runtime audio verification, the four-probe limit and on-demand paging stay in
+place. The bundled metadata does not assign `hasMusic` flags itself.
+
+For a subsequent audit, set `AURAFLOW_MUSIC_AUDIT_EXCLUDE_CURRENT=1` along with
+the input/output variables. This resolves the current selection with four
+requests at most and rejects matching originals before decoding candidate audio.
+An explicitly supplied empty input fails before making network requests.
