@@ -346,3 +346,44 @@ count, filter and policy getters occupied zero of 7,328 main-thread observations
 The removed work is no longer a sampled scrolling bottleneck. Sampling and
 accessibility-driven wheel input do not measure display FPS; no fixed frame-rate
 claim is made.
+
+## Music loading from an empty cache (2026-11-15)
+
+The tab and its count label are now named **Music**. Warm-cache scrolling could
+reach all 60 reviewed entries, but that did not cover the first-launch path.
+Previously, music refresh returned only the first audio-verification batch and
+left the rest dependent on trailing-card events. Failed or inconclusive probes
+were consumed without retaining a retry candidate, and reviewed search results
+were capped at sixteen candidates per site.
+
+The bounded reviewed collection now drains during refresh, with at most four
+probes in flight across sites. Progress publishes settled prefixes so later
+probe completions cannot insert cards ahead of already-visible results. Each
+completed batch is persisted. Card rendering still loads posters only.
+Unknown audio or a transient source failure retains the reviewed card in a
+separate retry queue; that queue cannot make refresh loop indefinitely. A retry
+that adds nothing reports an error and leaves the remaining candidates pending,
+rather than reporting the collection exhausted. Inconclusive cached audio does
+not suppress an explicit retry. A paging call on an uninitialized provider
+initializes the reviewed collection instead of immediately returning an empty end.
+Reviewed search checks every matching candidate with the same concurrency bound.
+
+Music paging exposes its pending state through the managed provider and
+repository. Initial refresh updates that state, and the footer shows
+**Loading music…** while verification is active. The final count drops its `+`
+when the reviewed collection is complete.
+
+Validation: **153** targeted catalog tests passed. New cases cover a 60-card
+empty-cache load without row-appearance events, lazy provider initialization,
+40 transient failures/inconclusive results after 20 successes, bounded explicit
+retry, untruncated search, stable progress order and four-probe concurrency.
+
+For live acceptance, the GUI was stopped and only catalog metadata caches were
+moved to a reversible developer backup. The rebuilt app's Music count advanced
+from **7 to 21 to 60 without scrolling or pressing Load more**. The new music
+cache contained all 60 reviewed IDs and 60 freshly decoded `audible` results.
+Ordinary scrolling then exposed **60 distinct card IDs** and reached the true
+end. Closing/reopening the catalog and restarting the application both retained
+60 Music cards. Previous ordinary catalog metadata was merged back after the
+cold-start test; downloaded media and wallpaper/playback preferences were not
+part of the test reset.

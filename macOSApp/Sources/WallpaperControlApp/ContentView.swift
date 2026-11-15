@@ -1407,7 +1407,7 @@ struct WallpaperCatalogView: View {
         if !query.isEmpty {
             return "\(filteredCount)"
         }
-        if catalogViewModel.showsMusicOnly { return "\(filteredCount)\(catalogViewModel.canLoadMore ? "+" : "") With Music" }
+        if catalogViewModel.showsMusicOnly { return "\(filteredCount)\(catalogViewModel.canLoadMore ? "+" : "") Music" }
         if let selectedGroup = catalogViewModel.selectedGroup {
             let groupCount = catalogViewModel.count(in: selectedGroup)
             let moreSuffix = selectedGroup == .anime && catalogViewModel.hasMoreWallpapers ? "+" : ""
@@ -1547,12 +1547,12 @@ struct WallpaperCatalogView: View {
         Button {
             viewModel.toggleCatalogMusic()
         } label: {
-            Label("With Music", systemImage: "music.note")
+            Label("Music", systemImage: "music.note")
                 .font(.caption2.weight(.semibold)).lineLimit(1)
         }
         .buttonStyle(AuraPanelButtonStyle(fillWidth: false, emphasized: catalogViewModel.showsMusicOnly,
             selected: catalogViewModel.showsMusicOnly, region: .center))
-        .accessibilityLabel("Wallpapers with music")
+        .accessibilityLabel("Music wallpapers")
         .accessibilityValue(catalogViewModel.showsMusicOnly ? "Selected, \(catalogViewModel.musicCount)" : "\(catalogViewModel.musicCount)")
         .accessibilityIdentifier("catalog.music")
 

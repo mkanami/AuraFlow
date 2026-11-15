@@ -4935,6 +4935,8 @@ final class AppViewModel: ObservableObject {
                 }
                 guard !Task.isCancelled else { return }
                 let fetched = refreshResult.wallpapers
+                catalogViewModel.hasMoreMusicWallpapers = await catalogRepository.hasMoreMusicCatalogPages()
+                guard !Task.isCancelled else { return }
                 guard !fetched.isEmpty else {
                     catalogViewModel.replaceCatalogForDisplay(
                         with: [],

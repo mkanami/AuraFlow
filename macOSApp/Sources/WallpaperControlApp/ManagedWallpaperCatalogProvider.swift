@@ -222,6 +222,10 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         }
     }
 
+    func hasMoreMusicCatalogPages() async -> Bool {
+        await (musicProvider as? any WallpaperCatalogMusicPaging)?.hasMoreMusicCatalogPages() ?? true
+    }
+
     func fetchNextMusicCatalogPage() async throws -> CatalogPage {
         guard let paging = musicProvider as? any WallpaperCatalogPaging else {
             return CatalogPage(wallpapers: [], hasMore: false)

@@ -22,8 +22,11 @@ struct WallpaperCatalogGridView: View {
                     .padding(.vertical, 2)
 
                 ZStack {
-                    if catalogViewModel.isLoadingMore {
-                        ProgressView().controlSize(.small)
+                    if catalogViewModel.isLoadingMore || (catalogViewModel.showsMusicOnly && catalogViewModel.isRefreshing) {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            if catalogViewModel.showsMusicOnly { Text("Loading music…").font(.caption) }
+                        }
                     } else if catalogViewModel.canLoadMore {
                         Button(action: viewModel.loadMoreCatalogWallpapers) {
                             Label(catalogViewModel.loadMoreFailed ? "Try again" : "Load more", systemImage: "arrow.down.circle")

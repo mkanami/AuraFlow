@@ -260,6 +260,10 @@ final class CatalogRepository: @unchecked Sendable {
         )
     }
 
+    func hasMoreMusicCatalogPages() async -> Bool {
+        await (provider as? any WallpaperCatalogMusicPaging)?.hasMoreMusicCatalogPages() ?? true
+    }
+
     func loadNextCatalogPage(existing: [CatalogWallpaper], musicOnly: Bool = false) async throws -> CatalogPageResult {
         let page: CatalogPage
         if musicOnly, let music = provider as? any WallpaperCatalogMusicPaging {

@@ -132,7 +132,13 @@ import Testing
 @Test func musicCatalogLiveVerifiesBundledSelectionsFromBothSites() async throws {
     guard ProcessInfo.processInfo.environment["AURAFLOW_LIVE_MUSIC_CATALOG"] == "1" else { return }
     let provider = MusicWallpaperCatalogProvider(directory: nil)
-    let result = try await provider.fetchCatalog()
+    var result = try await provider.fetchCatalog()
+    print("[music-cold-start] initial \(result.count)/\(MusicWallpaperCatalogProvider.bundledSelections().count)")
+    for _ in 0..<3 where await provider.hasMoreMusicCatalogPages() {
+        do { result = CatalogWallpaperMerge.combining(result, try await provider.fetchNextCatalogPage().wallpapers) }
+        catch { print("[music-cold-start] retry unavailable: \(error.localizedDescription)") }
+    }
+    #expect(result.count == MusicWallpaperCatalogProvider.bundledSelections().count)
     #expect(result.allSatisfy { $0.hasMusic == true })
     #expect(Set(result.map(\.attribution)) == ["DesktopHut", "LiveWallpapers4Free"])
     for fragment in ["Midnight-Hour", "anime-medusa-girl-underwater-with-music-animated-desktop"] {
