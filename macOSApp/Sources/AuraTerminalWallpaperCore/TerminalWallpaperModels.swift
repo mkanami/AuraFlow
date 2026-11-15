@@ -189,21 +189,25 @@ public struct TerminalWallpaperBehavior: Codable, Equatable, Sendable {
     public var launchAtLogin: Bool
     public var allDisplays: Bool
     public var pauseOnFullscreen: Bool
+    public var lockScreenOnly: Bool
 
     public init(
         launchAtLogin: Bool = false,
         allDisplays: Bool = true,
-        pauseOnFullscreen: Bool = true
+        pauseOnFullscreen: Bool = true,
+        lockScreenOnly: Bool = false
     ) {
         self.launchAtLogin = launchAtLogin
         self.allDisplays = allDisplays
         self.pauseOnFullscreen = pauseOnFullscreen
+        self.lockScreenOnly = lockScreenOnly
     }
 
     private enum CodingKeys: String, CodingKey {
         case launchAtLogin
         case allDisplays
         case pauseOnFullscreen
+        case lockScreenOnly
     }
 
     public init(from decoder: Decoder) throws {
@@ -211,6 +215,7 @@ public struct TerminalWallpaperBehavior: Codable, Equatable, Sendable {
         launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
         allDisplays = try container.decodeIfPresent(Bool.self, forKey: .allDisplays) ?? true
         pauseOnFullscreen = try container.decodeIfPresent(Bool.self, forKey: .pauseOnFullscreen) ?? true
+        lockScreenOnly = try container.decodeIfPresent(Bool.self, forKey: .lockScreenOnly) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -218,6 +223,7 @@ public struct TerminalWallpaperBehavior: Codable, Equatable, Sendable {
         try container.encode(launchAtLogin, forKey: .launchAtLogin)
         try container.encode(allDisplays, forKey: .allDisplays)
         try container.encode(pauseOnFullscreen, forKey: .pauseOnFullscreen)
+        try container.encode(lockScreenOnly, forKey: .lockScreenOnly)
     }
 }
 

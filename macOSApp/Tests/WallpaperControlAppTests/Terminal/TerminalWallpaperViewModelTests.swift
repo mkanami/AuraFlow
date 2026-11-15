@@ -5,6 +5,73 @@ import Foundation
 import Testing
 @testable import WallpaperControlApp
 
+@Test @MainActor
+func terminalLockButtonAppliesOnlyToLockScreenAndStartResetsItsTarget() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("TerminalLockButton-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let selection = WallpaperPreviewSelectionStore(selectionURL: root.appendingPathComponent("selection.json"))
+    let controller = StubTerminalWallpaperController()
+    let terminal = TerminalWallpaperViewModel(controller: controller, previewSelectionStore: selection,
+        resolveExecutable: { _ in nil }, runtimeRecoveryInterval: 0)
+    terminal.executable = "/usr/bin/printf"
+    terminal.argumentsText = "terminal wallpaper"
+    selection.selectTerminal(.init(command: .init(executable: "/usr/bin/printf")))
+    let video = MockNativeWallpaperController()
+    let model = AppViewModel(controller: video, catalogProvider: MockCatalogProvider(wallpapers: []),
+        previewSelectionStore: selection)
+    model.connectTerminalScaleControls(terminal)
+    model.terminalCanStart = { terminal.canStart }
+    model.terminalIsActive = { terminal.status.running }
+    model.terminalStartAction = { terminal.start() }
+    #expect(model.canApplyLockScreenOnly)
+    model.applyLockScreenOnly()
+    #expect(!model.canApplyLockScreenOnly, "A second click must not start another application")
+    while terminal.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(controller.startCount == 1)
+    #expect(controller.currentStatus.config.behavior.lockScreenOnly)
+    #expect(video.startCallCount == 0 && video.lastConfiguredVideoURL == nil)
+    #expect(!model.canStart && !model.canApplyLockScreenOnly)
+    #expect(model.showOnLockScreenEnabled)
+
+    terminal.scaleMode = .fit
+    terminal.apply()
+    while terminal.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(controller.currentStatus.config.behavior.lockScreenOnly, "Settings must not expose a Desktop window")
+    terminal.restart()
+    while terminal.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(controller.currentStatus.config.behavior.lockScreenOnly)
+    terminal.stop()
+    while terminal.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(model.canApplyLockScreenOnly)
+    model.start()
+    while terminal.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(!controller.currentStatus.config.behavior.lockScreenOnly)
+}
+
+@Test @MainActor
+func terminalLockButtonReportsFailureWithoutApplyingVideoOrChangingTheTarget() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("TerminalLockFailure-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let selection = WallpaperPreviewSelectionStore(selectionURL: root.appendingPathComponent("selection.json"))
+    let controller = StubTerminalWallpaperController()
+    controller.rejectStart = true
+    let terminal = TerminalWallpaperViewModel(controller: controller, previewSelectionStore: selection,
+        resolveExecutable: { _ in nil }, runtimeRecoveryInterval: 0)
+    terminal.executable = "/usr/bin/printf"
+    selection.selectTerminal(.init(command: .init(executable: "/usr/bin/printf")))
+    let video = MockNativeWallpaperController()
+    let model = AppViewModel(controller: video, catalogProvider: MockCatalogProvider(wallpapers: []),
+        previewSelectionStore: selection)
+    model.connectTerminalScaleControls(terminal)
+    model.terminalCanStart = { terminal.canStart }
+    model.terminalIsActive = { terminal.status.running }
+    model.applyLockScreenOnly()
+    while terminal.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(model.alertMessage == TerminalWallpaperControllerError.videoWallpaperAlreadyRunning.localizedDescription)
+    #expect(!terminal.status.running && model.canApplyLockScreenOnly)
+    #expect(video.startCallCount == 0)
+}
+
 private final class TerminalDiscoveryRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0

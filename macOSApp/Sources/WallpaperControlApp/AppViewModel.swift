@@ -2570,7 +2570,13 @@ final class AppViewModel: ObservableObject {
     }
 
     var canApplyLockScreenOnly: Bool {
-        previewSelectionStore?.kind == .video && !wallpaperEngine.runtimeActive && terminalIsActive?() != true && isControllerAvailable
+        if previewSelectionStore?.kind == .terminal {
+            return terminalScaleModel != nil && terminalCanStart?() == true && terminalIsActive?() != true
+                && !hasInstalledWallpaperSessionForControls && !isBusy && !isLifecycleBusy
+                && !lifecycleViewModel.hasActiveOrPendingLifecycleOperation
+                && !wallpaperEngine.runtimeActive && !wallpaperEngine.isBusy
+        }
+        return previewSelectionStore?.kind == .video && !wallpaperEngine.runtimeActive && terminalIsActive?() != true && isControllerAvailable
             && !isBusy
             && !isLifecycleBusy
             && !lifecycleViewModel.hasActiveOrPendingLifecycleOperation
@@ -3874,6 +3880,18 @@ final class AppViewModel: ObservableObject {
 
     func applyLockScreenOnly() {
         guard canApplyLockScreenOnly else { return }
+        if previewSelectionStore?.kind == .terminal {
+            terminalScaleModel?.startLockScreenOnly { [weak self] succeeded in
+                guard let self else { return }
+                if succeeded {
+                    showOnLockScreenEnabled = true
+                    showSuccessBanner("Terminal Wallpaper applied to Lock Screen only.")
+                } else {
+                    alertMessage = terminalScaleModel?.errorMessage
+                }
+            }
+            return
+        }
         // Keep source preparation alive. The native installer uses the same
         // source/rate/mode cache key, so an in-flight warm-up is reused by the
         // Lock transaction instead of being canceled and rebuilt on demand.

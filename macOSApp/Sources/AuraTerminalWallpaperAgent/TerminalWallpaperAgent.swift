@@ -33,6 +33,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var retainedLockScreenWindows: [TerminalWallpaperWindow] = []
     private var displayRecoveryPending = false
     private let screensProvider: () -> [NSScreen]
+    private let desktopWindowPresenter: (NSWindow) -> Void
     private let executableFingerprint = RuntimeExecutableFingerprint.digest(at: URL(fileURLWithPath: CommandLine.arguments[0]))
     private var latestSnapshot: TerminalGridSnapshot?
     private var commandTimer: Timer?
@@ -60,6 +61,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     init(configurationURL: URL, managesLockScreenPresentation: Bool = true,
          screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens },
          framePublisher: TerminalLockScreenFramePublisher? = nil,
+         desktopWindowPresenter: @escaping (NSWindow) -> Void = { $0.orderBack(nil); $0.orderFrontRegardless() },
          fullscreenApplicationIsActive: (() -> Bool)? = nil,
          previewActivityUptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          previewClientIsRunning: @escaping (Int) -> Bool = { value in
@@ -71,6 +73,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         self.framePublisher = framePublisher ?? TerminalLockScreenFramePublisher(store: store)
         self.managesLockScreenPresentation = managesLockScreenPresentation
         self.screensProvider = screensProvider
+        self.desktopWindowPresenter = desktopWindowPresenter
         self.fullscreenApplicationIsActive = fullscreenApplicationIsActive ?? { Self.detectFullscreenApplication() }
         self.previewActivityUptime = previewActivityUptime
         self.previewClientIsRunning = previewClientIsRunning
@@ -463,9 +466,13 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             window.orderOut(nil)
         }
         windows.removeAll()
-        let screens = config.behavior.allDisplays ? availableScreens : Array(availableScreens.prefix(1))
+        let screens = config.behavior.allDisplays && !config.behavior.lockScreenOnly
+            ? availableScreens : Array(availableScreens.prefix(1))
         let effectsStore = WallpaperEffectsStore(appSupportURL: store.appSupportURL.deletingLastPathComponent())
-        windows = screens.map { TerminalWallpaperWindow(screen: $0, device: metalDevice, effectsStore: effectsStore) }
+        windows = screens.map {
+            TerminalWallpaperWindow(screen: $0, device: metalDevice, effectsStore: effectsStore,
+                desktopPresentationEnabled: !config.behavior.lockScreenOnly, desktopPresenter: desktopWindowPresenter)
+        }
         if let firstWindow = windows.first {
             let generation = displayGeneration
             firstWindow.onLockScreenFrame = { [weak self] bytes, width, height in
@@ -512,10 +519,10 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             }
         }
         for window in windows {
-            window.setDesktopPresentationPaused(fullscreenPausePolicy.playbackIsPaused)
+            window.setDesktopPresentationPaused(fullscreenPausePolicy.playbackIsPaused || config.behavior.lockScreenOnly)
             window.setRendererPaused(producerPlaybackIsPaused)
             window.setLockScreenCaptureEnabled(lockScreenIsLocked)
-            if !window.isVisible { window.orderBack(nil); window.orderFrontRegardless() }
+            if !window.isVisible { window.restoreDesktopPresentation() }
         }
         applyLatestSnapshot()
     }
@@ -645,7 +652,7 @@ final class TerminalWallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             catch { lastError = error.localizedDescription; return }
         }
         for window in windows {
-            window.setDesktopPresentationPaused(fullscreenPausePolicy.playbackIsPaused)
+            window.setDesktopPresentationPaused(fullscreenPausePolicy.playbackIsPaused || config.behavior.lockScreenOnly)
             window.setRendererPaused(paused)
         }
         if paused {

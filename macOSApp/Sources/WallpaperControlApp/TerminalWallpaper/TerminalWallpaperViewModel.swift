@@ -543,6 +543,9 @@ final class TerminalWallpaperViewModel: ObservableObject {
     }
 
     func start() { applyRuntime(.start) }
+    func startLockScreenOnly(onCompletion: ((Bool) -> Void)? = nil) {
+        applyRuntime(.lockScreenOnly, onCompletion: onCompletion)
+    }
     func stop() { applyRuntime(.stop) }
     func restart() { applyRuntime(.restart) }
 
@@ -959,14 +962,20 @@ final class TerminalWallpaperViewModel: ObservableObject {
         }
     }
 
-    private enum RuntimeAction { case start, stop, restart }
+    private enum RuntimeAction { case start, lockScreenOnly, stop, restart }
 
-    private func applyRuntime(_ action: RuntimeAction) {
+    private func applyRuntime(_ action: RuntimeAction, onCompletion: ((Bool) -> Void)? = nil) {
         let controller = controller
-        let config = makeConfig()
-        perform(successMessage: action == .stop ? "Terminal Wallpaper stopped." : nil) {
+        var configuration = makeConfig()
+        if action == .start { configuration.behavior.lockScreenOnly = false }
+        if action == .lockScreenOnly { configuration.behavior.lockScreenOnly = true }
+        let config = configuration
+        let message = action == .lockScreenOnly ? "Terminal Wallpaper applied to Lock Screen only."
+            : (action == .stop ? "Terminal Wallpaper stopped." : nil)
+        perform(successMessage: message, onCompletion: onCompletion) {
             switch action {
             case .start: return try controller.start(config: config)
+            case .lockScreenOnly: return try controller.startLockScreenOnly(config: config)
             case .stop: return try controller.stop()
             case .restart: return try controller.restart(config: config)
             }
@@ -1118,7 +1127,8 @@ final class TerminalWallpaperViewModel: ObservableObject {
             behavior: TerminalWallpaperBehavior(
                 launchAtLogin: launchAtLogin,
                 allDisplays: allDisplays,
-                pauseOnFullscreen: pauseOnFullscreen
+                pauseOnFullscreen: pauseOnFullscreen,
+                lockScreenOnly: status.running && status.config.behavior.lockScreenOnly
             ),
             playbackSpeed: preservesSpeed ? speedConfiguration.playbackSpeed : 1,
             nativeSpeed: preservesSpeed ? speedConfiguration.nativeSpeed : nil

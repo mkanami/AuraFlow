@@ -16,8 +16,8 @@ private final class RecordingLoginLockCoordinator: TerminalLockScreenCoordinatin
 
 @Suite(.serialized)
 struct TerminalLoginLockIndependenceTests {
-    @Test(arguments: [false, true]) @MainActor
-    func loginPreferenceLeavesTheRunningLockScreenPublicationUntouched(initialLogin: Bool) async throws {
+    @Test(arguments: [false, true], [false, true]) @MainActor
+    func loginPreferenceLeavesTheRunningLockScreenPublicationUntouched(initialLogin: Bool, lockScreenOnly: Bool) async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraLoginLock-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -29,7 +29,7 @@ struct TerminalLoginLockIndependenceTests {
         let config = TerminalWallpaperConfig(command: .init(executable: "/bin/sh", arguments: ["-c",
             "n=0; while :; do printf '\\033[Hframe %s' \"$n\"; n=$((n+1)); sleep 0.05; done"]),
             render: .init(columns: 20, rows: 4, maxFPS: 15),
-            behavior: .init(launchAtLogin: initialLogin, pauseOnFullscreen: false))
+            behavior: .init(launchAtLogin: initialLogin, pauseOnFullscreen: false, lockScreenOnly: lockScreenOnly))
         try store.saveConfig(config)
         var now: TimeInterval = 100
         let publisher = TerminalLockScreenFramePublisher(store: store, clock: { now })
@@ -63,6 +63,7 @@ struct TerminalLoginLockIndependenceTests {
             #expect(!publisher.needsDesktopSeed, "Login registration must not invalidate the prepared Lock Screen frame")
             #expect(try Data(contentsOf: store.lockScreenFrameURL) == frame)
             #expect(store.lockScreenPlaybackEnabled && app.loadConfig().show_on_lock_screen == true)
+            #expect(store.loadConfig().behavior.lockScreenOnly == lockScreenOnly)
             #expect(store.loadHealth()?.childPID == child && store.loadHealth()?.childRunning == true)
             #expect(coordinator.activations == 0 && coordinator.restorations == 0)
         }

@@ -9,6 +9,8 @@ final class TerminalWallpaperWindow: NSWindow {
     private let terminalView: TerminalMetalView
     private let effectsView: WallpaperEffectsView
     private var effectsPaused = false
+    private let desktopPresentationEnabled: Bool
+    private let desktopPresenter: (NSWindow) -> Void
 
     var onLockScreenFrame: ((Data, Int, Int) -> Void)? {
         get { terminalView.onLockScreenFrame }
@@ -17,7 +19,11 @@ final class TerminalWallpaperWindow: NSWindow {
 
     var onSharedFrame: ((TerminalSharedFrameDescriptor, UInt64) -> Void)?
 
-    init(screen: NSScreen, device: MTLDevice, effectsStore: WallpaperEffectsStore = WallpaperEffectsStore()) {
+    init(screen: NSScreen, device: MTLDevice, effectsStore: WallpaperEffectsStore = WallpaperEffectsStore(),
+         desktopPresentationEnabled: Bool = true,
+         desktopPresenter: @escaping (NSWindow) -> Void = { $0.orderBack(nil); $0.orderFrontRegardless() }) {
+        self.desktopPresentationEnabled = desktopPresentationEnabled
+        self.desktopPresenter = desktopPresenter
         terminalView = TerminalMetalView(
             frame: NSRect(origin: .zero, size: screen.frame.size),
             logicalSize: screen.frame.size,
@@ -79,9 +85,11 @@ final class TerminalWallpaperWindow: NSWindow {
     }
 
     func restoreDesktopPresentation() {
+        // Lock-only uses this window solely as an offscreen IOSurface producer.
+        // The same guard covers launch, display changes, wake and unlock.
+        guard desktopPresentationEnabled else { return }
         level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))
-        orderBack(nil)
-        orderFrontRegardless()
+        desktopPresenter(self)
         terminalView.needsDisplay = true
         terminalView.draw()
     }

@@ -38,6 +38,86 @@ private struct TerminalControllerFixture {
     }
 }
 
+@Test(arguments: [false, true])
+func terminalLockOnlyEnablesItsRouteAndKeepsAllOtherPreferences(showOnLockScreen: Bool) throws {
+    let fixture = try TerminalControllerFixture("lock-only")
+    defer { fixture.cleanup() }
+    let app = WallpaperRuntimeStore(appSupportURL: fixture.root,
+        launchAgentURL: fixture.root.appendingPathComponent("LaunchAgents/video.plist"))
+    var shared = app.loadConfig()
+    shared.show_on_lock_screen = showOnLockScreen
+    shared.video_path = "/fixtures/unchanged-desktop.mp4"
+    shared.playback_speed = 1.5
+    shared.volume = 0.37
+    try app.saveConfig(shared)
+    let coordinator = MockTerminalLockScreenCoordinator()
+    var frameChecks = 0
+    let controller = try NativeTerminalWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }, lockScreenVideoIsActive: { false }, lockScreenCoordinator: coordinator,
+        lockScreenFrameReadinessWaiter: { _, _ in
+            frameChecks += 1
+            #expect(fixture.store.loadConfig().behavior.lockScreenOnly)
+            #expect(fixture.store.lockScreenPlaybackEnabled)
+            return true
+        })
+    let config = TerminalWallpaperConfig(command: .init(executable: "/bin/echo", arguments: ["hello"]),
+        behavior: .init(lockScreenOnly: true))
+    let status = try controller.startLockScreenOnly(config: config)
+    #expect(status.running && status.config.behavior.lockScreenOnly)
+    #expect(frameChecks == 1 && coordinator.activations == 1)
+    shared.show_on_lock_screen = true
+    shared.login_wallpaper_runtime = .terminal
+    #expect(app.loadConfig() == shared)
+    #expect(!FileManager.default.fileExists(atPath: app.commandURL.path))
+    _ = try controller.stop()
+    #expect(coordinator.restorations == 1)
+}
+
+@Test func terminalLockOnlyRollsBackFailedFramePreparation() throws {
+    let fixture = try TerminalControllerFixture("lock-only-failure")
+    defer { fixture.cleanup() }
+    let app = WallpaperRuntimeStore(appSupportURL: fixture.root,
+        launchAgentURL: fixture.root.appendingPathComponent("LaunchAgents/video.plist"))
+    var shared = app.loadConfig()
+    shared.show_on_lock_screen = false
+    try app.saveConfig(shared)
+    let previous = fixture.store.loadConfig()
+    let coordinator = MockTerminalLockScreenCoordinator()
+    let controller = try NativeTerminalWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }, lockScreenVideoIsActive: { false }, lockScreenCoordinator: coordinator,
+        lockScreenFrameReadinessWaiter: { _, _ in false })
+    #expect(throws: TerminalWallpaperControllerError.lockScreenFrameNotReady) {
+        try controller.startLockScreenOnly(config: .init(command: .init(executable: "/bin/echo"),
+            behavior: .init(lockScreenOnly: true)))
+    }
+    #expect(app.loadConfig() == shared)
+    #expect(fixture.store.loadConfig() == previous)
+    #expect(!fixture.store.status().running)
+    #expect(coordinator.activations == 0)
+}
+
+@Test func terminalLockOnlyRecoveryDoesNotReenableTheSharedLockScreenPreference() throws {
+    let fixture = try TerminalControllerFixture("lock-only-recovery")
+    defer { fixture.cleanup() }
+    let app = WallpaperRuntimeStore(appSupportURL: fixture.root,
+        launchAgentURL: fixture.root.appendingPathComponent("LaunchAgents/video.plist"))
+    var shared = app.loadConfig()
+    shared.show_on_lock_screen = false
+    try app.saveConfig(shared)
+    let coordinator = MockTerminalLockScreenCoordinator()
+    let controller = try NativeTerminalWallpaperController(store: fixture.store, helperURL: fixture.helperURL,
+        videoRuntimeIsRunning: { false }, lockScreenVideoIsActive: { false }, lockScreenCoordinator: coordinator,
+        lockScreenFrameReadinessWaiter: { _, _ in
+            Issue.record("A disabled Lock Screen must not be prepared during recovery")
+            return false
+        })
+    let status = try controller.start(config: .init(command: .init(executable: "/bin/echo"),
+        behavior: .init(lockScreenOnly: true)))
+    #expect(status.config.behavior.lockScreenOnly)
+    #expect(app.loadConfig().show_on_lock_screen == false)
+    #expect(coordinator.activations == 0)
+}
+
 @Test func terminalHelperUsesItsOwnNestedAppBundle() {
     let appURL = URL(fileURLWithPath: "/tmp/AuraFlow.app")
     #expect(

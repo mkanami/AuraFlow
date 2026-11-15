@@ -11,6 +11,7 @@ protocol TerminalWallpaperControlling: Sendable {
     func ensureCanStart() throws
     func status() throws -> TerminalWallpaperStatus
     func start(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
+    func startLockScreenOnly(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus
     func stop() throws -> TerminalWallpaperStatus
     func setPlaybackPaused(_ paused: Bool) throws -> TerminalWallpaperStatus
     func terminate() throws -> TerminalWallpaperStatus
@@ -34,6 +35,9 @@ extension TerminalLockScreenCoordinating {
 
 private final class SystemTerminalLockScreenCoordinator: TerminalLockScreenCoordinating, @unchecked Sendable {
     private let installer = LockScreenSaverInstaller()
+    private let store: TerminalWallpaperRuntimeStore
+
+    init(store: TerminalWallpaperRuntimeStore) { self.store = store }
 
     func activate() throws {
         try installer.activateForTerminal()
@@ -42,11 +46,18 @@ private final class SystemTerminalLockScreenCoordinator: TerminalLockScreenCoord
             object: nil, userInfo: nil, deliverImmediately: true
         )
     }
-    func restore() throws { try installer.restoreAfterTerminal(preferCurrentDesktop: true) }
-    func restoreUserWallpaper() throws { try installer.restoreAfterTerminal(preferCurrentDesktop: true) }
+    func restore() throws {
+        try installer.restoreAfterTerminal(preferCurrentDesktop: !store.loadConfig().behavior.lockScreenOnly)
+    }
+    func restoreUserWallpaper() throws { try restore() }
 }
 
 extension TerminalWallpaperControlling {
+    func startLockScreenOnly(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
+        var config = config
+        config.behavior.lockScreenOnly = true
+        return try start(config: config)
+    }
     func reconcileDeferredRuntimeUpdateIfRunning() throws -> Bool { false }
     func setPauseOnFullscreen(_ enabled: Bool, config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
         throw TerminalWallpaperControllerError.unavailable("Fullscreen pause controls are unavailable.")
@@ -76,7 +87,7 @@ enum TerminalWallpaperControllerError: LocalizedError, Equatable {
         case .lockScreenVideoAlreadyRunning:
             return "Stop the Lock Screen-only video before using Terminal Wallpaper on the Lock Screen."
         case .lockScreenFrameNotReady:
-            return "Terminal Wallpaper is running on the desktop, but has not published a fresh Lock Screen frame yet. Check Runtime health and try Restart."
+            return "Terminal Wallpaper has not published a fresh Lock Screen frame yet. Check Runtime health and try Restart."
         case .guiApplicationNotSupported:
             return "A GUI .app cannot be rendered as a terminal wallpaper. Choose a command-line executable or TUI app."
         }
@@ -141,7 +152,7 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
             return videoStore.loadConfig().show_on_lock_screen != false
                 && videoStore.loadLockScreenOnlySource() != nil
         }
-        self.lockScreenCoordinator = lockScreenCoordinator ?? SystemTerminalLockScreenCoordinator()
+        self.lockScreenCoordinator = lockScreenCoordinator ?? SystemTerminalLockScreenCoordinator(store: store)
         self.lockScreenFrameReadinessWaiter = lockScreenFrameReadinessWaiter ?? {
             [store] startedAt, previousRevision in
             Self.waitForLockScreenFrame(
@@ -172,6 +183,16 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
     }
 
     func start(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
+        try start(config: config, explicitlyApplyingLockScreen: false)
+    }
+
+    func startLockScreenOnly(config: TerminalWallpaperConfig) throws -> TerminalWallpaperStatus {
+        var config = config
+        config.behavior.lockScreenOnly = true
+        return try start(config: config, explicitlyApplyingLockScreen: true)
+    }
+
+    private func start(config: TerminalWallpaperConfig, explicitlyApplyingLockScreen: Bool) throws -> TerminalWallpaperStatus {
         lockScreenOperationLock.lock()
         defer { lockScreenOperationLock.unlock() }
         var normalized = try validated(config)
@@ -180,9 +201,22 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
         }
         try ensureCanStart()
         let wasRunning = store.processIsAlive(pid: store.loadPID())
+        let previousConfig = store.loadConfig()
+        let previousLockScreenPreference = applicationStore?.loadConfig().show_on_lock_screen
+        var enabledLockScreenPreference = false
         let startedAt = Date().timeIntervalSince1970
         let previousFrameRevision = Self.lockScreenFrameRevision(in: store)
         do {
+            // Lock is an explicit application request, even when the shared
+            // playback checkbox was previously off. Ordinary Start/Login do
+            // not override that preference.
+            if explicitlyApplyingLockScreen, let applicationStore,
+               !store.lockScreenPlaybackEnabled {
+                var shared = applicationStore.loadConfig()
+                shared.show_on_lock_screen = true
+                try applicationStore.saveConfig(shared)
+                enabledLockScreenPreference = true
+            }
             try store.setPlaybackPaused(false)
             try store.saveConfig(normalized)
             try applyLaunchAtLogin(normalized)
@@ -206,6 +240,19 @@ final class NativeTerminalWallpaperController: TerminalWallpaperControlling, @un
             try autostartManager?.selectRuntime(.terminal)
         } catch {
             if !wasRunning { try? lockScreenCoordinator.restore() }
+            if normalized.behavior.lockScreenOnly, !wasRunning {
+                _ = store.terminateAgent(timeout: 2)
+                store.removeCommand()
+                store.removeHealth()
+                store.removeSharedFrameDescriptor()
+                store.removeLockScreenPublication()
+                try? store.saveConfig(previousConfig)
+            }
+            if enabledLockScreenPreference, let applicationStore {
+                var shared = applicationStore.loadConfig()
+                shared.show_on_lock_screen = previousLockScreenPreference
+                try? applicationStore.saveConfig(shared)
+            }
             throw error
         }
         return store.status()

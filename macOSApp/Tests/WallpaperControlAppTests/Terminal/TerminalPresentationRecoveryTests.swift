@@ -281,7 +281,9 @@ struct TerminalPresentationRecoveryTests {
         )
         try store.saveConfig(config)
         let previousWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
-        let delegate = TerminalWallpaperAgentDelegate(configurationURL: store.configURL, managesLockScreenPresentation: false)
+        var presentedWindows: [ObjectIdentifier] = []
+        let delegate = TerminalWallpaperAgentDelegate(configurationURL: store.configURL, managesLockScreenPresentation: false,
+            desktopWindowPresenter: { presentedWindows.append(ObjectIdentifier($0)) })
         defer {
             delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
             try? FileManager.default.removeItem(at: root)
@@ -301,9 +303,12 @@ struct TerminalPresentationRecoveryTests {
                      NSWorkspace.sessionDidBecomeActiveNotification] {
             window.orderOut(nil)
             #expect(!window.isVisible)
+            let previousPresentations = presentedWindows.count
             NSWorkspace.shared.notificationCenter.post(name: name, object: nil)
             pumpPresentationRecoveryAppKit()
-            #expect(window.isVisible)
+            #expect(presentedWindows.count == previousPresentations + 1)
+            #expect(presentedWindows.last == ObjectIdentifier(window))
+            #expect(!window.isVisible, "Tests intercept ordering instead of covering the active Desktop")
             #expect(store.loadSharedFrameDescriptor() == surface)
             #expect(store.isPlaybackPaused)
         }
@@ -363,7 +368,7 @@ struct TerminalPresentationRecoveryTests {
             behavior: .init(allDisplays: false, pauseOnFullscreen: false))
         try store.saveConfig(config)
         let delegate = TerminalWallpaperAgentDelegate(configurationURL: store.configURL,
-            managesLockScreenPresentation: false, screensProvider: { screens })
+            managesLockScreenPresentation: false, screensProvider: { screens }, desktopWindowPresenter: { _ in })
         defer {
             delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
             try? FileManager.default.removeItem(at: root)
@@ -422,6 +427,7 @@ func terminalLockStartsAuraOnlyAfterItsLockedPresentationIsReady() async {
     #expect(held != nil)
     #expect(starts == 0, "Starting the saver against Idle can display the system wallpaper instead of Aura")
     held?.resume()
-    for _ in 0..<10 { await Task.yield() }
+    let deadline = Date().addingTimeInterval(3)
+    while starts == 0 && Date() < deadline { try? await Task.sleep(for: .milliseconds(5)) }
     #expect(starts == 1)
 }
