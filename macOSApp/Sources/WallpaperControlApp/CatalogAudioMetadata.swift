@@ -1,3 +1,4 @@
+import AuraWallpaperCore
 import AVFoundation
 import Combine
 import Foundation
@@ -253,8 +254,9 @@ final class CatalogAudioMetadata: ObservableObject {
 
     func inspectLocal(id: String? = nil, url: URL, source: String? = nil) async {
         let url = url.standardizedFileURL
-        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let signature = "\(url.path)|\(String(describing: attributes?[.size]))|\(String(describing: attributes?[.modificationDate]))"
+        let audioURL = WallpaperAudioAttachment.source(for: url)
+        let attributes = try? FileManager.default.attributesOfItem(atPath: audioURL.path)
+        let signature = "\(audioURL.path)|\(String(describing: attributes?[.size]))|\(String(describing: attributes?[.modificationDate]))"
         let generation = cacheGeneration
         let result: WallpaperAudioContent
         if let cached = localCache[signature] { result = cached }

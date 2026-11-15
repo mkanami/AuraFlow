@@ -1676,6 +1676,12 @@ struct WallpaperCatalogDetailView: View {
                             .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
                             .lineLimit(1)
 
+                        if let track = CatalogSoundtracks.track(wallpaper.soundtrackID) {
+                            Link("Music: \(track.title) · \(track.author) · CC0", destination: track.page)
+                                .font(.subheadline)
+                                .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)
+                                .lineLimit(2)
+                        }
                         Text("by \(wallpaper.attribution)")
                             .font(.subheadline)
                             .foregroundStyle(adaptiveGlassAppearance.bottomTextTone.secondaryTextColor)

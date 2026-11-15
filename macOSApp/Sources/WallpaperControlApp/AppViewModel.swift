@@ -111,6 +111,7 @@ struct CatalogWallpaper: Identifiable, Hashable, Codable, Sendable {
     let sources: [CatalogVideoSource]
     /// Set after decoded audio has been detected, never from a title or tag.
     var hasMusic: Bool? = nil
+    var soundtrackID: String? = nil
 
     static let defaultCatalog: [CatalogWallpaper] = []
 }
@@ -173,6 +174,7 @@ struct DownloadedCatalogWallpaper: Identifiable, Hashable, Codable, Sendable {
     let localPath: String
     let downloadedAt: Date
     var hasMusic: Bool? = nil
+    var soundtrackID: String? = nil
 
     var localURL: URL {
         URL(fileURLWithPath: localPath)
@@ -4559,6 +4561,11 @@ final class AppViewModel: ObservableObject {
             }
         )
 
+        let soundtrack = WallpaperAudioAttachment.source(for: sourceURL)
+        if soundtrack != sourceURL && result.outputURL.standardizedFileURL != sourceURL.standardizedFileURL {
+            try WallpaperAudioAttachment.install(soundtrack, for: result.outputURL)
+        }
+
         switch result.decision {
         case .passthrough(let reason):
             return (result.outputURL, reason)
@@ -4604,6 +4611,11 @@ final class AppViewModel: ObservableObject {
         }
         guard outputIsPlayable else {
             throw URLError(.cannotDecodeContentData)
+        }
+
+        let soundtrack = WallpaperAudioAttachment.source(for: sourceURL)
+        if soundtrack != sourceURL && result.outputURL.standardizedFileURL != sourceURL.standardizedFileURL {
+            try WallpaperAudioAttachment.install(soundtrack, for: result.outputURL)
         }
 
         switch result.decision {
@@ -5194,7 +5206,8 @@ final class AppViewModel: ObservableObject {
                 previewImageURL: wallpaper.effectivePreviewURL,
                 sourcePageURL: wallpaper.sourcePageURL,
                 sources: [CatalogVideoSource(url: wallpaper.localURL, width: 0, height: 0)],
-                hasMusic: wallpaper.hasMusic
+                hasMusic: wallpaper.hasMusic,
+                soundtrackID: wallpaper.soundtrackID
             )
         }
         guard !additions.isEmpty else { return }
@@ -5207,7 +5220,7 @@ final class AppViewModel: ObservableObject {
             for: wallpaper.id,
             in: downloadedCatalogWallpapers
         ) {
-            return existingURL
+            return try await catalogDownloadService.attachSoundtrackIfNeeded(wallpaper, to: existingURL)
         }
 
         let lease = await catalogPreviewPipeline.beginForegroundDownload(for: wallpaper.id)

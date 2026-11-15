@@ -27,7 +27,7 @@ import Foundation
     deinit { preparation?.cancel() }
 
     public func setSource(_ url: URL?) {
-        let next = url.map { url -> Source in
+        let next = url.map(WallpaperAudioAttachment.source).map { url -> Source in
             let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
             return Source(url: url.standardizedFileURL, size: (attributes?[.size] as? NSNumber)?.int64Value,
                 modified: attributes?[.modificationDate] as? Date)

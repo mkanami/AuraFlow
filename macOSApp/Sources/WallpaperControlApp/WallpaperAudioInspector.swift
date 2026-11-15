@@ -1,3 +1,4 @@
+import AuraWallpaperCore
 import AVFoundation
 import Foundation
 
@@ -20,7 +21,7 @@ enum WallpaperAudioContent: String, Codable, Sendable {
 enum WallpaperAudioInspector {
     static func inspect(url: URL, windows: [Range<Double>]? = nil, complete: Bool = true) async throws -> WallpaperAudioContent {
         let task = Task.detached(priority: .utility) {
-            try await decode(url: url, windows: windows, complete: complete)
+            try await decode(url: WallpaperAudioAttachment.source(for: url), windows: windows, complete: complete)
         }
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }

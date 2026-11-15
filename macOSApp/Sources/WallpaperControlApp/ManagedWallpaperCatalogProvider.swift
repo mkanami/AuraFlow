@@ -118,14 +118,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         if let source = wallpaper.sources.first {
             return source.url
         }
-        switch wallpaper.catalogGroup {
-        case .anime:
-            return try await animeProvider.resolveDownloadURL(for: wallpaper)
-        case .animeNature:
-            return try await animeNatureProvider.resolveDownloadURL(for: wallpaper)
-        case .scenic:
-            return try await scenicProvider.resolveDownloadURL(for: wallpaper)
-        }
+        return try await mediaProvider(for: wallpaper).resolveDownloadURL(for: wallpaper)
     }
 
     func resolvePreviewSources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {
@@ -134,15 +127,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
 
     func resolveMedia(for wallpaper: CatalogWallpaper) async throws -> CatalogResolvedMedia {
         try CatalogContentPolicy.validate(wallpaper)
-        let provider: WallpaperCatalogProviding
-        switch wallpaper.catalogGroup {
-        case .anime:
-            provider = animeProvider
-        case .animeNature:
-            provider = animeNatureProvider
-        case .scenic:
-            provider = scenicProvider
-        }
+        let provider = mediaProvider(for: wallpaper)
         if let mediaProvider = provider as? any WallpaperCatalogMediaResolving {
             return try await mediaProvider.resolveMedia(for: wallpaper)
         }
@@ -162,15 +147,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
     }
 
     func invalidateResolvedMedia(for wallpaper: CatalogWallpaper) async {
-        let provider: WallpaperCatalogProviding
-        switch wallpaper.catalogGroup {
-        case .anime:
-            provider = animeProvider
-        case .animeNature:
-            provider = animeNatureProvider
-        case .scenic:
-            provider = scenicProvider
-        }
+        let provider = mediaProvider(for: wallpaper)
         if let mediaProvider = provider as? any WallpaperCatalogMediaResolving {
             await mediaProvider.invalidateResolvedMedia(for: wallpaper)
         }
@@ -180,15 +157,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
         for wallpaper: CatalogWallpaper,
         media: CatalogResolvedMedia
     ) async throws -> CatalogResolvedMedia {
-        let provider: WallpaperCatalogProviding
-        switch wallpaper.catalogGroup {
-        case .anime:
-            provider = animeProvider
-        case .animeNature:
-            provider = animeNatureProvider
-        case .scenic:
-            provider = scenicProvider
-        }
+        let provider = mediaProvider(for: wallpaper)
         guard let enricher = provider as? any WallpaperCatalogMediaMetadataEnriching else {
             return media
         }
@@ -196,6 +165,20 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
             for: wallpaper,
             media: media
         )
+    }
+
+    private func mediaProvider(for wallpaper: CatalogWallpaper) -> WallpaperCatalogProviding {
+        // Music includes natural scenery from the same sites as anime. Its
+        // visual category must not send a source page to an unrelated adapter.
+        if let page = wallpaper.sourcePageURL,
+           LearnedAnimeSite.allCases.contains(where: { $0.accepts(page) }) {
+            return animeProvider
+        }
+        switch wallpaper.catalogGroup {
+        case .anime: return animeProvider
+        case .animeNature: return animeNatureProvider
+        case .scenic: return scenicProvider
+        }
     }
 
     func fetchNextCatalogPage() async throws -> CatalogPage {
@@ -292,6 +275,7 @@ actor ManagedWallpaperCatalogProvider: WallpaperCatalogProviding, CatalogCacheCl
                 guard CatalogContentPolicy.allows(wallpaper) else { continue }
                 if let existing = indices[wallpaper.id] {
                     if wallpaper.hasMusic == true { merged[existing].hasMusic = true }
+                    if let soundtrack = wallpaper.soundtrackID { merged[existing].soundtrackID = soundtrack }
                 } else {
                     indices[wallpaper.id] = merged.count
                     merged.append(wallpaper)

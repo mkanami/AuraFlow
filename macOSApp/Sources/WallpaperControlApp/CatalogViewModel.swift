@@ -134,7 +134,7 @@ final class CatalogViewModel: ObservableObject {
     }
 
     private func containsMusic(_ wallpaper: CatalogWallpaper) -> Bool {
-        wallpaper.hasMusic == true && !wallpaper.explicitlyExcludesMusic && audioStatus[wallpaper.id] != false
+        wallpaper.hasMusic == true && !wallpaper.explicitlyExcludesMusic && (CatalogSoundtracks.track(wallpaper.soundtrackID) != nil || audioStatus[wallpaper.id] != false)
     }
 
     func requestScroll(to wallpaperID: String?) {

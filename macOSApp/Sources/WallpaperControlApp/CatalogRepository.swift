@@ -1,3 +1,4 @@
+import AuraWallpaperCore
 import AVFoundation
 import AppKit
 import Foundation
@@ -435,7 +436,8 @@ final class CatalogRepository: @unchecked Sendable {
                 sourcePageURL: item.sourcePageURL,
                 localPath: item.localPath,
                 downloadedAt: item.downloadedAt,
-                hasMusic: item.hasMusic
+                hasMusic: item.hasMusic,
+                soundtrackID: item.soundtrackID
             )
         }
 
@@ -509,7 +511,8 @@ final class CatalogRepository: @unchecked Sendable {
             sourcePageURL: wallpaper.sourcePageURL,
             localPath: normalizedPath,
             downloadedAt: Date(),
-            hasMusic: wallpaper.hasMusic
+            hasMusic: wallpaper.hasMusic,
+            soundtrackID: wallpaper.soundtrackID
         )
 
         var updated = existing
@@ -568,7 +571,8 @@ final class CatalogRepository: @unchecked Sendable {
             sourcePageURL: current.sourcePageURL,
             localPath: current.localPath,
             downloadedAt: current.downloadedAt,
-            hasMusic: current.hasMusic
+            hasMusic: current.hasMusic,
+            soundtrackID: current.soundtrackID
         )
         return UpdatedWallpapersResult(
             wallpapers: updated,
@@ -672,7 +676,8 @@ final class CatalogRepository: @unchecked Sendable {
             sourcePageURL: normalizedOriginalURL,
             localPath: normalizedCopiedURL.path,
             downloadedAt: existingItem?.downloadedAt ?? Date(),
-            hasMusic: existingItem?.hasMusic
+            hasMusic: existingItem?.hasMusic,
+            soundtrackID: existingItem?.soundtrackID
         )
 
         var updated = existing
@@ -720,6 +725,7 @@ final class CatalogRepository: @unchecked Sendable {
         if hasUsableCatalogFile(at: existing.localURL) {
             return existing.localURL.standardizedFileURL
         }
+        WallpaperAudioAttachment.remove(for: existing.localURL)
         try? FileManager.default.removeItem(at: existing.localURL)
         return nil
     }
@@ -731,6 +737,7 @@ final class CatalogRepository: @unchecked Sendable {
     }
 
     func removeFile(at url: URL) {
+        WallpaperAudioAttachment.remove(for: url)
         try? FileManager.default.removeItem(at: url)
     }
 
@@ -1021,7 +1028,8 @@ final class CatalogRepository: @unchecked Sendable {
                 sourcePageURL: item.sourcePageURL,
                 localPath: migratedPath,
                 downloadedAt: item.downloadedAt,
-                hasMusic: item.hasMusic
+                hasMusic: item.hasMusic,
+                soundtrackID: item.soundtrackID
             )
         }
     }

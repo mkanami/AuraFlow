@@ -10,6 +10,7 @@ enum CatalogWallpaperMerge {
             guard CatalogContentPolicy.allows(wallpaper) else { continue }
             if let index = indices[wallpaper.id] {
                 if wallpaper.hasMusic == true { result[index].hasMusic = true }
+                if let soundtrack = wallpaper.soundtrackID { result[index].soundtrackID = soundtrack }
             } else {
                 indices[wallpaper.id] = result.count
                 result.append(wallpaper)
@@ -21,7 +22,7 @@ enum CatalogWallpaperMerge {
 
 extension CatalogWallpaper {
     var explicitlyExcludesMusic: Bool {
-        title.range(of: #"\b(no|without)\s+(music|audio|sound)\b|без\s+(музыки|звука)"#,
+        soundtrackID == nil && title.range(of: #"\b(no|without)\s+(music|audio|sound)\b|без\s+(музыки|звука)"#,
             options: .caseInsensitive.union(.regularExpression)) != nil
     }
 }

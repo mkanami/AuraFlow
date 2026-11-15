@@ -58,7 +58,7 @@ func desktopMusicPolicyRetainsSilenceForEveryHiddenDesktopState(state: String) {
     #expect(try await WallpaperAudioPlayback.audioComposition(for: silentVideo) == nil)
 }
 
-@Test @MainActor func desktopMusicRealPlayerPausesAndResumesTheSamePositionWithoutReloading() async throws {
+@Test(arguments: [false, true]) @MainActor func desktopMusicRealPlayerPausesAndResumesTheSamePositionWithoutReloading(paired: Bool) async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -67,7 +67,13 @@ func desktopMusicPolicyRetainsSilenceForEveryHiddenDesktopState(state: String) {
     try silentMusicClock().write(to: url)
     let music = WallpaperAudioPlayback()
     defer { music.stop() }
-    music.setSource(url)
+    let source: URL
+    if paired {
+        source = root.appendingPathComponent("silent-video.mp4")
+        try Data("video source is independent of the music clock".utf8).write(to: source)
+        try WallpaperAudioAttachment.install(url, for: source)
+    } else { source = url }
+    music.setSource(source)
     #expect(!music.isPrepared, "Muted wallpapers must not create an extra decoder")
     music.update(volume: 0.3)
     try await waitForMusic { (music.time ?? 0) > 0.15 }
@@ -78,7 +84,7 @@ func desktopMusicPolicyRetainsSilenceForEveryHiddenDesktopState(state: String) {
     try await Task.sleep(for: .milliseconds(250))
     #expect(abs((music.time ?? 0) - pausedAt) < 0.025)
     #expect(music.rate == 0)
-    music.setSource(url) // Video refreshes/quality changes keep the original source.
+    music.setSource(source) // Video refreshes/quality changes keep the original source.
     #expect(abs((music.time ?? 0) - pausedAt) < 0.025)
     music.update(volume: 0.6)
     try await waitForMusic { (music.time ?? 0) > pausedAt + 0.15 }

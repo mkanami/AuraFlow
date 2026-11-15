@@ -26,11 +26,24 @@ import Testing
             group.addTask {
                 do {
                     guard !item.explicitlyExcludesMusic, let page = item.sourcePageURL,
-                          let site = LearnedAnimeSite.allCases.first(where: { $0.accepts(page) }), let source = sources[site],
-                          let url = try await source.resolveMedia(for: item).originalSources.first?.url else { return (index, nil, nil) }
+                          let site = LearnedAnimeSite.allCases.first(where: { $0.accepts(page) }), let source = sources[site] else { return (index, nil, nil) }
+                    let url: URL
+                    if env["AURAFLOW_MUSIC_AUDIT_TRACE"] == "1" {
+                        FileHandle.standardOutput.write(Data("[music-audit-trace] \(index) resolving\n".utf8))
+                    }
+                    if env["AURAFLOW_MUSIC_AUDIT_DIRECT_SOURCES"] == "1", let original = item.sources.first {
+                        guard site.accepts(original.url, media: true) else { return (index, nil, nil) }
+                        url = original.url
+                    } else {
+                        guard let original = try await source.resolveMedia(for: item).originalSources.first?.url else { return (index, nil, nil) }
+                        url = original
+                    }
                     guard !excludedURLs.contains(url) else {
                         print("[music-audit] \(index) existing-original \(item.id)")
                         return (index, nil, nil)
+                    }
+                    if env["AURAFLOW_MUSIC_AUDIT_TRACE"] == "1" {
+                        FileHandle.standardOutput.write(Data("[music-audit-trace] \(index) probing \(url.host ?? "")\n".utf8))
                     }
                     let audio = try await MusicWallpaperCatalogProvider.verifyOriginalAudio(url, page)
                     print("[music-audit] \(index) \(audio.rawValue) \(item.id)")

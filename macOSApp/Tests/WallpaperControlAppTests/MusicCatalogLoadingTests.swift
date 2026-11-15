@@ -7,22 +7,22 @@ struct MusicCatalogLoadingTests {
     @Test func coldReviewedCollectionLoadsBeyondTheFirstBatchWithoutScrolling() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let cards = reviewedMusicCards(60)
+        let cards = reviewedMusicCards(320)
         let source = ReviewedMusicSource()
         let probe = ReviewedMusicProbe()
         let provider = MusicWallpaperCatalogProvider(entries: [.init(site: .desktophut,
             provider: source, seeds: cards, curatedOnly: true)], directory: root,
             verifyAudio: { url, _ in try await probe.inspect(url) })
         let result = try await provider.fetchCatalog()
-        #expect(result.count == 60)
+        #expect(result.count == 320)
         #expect(result.allSatisfy { $0.hasMusic == true })
-        #expect(await provider.loadCachedCatalog()?.count == 60)
+        #expect(await provider.loadCachedCatalog()?.count == 320)
         #expect(await probe.peak <= 4)
-        #expect(await probe.total == 60)
+        #expect(await probe.total == 320)
         #expect(!(await provider.hasMoreMusicCatalogPages()))
         // Search used to silently cut a matching reviewed collection at 16/site.
-        #expect(try await provider.searchCatalog(query: "Wallpaper").count == 60)
-        #expect(await probe.total == 60)
+        #expect(try await provider.searchCatalog(query: "Wallpaper").count == 320)
+        #expect(await probe.total == 320)
         #expect(await source.discoveryRequests == 0)
     }
 
@@ -90,7 +90,7 @@ struct MusicCatalogLoadingTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let probe = ReviewedMusicProbe()
         let music = MusicWallpaperCatalogProvider(entries: [.init(site: .desktophut,
-            provider: ReviewedMusicSource(), seeds: reviewedMusicCards(60), curatedOnly: true)],
+            provider: ReviewedMusicSource(), seeds: reviewedMusicCards(320), curatedOnly: true)],
             directory: nil, verifyAudio: { url, _ in try await probe.inspect(url) })
         let empty = MockCatalogProvider(wallpapers: [])
         let managed = ManagedWallpaperCatalogProvider(animeProvider: empty, animeNatureProvider: empty,
@@ -100,11 +100,11 @@ struct MusicCatalogLoadingTests {
         model.openCatalogFromMenuBar()
         model.toggleCatalogMusic()
         try await waitForMusicPagingModel(model)
-        #expect(model.filteredCatalogWallpapers.count == 60)
-        #expect(model.catalogViewModel.musicCount == 60)
+        #expect(model.filteredCatalogWallpapers.count == 320)
+        #expect(model.catalogViewModel.musicCount == 320)
         #expect(!model.catalogViewModel.canLoadMore)
         #expect(!model.catalogViewModel.loadMoreFailed)
-        #expect(await probe.total == 60)
+        #expect(await probe.total == 320)
     }
 }
 

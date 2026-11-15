@@ -1,3 +1,4 @@
+import AuraWallpaperCore
 import AVFoundation
 import AppKit
 import Foundation
@@ -14,6 +15,7 @@ final class CatalogDownloadService: @unchecked Sendable {
     private let provider: WallpaperCatalogProviding
     private let catalogDirectoryURL: URL
     private let fileDownloader: @Sendable (URLRequest, URLSession, CatalogDownloadProgress.Handler?) async throws -> (temporaryURL: URL, response: URLResponse)
+    private let soundtrackFile: @Sendable (String) async throws -> URL
     private let standardSession: URLSession
     private let browserSession: URLSession
 
@@ -26,8 +28,10 @@ final class CatalogDownloadService: @unchecked Sendable {
         catalogDirectoryURL: URL,
         standardSession: URLSession? = nil,
         browserSession: URLSession? = nil,
-        fileDownloader: FileDownload? = nil
+        fileDownloader: FileDownload? = nil,
+        soundtrackFile: @escaping @Sendable (String) async throws -> URL = { try await CatalogSoundtrackCache.shared.file(for: $0) }
     ) {
+        self.soundtrackFile = soundtrackFile
         self.provider = provider
         self.catalogDirectoryURL = catalogDirectoryURL
         if let fileDownloader {
@@ -230,7 +234,7 @@ final class CatalogDownloadService: @unchecked Sendable {
         )
 
         if hasUsableCatalogFile(at: cachedDestination) {
-            return cachedDestination.standardizedFileURL
+            return try await attachSoundtrackIfNeeded(wallpaper, to: cachedDestination.standardizedFileURL)
         }
         if FileManager.default.fileExists(atPath: cachedDestination.path) {
             try? FileManager.default.removeItem(at: cachedDestination)
@@ -301,7 +305,7 @@ final class CatalogDownloadService: @unchecked Sendable {
             try? FileManager.default.removeItem(at: destination)
             throw error
         }
-        return destination.standardizedFileURL
+        return try await attachSoundtrackIfNeeded(wallpaper, to: destination.standardizedFileURL)
     }
 
     private func downloadMoeWallsVideo(
@@ -333,7 +337,16 @@ final class CatalogDownloadService: @unchecked Sendable {
         }
         try Task.checkCancellation()
         keepDownloadedFile = true
-        return downloadedURL
+        return try await attachSoundtrackIfNeeded(wallpaper, to: downloadedURL)
+    }
+
+    func attachSoundtrackIfNeeded(_ wallpaper: CatalogWallpaper, to video: URL) async throws -> URL {
+        guard let soundtrack = wallpaper.soundtrackID else { return video }
+        guard CatalogSoundtracks.track(soundtrack) != nil else { throw URLError(.unsupportedURL) }
+        let audio = try await soundtrackFile(soundtrack)
+        try Task.checkCancellation()
+        try WallpaperAudioAttachment.install(audio, for: video)
+        return video
     }
 
     private func sources(for wallpaper: CatalogWallpaper) async throws -> [CatalogVideoSource] {

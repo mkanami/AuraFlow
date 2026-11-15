@@ -15,7 +15,9 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
     typealias VerifyAudio = @Sendable (URL, URL?) async throws -> WallpaperAudioContent
     private struct AudioEntry: Codable { let content: WallpaperAudioContent; let expires: Date }
     private let entries: [Entry]
+    private let reviews: [String: MusicCatalogReview]
     private let verifyAudio: VerifyAudio
+    private let verifySoundtrack: @Sendable (String) async throws -> Void
     private let directory: URL?
     private var audioCache: [String: AudioEntry]
     private var queues: [[CatalogWallpaper]]
@@ -31,13 +33,16 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
          directory: URL? = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("AuraFlow/MusicCatalog", isDirectory: true),
          batchSize: Int = 16,
+         verifySoundtrack: @escaping @Sendable (String) async throws -> Void = { _ = try await CatalogSoundtrackCache.shared.file(for: $0) },
          verifyAudio: @escaping VerifyAudio = { url, referer in try await MusicWallpaperCatalogProvider.verifyOriginalAudio(url, referer) }) {
         let seeds = Self.bundledSelections()
         let sources = entries ?? [LearnedAnimeSite.desktophut, .livewallpapers4free].map { site in
             Entry(site: site, provider: LearnedAnimeSource(site: site, musicCollection: true),
                 seeds: seeds.filter { $0.sourcePageURL.map { site.accepts($0) } == true }, curatedOnly: true)
         }
+        self.reviews = entries == nil ? MusicCatalogReview.bundled() : [:]
         self.entries = sources; self.directory = directory; self.verifyAudio = verifyAudio
+        self.verifySoundtrack = verifySoundtrack
         self.batchSize = max(1, min(batchSize, 32))
         queues = Array(repeating: [], count: sources.count)
         retryQueues = Array(repeating: [], count: sources.count)
@@ -266,6 +271,25 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
                   !item.explicitlyExcludesMusic, let page = item.sourcePageURL, entry.site.accepts(page) else { continue }
             unavailableIDs.remove(item.id)
             do {
+                if let soundtrack = item.soundtrackID {
+                    guard CatalogSoundtracks.track(soundtrack) != nil else { continue }
+                    try await verifySoundtrack(soundtrack)
+                    try Task.checkCancellation()
+                    guard revision == generation else { throw CancellationError() }
+                    var paired = item
+                    paired.hasMusic = true
+                    result.append(paired)
+                    continue
+                }
+                // Bundled original-audio entries were decoded and their five
+                // original frames reviewed before shipping. Browsing the bounded
+                // collection must not re-download/probe hundreds of videos.
+                if let review = reviews[item.id], review.audio == "original-audible", review.matches(item) {
+                    var approved = item
+                    approved.hasMusic = true
+                    result.append(approved)
+                    continue
+                }
                 let url: URL
                 if let resolver = entry.provider as? any WallpaperCatalogMediaResolving {
                     guard let original = try await resolver.resolveMedia(for: item).originalSources.first else {
@@ -341,7 +365,7 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
 
     private static func isReviewed(_ item: CatalogWallpaper, entry: Entry) -> Bool {
         !entry.curatedOnly || entry.seeds.contains {
-            $0.id == item.id && $0.sourcePageURL == item.sourcePageURL && $0.previewImageURL == item.previewImageURL
+            $0.id == item.id && $0.sourcePageURL == item.sourcePageURL && $0.previewImageURL == item.previewImageURL && $0.soundtrackID == item.soundtrackID
         }
     }
 }
