@@ -326,3 +326,23 @@ scrolling, steady trailing rows receiving additional pages, first-click handling
 cache invalidation after search/paging/audio changes, no remote-video resolution
 while browsing, and stable document height/offset while loading. The new app
 bundle built and launched successfully through `script/build_and_run.sh --verify`.
+
+### Live UI acceptance (2026-11-15)
+
+After unlocking the Mac, the installed `c72d130` build was exercised through the
+native UI. Ordinary wheel scrolling expanded the catalog from 24 to **589**
+cards, including a remote page beyond the restored cache. Twenty further wheel
+operations moved up and down the loaded list; reported scroll positions advanced
+monotonically in each direction and returned to the starting offset. There was
+no crash, first-page stall or reversal reset. Opening a visible card and pressing
+Back retained the same group of visible cards. Switching to With Music showed
+all 60 known music entries and returned to the first music row. Screenshots
+confirmed the existing glass card appearance and loaded posters.
+
+A 15-second live process sample was captured during the two-way scroll. Before
+the fix, `musicCount` occupied 2,665 of 9,541 main-thread observations (27.93%),
+mostly inside repeated content-policy matching. In the new sample these header,
+count, filter and policy getters occupied zero of 7,328 main-thread observations.
+The removed work is no longer a sampled scrolling bottleneck. Sampling and
+accessibility-driven wheel input do not measure display FPS; no fixed frame-rate
+claim is made.
