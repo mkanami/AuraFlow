@@ -120,7 +120,7 @@ struct ControlPanel: View {
     }
 
     private var catalogButton: some View {
-        MainPanelActionButton(compactTitles ? "Catalog" : "Wallpaper Catalog", icon: "square.grid.2x2", id: "catalog",
+        MainPanelActionButton(compactTitles ? "Catalog" : "Wallpaper Catalog", icon: "photo.stack", id: "catalog",
                               help: "Browse the wallpaper catalog", enabled: viewModel.canClearWallpaper,
                               accessibilityTitle: "Wallpaper Catalog") {
             viewModel.openCatalog()
