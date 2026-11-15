@@ -13,6 +13,7 @@ private final class EffectsNativeInstaller: ModernLockScreenInstalling {
     var removes = 0
     var desktopInstalls = 0
     var lockInstalls = 0
+    var preparations = 0
     var requiresLockScreenSessionPromotion: Bool { isInstalled && lockInstalls > 0 && desktopInstalls == 0 && installs == 0 }
     func install(videoURL: URL) async throws { installs += 1; isInstalled = true }
     func installForDesktopAgent(videoURL: URL, playbackSpeed: Double, scaleMode: WallpaperScaleMode) async throws {
@@ -21,7 +22,7 @@ private final class EffectsNativeInstaller: ModernLockScreenInstalling {
     func installLockScreenOnly(videoURL: URL, playbackSpeed: Double, scaleMode: WallpaperScaleMode) async throws {
         lockInstalls += 1; isInstalled = true
     }
-    func prepareLockScreenMedia(videoURL: URL) async throws {}
+    func prepareLockScreenMedia(videoURL: URL) async throws { preparations += 1 }
     func uninstall() throws { removes += 1; isInstalled = false }
 }
 
@@ -78,8 +79,16 @@ func lockEffectsManualAndAutomaticSessionsPreserveCompleteNativeDescriptors(lock
     if lockOnly { try await installer.installLockScreenOnly(videoURL: f.source) }
     else { try await installer.installForDesktopAgent(videoURL: f.source, playbackSpeed: 1.5, scaleMode: .fit) }
     #expect(installer.lockScreenOnlyStatus(videoURL: f.source).isReady)
-    #expect(f.native.installs == 0)
+    #expect(f.native.installs == 0 && f.native.lockInstalls == 0,
+        "Lock with live effects must never enter native effects movie preparation")
+    #expect(installer.requiresLockScreenSessionPromotion == lockOnly)
     let idle = try f.load()
+    if lockOnly {
+        let actual = idle["AllSpacesAndDisplays"] as! [String: Any]
+        let original = f.original["AllSpacesAndDisplays"] as! [String: Any]
+        #expect(actual["Desktop"] as? NSDictionary == original["Linked"] as? NSDictionary)
+        #expect(actual["Linked"] == nil)
+    }
     if automatic {
         // Idle saver before password lock is not a secure lock. No promotion.
         #expect(try installer.activateLockScreenForCurrentSession() == false)
@@ -89,9 +98,10 @@ func lockEffectsManualAndAutomaticSessionsPreserveCompleteNativeDescriptors(lock
     #expect(try installer.activateLockScreenForCurrentSession() == false)
     #expect(try f.load() == idle)
     f.locked = true
-    #expect(try installer.activateLockScreenForCurrentSession() == false)
+    #expect(try installer.activateLockScreenForCurrentSession() == lockOnly)
     let secure = try f.load()
-    #expect(secure == idle, "Both sources must already be selected before the manual or OS lock edge")
+    #expect((secure == idle) == !lockOnly,
+        "Lock-only promotes the live source only after a confirmed secure lock")
     if !lockOnly {
         let coordinator = LiveScreenSaverStoreCoordinator(storeURL: f.storeURL,
             journalURL: f.root.appendingPathComponent("live-lock-screen-route.json"), saverURL: f.saverURL,
@@ -104,11 +114,53 @@ func lockEffectsManualAndAutomaticSessionsPreserveCompleteNativeDescriptors(lock
     #expect(try await installer.repair(videoURL: f.source, shouldProceed: { true }) == false)
     #expect(try f.load() == secure)
     f.locked = false // Unlock recovered by polling; no notification required.
-    #expect(try await installer.restoreDesktopAfterLockScreenSessionAsync() == false)
+    #expect(try await installer.restoreDesktopAfterLockScreenSessionAsync() == lockOnly)
     #expect(try f.load() == idle)
     try await installer.uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
     #expect(try f.load() == f.original)
-    #expect(!installer.isInstalled && f.restarts == (lockOnly ? 0 : 2))
+    #expect(!installer.isInstalled && f.restarts == 2)
+}
+
+@Test(arguments: ["scene.mp4", "still.png"])
+func lockEffectsLockOnlyUsesTheOriginalMediaWithoutBakingOrNativePreparation(name: String) async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let source = f.root.appendingPathComponent(name)
+    if source != f.source { try Data("still fixture".utf8).write(to: source) }
+    let installer = f.installer()
+    try WallpaperRuntimeStore(appSupportURL: f.root).saveLockScreenOnlySource(source)
+    try await installer.prepareLockScreenMedia(videoURL: source, playbackSpeed: 1.5, scaleMode: .fit)
+    try await installer.installLockScreenOnly(videoURL: source, playbackSpeed: 1.5, scaleMode: .fit)
+    #expect(f.native.preparations == 0 && f.native.lockInstalls == 0)
+    #expect(LiveEffectsLockScreenInstaller.usesLiveRenderer(appSupportURL: f.root))
+    #expect(installer.installationConfirmed && installer.requiresLockScreenSessionPromotion)
+    let marker = try JSONSerialization.jsonObject(with: Data(contentsOf:
+        f.root.appendingPathComponent("live-lock-screen-effects.json"))) as! [String: Any]
+    #expect(marker["path"] as? String == source.standardizedFileURL.path)
+    #expect(marker["desktopIncluded"] as? Bool == false)
+    var settings = WallpaperEffectsPreset.dreamy.settings
+    settings.rainEnabled = true
+    settings.glassRainEnabled = true
+    try WallpaperEffectsStore(appSupportURL: f.root).save(settings)
+    #expect(try await installer.repair(videoURL: source, shouldProceed: { true }) == false)
+    #expect(f.native.lockInstalls == 0 && f.native.preparations == 0)
+    #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("NativeEffectsCache").path))
+    try await installer.uninstallAsync()
+    #expect(try f.load() == f.original)
+}
+
+@Test func lockEffectsSwitchingSharedPlaybackToLockOnlyRecoversTheOriginalDesktop() async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let installer = f.installer()
+    try await installer.installForDesktopAgent(videoURL: f.source, playbackSpeed: 1, scaleMode: .fill)
+    try WallpaperRuntimeStore(appSupportURL: f.root).saveLockScreenOnlySource(f.source)
+    try await installer.installLockScreenOnly(videoURL: f.source)
+    let current = try f.load()["AllSpacesAndDisplays"] as! [String: Any]
+    let original = f.original["AllSpacesAndDisplays"] as! [String: Any]
+    #expect(current["Desktop"] as? NSDictionary == original["Linked"] as? NSDictionary)
+    #expect(installer.installationConfirmed && installer.requiresLockScreenSessionPromotion)
+    #expect(f.native.lockInstalls == 0)
+    try await installer.uninstallAsync()
+    #expect(try f.load() == f.original)
 }
 
 @Test func lockEffectsCanMigrateExistingNativePlaybackAndStayLiveWhenSettingsToggle() async throws {

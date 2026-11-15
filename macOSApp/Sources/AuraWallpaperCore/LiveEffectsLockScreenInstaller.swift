@@ -79,29 +79,35 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
     }
     public func installLockScreenOnly(videoURL: URL, playbackSpeed: Double, scaleMode: WallpaperScaleMode) async throws {
         try await mutations.withExclusiveAsync {
-            // A dedicated Lock installation must retain the user's native
-            // Desktop. Keep its existing native fallback rather than selecting
-            // a shared live provider underneath an unrelated Desktop.
-            if self.usesLiveEffects {
-                try self.routes.restoreIfOwned()
-                try FileManager.default.removeItem(at: self.markerURL)
+            if self.wantsLiveEffects || self.usesLiveEffects {
+                // The saver consumes the original source and renders effects
+                // live. Baking a movie here delays Lock for every new source
+                // or effects adjustment, even though this renderer is ready.
+                try await self.installLive(videoURL: videoURL, includeDesktop: false)
+            } else {
+                try await self.native.installLockScreenOnly(videoURL: videoURL, playbackSpeed: playbackSpeed, scaleMode: scaleMode)
             }
-            try await self.native.installLockScreenOnly(videoURL: videoURL, playbackSpeed: playbackSpeed, scaleMode: scaleMode)
         }
     }
-    private func installLive(videoURL: URL) async throws {
+    private func installLive(videoURL: URL, includeDesktop: Bool = true) async throws {
         guard rendererAvailable, FileManager.default.isReadableFile(atPath: videoURL.path) else { throw CocoaError(.fileReadNoSuchFile) }
         // Remove the Aerial assertion/route first, using its descriptor-preserving
         // transaction. The custom route journals the restored user choices.
         if native.isInstalled { try await native.uninstallLockScreenOnlyPreservingCurrentDesktopAsync() }
+        if !includeDesktop, installation?.desktopIncluded == true {
+            // Switching an existing shared route to Lock-only must first
+            // recover the exact Desktop descriptor saved by that route.
+            try routes.restoreIfOwned()
+        }
         let generation = (installation?.generation ?? 0) &+ 1
         let next = Installation(path: videoURL.standardizedFileURL.path, signature: signature(videoURL), generation: generation,
-            desktopIncluded: true)
+            desktopIncluded: includeDesktop)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try JSONEncoder().encode(next).write(to: markerURL, options: .atomic)
-        // Manual loginwindow resolution may run before any lock notification.
-        // Bind the same live provider to Desktop and Idle while still unlocked.
-        do { try routes.activate(includeDesktop: true) }
+        // Shared playback binds both routes up front. Lock-only selects Idle;
+        // its existing secure-session handoff temporarily promotes Desktop
+        // only after a confirmed lock and restores it after unlock.
+        do { try routes.activate(includeDesktop: includeDesktop) }
         catch {
             try? routes.restoreIfOwned()
             try? FileManager.default.removeItem(at: markerURL)
@@ -140,7 +146,10 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
                 return true
             }
             if self.usesLiveEffects {
-                if self.installation?.desktopIncluded != true,
+                // Only old markers lacked a scope. An explicit Lock-only
+                // installation must never become shared during repair, even
+                // if runtime source metadata is delayed or unavailable.
+                if self.installation?.desktopIncluded == nil,
                    WallpaperRuntimeStore(appSupportURL: self.root).loadLockScreenOnlySource() == nil {
                     try await self.installLive(videoURL: videoURL)
                     return true
