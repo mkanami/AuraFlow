@@ -19,6 +19,9 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
     private let recovery: ScreenSaverRouteRecovery
     private let sessionIsLocked: () -> Bool?
     private let mutations = AerialMutationCoordinator()
+    // The OS keeps a separate cached provider for loginwindow. A restored
+    // Desktop starts a new session even when the Idle descriptor is unchanged.
+    private var lockOnlyProviderPreparedForSession = false
     private var markerURL: URL { root.appendingPathComponent("live-lock-screen-effects.json") }
     private var installation: Installation? {
         guard let data = try? Data(contentsOf: markerURL) else { return nil }
@@ -102,6 +105,7 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
         let generation = (installation?.generation ?? 0) &+ 1
         let next = Installation(path: videoURL.standardizedFileURL.path, signature: signature(videoURL), generation: generation,
             desktopIncluded: includeDesktop)
+        lockOnlyProviderPreparedForSession = false
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try JSONEncoder().encode(next).write(to: markerURL, options: .atomic)
         // Shared playback binds both routes up front. Lock-only selects Idle;
@@ -181,7 +185,16 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
         if usesLiveEffects {
             guard installation?.desktopIncluded != true else { return false }
             return try mutations.withExclusive {
-                try recovery.activateDesktopForLockSession { self.sessionIsLocked() == true && self.usesLiveEffects }
+                guard self.sessionIsLocked() == true, self.usesLiveEffects else { return false }
+                let changed = try recovery.activateDesktopForLockSession {
+                    self.sessionIsLocked() == true && self.usesLiveEffects
+                }
+                guard changed || !self.lockOnlyProviderPreparedForSession else { return false }
+                try self.routes.refreshProviderForLockSession {
+                    self.sessionIsLocked() == true && self.usesLiveEffects
+                }
+                self.lockOnlyProviderPreparedForSession = self.sessionIsLocked() == true && self.usesLiveEffects
+                return true
             }
         }
         return try native.activateLockScreenForCurrentSession()
@@ -189,14 +202,20 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
     public func restoreDesktopAfterLockScreenSession() throws -> Bool {
         if usesLiveEffects {
             guard installation?.desktopIncluded != true else { return false }
-            return try mutations.withExclusive { try recovery.restoreDesktopAfterLockSession() }
+            return try mutations.withExclusive {
+                lockOnlyProviderPreparedForSession = false
+                return try recovery.restoreDesktopAfterLockSession()
+            }
         }
         return try native.restoreDesktopAfterLockScreenSession()
     }
     public func restoreDesktopAfterLockScreenSessionAsync() async throws -> Bool {
         if usesLiveEffects {
             guard installation?.desktopIncluded != true else { return false }
-            return try await mutations.withExclusiveAsync { try self.recovery.restoreDesktopAfterLockSession() }
+            return try await mutations.withExclusiveAsync {
+                self.lockOnlyProviderPreparedForSession = false
+                return try self.recovery.restoreDesktopAfterLockSession()
+            }
         }
         return try await native.restoreDesktopAfterLockScreenSessionAsync()
     }

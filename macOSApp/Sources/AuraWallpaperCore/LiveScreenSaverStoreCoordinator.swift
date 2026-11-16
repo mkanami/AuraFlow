@@ -85,6 +85,18 @@ public final class LiveScreenSaverStoreCoordinator {
 
     public func activate() throws { try activate(includeDesktop: false) }
 
+    /// Changing Index.plist alone can leave loginwindow's existing shared
+    /// wallpaper bound to the user's Desktop on the next secure session.
+    /// Refresh its provider after promotion, then reapply the promotion to
+    /// the post-exit store in case WallpaperAgent flushed a cached descriptor.
+    func refreshProviderForLockSession(shouldProceed: () -> Bool) throws {
+        guard shouldProceed(), isSelected else { return }
+        try withStoppedWallpaperAgent {
+            _ = try routeRecovery.activateDesktopForLockSession(shouldProceed: shouldProceed)
+            if !shouldProceed() { _ = try routeRecovery.restoreDesktopAfterLockSession() }
+        }
+    }
+
     public func activate(includeDesktop: Bool) throws {
         if includeDesktop { try routeRecovery.restoreDesktopAfterLockSession() }
         try routeRecovery.withExclusiveAccess { try activateLocked(includeDesktop: includeDesktop) }
