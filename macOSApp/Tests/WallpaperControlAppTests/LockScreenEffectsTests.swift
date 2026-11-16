@@ -126,6 +126,40 @@ private final class EffectsRouteFixture {
     #expect(try f.load() == f.original)
 }
 
+@Test(arguments: [false, true])
+func lockEffectsPrewarmsRepeatedSessionsWithoutRestartingTheProviderOnTheSecureEdge(automatic: Bool) async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let installer = f.installer()
+    try await installer.installLockScreenOnly(videoURL: f.source)
+    let idle = try f.load()
+    for cycle in 1...3 {
+        f.locked = false
+        #expect(try await installer.rearmForNextLock(videoURL: f.source, shouldProceed: { true }))
+        #expect(f.restarts == cycle + 1)
+        #expect(try f.load() == idle, "Prewarming preserves all native Desktop appearance settings")
+        #expect(try await installer.rearmForNextLock(videoURL: f.source, shouldProceed: { true }))
+        #expect(f.restarts == cycle + 1, "Readiness polls must not restart a warm provider")
+        if automatic {
+            #expect(try installer.activateLockScreenForCurrentSession() == false)
+            f.locked = nil
+            #expect(try installer.activateLockScreenForCurrentSession() == false)
+        }
+        f.locked = true
+        #expect(try installer.activateLockScreenForCurrentSession())
+        #expect(f.restarts == cycle + 1, "The secure handoff must retain the prewarmed provider and its decoded frame")
+        #expect(try installer.activateLockScreenForCurrentSession() == false)
+        #expect(try await installer.repair(videoURL: f.source, shouldProceed: { true }) == false)
+        #expect(f.restarts == cycle + 1, "Sleep/wake and duplicate notifications retain the secure source")
+        f.locked = false
+        #expect(try await installer.restoreDesktopAfterLockScreenSessionAsync())
+        #expect(try f.load() == idle)
+        // Delayed restoration callbacks cannot invalidate the next warm-up.
+        #expect(try await installer.restoreDesktopAfterLockScreenSessionAsync() == false)
+    }
+    try await installer.uninstallAsync()
+    #expect(try f.load() == f.original)
+}
+
 @Test func lockEffectsFailedProviderRefreshRemainsRetryableForTheSameLockSession() async throws {
     let f = try EffectsRouteFixture(); defer { f.cleanup() }
     let installer = f.installer()
@@ -142,6 +176,32 @@ private final class EffectsRouteFixture {
     f.locked = false
     _ = try await installer.restoreDesktopAfterLockScreenSessionAsync()
     #expect(try f.load() == idle)
+    try await installer.uninstallAsync()
+    #expect(try f.load() == f.original)
+}
+
+@Test func lockEffectsPrewarmCanWinTheUnlockRestorationRaceWithoutAColdNextLock() async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let installer = f.installer()
+    try await installer.installLockScreenOnly(videoURL: f.source)
+    let idle = try f.load()
+    _ = try await installer.rearmForNextLock(videoURL: f.source, shouldProceed: { true })
+    f.locked = true
+    _ = try installer.activateLockScreenForCurrentSession()
+    #expect(f.restarts == 2)
+    f.locked = false
+    // The prewarm task may reach the platform actor before the ordinary
+    // asynchronous unlock restoration or its delayed retry callbacks.
+    _ = try await installer.rearmForNextLock(videoURL: f.source, shouldProceed: { true })
+    #expect(try f.load() == idle)
+    #expect(f.restarts == 3)
+    #expect(try await installer.restoreDesktopAfterLockScreenSessionAsync() == false)
+    _ = try await installer.rearmForNextLock(videoURL: f.source, shouldProceed: { true })
+    f.locked = true
+    #expect(try installer.activateLockScreenForCurrentSession())
+    #expect(f.restarts == 3, "A late unlock completion must not force a cold restart at the next secure edge")
+    f.locked = false
+    _ = try await installer.restoreDesktopAfterLockScreenSessionAsync()
     try await installer.uninstallAsync()
     #expect(try f.load() == f.original)
 }

@@ -97,6 +97,15 @@ public final class LiveScreenSaverStoreCoordinator {
         }
     }
 
+    func prepareProviderForNextLock(shouldProceed: () -> Bool) throws {
+        guard shouldProceed(), isSelected else { return }
+        try withStoppedWallpaperAgent {
+            // Keep the real Desktop selected while warming the independent
+            // Idle provider. Rebase a shutdown flush only while still owned.
+            _ = try routeRecovery.recoverIfNeeded(shouldProceed: shouldProceed)
+        }
+    }
+
     public func activate(includeDesktop: Bool) throws {
         if includeDesktop { try routeRecovery.restoreDesktopAfterLockSession() }
         try routeRecovery.withExclusiveAccess { try activateLocked(includeDesktop: includeDesktop) }

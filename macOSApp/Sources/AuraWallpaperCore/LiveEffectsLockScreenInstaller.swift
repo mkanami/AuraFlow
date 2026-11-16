@@ -174,6 +174,20 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
     public func rearmForNextLock(videoURL: URL, shouldProceed: @escaping () -> Bool) async throws -> Bool {
         if usesLiveEffects || (wantsLiveEffects && !native.requiresLockScreenSessionPromotion) {
             _ = try await repair(videoURL: videoURL, shouldProceed: shouldProceed)
+            if installation?.desktopIncluded == false {
+                try await mutations.withExclusiveAsync {
+                    guard shouldProceed(), self.sessionIsLocked() == false,
+                          self.usesLiveEffects else { return }
+                    let restored = try self.recovery.restoreDesktopAfterLockSession()
+                    if restored { self.lockOnlyProviderPreparedForSession = false }
+                    guard !self.lockOnlyProviderPreparedForSession else { return }
+                    try self.routes.prepareProviderForNextLock {
+                        shouldProceed() && self.sessionIsLocked() == false && self.usesLiveEffects
+                    }
+                    self.lockOnlyProviderPreparedForSession = shouldProceed()
+                        && self.sessionIsLocked() == false && self.usesLiveEffects
+                }
+            }
             // Ready is not the same as changed. The agent must bind a fresh
             // presentation and acknowledge the current command even when the
             // selected live route already needs no filesystem repair.
@@ -189,7 +203,7 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
                 let changed = try recovery.activateDesktopForLockSession {
                     self.sessionIsLocked() == true && self.usesLiveEffects
                 }
-                guard changed || !self.lockOnlyProviderPreparedForSession else { return false }
+                guard !self.lockOnlyProviderPreparedForSession else { return changed }
                 try self.routes.refreshProviderForLockSession {
                     self.sessionIsLocked() == true && self.usesLiveEffects
                 }
@@ -203,8 +217,9 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
         if usesLiveEffects {
             guard installation?.desktopIncluded != true else { return false }
             return try mutations.withExclusive {
-                lockOnlyProviderPreparedForSession = false
-                return try recovery.restoreDesktopAfterLockSession()
+                let restored = try recovery.restoreDesktopAfterLockSession()
+                if restored { lockOnlyProviderPreparedForSession = false }
+                return restored
             }
         }
         return try native.restoreDesktopAfterLockScreenSession()
@@ -213,8 +228,9 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
         if usesLiveEffects {
             guard installation?.desktopIncluded != true else { return false }
             return try await mutations.withExclusiveAsync {
-                self.lockOnlyProviderPreparedForSession = false
-                return try self.recovery.restoreDesktopAfterLockSession()
+                let restored = try self.recovery.restoreDesktopAfterLockSession()
+                if restored { self.lockOnlyProviderPreparedForSession = false }
+                return restored
             }
         }
         return try await native.restoreDesktopAfterLockScreenSessionAsync()
