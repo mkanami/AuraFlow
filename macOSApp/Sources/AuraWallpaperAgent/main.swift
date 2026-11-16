@@ -1849,39 +1849,6 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         status: LockScreenOnlyGenerationStatus,
         reason: String
     ) {
-        let token = currentRearmToken()
-        if !operation.expectedLocked, lastRearmedToken != token {
-            let lifecycleGuard = self.lifecycleGuard
-            let store = self.store
-            let platformExecutor = self.lockScreenPlatformExecutor
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                do {
-                    _ = try await platformExecutor.rearmForNextLock(videoURL: URL(fileURLWithPath: token.videoPath),
-                        shouldProceed: {
-                            lifecycleGuard.isCurrent(operation.operationID)
-                                && store.loadConfig().show_on_lock_screen != false
-                        })
-                    guard self.isCurrentLockScreenLifecycleOperation(operation.operationID) else { return }
-                    // The old assertion belongs to the pre-refresh system
-                    // process. Bind a fresh Idle surface while still unlocked.
-                    self.nativeLockScreenBridge.invalidatePreparation()
-                    let latest = self.lockScreenPlatform.lockScreenOnlyStatus(videoURL: URL(fileURLWithPath: token.videoPath))
-                    guard self.isLockScreenGenerationReady(latest), self.currentRearmToken() == token,
-                          !self.lockScreenLifecycleCoordinator.desiredLocked else {
-                        self.finishLockScreenLifecycle(operation, reason: "superseded-prewarm")
-                        return
-                    }
-                    self.lastRearmedToken = token
-                    self.completeReadyLockScreenLifecycle(operation, status: latest, reason: reason)
-                } catch {
-                    self.store.markLockScreenAgentReady(false)
-                    self.writeHealth(reason: "lock-screen-prewarm-failed: " + error.localizedDescription)
-                    self.finishLockScreenLifecycle(operation, reason: reason)
-                }
-            }
-            return
-        }
         nativeLockScreenBridge.prepare { [weak self] prepared in
             Task { @MainActor [weak self] in
                 guard let self,

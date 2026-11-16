@@ -85,24 +85,26 @@ public final class LiveScreenSaverStoreCoordinator {
 
     public func activate() throws { try activate(includeDesktop: false) }
 
-    /// Changing Index.plist alone can leave loginwindow's existing shared
-    /// wallpaper bound to the user's Desktop on the next secure session.
-    /// Refresh its provider after promotion, then reapply the promotion to
-    /// the post-exit store in case WallpaperAgent flushed a cached descriptor.
+    /// Give loginwindow a new content identity while retaining the live Idle
+    /// renderer. A mode-only update can reuse its cached user Desktop; killing
+    /// WallpaperAgent instead creates a black gap while its replacement starts.
     func refreshProviderForLockSession(shouldProceed: () -> Bool) throws {
         guard shouldProceed(), isSelected else { return }
-        try withStoppedWallpaperAgent {
-            _ = try routeRecovery.activateDesktopForLockSession(shouldProceed: shouldProceed)
-            if !shouldProceed() { _ = try routeRecovery.restoreDesktopAfterLockSession() }
-        }
-    }
-
-    func prepareProviderForNextLock(shouldProceed: () -> Bool) throws {
-        guard shouldProceed(), isSelected else { return }
-        try withStoppedWallpaperAgent {
-            // Keep the real Desktop selected while warming the independent
-            // Idle provider. Rebase a shutdown flush only while still owned.
-            _ = try routeRecovery.recoverIfNeeded(shouldProceed: shouldProceed)
+        try routeRecovery.withExclusiveAccess {
+            guard shouldProceed(), isSelected else { return }
+            let original = try readStore()
+            let next = try makeSaverMode()
+            var changed = false
+            let updated = try mapContainers(in: dictionary(original)) { _, route in
+                guard self.isSelected(route["Idle"]), self.isSelected(route["Desktop"]) else { return route }
+                var result = route
+                result["Desktop"] = next
+                changed = true
+                return result
+            }
+            guard changed, shouldProceed() else { return }
+            guard try readStore() == original else { throw StoreError.changedDuringUpdate }
+            try encodedPlist(updated).write(to: storeURL, options: .atomic)
         }
     }
 
@@ -335,7 +337,8 @@ public final class LiveScreenSaverStoreCoordinator {
     }
 
     private func makeSaverMode() throws -> [String: Any] {
-        let configuration = ["module": ["relative": canonicalModuleURL.absoluteString]]
+        let configuration: [String: Any] = ["module": ["relative": canonicalModuleURL.absoluteString],
+            "auraflowGeneration": UUID().uuidString]
         let data = try encodedPlist(configuration)
         let now = Date()
         return [
