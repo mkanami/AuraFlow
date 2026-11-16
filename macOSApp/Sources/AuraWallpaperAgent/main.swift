@@ -311,7 +311,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let sessionIsLocked: () -> Bool?
     private let fullscreenApplicationIsActive: (@MainActor () -> Bool)?
     private let applicationWindows: @MainActor () -> DesktopApplicationWindows.State
-    private let lockScreenOnlyMode = CommandLine.arguments.contains("--lock-screen-only")
+    private let lockScreenOnlyMode: Bool
     private let lockScreenPlatform: LockScreenPlatformOperating
     private let nativeLockScreenBridge: NativeLockScreenBridging
     private let presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)?
@@ -398,12 +398,14 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)? = nil,
         screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens },
         observesSystemEvents: Bool = true,
+        lockScreenOnlyMode: Bool = CommandLine.arguments.contains("--lock-screen-only"),
         sessionIsLocked: @escaping () -> Bool? = { agentSystemSessionIsLocked() },
         fullscreenApplicationIsActive: (@MainActor () -> Bool)? = nil,
         applicationWindows: @escaping @MainActor () -> DesktopApplicationWindows.State = { DesktopApplicationWindows.currentState() }
     ) {
         self.store = store
         self.observesSystemEvents = observesSystemEvents
+        self.lockScreenOnlyMode = lockScreenOnlyMode
         self.sessionIsLocked = sessionIsLocked
         self.rearmGuard = WallpaperAgentRearmGuard(store: store, sessionIsLocked: sessionIsLocked)
         self.fullscreenApplicationIsActive = fullscreenApplicationIsActive
@@ -1010,6 +1012,10 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             lastLockScreenOnlyStatus = liveStatus
         }
 
+        // The fast Lock-only path can run before the normal session callback.
+        // Promote its live source before the bridge binds a Locked assertion;
+        // a later lifecycle repair cannot replace that already-bound source.
+        promoteModernLockScreenForCurrentSession()
         earlyLockScreenHandoffArmed = true
         earlyLockScreenHandoffGeneration &+= 1
         let handoffGeneration = earlyLockScreenHandoffGeneration

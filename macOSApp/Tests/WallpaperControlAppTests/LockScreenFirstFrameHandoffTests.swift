@@ -24,6 +24,7 @@ private final class FirstFramePlatform: LockScreenSaverInstalling {
     func install(videoURL: URL) async throws {}
     func uninstall() throws {}
     func activateLockScreenForCurrentSession() throws -> Bool {
+        guard !trace.promoted else { return false }
         trace.promoted = true
         trace.events.append("promote")
         return true
@@ -52,6 +53,51 @@ private final class FirstFrameBridge: NativeLockScreenBridging {
 
 @Suite(.serialized)
 struct LockScreenFirstFrameHandoffTests {
+    @Test(arguments: [false, true]) @MainActor
+    func lockOnlyPromotesItsSourceBeforeTheEarlySecureFrame(automatic: Bool) async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraLockOnlyFirstFrame-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = WallpaperRuntimeStore(appSupportURL: root, launchAgentURL: root.appendingPathComponent("login.plist"))
+        let movie = root.appendingPathComponent("fixture.mp4")
+        try store.ensureDirectories()
+        try Data("unopened mock media".utf8).write(to: movie)
+        try store.saveConfig(.init(video_path: "", playback_speed: 1, show_on_lock_screen: true))
+        try store.saveLockScreenOnlySource(movie)
+        let trace = FirstFrameTrace()
+        let agent = WallpaperAgentDelegate(store: store,
+            lockScreenPlatform: FirstFramePlatform(trace, promotionRequired: true),
+            nativeLockScreenBridge: FirstFrameBridge(trace), presentWindow: { _, _ in },
+            screensProvider: { [] }, observesSystemEvents: false, lockScreenOnlyMode: true,
+            sessionIsLocked: { trace.locked })
+        defer { agent.applicationWillTerminate(.init(name: NSApplication.willTerminateNotification)) }
+        agent.applicationDidFinishLaunching(.init(name: NSApplication.didFinishLaunchingNotification))
+        let deadline = Date().addingTimeInterval(3)
+        while !store.isLockScreenAgentReady() {
+            try #require(Date() < deadline)
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(trace.events.isEmpty, "Startup on the active Desktop must not promote or show a secure source")
+        if automatic {
+            // Idle saver before password lock, followed by a missing/delayed
+            // secure notification. Only confirmed CGSession may promote.
+            agent.lockShieldDidRaise(.init(name: .init("com.apple.shieldWindowRaised")))
+            trace.locked = nil
+            try await Task.sleep(for: .milliseconds(30))
+            #expect(trace.events.isEmpty)
+        }
+        trace.locked = true
+        agent.lockShieldDidRaise(.init(name: .init("com.apple.shieldWindowRaised")))
+        try #require(trace.events.contains("show-aura"), "The early handoff must bind Aura, not the user's Desktop")
+        #expect(Array(trace.events.prefix(2)) == ["promote", "show-aura"])
+        agent.handleSessionNotification(expectedLocked: true)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!trace.events.contains("show-before-promotion"))
+        #expect(agent.windows.isEmpty)
+        trace.locked = false
+        agent.handleSessionNotification(expectedLocked: false)
+    }
+
     @Test(arguments: [false, true]) @MainActor
     func sharedReadinessBelongsToTheCommittedSourceAcrossManualAndDelayedAutomaticLocks(automatic: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraSharedReady-\(UUID())")
