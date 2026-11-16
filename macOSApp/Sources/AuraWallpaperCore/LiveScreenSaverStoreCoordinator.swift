@@ -294,14 +294,44 @@ public final class LiveScreenSaverStoreCoordinator {
     }
 
     private func withStoppedWallpaperAgent(_ operation: () throws -> Void) throws {
+        let before = try dictionary(readStore())
+        let journal = try loadJournal()
         try stopWallpaperAgent()
         do {
+            let postExit = try readStore()
+            if let repaired = try preservingNativeDesktop(postExit, before: before, journal: journal) {
+                guard try readStore() == postExit else { throw StoreError.changedDuringUpdate }
+                try repaired.write(to: storeURL, options: .atomic)
+            }
             try operation()
         } catch {
             try? startWallpaperAgent()
             throw error
         }
         try startWallpaperAgent()
+    }
+
+    private func preservingNativeDesktop(_ data: Data, before: [String: Any], journal: Journal?) throws -> Data? {
+        var originals: [String: [String: Any]] = [:]
+        _ = mapContainers(in: before) { path, route in originals[path] = route; return route }
+        var changed = false
+        let root = try mapContainers(in: dictionary(data)) { path, route in
+            var result = route
+            let saved = journal?.routes.first { $0.path == path }
+            for key in ["Desktop", "Linked"] where WallpaperDesktopSupport.isPlaceholderWallpaperMode(result[key]) {
+                // A shutdown flush is not a new user choice. Keep the exact
+                // last valid descriptor, including appearance and options.
+                // Never borrow Idle or synthesize a replacement wallpaper.
+                let candidates: [Any?] = [originals[path]?[key], originals[path]?["Desktop"],
+                    originals[path]?["Linked"], propertyList(saved?.desktop), propertyList(saved?.linked)]
+                if let original = candidates.compactMap({ $0 }).first(where: WallpaperDesktopSupport.isUserWallpaperMode) {
+                    result[key] = original
+                    changed = true
+                }
+            }
+            return result
+        }
+        return changed ? try encodedPlist(root) : nil
     }
 
     private func makeSaverMode() throws -> [String: Any] {

@@ -73,6 +73,85 @@ private final class EffectsRouteFixture {
     }
 }
 
+private func placeholderDesktops(_ value: Any) -> Any {
+    guard let dictionary = value as? [String: Any] else { return value }
+    return dictionary.mapValues { placeholderDesktops($0) }.reduce(into: [String: Any]()) { result, item in
+        result[item.key] = ["Desktop", "Linked"].contains(item.key)
+            ? ["Content": ["Choices": [["Provider": "default", "Files": [], "Configuration": Data()]]]]
+            : item.value
+    }
+}
+
+private func nativeDesktops(_ value: Any, path: String = "") -> [String: NSDictionary] {
+    guard let root = value as? [String: Any] else { return [:] }
+    var result: [String: NSDictionary] = [:]
+    if let mode = (root["Desktop"] ?? root["Linked"]) as? NSDictionary { result[path] = mode }
+    for (key, child) in root where key != "Desktop" && key != "Linked" && key != "Idle" {
+        result.merge(nativeDesktops(child, path: path + "/" + key)) { _, new in new }
+    }
+    return result
+}
+
+@Test func lockEffectsShutdownPlaceholderCannotReplaceNativeDesktopDescriptors() async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    f.onStop = {
+        let changed = placeholderDesktops(try f.load())
+        try PropertyListSerialization.data(fromPropertyList: changed, format: .binary, options: 0).write(to: f.storeURL)
+    }
+    let installer = f.installer()
+    try await installer.installLockScreenOnly(videoURL: f.source)
+    let expected = nativeDesktops(f.original!)
+    #expect(nativeDesktops(try f.load()) == expected)
+    for _ in 0..<2 {
+        f.locked = false
+        _ = try await installer.rearmForNextLock(videoURL: f.source, shouldProceed: { true })
+        #expect(nativeDesktops(try f.load()) == expected)
+        f.locked = true
+        #expect(try installer.activateLockScreenForCurrentSession())
+        f.locked = false
+        _ = try await installer.restoreDesktopAfterLockScreenSessionAsync()
+        #expect(nativeDesktops(try f.load()) == expected)
+    }
+    try await installer.uninstallAsync()
+    #expect(try f.load() == f.original)
+}
+
+@Test func lockEffectsRepairsAnOwnedDefaultPlaceholderFromItsExactSavedDesktop() async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let installer = f.installer()
+    try await installer.installLockScreenOnly(videoURL: f.source)
+    try PropertyListSerialization.data(fromPropertyList: placeholderDesktops(try f.load()), format: .binary, options: 0)
+        .write(to: f.storeURL)
+    #expect(try await installer.repair(videoURL: f.source, shouldProceed: { true }))
+    #expect(nativeDesktops(try f.load()) == nativeDesktops(f.original!))
+    f.locked = true
+    #expect(try installer.activateLockScreenForCurrentSession())
+    f.locked = false
+    _ = try await installer.restoreDesktopAfterLockScreenSessionAsync()
+    try await installer.uninstallAsync()
+    #expect(try f.load() == f.original)
+}
+
+@Test func lockEffectsShutdownKeepsANewerExplicitNativeDesktopInsteadOfTheOldJournal() async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let installer = f.installer()
+    try await installer.installLockScreenOnly(videoURL: f.source)
+    var current = try f.load() as! [String: Any]
+    var route = current["SystemDefault"] as! [String: Any]
+    var chosen = route["Desktop"] as! [String: Any]
+    chosen["Appearance"] = ["mode": "light", "color": [0.9, 0.5, 0.2]]
+    route["Desktop"] = chosen; current["SystemDefault"] = route
+    try PropertyListSerialization.data(fromPropertyList: current, format: .binary, options: 0).write(to: f.storeURL)
+    f.onStop = {
+        try PropertyListSerialization.data(fromPropertyList: placeholderDesktops(try f.load()), format: .binary, options: 0)
+            .write(to: f.storeURL)
+    }
+    _ = try await installer.rearmForNextLock(videoURL: f.source, shouldProceed: { true })
+    #expect((try f.load()["SystemDefault"] as? [String: Any])?["Desktop"] as? NSDictionary == chosen as NSDictionary)
+    try await installer.uninstallAsync()
+    #expect((try f.load()["SystemDefault"] as? [String: Any])?["Desktop"] as? NSDictionary == chosen as NSDictionary)
+}
+
 @Test func lockEffectsRepeatedLockRefreshesTheSystemProviderAfterRestoringTheDesktop() async throws {
     let f = try EffectsRouteFixture(); defer { f.cleanup() }
     let installer = f.installer()

@@ -836,6 +836,14 @@ public enum WallpaperDesktopSupport {
         return found
     }
 
+    /// The service's temporary default is not an explicit wallpaper choice.
+    public static func isPlaceholderWallpaperMode(_ value: Any?) -> Bool {
+        guard let mode = value as? [String: Any],
+              let content = mode["Content"] as? [String: Any],
+              let choices = content["Choices"] as? [[String: Any]] else { return false }
+        return choices.contains { $0["Provider"] as? String == "default" }
+    }
+
     /// An original descriptor may be replayed verbatim. Empty/default
     /// placeholders and Aura's own cached surfaces are not user selections.
     public static func isUserWallpaperMode(_ value: Any) -> Bool {

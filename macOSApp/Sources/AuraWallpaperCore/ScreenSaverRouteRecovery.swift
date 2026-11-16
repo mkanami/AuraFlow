@@ -109,6 +109,7 @@ public final class ScreenSaverRouteRecovery {
         guard FileManager.default.fileExists(atPath: journalURL.path) else { return false }
         return try withExclusiveAccess {
             guard shouldProceed(), FileManager.default.fileExists(atPath: journalURL.path) else { return false }
+            _ = try recoverLocked(shouldProceed: shouldProceed)
             let original = try Data(contentsOf: storeURL)
             guard let root = try PropertyListSerialization.propertyList(from: original, format: nil) as? [String: Any] else { return false }
             var saved = FileManager.default.fileExists(atPath: lockSessionURL.path)
@@ -168,7 +169,8 @@ public final class ScreenSaverRouteRecovery {
         guard let root = try PropertyListSerialization.propertyList(from: original, format: nil) as? [String: Any] else { return false }
         var changed = false
         let updated = mapRoutes(root) { path, route in
-            guard self.isAura(route["Desktop"]), let item = saved.first(where: { $0.path == path }) else { return route }
+            guard self.isAura(route["Desktop"]) || WallpaperDesktopSupport.isPlaceholderWallpaperMode(route["Desktop"]),
+                  let item = saved.first(where: { $0.path == path }) else { return route }
             var result = route
             if let desktop = desktops[item.path] {
                 result["Desktop"] = desktop
@@ -257,6 +259,17 @@ public final class ScreenSaverRouteRecovery {
         }
         guard let selected else { return nil }
         var changed = false
+        root = mapRoutes(root) { path, route in
+            guard route["Linked"] == nil, self.isAura(route["Idle"]),
+                  WallpaperDesktopSupport.isPlaceholderWallpaperMode(route["Desktop"]),
+                  let saved = journal.routes.first(where: { $0.path == path }) else { return route }
+            let candidates = [self.decodedMode(saved.desktop), self.decodedMode(saved.linked)].compactMap { $0 }
+            guard let original = candidates.first(where: self.isUserDesktop) else { return route }
+            var repaired = route
+            repaired["Desktop"] = original
+            changed = true
+            return repaired
+        }
         root = mapRoutes(root) { path, route in
             guard route["Linked"] == nil, !self.isAura(route["Idle"]),
                   let saved = journal.routes.first(where: { $0.path == path }) else { return route }
