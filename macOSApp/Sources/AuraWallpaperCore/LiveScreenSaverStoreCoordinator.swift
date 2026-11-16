@@ -37,6 +37,8 @@ public final class LiveScreenSaverStoreCoordinator {
     private let saverURL: URL
     private let stopWallpaperAgent: () throws -> Void
     private let startWallpaperAgent: () throws -> Void
+    private let stopWallpaperAgentForLockSession: () throws -> Void
+    private let startWallpaperAgentForLockSession: () throws -> Void
 
     public init(
         storeURL: URL = WallpaperPlatformConstants.wallpaperStoreURL(
@@ -45,18 +47,20 @@ public final class LiveScreenSaverStoreCoordinator {
         journalURL: URL = WallpaperRuntimeStore.defaultAppSupportURL().appendingPathComponent("terminal-wallpaper")
             .appendingPathComponent("screen-saver-wallpaper-store-backup.json"),
         saverURL: URL,
-        stopWallpaperAgent: @escaping () throws -> Void = {
-            try LiveScreenSaverStoreCoordinator.restartWallpaperAgent(stopOnly: true)
-        },
-        startWallpaperAgent: @escaping () throws -> Void = {
-            try LiveScreenSaverStoreCoordinator.restartWallpaperAgent(stopOnly: false)
-        }
+        stopWallpaperAgent: (() throws -> Void)? = nil,
+        startWallpaperAgent: (() throws -> Void)? = nil
     ) {
         self.storeURL = storeURL
         self.journalURL = journalURL
         self.saverURL = saverURL
-        self.stopWallpaperAgent = stopWallpaperAgent
-        self.startWallpaperAgent = startWallpaperAgent
+        self.stopWallpaperAgent = stopWallpaperAgent ?? { try Self.restartWallpaperAgent(stopOnly: true) }
+        self.startWallpaperAgent = startWallpaperAgent ?? { try Self.restartWallpaperAgent(stopOnly: false) }
+        self.stopWallpaperAgentForLockSession = stopWallpaperAgent ?? {
+            try Self.restartWallpaperAgent(stopOnly: true, resetScreenSaver: false)
+        }
+        self.startWallpaperAgentForLockSession = startWallpaperAgent ?? {
+            try Self.restartWallpaperAgent(stopOnly: false, resetScreenSaver: false)
+        }
     }
 
     public var isSelected: Bool {
@@ -85,26 +89,15 @@ public final class LiveScreenSaverStoreCoordinator {
 
     public func activate() throws { try activate(includeDesktop: false) }
 
-    /// Give loginwindow a new content identity while retaining the live Idle
-    /// renderer. A mode-only update can reuse its cached user Desktop; killing
-    /// WallpaperAgent instead creates a black gap while its replacement starts.
+    /// WallpaperAgent does not reload an externally edited Index.plist. Its
+    /// cached Desktop can overwrite our secure promotion on a repeated lock.
+    /// Rebase after its final write and restart only that store owner; the
+    /// unchanged Screen Saver module keeps its renderer and decoded frames.
     func refreshProviderForLockSession(shouldProceed: () -> Bool) throws {
         guard shouldProceed(), isSelected else { return }
-        try routeRecovery.withExclusiveAccess {
-            guard shouldProceed(), isSelected else { return }
-            let original = try readStore()
-            let next = try makeSaverMode()
-            var changed = false
-            let updated = try mapContainers(in: dictionary(original)) { _, route in
-                guard self.isSelected(route["Idle"]), self.isSelected(route["Desktop"]) else { return route }
-                var result = route
-                result["Desktop"] = next
-                changed = true
-                return result
-            }
-            guard changed, shouldProceed() else { return }
-            guard try readStore() == original else { throw StoreError.changedDuringUpdate }
-            try encodedPlist(updated).write(to: storeURL, options: .atomic)
+        try withStoppedWallpaperAgent(preservingScreenSaver: true) {
+            _ = try routeRecovery.activateDesktopForLockSession(shouldProceed: shouldProceed)
+            if !shouldProceed() { _ = try routeRecovery.restoreDesktopAfterLockSession() }
         }
     }
 
@@ -295,10 +288,12 @@ public final class LiveScreenSaverStoreCoordinator {
         return changed ? try encodedPlist(root) : nil
     }
 
-    private func withStoppedWallpaperAgent(_ operation: () throws -> Void) throws {
+    private func withStoppedWallpaperAgent(preservingScreenSaver: Bool = false, _ operation: () throws -> Void) throws {
         let before = try dictionary(readStore())
         let journal = try loadJournal()
-        try stopWallpaperAgent()
+        let stop = preservingScreenSaver ? stopWallpaperAgentForLockSession : stopWallpaperAgent
+        let start = preservingScreenSaver ? startWallpaperAgentForLockSession : startWallpaperAgent
+        try stop()
         do {
             let postExit = try readStore()
             if let repaired = try preservingNativeDesktop(postExit, before: before, journal: journal) {
@@ -307,10 +302,10 @@ public final class LiveScreenSaverStoreCoordinator {
             }
             try operation()
         } catch {
-            try? startWallpaperAgent()
+            try? start()
             throw error
         }
-        try startWallpaperAgent()
+        try start()
     }
 
     private func preservingNativeDesktop(_ data: Data, before: [String: Any], journal: Journal?) throws -> Data? {
@@ -337,8 +332,7 @@ public final class LiveScreenSaverStoreCoordinator {
     }
 
     private func makeSaverMode() throws -> [String: Any] {
-        let configuration: [String: Any] = ["module": ["relative": canonicalModuleURL.absoluteString],
-            "auraflowGeneration": UUID().uuidString]
+        let configuration = ["module": ["relative": canonicalModuleURL.absoluteString]]
         let data = try encodedPlist(configuration)
         let now = Date()
         return [
@@ -458,27 +452,40 @@ public final class LiveScreenSaverStoreCoordinator {
         try JSONEncoder().encode(journal).write(to: journalURL, options: .atomic)
     }
 
-    @usableFromInline internal static func restartWallpaperAgent(stopOnly: Bool) throws {
-        let oldPIDs = wallpaperAgentPIDs()
-        let oldSaverPIDs = legacyScreenSaverPIDs()
+    struct RestartActions {
+        var processes: (String) -> Set<pid_t>
+        var run: (String, [String]) -> Void
+        var waitForExit: (Set<pid_t>, TimeInterval) -> Bool
+        var waitForFreshAgent: (Set<pid_t>) -> Bool
+
+        static var system: Self {
+            Self(processes: processIdentifiers, run: runProcess,
+                waitForExit: { waitForProcessesToExit($0, timeout: $1) },
+                waitForFreshAgent: { waitForFreshWallpaperAgent(excluding: $0) })
+        }
+    }
+
+    internal static func restartWallpaperAgent(stopOnly: Bool, resetScreenSaver: Bool = true,
+                                               actions: RestartActions = .system) throws {
+        let oldPIDs = actions.processes(WallpaperPlatformConstants.wallpaperAgentProcessName)
+        let oldSaverPIDs = resetScreenSaver ? actions.processes("legacyScreenSaver") : []
         // WallpaperAgent can be relaunched by macOS while Index.plist is being
         // updated. Stop that generation too before asking it to read the new
         // Screen Saver route.
         if stopOnly || !oldPIDs.isEmpty {
-            runProcess(
+            actions.run(
                 "/usr/bin/killall",
                 [WallpaperPlatformConstants.wallpaperAgentProcessName]
             )
-            guard waitForProcessesToExit(oldPIDs, timeout: 2) else {
+            guard actions.waitForExit(oldPIDs, 2) else {
                 throw StoreError.wallpaperAgentUnavailable
             }
         }
-        // This route is hosted by the legacy Screen Saver extension. A live
-        // extension can retain the previous module even after WallpaperAgent
-        // has reread its store, so drain it before the next owner starts.
+        // A real source/module installation must drain the old extension.
+        // A secure-session rebind keeps the same source and retains it.
         if !oldSaverPIDs.isEmpty {
-            runProcess("/usr/bin/pkill", ["-x", "legacyScreenSaver"])
-            guard waitForProcessesToExit(oldSaverPIDs, timeout: 2) else {
+            actions.run("/usr/bin/pkill", ["-x", "legacyScreenSaver"])
+            guard actions.waitForExit(oldSaverPIDs, 2) else {
                 throw StoreError.wallpaperAgentUnavailable
             }
         }
@@ -486,11 +493,11 @@ public final class LiveScreenSaverStoreCoordinator {
 
         // `open` hands the request to Launch Services. Its exit code does not
         // tell us whether WallpaperAgent actually started; the new PID does.
-        runProcess(
+        actions.run(
             "/usr/bin/open",
             ["-gja", WallpaperPlatformConstants.wallpaperAgentApplicationPath]
         )
-        guard waitForFreshWallpaperAgent(excluding: oldPIDs) else {
+        guard actions.waitForFreshAgent(oldPIDs) else {
             throw StoreError.wallpaperAgentUnavailable
         }
     }
@@ -537,10 +544,6 @@ public final class LiveScreenSaverStoreCoordinator {
 
     @usableFromInline internal static func wallpaperAgentPIDs() -> Set<pid_t> {
         processIdentifiers(named: WallpaperPlatformConstants.wallpaperAgentProcessName)
-    }
-
-    private static func legacyScreenSaverPIDs() -> Set<pid_t> {
-        processIdentifiers(named: "legacyScreenSaver")
     }
 
     private static func processIdentifiers(named name: String) -> Set<pid_t> {

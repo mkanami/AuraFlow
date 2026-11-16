@@ -148,46 +148,116 @@ private func nativeDesktops(_ value: Any, path: String = "") -> [String: NSDicti
     }
     _ = try await installer.rearmForNextLock(videoURL: f.source, shouldProceed: { true })
     #expect((try f.load()["SystemDefault"] as? [String: Any])?["Desktop"] as? NSDictionary == chosen as NSDictionary)
+    f.locked = true
+    _ = try installer.activateLockScreenForCurrentSession()
+    f.locked = false
+    _ = try await installer.restoreDesktopAfterLockScreenSessionAsync()
+    #expect((try f.load()["SystemDefault"] as? [String: Any])?["Desktop"] as? NSDictionary == chosen as NSDictionary,
+        "The secure provider's final placeholder write must preserve the Desktop selected after installation")
     try await installer.uninstallAsync()
     #expect((try f.load()["SystemDefault"] as? [String: Any])?["Desktop"] as? NSDictionary == chosen as NSDictionary)
 }
 
-@Test func lockEffectsRepeatedLockRefreshesContentWithoutRestartingTheSystemProvider() async throws {
+@Test(arguments: [false, true])
+func lockEffectsRepeatedSessionsReloadTheStoreAfterTheSystemFlushesItsCachedDesktop(automatic: Bool) async throws {
     let f = try EffectsRouteFixture(); defer { f.cleanup() }
     let installer = f.installer()
     try await installer.installLockScreenOnly(videoURL: f.source)
     let idle = try f.load()
-    var contentIdentities = Set<Data>()
-    for cycle in 1...2 {
+    // Model the real server cache: changing the file alone does not change
+    // the source it will render, and shutdown writes its cached route back.
+    var serverCache = idle
+    f.onStop = {
+        try PropertyListSerialization.data(fromPropertyList: serverCache, format: .binary, options: 0).write(to: f.storeURL)
+    }
+    for cycle in 1...3 {
         f.locked = false
+        if automatic {
+            #expect(try installer.activateLockScreenForCurrentSession() == false,
+                "An idle saver before the password lock cannot promote Desktop")
+        }
         #expect(try installer.activateLockScreenForCurrentSession() == false)
         f.locked = nil
         #expect(try installer.activateLockScreenForCurrentSession() == false)
-        #expect(f.restarts == 1)
+        #expect(f.restarts == cycle)
         f.locked = true
         #expect(try installer.activateLockScreenForCurrentSession())
-        #expect(f.restarts == 1, "A secure transition must not destroy the rendered provider")
+        #expect(f.restarts == cycle + 1, "Each secure session must make the server read the promoted route")
+        serverCache = try f.load()
         let live = try f.load()["AllSpacesAndDisplays"] as! [String: Any]
-        let mode = live["Desktop"] as! [String: Any]
-        let choice = (mode["Content"] as! [String: Any])["Choices"] as! [[String: Any]]
-        let identity = try #require(choice.first?["Configuration"] as? Data)
-        #expect(contentIdentities.insert(identity).inserted, "Each session invalidates the cached content identity")
-        #expect(contentIdentities.count == cycle)
+        #expect(live["Desktop"] as? NSDictionary == live["Idle"] as? NSDictionary,
+            "The restarted server must resolve AuraFlow for both secure modes")
         #expect(installer.lockScreenOnlyStatus(videoURL: f.source).isReady)
         #expect(try installer.activateLockScreenForCurrentSession() == false)
         #expect(try f.load()["AllSpacesAndDisplays"] as? NSDictionary == live as NSDictionary)
         // A sleep/wake or duplicate lock callback in the same secure session
         // retains its provider rather than restarting it again.
         #expect(try await installer.repair(videoURL: f.source, shouldProceed: { true }) == false)
-        #expect(f.restarts == 1)
+        #expect(f.restarts == cycle + 1)
         f.locked = false
         #expect(try await installer.restoreDesktopAfterLockScreenSessionAsync())
         #expect(try f.load() == idle)
+        // On unlock the OS may already hold the native Desktop in memory.
+        // The next lock must work whether or not it observed our restoration.
+        if cycle % 2 == 0 { serverCache = idle }
     }
     f.onStop = nil
     try await installer.uninstallAsync()
     #expect(try f.load() == f.original)
+    #expect(f.restarts == 5)
+}
+
+@Test func lockEffectsUnlockDuringProviderRefreshRestoresTheExactDesktop() async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let installer = f.installer()
+    try await installer.installLockScreenOnly(videoURL: f.source)
+    let idle = try f.load()
+    f.locked = true
+    f.onStop = { f.locked = false }
+    _ = try installer.activateLockScreenForCurrentSession()
+    #expect(try f.load() == idle)
     #expect(f.restarts == 2)
+    #expect(try installer.activateLockScreenForCurrentSession() == false)
+    #expect(f.restarts == 2, "A delayed completion cannot rearm an unlocked Mac")
+    f.onStop = nil
+    try await installer.uninstallAsync()
+    #expect(try f.load() == f.original)
+}
+
+@Test func lockEffectsFailedProviderRefreshRemainsRetryableForTheSameLockSession() async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let installer = f.installer()
+    try await installer.installLockScreenOnly(videoURL: f.source)
+    f.locked = true
+    f.onStop = { throw CocoaError(.fileReadUnknown) }
+    #expect(throws: CocoaError.self) { try installer.activateLockScreenForCurrentSession() }
+    f.onStop = nil
+    #expect(try installer.activateLockScreenForCurrentSession())
+    #expect(f.restarts == 3)
+    #expect(try installer.activateLockScreenForCurrentSession() == false)
+    #expect(f.restarts == 3)
+    f.locked = false
+    _ = try await installer.restoreDesktopAfterLockScreenSessionAsync()
+    try await installer.uninstallAsync()
+    #expect(try f.load() == f.original)
+}
+
+@Test(arguments: [false, true], [false, true])
+func lockEffectsProviderReloadRetainsTheWarmSaverOnlyForSessionRebinds(stopOnly: Bool, resetScreenSaver: Bool) throws {
+    var inspected: [String] = [], commands: [[String]] = [], waited: [Set<pid_t>] = []
+    var freshWaits = 0
+    let actions = LiveScreenSaverStoreCoordinator.RestartActions(
+        processes: { name in inspected.append(name); return name == "legacyScreenSaver" ? [82] : [41] },
+        run: { commands.append([$0] + $1) },
+        waitForExit: { ids, _ in waited.append(ids); return true },
+        waitForFreshAgent: { ids in #expect(ids == [41]); freshWaits += 1; return true })
+    try LiveScreenSaverStoreCoordinator.restartWallpaperAgent(stopOnly: stopOnly,
+        resetScreenSaver: resetScreenSaver, actions: actions)
+    #expect(commands.contains(["/usr/bin/killall", "WallpaperAgent"]))
+    #expect(inspected.contains("legacyScreenSaver") == resetScreenSaver)
+    #expect(commands.contains(["/usr/bin/pkill", "-x", "legacyScreenSaver"]) == resetScreenSaver)
+    #expect(waited == (resetScreenSaver ? [[41], [82]] : [[41]]))
+    #expect(freshWaits == (stopOnly ? 0 : 1))
 }
 
 @Test(arguments: [false, true], [false, true])
@@ -236,7 +306,7 @@ func lockEffectsManualAndAutomaticSessionsPreserveCompleteNativeDescriptors(lock
     #expect(try f.load() == idle)
     try await installer.uninstallLockScreenOnlyPreservingCurrentDesktopAsync()
     #expect(try f.load() == f.original)
-    #expect(!installer.isInstalled && f.restarts == 2)
+    #expect(!installer.isInstalled && f.restarts == (lockOnly ? 3 : 2))
 }
 
 @Test(arguments: ["scene.mp4", "still.png"])
