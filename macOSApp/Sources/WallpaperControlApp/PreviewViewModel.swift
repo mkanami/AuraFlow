@@ -28,6 +28,7 @@ struct WallpaperPreviewSeed: Codable, Equatable {
 @MainActor
 final class PreviewViewModel: ObservableObject {
     private let previewStateURL: URL
+    let audioPlayback: WallpaperPreviewAudioPlayback
 
     @Published var appliedVideoURL: URL?
     @Published var pendingVideoURL: URL?
@@ -39,8 +40,9 @@ final class PreviewViewModel: ObservableObject {
     @Published var posterRefererURL: URL?
     @Published var posterTitle = "Wallpaper Preview"
 
-    init(previewStateURL: URL) {
+    init(previewStateURL: URL, audioPlayback: WallpaperPreviewAudioPlayback? = nil) {
         self.previewStateURL = previewStateURL
+        self.audioPlayback = audioPlayback ?? WallpaperPreviewAudioPlayback()
     }
 
     var selectedVideoURL: URL? {

@@ -11,7 +11,7 @@ import Testing
     #expect(WallpaperAudioPolicy.normalized(2) == 1)
     #expect(WallpaperAudioPolicy.previewVolume(0.4, desktopOwnsAudio: true, visible: true) == 0)
     #expect(WallpaperAudioPolicy.previewVolume(0.4, desktopOwnsAudio: false, visible: false) == 0)
-    #expect(WallpaperAudioPolicy.previewVolume(0.4, desktopOwnsAudio: false, visible: true) == 0)
+    #expect(WallpaperAudioPolicy.previewVolume(0.4, desktopOwnsAudio: false, visible: true) == 0.4)
     #expect(WallpaperAudioPolicy.previewVolume(0.4, desktopOwnsAudio: false, visible: true, systemLocked: true) == 0)
 }
 

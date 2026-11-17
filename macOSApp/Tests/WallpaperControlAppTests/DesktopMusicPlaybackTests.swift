@@ -46,7 +46,6 @@ func desktopMusicPolicyRetainsSilenceForEveryHiddenDesktopState(state: String) {
     #expect(volume == 0)
     #expect(WallpaperAudioPolicy.desktopVolume(0.5, lockScreenOnly: false, sessionInactive: false,
         systemLocked: false, sleeping: false, desktopObstructed: false) == 0.5)
-    #expect(WallpaperAudioPolicy.previewVolume(0.5, desktopOwnsAudio: false, visible: true) == 0)
 }
 
 @Test @MainActor func desktopMusicCompositionContainsAudioWithoutASecondVideoDecoder() async throws {
@@ -184,7 +183,7 @@ func desktopMusicLoginWarningRespectsAppliedEngineWithoutChangingPreferences(run
     #expect(agent.windows.allSatisfy { !$0.isVisible }, "Never order a test window on the active Desktop")
 }
 
-@MainActor private func silentMusicMovie(in root: URL) async throws -> URL {
+@MainActor func silentMusicMovie(in root: URL) async throws -> URL {
     let wav = root.appendingPathComponent("silent-clock.wav")
     try silentMusicClock().write(to: wav)
     let composition = try #require(try await WallpaperAudioPlayback.audioComposition(for: wav))
@@ -202,7 +201,7 @@ func desktopMusicLoginWarningRespectsAppliedEngineWithoutChangingPreferences(run
     return url
 }
 
-private func silentMusicClock() -> Data {
+func silentMusicClock() -> Data {
     let samples = 12 * 16_000, bytes = samples * 2
     var data = Data("RIFF".utf8)
     func append<T: FixedWidthInteger>(_ value: T) {

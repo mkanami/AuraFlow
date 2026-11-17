@@ -2768,7 +2768,8 @@ final class AppViewModel: ObservableObject {
         previewStateURL: URL? = nil,
         previewSelectionStore: WallpaperPreviewSelectionStore? = nil,
         terminalMonitoringSnapshot: (@Sendable () -> WallpaperMonitoringSnapshot?)? = nil,
-        catalogDownloadService: CatalogDownloadService? = nil
+        catalogDownloadService: CatalogDownloadService? = nil,
+        previewAudioPlayback: WallpaperPreviewAudioPlayback? = nil
     ) {
         let resolvedAppSupportURL = appSupportDirectoryURL
             ?? Self.defaultAppSupportDirectoryForCurrentProcess()
@@ -2779,9 +2780,14 @@ final class AppViewModel: ObservableObject {
         let resolvedPreviewStateURL = previewStateURL
             ?? resolvedAppSupportURL.appendingPathComponent("last_preview.json")
         self.catalogViewModel = CatalogViewModel()
-        self.previewViewModel = PreviewViewModel(
-            previewStateURL: resolvedPreviewStateURL
-        )
+        let audioRuntime = WallpaperRuntimeStore(appSupportURL: resolvedAppSupportURL)
+        self.previewViewModel = PreviewViewModel(previewStateURL: resolvedPreviewStateURL,
+            audioPlayback: previewAudioPlayback ?? WallpaperPreviewAudioPlayback(desktopOwnsAudio: {
+                guard audioRuntime.processIsAlive(pid: audioRuntime.loadPID()),
+                      !audioRuntime.isLockScreenOnlyAgent() else { return false }
+                guard let rate = audioRuntime.loadHealth()?.audio_rate else { return true }
+                return rate > 0
+            }))
         self.lifecycleViewModel = LifecycleViewModel()
         let selection = previewSelectionStore ?? WallpaperPreviewSelectionStore(selectionURL: resolvedAppSupportURL.appendingPathComponent("preview-selection.json"))
         self.previewSelectionStore = selection
@@ -4047,11 +4053,13 @@ final class AppViewModel: ObservableObject {
     }
 
     private func syncPreviewAudio() {
-        // An open preview is an application window. Music belongs exclusively
-        // to the unobstructed Desktop, including when no wallpaper is running.
-        previewPlayer?.volume = WallpaperAudioPolicy.previewVolume(wallpaperVolume,
-            desktopOwnsAudio: isRunning, visible: previewWindowVisible)
+        // The video decoder stays silent. One audio-only player handles both
+        // embedded music and an optional companion without duplicate sound.
+        previewPlayer?.volume = 0
         previewPlayer?.isMuted = true
+        previewViewModel.audioPlayback.update(volume: wallpaperVolume,
+            visible: previewWindowVisible && !isShuttingDown
+                && (previewSelectionStore?.kind ?? .video) == .video)
     }
 
     func toggleAutostart(_ enabled: Bool) {
@@ -5658,6 +5666,7 @@ final class AppViewModel: ObservableObject {
         previewItemStatusObservation = nil
 
         guard let url else {
+            previewViewModel.audioPlayback.stop()
             previewPlayer?.pause()
             previewPlayer = nil
             previewViewModel.isPlayerReadyForDisplay = false
@@ -5674,6 +5683,14 @@ final class AppViewModel: ObservableObject {
 
         previewViewModel.isPlayerReadyForDisplay = false
         previewPlayer?.pause()
+        // Video optimization may replace the decoded file while the wallpaper
+        // stays the same. Keep music on its original compatible source so that
+        // changing video quality does not restart the soundtrack.
+        let original = selectedVideoURL
+        let audioSource = original.flatMap { source in
+            isNativePlaybackContainer(source) || WallpaperAudioAttachment.source(for: source) != source ? source : nil
+        } ?? url
+        previewViewModel.audioPlayback.setSource(audioSource)
 
         let playbackURL = VideoFrameBlendCache(appSupportURL: appSupportDirectoryURL)
             .playbackURL(for: url, enabled: blendInterpolationEnabled)
@@ -6019,6 +6036,7 @@ final class AppViewModel: ObservableObject {
     private func beginShutdown() {
         guard !isShuttingDown else { return }
         isShuttingDown = true
+        previewViewModel.audioPlayback.stop()
         blendInterpolationTask?.cancel()
         volumeUpdateTask?.cancel()
         healthMonitorTask?.cancel()

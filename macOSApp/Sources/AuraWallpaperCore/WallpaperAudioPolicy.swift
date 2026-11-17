@@ -16,7 +16,7 @@ public enum WallpaperAudioPolicy {
     }
 
     public static func previewVolume(_ volume: Double, desktopOwnsAudio: Bool, visible: Bool, systemLocked: Bool = false) -> Float {
-        // A preview itself is an application window. It never owns music.
-        return 0
+        guard visible, !desktopOwnsAudio, !systemLocked else { return 0 }
+        return Float(normalized(volume))
     }
 }

@@ -2643,6 +2643,7 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
     var statusRunning = false
     var statusPaused: Bool?
     var statusHealth: DaemonHealth?
+    var statusVolume = 0.0
     var statusShowOnLockScreen = false
     var lockScreenPlaybackDelay: UInt64 = 0
     var lockScreenPlaybackError: Error?
@@ -2770,6 +2771,11 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
         try status()
     }
 
+    func setVolume(_ volume: Double) async throws -> ControlStatus {
+        statusVolume = volume
+        return try status()
+    }
+
     func setPauseOnFullscreen(_ enabled: Bool) throws -> ControlStatus {
         try status()
     }
@@ -2824,7 +2830,7 @@ final class MockNativeWallpaperController: WallpaperControlling, @unchecked Send
             config: ControlConfig(
                 video_path: configuredVideoURL?.path ?? "",
                 playback_speed: 1.0,
-                volume: 0.0,
+                volume: statusVolume,
                 autostart: statusConfigAutostart,
                 show_on_lock_screen: statusShowOnLockScreen,
                 autostart_deferred_session_id: statusAutostartDeferredSessionID,
