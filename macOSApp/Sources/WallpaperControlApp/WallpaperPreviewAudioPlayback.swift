@@ -5,12 +5,13 @@ import QuartzCore
 import OSLog
 
 /// Preview music uses an audio-only player, including companion soundtracks.
-/// Its clock pauses when the preview is hidden and resumes from that position.
+/// Its clock pauses when the preview is hidden or AuraFlow loses focus.
 @MainActor
 final class WallpaperPreviewAudioPlayback {
     let playback = WallpaperAudioPlayback()
     private let systemAllowsPlayback: @MainActor () -> Bool
     private let desktopOwnsAudio: @MainActor () -> Bool
+    private let applicationIsActive: @MainActor () -> Bool
     private let automaticallyMonitor: Bool
     private var timer: ScheduledTimerLifetime?
     private var observers: [NotificationObserverLifetime] = []
@@ -23,11 +24,20 @@ final class WallpaperPreviewAudioPlayback {
     var isMonitoringSystem: Bool { timer != nil }
 
     init(systemAllowsPlayback: @escaping @MainActor () -> Bool = { WallpaperPreviewAudioPlayback.currentSystemAllowsPlayback() },
-         desktopOwnsAudio: @escaping @MainActor () -> Bool = { false }, automaticallyMonitor: Bool = true) {
+         desktopOwnsAudio: @escaping @MainActor () -> Bool = { false },
+         applicationIsActive: @escaping @MainActor () -> Bool = { NSApp?.isActive == true },
+         applicationNotifications: NotificationCenter = .default, automaticallyMonitor: Bool = true) {
         self.systemAllowsPlayback = systemAllowsPlayback
         self.desktopOwnsAudio = desktopOwnsAudio
+        self.applicationIsActive = applicationIsActive
         self.automaticallyMonitor = automaticallyMonitor
         guard automaticallyMonitor else { return }
+        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+            observers.append(NotificationObserverLifetime(applicationNotifications.addObserver(forName: name,
+                object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refresh() }
+            }, center: applicationNotifications))
+        }
         let workspace = NSWorkspace.shared.notificationCenter
         let suspending = [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
                           NSWorkspace.sessionDidResignActiveNotification]
@@ -56,7 +66,7 @@ final class WallpaperPreviewAudioPlayback {
     }
 
     func refresh() {
-        guard source != nil, visible, volume > 0, playback.errorDescription == nil else {
+        guard source != nil, visible, applicationIsActive(), volume > 0, playback.errorDescription == nil else {
             playback.update(volume: 0)
             timer?.invalidate(); timer = nil
             logPlaybackState()
@@ -90,7 +100,7 @@ final class WallpaperPreviewAudioPlayback {
             : (playback.rate > 0 ? "playing" : (playback.isPrepared ? "paused" : "waiting")))
         guard state != lastPlaybackState else { return }
         lastPlaybackState = state
-        logger.info("Preview music state=\(state, privacy: .public) rate=\(self.playback.rate, privacy: .public) time=\(self.playback.time ?? 0, privacy: .public) volume=\(self.volume, privacy: .public) visible=\(self.visible, privacy: .public)")
+        logger.info("Preview music state=\(state, privacy: .public) rate=\(self.playback.rate, privacy: .public) time=\(self.playback.time ?? 0, privacy: .public) volume=\(self.volume, privacy: .public) visible=\(self.visible, privacy: .public) active=\(self.applicationIsActive(), privacy: .public)")
     }
 
     private func observe(_ name: Notification.Name, center: NotificationCenter, suspending: Bool) {

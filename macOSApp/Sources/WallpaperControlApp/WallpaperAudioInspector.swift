@@ -11,7 +11,7 @@ enum WallpaperAudioContent: String, Codable, Sendable {
         switch self {
         case .silent: "This wallpaper's audio track contains silence."
         case .noTrack: "This wallpaper has no audio track."
-        case .audible, .unknown: "Volume for the preview and installed wallpaper. Preview music pauses when hidden; Desktop music pauses for visible app windows. Zero mutes audio."
+        case .audible, .unknown: "Volume for the preview and installed wallpaper. Preview music plays only while AuraFlow is active and the preview is visible. Desktop music pauses for visible app windows. Zero mutes audio."
         }
     }
 }

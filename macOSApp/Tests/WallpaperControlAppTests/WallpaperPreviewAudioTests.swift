@@ -1,4 +1,5 @@
 import AVFoundation
+import AppKit
 import Foundation
 import Testing
 @testable import AuraWallpaperCore
@@ -10,7 +11,7 @@ func previewMusicPlaysEmbeddedAndCompanionTracksAndPausesItsClock(paired: Bool) 
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let source = try await previewMusicSource(in: root, paired: paired)
-    let audio = WallpaperPreviewAudioPlayback(systemAllowsPlayback: { true }, automaticallyMonitor: false)
+    let audio = WallpaperPreviewAudioPlayback(systemAllowsPlayback: { true }, applicationIsActive: { true }, automaticallyMonitor: false)
     defer { audio.stop() }
     audio.setSource(source)
     #expect(!audio.playback.isPrepared)
@@ -45,7 +46,7 @@ func previewMusicPlaysEmbeddedAndCompanionTracksAndPausesItsClock(paired: Bool) 
     let audio = WallpaperPreviewAudioPlayback(systemAllowsPlayback: {
         WallpaperPreviewAudioPlayback.sessionAllowsPlayback(locked: locked, active: active, saver: saver, displayAwake: awake)
     },
-        desktopOwnsAudio: { desktopPlaying }, automaticallyMonitor: false)
+        desktopOwnsAudio: { desktopPlaying }, applicationIsActive: { true }, automaticallyMonitor: false)
     defer { audio.stop() }
     audio.setSource(source)
     audio.update(volume: 0.4, visible: true)
@@ -86,7 +87,7 @@ func mainPreviewUsesTheVolumeControlForEmbeddedAndCompanionMusic(paired: Bool) a
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let source = try await previewMusicSource(in: root, paired: paired)
-    let audio = WallpaperPreviewAudioPlayback(systemAllowsPlayback: { true }, automaticallyMonitor: false)
+    let audio = WallpaperPreviewAudioPlayback(systemAllowsPlayback: { true }, applicationIsActive: { true }, automaticallyMonitor: false)
     defer { audio.stop() }
     let controller = MockNativeWallpaperController()
     let model = AppViewModel(controller: controller, appSupportDirectoryURL: root, previewAudioPlayback: audio)
@@ -118,12 +119,63 @@ func mainPreviewUsesTheVolumeControlForEmbeddedAndCompanionMusic(paired: Bool) a
 
 @Test @MainActor func previewWithoutMusicDoesNotKeepADecoderOrPollingTimer() async throws {
     let source = try #require(Bundle.module.url(forResource: "wallpaper-without-audio", withExtension: "mp4"))
-    let audio = WallpaperPreviewAudioPlayback(systemAllowsPlayback: { true })
+    let audio = WallpaperPreviewAudioPlayback(systemAllowsPlayback: { true }, applicationIsActive: { true })
     defer { audio.stop() }
     audio.setSource(source)
     audio.update(volume: 0.4, visible: true)
     try await waitForPreviewMusic { audio.playback.errorDescription != nil && !audio.isMonitoringSystem }
     #expect(!audio.playback.isPrepared && audio.playback.rate == 0)
+}
+
+@Test(arguments: [false, true], [false, true]) @MainActor
+func previewMusicRequiresAppFocusAndResumesTheSameClock(paired: Bool, missingLossNotification: Bool) async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = try await previewMusicSource(in: root, paired: paired)
+    let notifications = NotificationCenter()
+    var active = false
+    let audio = WallpaperPreviewAudioPlayback(systemAllowsPlayback: { true },
+        applicationIsActive: { active }, applicationNotifications: notifications)
+    defer { audio.stop() }
+    audio.setSource(source)
+    audio.update(volume: 0.4, visible: true)
+    #expect(!audio.playback.isPrepared && !audio.isMonitoringSystem,
+        "An unfocused visible preview must not start an audio decoder or polling timer")
+
+    active = true
+    notifications.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+    try await waitForPreviewMusic { (audio.playback.time ?? 0) > 0.15 }
+    #expect(audio.isMonitoringSystem)
+    active = false
+    if missingLossNotification {
+        try await waitForPreviewMusic { audio.playback.rate == 0 }
+    } else {
+        notifications.post(name: NSApplication.didResignActiveNotification, object: nil)
+        #expect(audio.playback.rate == 0, "Focus loss must pause immediately, without waiting for the timer")
+    }
+    #expect(!audio.isMonitoringSystem)
+    try await Task.sleep(for: .milliseconds(80))
+    let pausedAt = try #require(audio.playback.time)
+    audio.setSource(source)
+    audio.update(volume: 0.7, visible: true)
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(audio.playback.rate == 0)
+    #expect(abs((audio.playback.time ?? 0) - pausedAt) < 0.025)
+
+    active = true
+    notifications.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+    try await waitForPreviewMusic { (audio.playback.time ?? 0) > pausedAt + 0.1 }
+    audio.update(volume: 0.7, visible: false)
+    active = false
+    notifications.post(name: NSApplication.didResignActiveNotification, object: nil)
+    active = true
+    notifications.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+    #expect(audio.playback.rate == 0 && !audio.isMonitoringSystem,
+        "Returning to AuraFlow must not unpause a hidden preview")
+    audio.stop()
+    notifications.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+    #expect(!audio.playback.isPrepared && !audio.isMonitoringSystem)
 }
 
 @MainActor private func previewMusicSource(in root: URL, paired: Bool) async throws -> URL {

@@ -172,8 +172,9 @@ no visible application windows, including AuraFlow. Closing, hiding or minimizin
 the windows resumes music from its paused position. Video and music have separate
 timelines; video quality, speed and fullscreen behavior do not rewind the music.
 The main wallpaper preview also plays embedded or companion music at the selected
-volume. Hiding, minimizing or closing the preview pauses its music; returning
-resumes the same position. The preview waits for Desktop music to pause, and stays
+volume while AuraFlow is the active application. Switching to another app,
+hiding, minimizing or closing the preview pauses its music; returning to the
+visible preview resumes the same position. The preview waits for Desktop music to pause, and stays
 silent during the screen saver, Lock Screen and sleep.
 Catalog cards and downloaded wallpapers show an **Audio**
 music-note badge when sound is detected in the original video. Empty/silent
