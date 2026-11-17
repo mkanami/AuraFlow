@@ -337,7 +337,8 @@ struct ContentView: View {
             WindowAccessor(
                 window: $window,
                 onInteractionStart: beginWindowDrag,
-                onInteractionEnd: endWindowDrag
+                onInteractionEnd: endWindowDrag,
+                onScrollChange: viewModel.setPreviewScrolling
             )
             .allowsHitTesting(false)
         )
@@ -386,6 +387,7 @@ struct ContentView: View {
                 previewSelectionStore: previewSelectionStore,
                 terminalPreviewModel: terminalPreviewModel,
                 wallpaperEngine: viewModel.wallpaperEngine,
+                renderingActivity: viewModel.previewRenderingActivity,
                 player: viewModel.previewPlayer,
                 wallpaperURL: viewModel.currentVideoURL ?? viewModel.appliedVideoURL,
                 isVideoReadyForDisplay: viewModel.isPreviewReadyForDisplay,
@@ -400,6 +402,7 @@ struct ContentView: View {
                     )
                 }
             )
+            .equatable()
             .frame(
                 width: proxy.size.width,
                 height: proxy.size.height
@@ -617,10 +620,11 @@ final class TitlebarInteractionNSView: NSView {
     }
 }
 
-struct PreviewLayer: View {
+struct PreviewLayer: View, Equatable {
     @ObservedObject var previewSelectionStore: WallpaperPreviewSelectionStore
     let terminalPreviewModel: TerminalWallpaperPreviewModel
     @ObservedObject var wallpaperEngine: WallpaperEngineViewModel
+    let renderingActivity: PreviewRenderingActivity
     let player: AVPlayer?
     let wallpaperURL: URL?
     let isVideoReadyForDisplay: Bool
@@ -629,10 +633,43 @@ struct PreviewLayer: View {
     let posterTitle: String
     var effects = WallpaperEffectsSettings()
     let onVideoReadyForDisplayChange: (AVPlayer?, Bool) -> Void
+    private let selectionIdentity: ObjectIdentifier
+    private let engineIdentity: ObjectIdentifier
+
+    init(previewSelectionStore: WallpaperPreviewSelectionStore, terminalPreviewModel: TerminalWallpaperPreviewModel,
+         wallpaperEngine: WallpaperEngineViewModel, renderingActivity: PreviewRenderingActivity,
+         player: AVPlayer?, wallpaperURL: URL?, isVideoReadyForDisplay: Bool,
+         posterURL: URL?, posterRefererURL: URL?, posterTitle: String,
+         effects: WallpaperEffectsSettings = WallpaperEffectsSettings(),
+         onVideoReadyForDisplayChange: @escaping (AVPlayer?, Bool) -> Void) {
+        _previewSelectionStore = ObservedObject(wrappedValue: previewSelectionStore)
+        _wallpaperEngine = ObservedObject(wrappedValue: wallpaperEngine)
+        selectionIdentity = ObjectIdentifier(previewSelectionStore)
+        engineIdentity = ObjectIdentifier(wallpaperEngine)
+        self.terminalPreviewModel = terminalPreviewModel
+        self.renderingActivity = renderingActivity
+        self.player = player
+        self.wallpaperURL = wallpaperURL
+        self.isVideoReadyForDisplay = isVideoReadyForDisplay
+        self.posterURL = posterURL
+        self.posterRefererURL = posterRefererURL
+        self.posterTitle = posterTitle
+        self.effects = effects
+        self.onVideoReadyForDisplayChange = onVideoReadyForDisplayChange
+    }
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.selectionIdentity == rhs.selectionIdentity && lhs.engineIdentity == rhs.engineIdentity &&
+        lhs.terminalPreviewModel === rhs.terminalPreviewModel &&
+        lhs.renderingActivity === rhs.renderingActivity && lhs.player === rhs.player &&
+        lhs.wallpaperURL == rhs.wallpaperURL && lhs.isVideoReadyForDisplay == rhs.isVideoReadyForDisplay &&
+        lhs.posterURL == rhs.posterURL && lhs.posterRefererURL == rhs.posterRefererURL &&
+        lhs.posterTitle == rhs.posterTitle && lhs.effects == rhs.effects
+    }
 
     var body: some View {
         GeometryReader { viewport in
-            WallpaperEffectsPreview(settings: effects,
+            WallpaperEffectsPreview(settings: effects, renderingActivity: renderingActivity,
                 imageURL: previewSelectionStore.kind == .terminal || previewSelectionStore.kind == .web ? nil
                     : wallpaperURL.flatMap { WallpaperMediaKind.forURL($0).isStaticImage ? $0 : nil }) {
                 previewContent(in: viewport.size)
@@ -3125,9 +3162,14 @@ struct WindowAccessor: NSViewRepresentable {
     @Binding var window: NSWindow?
     var onInteractionStart: () -> Void = {}
     var onInteractionEnd: () -> Void = {}
+    var onScrollChange: (Bool) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -3137,7 +3179,8 @@ struct WindowAccessor: NSViewRepresentable {
             context.coordinator.attachIfNeeded(
                 currentWindow,
                 onInteractionStart: onInteractionStart,
-                onInteractionEnd: onInteractionEnd
+                onInteractionEnd: onInteractionEnd,
+                onScrollChange: onScrollChange
             )
             if window !== currentWindow {
                 window = currentWindow
@@ -3153,7 +3196,8 @@ struct WindowAccessor: NSViewRepresentable {
             context.coordinator.attachIfNeeded(
                 currentWindow,
                 onInteractionStart: onInteractionStart,
-                onInteractionEnd: onInteractionEnd
+                onInteractionEnd: onInteractionEnd,
+                onScrollChange: onScrollChange
             )
             if window !== currentWindow {
                 window = currentWindow
@@ -3163,7 +3207,8 @@ struct WindowAccessor: NSViewRepresentable {
             context.coordinator.attachIfNeeded(
                 currentWindow,
                 onInteractionStart: onInteractionStart,
-                onInteractionEnd: onInteractionEnd
+                onInteractionEnd: onInteractionEnd,
+                onScrollChange: onScrollChange
             )
             if window !== currentWindow {
                 window = currentWindow
@@ -3175,19 +3220,24 @@ struct WindowAccessor: NSViewRepresentable {
         private weak var configuredWindow: NSWindow?
         private var observers: [NotificationObserverLifetime] = []
         private let interaction = WindowInteractionActivity()
+        private var scrollMonitor: PreviewScrollMonitor?
 
         @MainActor
         func attachIfNeeded(
             _ window: NSWindow,
             onInteractionStart: @escaping () -> Void,
-            onInteractionEnd: @escaping () -> Void
+            onInteractionEnd: @escaping () -> Void,
+            onScrollChange: @escaping (Bool) -> Void
         ) {
             interaction.onStart = onInteractionStart
             interaction.onEnd = onInteractionEnd
+            scrollMonitor?.onChange = onScrollChange
             if configuredWindow !== window {
                 interaction.end()
+                scrollMonitor?.cancel()
                 detachObservers()
                 configuredWindow = window
+                scrollMonitor = PreviewScrollMonitor(window: window, onChange: onScrollChange)
                 let center = NotificationCenter.default
                 let names: [Notification.Name] = [
                     NSWindow.didBecomeKeyNotification,
@@ -3230,6 +3280,14 @@ struct WindowAccessor: NSViewRepresentable {
             observers.removeAll()
             // Notification tokens can be torn down off-actor during deinit.
             // The activity owns its timer and invalidates it on release.
+        }
+
+        func detach() {
+            interaction.end()
+            scrollMonitor?.cancel()
+            scrollMonitor = nil
+            detachObservers()
+            configuredWindow = nil
         }
 
     }

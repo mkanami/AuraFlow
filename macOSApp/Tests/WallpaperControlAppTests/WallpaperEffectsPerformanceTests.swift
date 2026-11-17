@@ -6,6 +6,41 @@ import Testing
 
 @Suite(.serialized)
 struct WallpaperEffectsPerformanceTests {
+    @Test @MainActor func previewScrollFreezesTheComposedFrameWithoutResettingEffects() throws {
+        let view = WallpaperEffectsView(content: NSView(frame: CGRect(x: 0, y: 0, width: 800, height: 500)), store: nil, isPreview: true)
+        view.update(settings: WallpaperEffectsPreset.cinematic.settings)
+        let active = WallpaperEffectsActivity()
+        view.applyActivity(active)
+        view.renderFrame(deltaTime: 1.0/60, cursor: CGPoint(x: 1, y: 1))
+        let transform = try #require(view.subviews.first?.layer?.affineTransform())
+        let before = view.status.renderedFrames
+        view.setPreviewInteractionActive(true)
+        for _ in 0..<100 {
+            view.applyActivity(active)
+            view.renderFrame(deltaTime: 1.0/60, cursor: CGPoint(x: -1, y: -1))
+        }
+        #expect(!view.isAnimating && view.status.pauseReason == "interaction")
+        #expect(view.status.renderedFrames == before)
+        #expect(view.subviews.first?.layer?.affineTransform() == transform,
+            "Scrolling must hold the current image rather than remove the effect layers")
+        view.setPreviewInteractionActive(false)
+        view.applyActivity(active)
+        view.renderFrame(deltaTime: 1.0/60, cursor: .zero)
+        #expect(view.isAnimating && view.status.renderedFrames > before)
+    }
+
+    @Test @MainActor func previewScrollGateCannotPauseDesktopOrScreenSaverEffects() {
+        for saver in [false, true] {
+            let view = WallpaperEffectsView(content: NSView(frame: CGRect(x: 0, y: 0, width: 800, height: 500)), store: nil, isScreenSaver: saver)
+            view.update(settings: WallpaperEffectsPreset.cinematic.settings)
+            let active = WallpaperEffectsActivity()
+            view.applyActivity(active)
+            let before = view.status.renderedFrames
+            view.setPreviewInteractionActive(true)
+            view.renderFrame(deltaTime: 1.0/60, cursor: .zero)
+            #expect(view.isAnimating && view.status.renderedFrames > before)
+        }
+    }
     @Test @MainActor func exhaustedDrawablePoolNeverBlocksTheMainThreadOrQueuesMoreWaiters() async throws {
         let started = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
         let finished = DispatchSemaphore(value: 0)
@@ -57,6 +92,7 @@ struct WallpaperEffectsPerformanceTests {
         let window = NSWindow(contentRect: view.bounds, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = view
+        view.stopMonitoring() // This test supplies sleep/lock activity explicitly.
         defer { window.contentView = nil }
         var reads = 0
         view.screenSaverPresentationIsVisible = { reads += 1; return true }

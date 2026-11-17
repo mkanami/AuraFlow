@@ -2451,9 +2451,9 @@ final class AppViewModel: ObservableObject {
     private var controllerBootstrapTask: Task<Void, Never>?
     private var cacheClearTask: Task<Void, Never>?
     private var isControllerBootstrapInProgress = false
-    private var previewRenderingSuspended = false
+    let previewRenderingActivity = PreviewRenderingActivity()
+    private var previewRenderingSuspended: Bool { previewRenderingActivity.isSuspended }
     private var previewWindowVisible = true
-    private var suspendedPreviewRate: Float?
     private var glassAnalysisTask: Task<Void, Never>?
     private var glassAnalysisGeneration = 0
     // Keep valid profiles by the exact content signature. A single global
@@ -2863,6 +2863,9 @@ final class AppViewModel: ObservableObject {
             .store(in: &featureViewModelCancellables)
         previewViewModel.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &featureViewModelCancellables)
+        previewRenderingActivity.changes
+            .sink { [weak self] _ in self?.syncPreviewPlaybackRate() }
             .store(in: &featureViewModelCancellables)
         selection.objectWillChange
             .sink { [weak self] _ in
@@ -5905,18 +5908,15 @@ final class AppViewModel: ObservableObject {
     }
 
     func suspendPreviewRenderingForWindowDrag() {
-        guard !previewRenderingSuspended else { return }
-        guard let previewPlayer else { return }
-        previewRenderingSuspended = true
-        suspendedPreviewRate = previewPlayer.rate
-        previewPlayer.pause()
+        previewRenderingActivity.set(.windowDrag, active: true)
     }
 
     func resumePreviewRenderingAfterWindowDrag() {
-        guard previewRenderingSuspended else { return }
-        previewRenderingSuspended = false
-        suspendedPreviewRate = nil
-        syncPreviewPlaybackRate()
+        previewRenderingActivity.set(.windowDrag, active: false)
+    }
+
+    func setPreviewScrolling(_ active: Bool) {
+        previewRenderingActivity.set(.scrolling, active: active)
     }
 
     private func startFromAutostartIfNeeded(using status: ControlStatus) async {

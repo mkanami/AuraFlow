@@ -426,3 +426,32 @@ removed Ayane card returned zero results; a new Samurai on Ocean Waves card
 opened its 3840×2160 detail preview with the separate soundtrack attribution.
 The persisted music cache contained exactly the 305 approved IDs and no stale
 entries from the previous selection.
+
+## Shared scrolling and preview rendering (2026-11-18)
+
+Catalog progress used to propagate through the application model into the live
+preview's hosting view. The preview now compares its actual media, player,
+selection and effect inputs, so an unrelated catalog update does not rebuild
+its background. Independently observed terminal/web selections still update.
+Cards retain their individual native glass surfaces; the full lazy grid no
+longer sits inside one glass container spanning the scrollable content.
+
+The main window observes its own wheel events and native live-scroll
+notifications. A single idle timer coalesces scrolling and momentum. Video and
+effects retain their last composed frame during scrolling, then resume without
+restarting the media. Independent scroll and window-drag reasons prevent one
+interaction from resuming another. The gate does not publish application-wide
+view updates, change settings, pause music or affect Desktop/Lock Screen hosts.
+Observers and the passive event monitor are removed when the window detaches.
+
+Validation: 49 targeted tests passed, including retained effect transforms,
+ignored gates on Desktop/saver instances, overlap with window dragging, hidden
+preview behavior, uninterrupted audio, isolated sleep/lock activity, preview
+viewport rendering, catalog state and music loading. An existing saver-clock
+test now stops real system observation before injecting its own activity;
+otherwise a real status-timer sample could overwrite the simulated sleep state.
+
+The rebuilt app was scrolled to the end of all 305 Music cards and through the
+settings in both directions. The final poster loaded and the glass card style
+was retained. Runtime scroll events recorded suspension and resume pairs. These
+checks do not constitute a measured before/after display-FPS comparison.

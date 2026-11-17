@@ -18,7 +18,7 @@ struct WallpaperCatalogGridView: View {
     var body: some View {
         ScrollViewReader { scrollViewProxy in
             ScrollView {
-                groupedWallpaperCards
+                wallpaperCards
                     .padding(.vertical, 2)
 
                 ZStack {
@@ -64,22 +64,9 @@ struct WallpaperCatalogGridView: View {
         }
     }
 
-    @ViewBuilder
-    private var groupedWallpaperCards: some View {
-        #if compiler(>=6.2)
-        if #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: 12) {
-                wallpaperCards
-            }
-        } else {
-            wallpaperCards
-        }
-        #else
-        wallpaperCards
-        #endif
-    }
-
     private var wallpaperCards: some View {
+        // Keep glass local to realized cards, rather than grouping the entire
+        // scrollable grid (including offscreen rows) into one glass region.
         let wallpapers = catalogViewModel.filteredWallpapers
         return LazyVGrid(columns: columns, spacing: 12) {
             ForEach(wallpapers) { wallpaper in

@@ -25,6 +25,7 @@ public final class WallpaperEffectsView: NSView {
     private let rainLightingSampler = WallpaperRainLightingSampler()
     private let store: WallpaperEffectsStore?
     private let isPreview: Bool
+    private var previewInteractionActive = false
     private let isScreenSaver: Bool
     private var screenSaverPresenting = false
     private var screenSaverPlaybackPaused = false
@@ -95,6 +96,21 @@ public final class WallpaperEffectsView: NSView {
     }
 
     public override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// Keep the last composed frame while the app scrolls or moves its window.
+    /// This gate cannot affect Desktop or Lock Screen renderer instances.
+    public func setPreviewInteractionActive(_ active: Bool) {
+        guard isPreview, previewInteractionActive != active else { return }
+        previewInteractionActive = active
+        if active { freezePreviewForInteraction() } else { refreshActivity() }
+    }
+
+    private func freezePreviewForInteraction() {
+        pauseReason = "interaction"
+        presentationActive = false
+        stopAnimation()
+        rainLightingSampler.stop()
+    }
 
     public func setScreenSaverPresenting(_ presenting: Bool, paused: Bool = false) {
         guard isScreenSaver, screenSaverPresenting != presenting || screenSaverPlaybackPaused != paused else { return }
@@ -205,6 +221,10 @@ public final class WallpaperEffectsView: NSView {
     }
 
     func applyActivity(_ activity: WallpaperEffectsActivity) {
+        if isPreview, previewInteractionActive, settings.enabled, settings.hasVisibleEffects, activity.pauseReason == nil {
+            freezePreviewForInteraction()
+            return
+        }
         pauseReason = !settings.enabled ? "disabled" : (!settings.hasVisibleEffects ? "noEffects" : activity.pauseReason)
         let nextActivity = pauseReason ?? "active-\(activity.framesPerSecond)"
         if loggedActivity != nextActivity {
@@ -247,6 +267,7 @@ public final class WallpaperEffectsView: NSView {
     }
 
     func renderFrame(deltaTime: Double, cursor: CGPoint?, at frameTime: CFTimeInterval? = nil) {
+        guard !isPreview || !previewInteractionActive else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if settings.hasVisibleEffects && presentationActive {
@@ -337,7 +358,9 @@ public final class WallpaperEffectsView: NSView {
         lastFrameTime = nil
     }
 
-    private func stopMonitoring() {
+    // Isolated hosts can supply activity directly without live system samples
+    // overriding their state between render callbacks.
+    func stopMonitoring() {
         screenSaverVisible = false
         rainLightingSampler.stop()
         stopGlass()

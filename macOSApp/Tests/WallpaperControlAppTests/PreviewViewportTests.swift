@@ -136,7 +136,7 @@ struct PreviewViewportTests {
                                           library: WallpaperEngineLibrary(rootURL: root.appendingPathComponent("library")))
         let player = AVPlayer()
         return (PreviewLayer(previewSelectionStore: selection, terminalPreviewModel: terminal,
-            wallpaperEngine: web, player: player, wallpaperURL: wallpaperURL,
+            wallpaperEngine: web, renderingActivity: PreviewRenderingActivity(), player: player, wallpaperURL: wallpaperURL,
             isVideoReadyForDisplay: isReady, posterURL: posterURL, posterRefererURL: nil,
             posterTitle: "Preview", effects: effects, onVideoReadyForDisplayChange: { _, _ in }), player)
     }

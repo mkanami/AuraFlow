@@ -1,9 +1,11 @@
 import AuraWallpaperCore
 import SwiftUI
+import Combine
 
 /// Hosts only the wallpaper background; controls and desktop clicks remain outside the effect layers.
 struct WallpaperEffectsPreview<Content: View>: NSViewRepresentable {
     let settings: WallpaperEffectsSettings
+    let renderingActivity: PreviewRenderingActivity
     var imageURL: URL? = nil
     @ViewBuilder var content: () -> Content
 
@@ -18,6 +20,7 @@ struct WallpaperEffectsPreview<Content: View>: NSViewRepresentable {
         let view = WallpaperEffectsView(content: hosting, store: nil, isPreview: true)
         view.rainLightingImageURL = imageURL
         view.update(settings: settings)
+        context.coordinator.attach(view, activity: renderingActivity)
         return view
     }
 
@@ -26,6 +29,23 @@ struct WallpaperEffectsPreview<Content: View>: NSViewRepresentable {
             WallpaperEffectsPreviewContent(content: content())
         view.rainLightingImageURL = imageURL
         view.update(settings: settings)
+        context.coordinator.attach(view, activity: renderingActivity)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    @MainActor final class Coordinator {
+        private weak var activity: PreviewRenderingActivity?
+        private var subscription: AnyCancellable?
+
+        func attach(_ view: WallpaperEffectsView, activity: PreviewRenderingActivity) {
+            guard self.activity !== activity else { return }
+            self.activity = activity
+            view.setPreviewInteractionActive(activity.isSuspended)
+            subscription = activity.changes.sink { [weak view] active in
+                view?.setPreviewInteractionActive(active)
+            }
+        }
     }
 }
 

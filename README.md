@@ -176,6 +176,10 @@ volume while AuraFlow is the active application. Switching to another app,
 hiding, minimizing or closing the preview pauses its music; returning to the
 visible preview resumes the same position. The preview waits for Desktop music to pause, and stays
 silent during the screen saver, Lock Screen and sleep.
+During scrolling and window dragging, the app preview holds its last composed
+frame so live video and rain rendering do not compete with the interface.
+Motion resumes after the interaction; the separate music clock is unaffected.
+This gate applies only to the app preview, not Desktop or Lock Screen playback.
 Catalog cards and downloaded wallpapers show an **Audio**
 music-note badge when sound is detected in the original video. Empty/silent
 audio tracks do not earn a badge; the Volume control shows **No audio** for
