@@ -52,9 +52,16 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
     }
 
     static func bundledSelections() -> [CatalogWallpaper] {
-        Bundle.module.url(forResource: "music-catalog-seeds", withExtension: "json")
+        let candidates = Bundle.module.url(forResource: "music-catalog-seeds", withExtension: "json")
             .flatMap { try? Data(contentsOf: $0) }
-            .flatMap { try? JSONDecoder().decode([CatalogWallpaper].self, from: $0) }?.filter(CatalogContentPolicy.allows) ?? []
+            .flatMap { try? JSONDecoder().decode([CatalogWallpaper].self, from: $0) } ?? []
+        return filterReviewedSelections(candidates, reviews: MusicCatalogReview.bundled())
+    }
+
+    static func filterReviewedSelections(_ candidates: [CatalogWallpaper], reviews: [String: MusicCatalogReview]) -> [CatalogWallpaper] {
+        // Paired soundtracks need the same visual approval as embedded audio.
+        // An audio check must not approve an unseen intro or warning poster.
+        candidates.filter { CatalogContentPolicy.allows($0) && reviews[$0.id]?.matches($0) == true }
     }
 
     static func verifyOriginalAudio(_ url: URL, _ referer: URL?) async throws -> WallpaperAudioContent {
@@ -281,8 +288,8 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
                     result.append(paired)
                     continue
                 }
-                // Bundled original-audio entries were decoded and their five
-                // original frames reviewed before shipping. Browsing the bounded
+                // Bundled original-audio entries were decoded and original
+                // frames, including frame zero, reviewed before shipping. Browsing the bounded
                 // collection must not re-download/probe hundreds of videos.
                 if let review = reviews[item.id], review.audio == "original-audible", review.matches(item) {
                     var approved = item

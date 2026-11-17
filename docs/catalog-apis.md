@@ -387,3 +387,42 @@ end. Closing/reopening the catalog and restarting the application both retained
 60 Music cards. Previous ordinary catalog metadata was merged back after the
 cold-start test; downloaded media and wallpaper/playback preferences were not
 part of the test reset.
+
+## Text and watermark audit (2026-11-17)
+
+Music now contains 305 reviewed selections. From the previous 311, this audit
+removed 28 clips with visible lettering or signatures, four cards whose source
+supplies an NSFW warning poster, and one clip whose beginning could not be
+retrieved for review. These exclusions apply to cached cards, search, paging,
+downloaded-card visibility and new downloads. Personal media files are retained.
+
+The remaining 278 originals were checked using their first decoded frame,
+additional samples near the beginning, and five samples across the duration.
+Their site posters were compared with original frames. Enlarged edge strips
+and OCR were used to flag small lettering; visual decisions, not OCR output
+alone, determine exclusion. This is a sampled audit, not continuous recognition
+of every frame or a guarantee against future changes at a source site.
+
+To preserve the size of Music, 65 additional candidates were inspected. The
+27 replacements use the existing verified instrumental soundtracks and have
+decoded originals of at least 1920×1080 and 23.5 fps. Six original frames,
+including frame zero, their enlarged corners and their site posters were
+reviewed. Duplicate artwork and candidates with corner logos, creator marks,
+signage, unsuitable imagery or incomplete quality checks were not added.
+
+`MusicCatalogReview` now requires explicit approval of both frame zero and the
+poster, with at least six sampled frames. A clean midpoint alone is insufficient.
+Warning-poster detection also covers new IDs and URL-encoded/case variants.
+Both download entry points enforce the content policy before looking for a
+cached file or trying a caller-supplied original URL.
+
+Validation: 55 targeted tests passed, including warning-poster aliases, removal
+from persisted caches, direct and preferred-source download rejection without
+deleting personal files, review coverage, 300+ unique selections and music
+loading/paging.
+
+The rebuilt application displayed **305 Music** entries. Searching for the
+removed Ayane card returned zero results; a new Samurai on Ocean Waves card
+opened its 3840×2160 detail preview with the separate soundtrack attribution.
+The persisted music cache contained exactly the 305 approved IDs and no stale
+entries from the previous selection.

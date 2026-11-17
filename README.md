@@ -195,9 +195,13 @@ native Aerial fallback: a cached, silent effects loop of at most 30 seconds with
 ambient motion. Older macOS versions use the live saver. The Lock Screen never
 plays music.
 
-The **With Music** tab collects videos with confirmed sound from DesktopHut and
+The **Music** tab collects videos with confirmed sound from DesktopHut and
 LiveWallpapers4Free. Music and lofi listings are loaded through bundled
-api-anything operations, then checked against the original audio.
+api-anything operations, then checked against the original audio. Reviewed
+pairings can use a separate instrumental soundtrack. The current selection has
+305 entries after the text and watermark audit. Approval includes the first
+video frame, samples across the clip, enlarged corners, and the artwork poster;
+warning placeholders are excluded rather than replaced with unreviewed frames.
 
 On macOS, **Anime** combines MoeWalls, DesktopHut and LiveWallpapers4Free;
 **Anime Nature** uses MotionBGS and **Scenic** uses Dareful. New-site API

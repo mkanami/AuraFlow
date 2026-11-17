@@ -11,6 +11,8 @@ struct MusicCatalogReview: Codable, Sendable {
     let height: Int
     let fps: Double
     let sampledFrames: Int
+    let firstFrameReviewed: Bool
+    let posterReviewed: Bool
     let audio: String
     let soundtrackID: String?
 
@@ -23,6 +25,7 @@ struct MusicCatalogReview: Codable, Sendable {
 
     func matches(_ item: CatalogWallpaper) -> Bool {
         id == item.id && sourcePageURL == item.sourcePageURL && previewImageURL == item.previewImageURL &&
-            soundtrackID == item.soundtrackID && width >= 1920 && height >= 1080 && fps >= 23.5 && sampledFrames >= 5
+            soundtrackID == item.soundtrackID && width >= 1920 && height >= 1080 && fps >= 23.5 && sampledFrames >= 6 &&
+            firstFrameReviewed && posterReviewed
     }
 }

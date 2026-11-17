@@ -23,20 +23,53 @@ import Testing
     #expect(CatalogContentPolicy.allows(policyCard("new-id", page: URL(string: "https://www.desktophut.com/clean-forest"))))
 }
 
+@Test func catalogContentPolicyRecognizesWarningPostersWithoutBlockingSimilarArtworkNames() {
+    for path in ["images/nsfw_min.png", "images/NSFW.webp?size=large", "images/%6Esfw-thumb.jpg"] {
+        #expect(!CatalogContentPolicy.allows(policyCard("new-upload", poster: URL(string: "https://images.test/\(path)"))))
+    }
+    #expect(CatalogContentPolicy.allows(policyCard("clean", poster: URL(string: "https://images.test/snowfall.jpg"))))
+    #expect(CatalogContentPolicy.allows(policyCard("clean", poster: URL(string: "https://images.test/mynsfwartwork.jpg"))))
+}
+
 @Test func catalogContentPolicyPrunesAndPersistsOldUnifiedCache() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let good = policyCard("clean"), bad = policyCard("desktophut-cat-lofi-cute")
+    let warning = policyCard("renamed-warning-card", poster: URL(string: "https://images.test/nsfw_min.png"))
     let cache = root.appendingPathComponent("catalog-cache.json")
-    try JSONEncoder().encode([bad, good]).write(to: cache)
-    let source = PolicyFixtureSource(items: [bad, good])
+    try JSONEncoder().encode([bad, warning, good]).write(to: cache)
+    let source = PolicyFixtureSource(items: [bad, warning, good])
     let repository = CatalogRepository(provider: source, catalogDirectoryURL: root)
     #expect(await repository.loadCatalogCache().wallpapers == [good])
     #expect(try JSONDecoder().decode([CatalogWallpaper].self, from: Data(contentsOf: cache)) == [good])
     #expect(try await repository.refreshCatalog(progress: { _ in }).wallpapers == [good])
     #expect(try await repository.loadNextCatalogPage(existing: [bad, good]).wallpapers == [good])
     #expect(try await repository.searchCatalog(query: "Wallpaper", existing: [bad]).wallpapers == [good])
+}
+
+@Test func excludedCatalogDownloadCannotReuseCachedMediaOrBypassPolicyWithPreferredSources() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let folder = CatalogStorageLayout.downloadedWallpapersDirectory(in: root)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let card = policyCard("renamed-warning-card", poster: URL(string: "https://images.test/nsfw_min.png"))
+    let cached = folder.appendingPathComponent("\(card.id)-1920x1080.mp4")
+    let personalMedia = Data("previously downloaded personal media".utf8)
+    try personalMedia.write(to: cached)
+    let backend = PolicyFixtureSource(items: [card])
+    let service = CatalogDownloadService(provider: backend, catalogDirectoryURL: root,
+        fileDownloader: { _, _ in
+            Issue.record("Excluded artwork must not start a transfer")
+            throw URLError(.cancelled)
+        })
+    await #expect(throws: (any Error).self) { try await service.download(card) }
+    await #expect(throws: (any Error).self) {
+        try await service.download(card, preferredSources: [CatalogVideoSource(
+            url: URL(string: "https://media.test/original.mp4")!, width: 1920, height: 1080)])
+    }
+    #expect(await backend.resolutions == 0)
+    #expect(try Data(contentsOf: cached) == personalMedia)
 }
 
 @Test func catalogContentPolicyFiltersProviderCacheRefreshSearchAndBothPagingRoutes() async throws {

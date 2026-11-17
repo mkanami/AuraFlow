@@ -1,18 +1,5 @@
 [
   {
-    "id": "livewallpapers4free-anime-girl-plays-an-electric-guitar",
-    "sourcePageURL": "https://livewallpapers4free.com/anime-girl-plays-an-electric-guitar/",
-    "originalURL": "https://livewallpapers4free.com/download/35369/",
-    "width": 3840,
-    "height": 2160,
-    "fps": 30.0,
-    "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/08/anime-girl-playing-guitar-4k-live_thumb1-480x270.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
     "id": "livewallpapers4free-araya-touka-tsuki-no-kanata-de-aimashou-4k-windows-theme",
     "sourcePageURL": "https://livewallpapers4free.com/araya-touka-tsuki-no-kanata-de-aimashou-4k-windows-theme/",
     "originalURL": "https://livewallpapers4free.com/download/14434/",
@@ -20,10 +7,12 @@
     "height": 2160,
     "fps": 59.94000793369568,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/06/v7eyfhlkjsaq3ws1.mp4_thumbnail-480x270.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-blue-haired-girl-chilling-live-wallpaper",
@@ -33,23 +22,12 @@
     "height": 2160,
     "fps": 30.050335570469798,
     "previewImageURL": "https://www.desktophut.com/images/3040_mpc-hc64_T08WrVKfnU.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-chill-rain-lofi",
-    "sourcePageURL": "https://www.desktophut.com/chill-rain-lofi",
-    "originalURL": "https://media.desktophut.com/files/OzC7lum93v5F55o_Chill%20Rain%20Lofi%20Live%20Wallpaper_1_112648.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 30.0,
-    "previewImageURL": "https://www.desktophut.com/images/1720613381.webp",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-dreamy-lofi",
@@ -59,10 +37,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1728051680.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "livewallpapers4free-firecracker-jinx-skin-league-of-legends",
@@ -72,10 +52,12 @@
     "height": 1080,
     "fps": 56.952904265782415,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/06/kmyr1iu9npkkmabn.mp4_thumbnail-480x270.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Ghibli-coffee",
@@ -85,10 +67,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1718794662.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-its-been-a-long-night-lofi",
@@ -98,10 +82,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1738157500.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-lofi-cat",
@@ -111,10 +97,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1720610955.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-lofi-cozy-winter-cabin-live-wallpaper",
@@ -124,10 +112,12 @@
     "height": 2160,
     "fps": 30.066079295154186,
     "previewImageURL": "https://www.desktophut.com/images/2269_mpc-hc64_A03bbQORTB.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-lofi-night-city-lights-scenery-live-wallpaper",
@@ -137,10 +127,12 @@
     "height": 2160,
     "fps": 30.03875968992248,
     "previewImageURL": "https://www.desktophut.com/images/6007_mpc-hc64_DxDP2S90tW.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "livewallpapers4free-missing-you-alone-girl-birds-loneliness-qhd-live-wallpaper",
@@ -150,10 +142,12 @@
     "height": 1440,
     "fps": 30.0,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/06/fa8chspusyojeb54.mp4_thumbnail-480x270.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "livewallpapers4free-starchasm-nyx-seele-s-rank-honkai-impact-3rd",
@@ -163,10 +157,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/06/2azfzljzrftowxzb.mp4_thumbnail-480x270.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Summer-Chill-Anime-Girl-in-Beach-4K-Live-Background",
@@ -176,10 +172,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1658171674_671140.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-tranquil-lofi-mornings",
@@ -189,23 +187,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1728987052.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-beats-lofi",
-    "sourcePageURL": "https://www.desktophut.com/beats-lofi",
-    "originalURL": "https://media.desktophut.com/files/EnSOPeU1B4M5UEj_Verge%20Chill%20Beats_3_113929.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 24.0,
-    "previewImageURL": "https://www.desktophut.com/images/1722939936.webp",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "livewallpapers4free-ataraxy-by-ahmad-fantasy-world-boat-galaxy",
@@ -215,10 +202,12 @@
     "height": 1080,
     "fps": 59.94003071597474,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/06/94btjmhqccxcotzx.mp4_thumbnail-480x270.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-chillout-in-space",
@@ -228,10 +217,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1727716954.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "livewallpapers4free-deemo-rhythm-game-with-music-free-live-wallpaper",
@@ -241,10 +232,12 @@
     "height": 1080,
     "fps": 29.95370086488587,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/06/ypif4icvxqkdatog.mp4_thumbnail-480x270.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Rainy-Forest-Ambience",
@@ -254,10 +247,12 @@
     "height": 2160,
     "fps": 36.78432465369122,
     "previewImageURL": "https://www.desktophut.com/images/1712102114.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Relax-House-Ambience",
@@ -267,10 +262,12 @@
     "height": 2160,
     "fps": 29.4089447529962,
     "previewImageURL": "https://www.desktophut.com/images/1710962790.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Nature-Ambience",
@@ -280,10 +277,12 @@
     "height": 2160,
     "fps": 36.564452698541984,
     "previewImageURL": "https://www.desktophut.com/images/1712102880.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-rooftop-chill-live-wallpaper",
@@ -293,10 +292,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/3203_mpc-hc64_qxWr7IXHvH.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Summer-Festival-Girl-Music-Live-Wallpaper",
@@ -306,10 +307,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645448029_337247.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-agassy-dance",
@@ -319,10 +322,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1713286497.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-cozy-rainy-anime-girl-reading-live-wallpaper-4k",
@@ -332,10 +337,12 @@
     "height": 2160,
     "fps": 30.049261083743843,
     "previewImageURL": "https://www.desktophut.com/images/cozy-rainy-anime-girl-reading-live-wallpaper-4k-1771339421.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-green-hair-anime-girl-city-night-4k-live-wallpaper",
@@ -345,10 +352,12 @@
     "height": 2160,
     "fps": 30.050251256281406,
     "previewImageURL": "https://www.desktophut.com/images/green-hair-anime-girl-city-night-4k-live-wallpaper-1771941078.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-sotheby-train-journey-live-wallpaper-ccj5",
@@ -358,10 +367,12 @@
     "height": 2304,
     "fps": 60.040650406504064,
     "previewImageURL": "https://www.desktophut.com/images/y8mtjLrKYA-sotheby-train-journey-live-wallpaper.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "livewallpapers4free-azusa-nakano-k-on-light-music-club",
@@ -371,10 +382,12 @@
     "height": 2160,
     "fps": 25.123092059217292,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/06/ceqp4towofizxpjo.mp4_thumbnail-480x270.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "livewallpapers4free-girl-swimming-with-fish-music",
@@ -384,23 +397,12 @@
     "height": 1080,
     "fps": 59.93985348035816,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/06/rzfzms6l3tsd6dwb.mp4_thumbnail-480x270.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Death-Stranding-Genshin-Impact-Live-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/Death-Stranding-Genshin-Impact-Live-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/1675814345-1675814345-death-stranding-genshin-impact-live-wallpaper.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 60.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1675814345_144078.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Desktop-Venti-Playing-Lyre-In-The-Forest-Genshin-Impact-Live-Wallpaper",
@@ -410,10 +412,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1657392241_337228.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Desktop-Nature-Storm-Into-The-Clouds-Live-Wallpaper",
@@ -423,10 +427,12 @@
     "height": 1080,
     "fps": 30.303030303030305,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655034159_171588.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Megumi-Kato-Sleep-Live-Anime-Wallpaper",
@@ -436,10 +442,12 @@
     "height": 1080,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655025726_695351.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Sleepy-Rainy-Night-Live-Wallpaper-Free",
@@ -449,10 +457,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654795784_863573.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Shogun-Raiden-Baal-Genshin-Impact-Live-Wallpaper",
@@ -462,10 +472,12 @@
     "height": 1080,
     "fps": 53.253842857051474,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645465335_715718.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-above-the-clouds",
@@ -475,23 +487,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1728053092.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-autumn-is-here",
-    "sourcePageURL": "https://www.desktophut.com/autumn-is-here",
-    "originalURL": "https://media.desktophut.com/files/AQDyddWmZavupSh_Autumn%20is%20Here_4_111328.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 60.0,
-    "previewImageURL": "https://www.desktophut.com/images/1729072725.webp",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-blue-haired-girl",
@@ -501,10 +502,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1733399519.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-genshin-impact-anime-game-live-wallpaper",
@@ -514,10 +517,12 @@
     "height": 2160,
     "fps": 59.93982413763898,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1657119792_700496.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-genshin-lunar-highlands-live-wallpaper-94zd",
@@ -527,10 +532,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/NE8j6koxdL-genshin-lunar-highlands-live-wallpaper.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-genshin-noelle",
@@ -540,10 +547,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1714750002.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-relaxing-and-sress-relief",
@@ -553,10 +562,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1729071997.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-rough-night",
@@ -566,10 +577,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1728991717.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-skull-violin",
@@ -579,10 +592,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1728648210.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-slow-days",
@@ -592,10 +607,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1728645117.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "livewallpapers4free-dont-mind-it-furry-underwater",
@@ -605,23 +622,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/10/dont-mind-it-furry-underwater-player-vxz_thumb1.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "livewallpapers4free-outdoor-coffee-shop-anime-street-view",
-    "sourcePageURL": "https://livewallpapers4free.com/outdoor-coffee-shop-anime-street-view/",
-    "originalURL": "https://livewallpapers4free.com/download/39399/",
-    "width": 3840,
-    "height": 2160,
-    "fps": 59.93995794481511,
-    "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2025/01/anime-street-view-4k-live_thumb1-scaled.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "livewallpapers4free-st-ar-15-shooting-girls-frontline-4k-live-wallpaper",
@@ -631,10 +637,12 @@
     "height": 2160,
     "fps": 59.93980503754697,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/06/5kh4vdewakvooebz.mp4_thumbnail.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "livewallpapers4free-tired-beauty-in-a-motel",
@@ -644,10 +652,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/11/tired-beauty-in-a-motel-4k-live_thumb1-scaled.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "livewallpapers4free-uchiha-sasuke-mangekyou-sharingan-naruto-shippuden",
@@ -657,10 +667,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2025/05/uchiha-sasuke-mangekyou-sharingan-naruto-shippuden-4k-live_thumb1-scaled.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "livewallpapers4free-gawr-gura-and-amelia-watson-night-campfire",
@@ -670,23 +682,12 @@
     "height": 1080,
     "fps": 29.96997634608434,
     "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2021/02/thumb-35.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "livewallpapers4free-hawaii-beach-wave-coast-sand-free-live-background",
-    "sourcePageURL": "https://livewallpapers4free.com/hawaii-beach-wave-coast-sand-free-live-background/",
-    "originalURL": "https://livewallpapers4free.com/download/46225/",
-    "width": 3840,
-    "height": 2160,
-    "fps": 23.976025008218457,
-    "previewImageURL": "https://livewallpapers4free.com/wp-content/uploads/2024/06/o9ayn9fcj7inhggg.mp4_thumbnail.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-ATRI-My-Dear-Moments",
@@ -696,10 +697,12 @@
     "height": 1080,
     "fps": 34.47756487195056,
     "previewImageURL": "https://www.desktophut.com/images/1711380406.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime---84574",
@@ -709,10 +712,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1669823863_409350.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Akaceite-Deep-Sea-Cruise-4K-Live-Wallpaper",
@@ -722,10 +727,12 @@
     "height": 2160,
     "fps": 71.92807192807193,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1663850161_536729.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Gohan-Beast-4K-Live-Wallpaper",
@@ -735,49 +742,12 @@
     "height": 2160,
     "fps": 23.976023976023978,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1664360080_540662.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Anime-Gotoh-Hitori-Live-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/Anime-Gotoh-Hitori-Live-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/1675711176-1675711176-anime-gotoh-hitori-live-wallpaper.mp4",
-    "width": 2560,
-    "height": 1440,
-    "fps": 24.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1675711176_906185.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Anime-Live2D-Blue-Archive-ayane-(summer)",
-    "sourcePageURL": "https://www.desktophut.com/Anime-Live2D-Blue-Archive-ayane-(summer)",
-    "originalURL": "https://media.desktophut.com/files/1659866880-1659866880-anime-live2d-blue-archive-ayane-%28summer%29.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 30.0,
-    "previewImageURL": "https://www.desktophut.com/images/nsfw_min.png",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Anime-Live2D-Blue-Archive-nonomi(summer)",
-    "sourcePageURL": "https://www.desktophut.com/Anime-Live2D-Blue-Archive-nonomi(summer)",
-    "originalURL": "https://media.desktophut.com/files/1659866821-1659866821-anime-live2d-blue-archive-nonomi%28summer%29.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 30.0,
-    "previewImageURL": "https://www.desktophut.com/images/nsfw_min.png",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Summer-Swimsuit-4K-Live-Wallpaper",
@@ -787,10 +757,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1663850176_233407.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Type-95-Yu-Linglong-4K-Live-Wallpaper",
@@ -800,10 +772,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1663850167_973501.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Girl-Wars",
@@ -813,10 +787,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1712095265.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Gohan-Piccolo",
@@ -826,10 +802,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1711394990.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Hololive-3rd-Gen-Video-Wallpaper",
@@ -839,10 +817,12 @@
     "height": 1080,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1659877004_43998.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Ishitaru-Live-Wallpaper",
@@ -852,10 +832,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1659876923_258614.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Live2D-Blue-Archive-suzumi",
@@ -865,10 +847,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1659866660_737881.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Live2D-Blue-Archive-wakamo-(summer)",
@@ -878,23 +862,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1659866951_938975.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Night-relax-anime",
-    "sourcePageURL": "https://www.desktophut.com/Night-relax-anime",
-    "originalURL": "https://media.desktophut.com/files/1675192398-1675192398-night-relax-anime.mp4",
-    "width": 1920,
-    "height": 1080,
-    "fps": 29.971288505408385,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1675192398_762635.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Ritas-Swimsuit-Anime-Moving-Wallpaper",
@@ -904,36 +877,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1660724477_439980.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Shinobi-Master-nodoka-Anime",
-    "sourcePageURL": "https://www.desktophut.com/Shinobi-Master-nodoka-Anime",
-    "originalURL": "https://media.desktophut.com/files/1673464269-1673464269-shinobi-master-nodoka-anime.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 30.0,
-    "previewImageURL": "https://www.desktophut.com/images/nsfw_min.png",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Shinobi-Master-serika-Anime",
-    "sourcePageURL": "https://www.desktophut.com/Shinobi-Master-serika-Anime",
-    "originalURL": "https://media.desktophut.com/files/1673464036-1673464036-shinobi-master-serika-anime.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 30.0,
-    "previewImageURL": "https://www.desktophut.com/images/nsfw_min.png",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Thoughtful-Anime-Girl-Live-Wallpaper-4K",
@@ -943,23 +892,12 @@
     "height": 2160,
     "fps": 72.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1660724539_453757.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Train-Travel",
-    "sourcePageURL": "https://www.desktophut.com/Train-Travel",
-    "originalURL": "https://media.desktophut.com/files/zkKxjTwYUHmG8bx_Train%20Travel%20Live%20Wallpaper.mp4",
-    "width": 1920,
-    "height": 1080,
-    "fps": 25.0,
-    "previewImageURL": "https://www.desktophut.com/images/1710184155.webp",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-aeon-fantasy-cassiopeia-live-wallpaper",
@@ -969,10 +907,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1701782580.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-aitis-strange-night-journey-4k-live-wallpaper",
@@ -982,10 +922,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1699452565.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-anime-backgrounds",
@@ -995,10 +937,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1673887604_114087.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-naruto-duel-sasuke",
@@ -1008,10 +952,12 @@
     "height": 2160,
     "fps": 45.57002336632646,
     "previewImageURL": "https://www.desktophut.com/images/1711637173.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-silent-words-4k-animated-wallpaper",
@@ -1021,10 +967,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1691924892.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-star-wish-4k-live-wallpaper",
@@ -1034,10 +982,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1702920580.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-zero-two-4k-60fps-live-wallpaper",
@@ -1047,23 +997,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1704904158.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-A-SOUL-Xiang-Wan-Dance-Live-Anime-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/A-SOUL-Xiang-Wan-Dance-Live-Anime-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/1657885399-1657885399-a-soul-xiang-wan-dance-live-anime-wallpaper.mp4",
-    "width": 1920,
-    "height": 1080,
-    "fps": 30.000124792532414,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1657885399_441747.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-BanG-Dream-Live-Anime-Wallpaper",
@@ -1073,10 +1012,12 @@
     "height": 1080,
     "fps": 29.97932588503308,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1657710221_651913.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Changli-Wuthering-Waves",
@@ -1086,10 +1027,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1718096923.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Cherry-Blossoms-Girl-Live-Wallpaper-Anime-4K",
@@ -1099,10 +1042,12 @@
     "height": 2880,
     "fps": 25.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1657885466_243870.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Cute-Honey-Live-Anime-Wallpaper",
@@ -1112,10 +1057,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1657707941_406904.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Darling-in-the-franxx-02-Live-Wallpaper-Anime",
@@ -1125,10 +1072,12 @@
     "height": 1738,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1657885474_458439.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Meursault-Crying",
@@ -1138,23 +1087,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1714946799.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Mirror-2-Project-X-Leah-Live-Wallpaper-Anime-4K",
-    "sourcePageURL": "https://www.desktophut.com/Mirror-2-Project-X-Leah-Live-Wallpaper-Anime-4K",
-    "originalURL": "https://media.desktophut.com/files/1657885564-1657885564-mirror-2-project-x-leah-live-wallpaper-anime-4k.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 30.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1657885564_344237.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Nightingale-Hollow",
@@ -1164,10 +1102,12 @@
     "height": 2160,
     "fps": 33.36999590193033,
     "previewImageURL": "https://www.desktophut.com/images/1719578310.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Pokemon-Gengar",
@@ -1177,10 +1117,12 @@
     "height": 2160,
     "fps": 29.978915927259948,
     "previewImageURL": "https://www.desktophut.com/images/1716500949.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Punishing-Gray-Raven-Noan-Auberge-Live-Wallpaper-Anime",
@@ -1190,10 +1132,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1657885635_419077.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Shibuya-Arc",
@@ -1203,10 +1147,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1717367673.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Theresa-Apocalypse-Honkai3d-Live-Anime-Wallpaper-4K",
@@ -1216,10 +1162,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1657710327_981791.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Twin-Horizon-双生视界-Live-Anime-Wallpaper-4K",
@@ -1229,10 +1177,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1657710373_138800.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Yor-Forger-Scenes-Live-Wallpaper-Anime",
@@ -1242,10 +1192,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1657885701_61395.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-aeon-cute-girl",
@@ -1255,10 +1207,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1722499789.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-angel-legion-game-live-wallpaper_ExPh",
@@ -1268,10 +1222,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/mWFfKS50UO-AngelLegion-GameLiveWallpaper.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-black-princess",
@@ -1281,10 +1237,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1721996995.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-blue-lock-anime-players-6682",
@@ -1294,23 +1252,12 @@
     "height": 2160,
     "fps": 29.95663357543615,
     "previewImageURL": "https://www.desktophut.com/images/WTiP89u0OS-SsstikIoJ1nym17481165325782Prob4.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-boruto-manga",
-    "sourcePageURL": "https://www.desktophut.com/boruto-manga",
-    "originalURL": "https://media.desktophut.com/files/HFNULfLXfKwkszw_Boruto_4_214906.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 30.0,
-    "previewImageURL": "https://www.desktophut.com/images/1715631653.webp",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-celestial-bloom-field-5456",
@@ -1320,10 +1267,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/6e7W14DfsA-Rhty2Prob4.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-cerulean-gaze-live-wallpaper",
@@ -1333,23 +1282,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1755420930.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-cyberpunk-racer",
-    "sourcePageURL": "https://www.desktophut.com/cyberpunk-racer",
-    "originalURL": "https://media.desktophut.com/files/pSMe6AqIwW9JRcz_Cyberpunk%20Racer%20Live%20Wallpaper_1_15_121033.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 29.97002997002997,
-    "previewImageURL": "https://www.desktophut.com/images/1723464770.webp",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-dreamscape-view_fHj",
@@ -1359,10 +1297,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1724776559.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-echoed-reflections",
@@ -1372,10 +1312,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1729072095.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-eyes-of-malevolence-live-wallpaper",
@@ -1385,10 +1327,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1754117248.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-girl-green-eyes",
@@ -1398,10 +1342,12 @@
     "height": 2160,
     "fps": 34.42001547759587,
     "previewImageURL": "https://www.desktophut.com/images/1719575880.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-glowing-red-eyes-live-wallpaper-kln8",
@@ -1411,10 +1357,12 @@
     "height": 2160,
     "fps": 30.15463917525773,
     "previewImageURL": "https://www.desktophut.com/images/nX8zZj4QCJ-glowing-red-eyes-live-wallpaper.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-gojos-void",
@@ -1424,10 +1372,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1716914772.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-green-goku",
@@ -1437,10 +1387,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1716922905.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-hayakawa-anime",
@@ -1450,10 +1402,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1716406298.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-itachi-sad",
@@ -1463,10 +1417,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1716931369.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-lunar-vow",
@@ -1476,10 +1432,12 @@
     "height": 2160,
     "fps": 30.141765667093583,
     "previewImageURL": "https://www.desktophut.com/images/1719586051.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-madara-obito-theme",
@@ -1489,10 +1447,12 @@
     "height": 2160,
     "fps": 29.840012451228215,
     "previewImageURL": "https://www.desktophut.com/images/1718612419.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-megumin-awakening-magic-live-wallpaper-nfgn",
@@ -1502,10 +1462,12 @@
     "height": 2304,
     "fps": 60.05,
     "previewImageURL": "https://www.desktophut.com/images/5ZOE8b6TAr-megumin-awakening-magic-live-wallpaper.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-memories-tree",
@@ -1515,10 +1477,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1716773554.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-neji-hyuga",
@@ -1528,10 +1492,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1723534377.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-pink-hair-anime-girl-katana",
@@ -1541,10 +1507,12 @@
     "height": 2304,
     "fps": 30.18633540372671,
     "previewImageURL": "https://www.desktophut.com/images/pink-hair-girl-with-katana-soft-aesthetic-live-wallpaper-1770036153.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-power-dancing-live-wallpaper-y3tn",
@@ -1554,10 +1522,12 @@
     "height": 2160,
     "fps": 60.03368893879843,
     "previewImageURL": "https://www.desktophut.com/images/QhJKFx9emn-power-dancing-live-wallpaper.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-punk-rock-girl",
@@ -1567,10 +1537,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1730962989.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-raining-in-japan",
@@ -1580,23 +1552,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1728653308.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-samurai-girl-graffiti-katana-live-wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/samurai-girl-graffiti-katana-live-wallpaper",
-    "originalURL": "https://media.desktophut.com/files/1770809667.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 24.19672131147541,
-    "previewImageURL": "https://www.desktophut.com/images/samurai-girl-graffiti-katana-live-wallpaper-1770809667.webp",
-    "sampledFrames": 5,
-    "audio": "paired-verified",
-    "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-shadow-solo-leveling",
@@ -1606,10 +1567,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1717624764.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-singularity-gaze-live-wallpaper",
@@ -1619,10 +1582,12 @@
     "height": 2160,
     "fps": 60.12820512820513,
     "previewImageURL": "https://www.desktophut.com/images/7405_mpc-hc64_IBh8eIdUvM.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-slitent-whispers",
@@ -1632,10 +1597,12 @@
     "height": 2160,
     "fps": 25.0,
     "previewImageURL": "https://www.desktophut.com/images/1728645660.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-solo-leveling-ending",
@@ -1645,10 +1612,12 @@
     "height": 2160,
     "fps": 23.976023976023978,
     "previewImageURL": "https://www.desktophut.com/images/1743344728.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-sukuna-s-throne-live-wallpaper",
@@ -1658,10 +1627,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1753887132.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-the-cutest-witchy-cat",
@@ -1671,10 +1642,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1728644642.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-tornado-girl",
@@ -1684,10 +1657,12 @@
     "height": 2160,
     "fps": 30.480007196668367,
     "previewImageURL": "https://www.desktophut.com/images/1718605076.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-urban-goku-z",
@@ -1697,10 +1672,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1716509413.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-yuji-itadori-animated",
@@ -1710,10 +1687,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1717447352.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Girl-Looking-Out-On-The-Train-Live-Wallpaper-For-PC",
@@ -1723,10 +1702,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655130519_793455.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Anime-NachoNeko-Shizuku-Live-Wallpaper",
@@ -1736,10 +1717,12 @@
     "height": 1440,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654970895_642672.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Artoria-Pendragon-Alter-Live-Anime-Wallpaper",
@@ -1749,10 +1732,12 @@
     "height": 1440,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655025563_909408.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Beach-Girl-Live-Anime-Wallpaper",
@@ -1762,23 +1747,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655025690_968764.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-PC-HD-Beautiful-Girl-Live-Anime-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/PC-HD-Beautiful-Girl-Live-Anime-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/1655025716-1655025716-pc-hd-beautiful-girl-live-anime-wallpaper.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 60.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1655025716_32985.jpg",
-    "sampledFrames": 5,
-    "audio": "paired-verified",
-    "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Chasing-the-Torrents-Live-Anime-Wallpaper",
@@ -1788,10 +1762,12 @@
     "height": 1440,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655025546_100792.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Citylife-Live-Anime-Wallpaper",
@@ -1801,10 +1777,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655024943_106468.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Dawn-Whales-Live-Anime-Wallpaper",
@@ -1814,23 +1792,12 @@
     "height": 1440,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655024712_68385.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-PC-HD-Drinking-Beer-Window-Rain-(1)-Live-Anime-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/PC-HD-Drinking-Beer-Window-Rain-(1)-Live-Anime-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/1655025272-1655025272-pc-hd-drinking-beer-window-rain-%281%29-live-anime-wallpaper.mp4",
-    "width": 1920,
-    "height": 1080,
-    "fps": 30.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1655025272_739735.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Girl-Pipe-Live-Anime-Wallpaper",
@@ -1840,10 +1807,12 @@
     "height": 1684,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655025480_604958.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Heavy-Rain-Live-Anime-Wallpaper",
@@ -1853,10 +1822,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655025272_708098.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Hello-Summer!-Live-Anime-Wallpaper",
@@ -1866,10 +1837,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655025301_318575.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Herrscher-of-Sentience-Live-Anime-Wallpaper",
@@ -1879,10 +1852,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655024764_669707.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Kimono-Cat-Girl-Live-Anime-Wallpaper",
@@ -1892,10 +1867,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655024888_158322.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Love-Color-Blue-Live-Anime-Wallpaper",
@@ -1905,10 +1882,12 @@
     "height": 1440,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655024851_87139.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Riven-The-Exile-Live-Anime-Wallpaper",
@@ -1918,10 +1897,12 @@
     "height": 1440,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655024688_488045.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Saber-Altria-Pendragon-Live-Anime-Wallpaper",
@@ -1931,10 +1912,12 @@
     "height": 1440,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655024627_936039.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Silk-Dress-Girl-Live-Anime-Wallpaper",
@@ -1944,10 +1927,12 @@
     "height": 1440,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655024676_737163.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Twilight-Knight-Theresa-Live-Anime-Wallpaper",
@@ -1957,23 +1942,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655024810_238309.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-PC-HD-Wedding-Makeup-Live-Anime-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/PC-HD-Wedding-Makeup-Live-Anime-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/1655025492-1655025492-pc-hd-wedding-makeup-live-anime-wallpaper.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 30.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1655025492_679066.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-HD-Zero-Two-Live-Anime-Wallpaper",
@@ -1983,10 +1957,12 @@
     "height": 1080,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655025461_450106.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut--Kamado-Nezuko-Kimetsu-No-Yaiba-Anime-Live-Wallpaper",
@@ -1996,10 +1972,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645453373_172823.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-4K-Beautiful-Anime-Scenery-Live-Wallpaper",
@@ -2009,10 +1987,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1652613343_734500.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Girl-HD-LIve-Wallpaper",
@@ -2022,10 +2002,12 @@
     "height": 1080,
     "fps": 29.97,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645120209_572281.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Halloween-Little-Witch-Viwwe-Live-Wallpaper",
@@ -2035,10 +2017,12 @@
     "height": 1080,
     "fps": 53.99921838040192,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645465110_840014.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-RGB-Girl-In-Dark-Night-City-Live-Wallpaper",
@@ -2048,10 +2032,12 @@
     "height": 1080,
     "fps": 49.61143355937282,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645463919_316107.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Tasumi-Akame-Ga-Kill-Live-Wallpaper",
@@ -2061,10 +2047,12 @@
     "height": 1080,
     "fps": 49.51666095667891,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645465111_346162.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Yamakaze-Miku-Sakura-Kantai-Live-Wallpaper",
@@ -2074,10 +2062,12 @@
     "height": 1080,
     "fps": 29.65764331210191,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645463496_471440.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 8,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Itachi-Blood-In-Eyes-Naruto-Anime-Live-Wallpaper",
@@ -2087,10 +2077,12 @@
     "height": 1080,
     "fps": 29.73234226199103,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645466723_631443.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Kimetsu-No-Yaiba-Nezuko-Kamado-Anime-Live-Wallpaper",
@@ -2100,10 +2092,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645453466_276844.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Megumin-Arch-Wizard-60FPS-Anime-LIve-Wallpaper",
@@ -2113,10 +2107,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645453200_922743.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Nakiri-Ayame-60Fps-Anime-Live-Wallpaper",
@@ -2126,10 +2122,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645453048_179839.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Re-Zero-Anime-Rem-and-Ram-Live-Wallpaper",
@@ -2139,10 +2137,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645461722_157239.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Rin-Shibuya-After-School-Stroll-Anime-Live-Wallpaper",
@@ -2152,10 +2152,12 @@
     "height": 1080,
     "fps": 47.71627845132904,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645463166_459492.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Rushia-Anime-Live-Wallpaper",
@@ -2165,10 +2167,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1646736879_718452.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Saber-Artoria-Pendragon-Anime-HD-Live-Wallpaper",
@@ -2178,10 +2182,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1652786265_296483.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Steins-Gate-Makise-Kurisu-Anime-Live-Wallpaper",
@@ -2191,23 +2197,12 @@
     "height": 1080,
     "fps": 46.93823392125704,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645463719_552625.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Sugar-Story-Anime-4K-Live-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/Sugar-Story-Anime-4K-Live-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/Sugar%20Story%20Anime%204K%20Live%20Wallpaper.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 60.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1652614031_450906.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Touhou-Project-東方Project-Anime-60Fps-4K-Live-Wallpaper-",
@@ -2217,23 +2212,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645464133_8297.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Tsukuyo-Anime-4K-Live-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/Tsukuyo-Anime-4K-Live-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/Tsukuyo%20Anime%204K%20Live%20Wallpaper.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 30.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1652614034_947391.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Yae-Sakura-Honkai-Impact-Anime-HD-Live-Wallpaper",
@@ -2243,10 +2227,12 @@
     "height": 1080,
     "fps": 30.48186126931435,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645463918_319084.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Your-Name-Kimi-No-Na-Wa-君の名は-Anime-Live-Wallpaper",
@@ -2256,23 +2242,12 @@
     "height": 1080,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645453597_734865.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-PC-Anime-Mao-Yu-Shizuku-Live-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/PC-Anime-Mao-Yu-Shizuku-Live-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/1654970839-1654970839-pc-anime-mao-yu-shizuku-live-wallpaper.mp4",
-    "width": 2000,
-    "height": 1124,
-    "fps": 24.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1654970839_656921.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-ANIME-RAIN",
@@ -2282,10 +2257,12 @@
     "height": 1080,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654427487_827288.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Girl-Goodbye-Live-Wallpaper",
@@ -2295,10 +2272,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654426554_988921.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Girl-Listening-to-the-Rain-in-the-Room-Live-Wallpaper",
@@ -2308,23 +2287,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654426690_627278.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "blackout",
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Anime-Girl-Non-firing-zone-Live-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/Anime-Girl-Non-firing-zone-Live-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/Anime%20Girl%20%20Non%20firing%20zone%20%20Live%20Wallpaper.mp4",
-    "width": 1920,
-    "height": 1080,
-    "fps": 30.01121810891562,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1654430527_746749.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Girl-Outer-Space-Live-Wallpaper",
@@ -2334,10 +2302,12 @@
     "height": 1080,
     "fps": 30.016490746858707,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654430254_703847.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Girl-Recalling-Live-Wallpaper",
@@ -2347,10 +2317,12 @@
     "height": 1080,
     "fps": 30.03296300817971,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654426747_273504.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Girl-The-Melody-hits-in-Daily-Life-Live-Wallpaper",
@@ -2360,10 +2332,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654430252_165400.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Anime-Girl-and-The-Sobbing-Tree-Live-Wallpaper",
@@ -2373,23 +2347,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654426495_278352.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Anime-Pixel-Game-Girl-Live-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/Anime-Pixel-Game-Girl-Live-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/Anime%20Pixel%20Game%20Girl%20Live%20Wallpaper.mp4",
-    "width": 1920,
-    "height": 1080,
-    "fps": 60.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1652560060_6949.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Beautiful-Forest-With-Animated-Live-Wallpaper",
@@ -2399,10 +2362,12 @@
     "height": 1080,
     "fps": 42.243192061590506,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645462958_903628.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Cool-Akatsuki-Naruto-4k-Live-Wallpaper",
@@ -2412,10 +2377,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654428898_682852.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Cool-Hatake-Kakashi-Naruto-4k-live-Wallpaper",
@@ -2425,10 +2392,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654428895_363105.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Cozy-Bedroom-Rain-On-Window-Live-Wallpaper-4K",
@@ -2438,23 +2407,12 @@
     "height": 2160,
     "fps": 24.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1662714265_93604.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Edgerunners-Crew-Pixel-Live-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/Edgerunners-Crew-Pixel-Live-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/1664440604-1664440604-edgerunners-crew-pixel-live-wallpaper.mp4",
-    "width": 3836,
-    "height": 2160,
-    "fps": 30.00661602635089,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1664440604_774657.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Fondo-de-Pantalla-Animado-Itachi-Cuervos-de-Naruto-HD-en-Movimiento",
@@ -2464,10 +2422,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654600417_285328.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Forest-Scene-What-Remains-of-Edith-Finch-Live-Wallpaper",
@@ -2477,10 +2437,12 @@
     "height": 1080,
     "fps": 59.94005461879677,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654696651_802534.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Forest-of-Ghosts-Skyrim-SE-Live-Wallpaper-HD",
@@ -2490,10 +2452,12 @@
     "height": 1080,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654698833_486014.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Girl-With-Great-Sword-Live-Wallpaper-Rain-edition",
@@ -2503,10 +2467,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654434092_991927.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Howls-Moving-Castle-Landscape-Live-Wallpaper",
@@ -2516,10 +2482,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645453727_770548.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Live-Wallpaper-Naruto-Sasuke-",
@@ -2529,10 +2497,12 @@
     "height": 1080,
     "fps": 28.452003301634964,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654429144_204183.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Live-Wallpaper-Naruto-Uchiha-Itachi-鼬",
@@ -2542,10 +2512,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654427482_868807.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Kimono-Anime-Girl-Live-Wallpaper-Free",
@@ -2555,36 +2527,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654791958_423147.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-PC-Rainy-City-Scene-Loop-Desktop-Live-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/PC-Rainy-City-Scene-Loop-Desktop-Live-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/1655057984-1655057984-pc-rainy-city-scene-loop-desktop-live-wallpaper.mp4",
-    "width": 1920,
-    "height": 1080,
-    "fps": 30.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1655057984_801221.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Pixel-Summerhouse",
-    "sourcePageURL": "https://www.desktophut.com/Pixel-Summerhouse",
-    "originalURL": "https://media.desktophut.com/files/5UEJoeNLQH4rU1Q_Pixel%20Summerhouse.mp4",
-    "width": 1920,
-    "height": 1080,
-    "fps": 60.0,
-    "previewImageURL": "https://www.desktophut.com/images/1711033185.webp",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Playa-Del-Carmen-Beach",
@@ -2594,10 +2542,12 @@
     "height": 1080,
     "fps": 30.007320768406643,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1673460111_246319.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Rain-in-the-Valley-1080p",
@@ -2607,10 +2557,12 @@
     "height": 1080,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654698771_551244.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Trine-2-Wizards-Forest-Live-Wallpaper-1080p",
@@ -2620,23 +2572,12 @@
     "height": 1080,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654696426_131604.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Wallpaper-Engine-Anime-Backyard-Rain-Update-CG",
-    "sourcePageURL": "https://www.desktophut.com/Wallpaper-Engine-Anime-Backyard-Rain-Update-CG",
-    "originalURL": "https://media.desktophut.com/files/Wallpaper%20Engine%20Anime%20Backyard%20Rain%20Update%20CG.mp4",
-    "width": 1920,
-    "height": 1080,
-    "fps": 60.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1654434092_393257.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Yachie-Kicchou-Touhou-Live-Wallpaper",
@@ -2646,10 +2587,12 @@
     "height": 1080,
     "fps": 30.032999633337408,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654426557_588801.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-amazing-landscape-1080p-video-low-cpu-usage",
@@ -2659,10 +2602,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1674109988_653822.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-autumn-hilltop-castle-night",
@@ -2672,10 +2617,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1727347001.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "blackout",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-cozy-urban-night",
@@ -2685,10 +2632,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1733399317.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-gameboy-girl",
@@ -2698,10 +2647,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1733400325.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-nte-rainy-garden-live-wallpaper-kyeo",
@@ -2711,10 +2662,12 @@
     "height": 2304,
     "fps": 60.05459508644222,
     "previewImageURL": "https://www.desktophut.com/images/P62t0SFe18-nte-rainy-garden-live-wallpaper.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-pixel-forest",
@@ -2724,10 +2677,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1718968825.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-purrple-cat",
@@ -2737,10 +2692,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1724929392.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-summer-dreamscape",
@@ -2750,10 +2707,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1713638586.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-2b-witch-nier-automata-hd-live-wallpaper",
@@ -2763,10 +2722,12 @@
     "height": 1080,
     "fps": 51.61567243205083,
     "previewImageURL": "https://www.desktophut.com/images/1637734066.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-87-NieR-Automata-Wallpaper-Engine",
@@ -2776,23 +2737,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654433952_166455.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Anime-Game-Bronya-Haxxor-Bunny-Honkai-Impact-3-4K-Live-Wallpaper",
-    "sourcePageURL": "https://www.desktophut.com/Anime-Game-Bronya-Haxxor-Bunny-Honkai-Impact-3-4K-Live-Wallpaper",
-    "originalURL": "https://media.desktophut.com/files/Anime%20Game%20Bronya%20Haxxor%20Bunny%20Honkai%20Impact%203%204K%20Live%20Wallpaper.mp4",
-    "width": 3840,
-    "height": 2160,
-    "fps": 60.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1645461308_306158.jpg",
-    "sampledFrames": 5,
-    "audio": "original-audible",
-    "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Azur-Lane-Ayanami-Moving-Wallpaper",
@@ -2802,10 +2752,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1660724536_329472.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Genshin-Impact-Eula-O",
@@ -2815,10 +2767,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1673479827_988128.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Genshin-Impact-Nahida-Wallpaper-4K",
@@ -2828,10 +2782,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1672773041_826722.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Genshin-Impact-Zhong-li-O",
@@ -2841,10 +2797,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1673479205_864188.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Kamisato-Ayaka-Genshin-Impact-Game-ANime-Live-Wallpaper",
@@ -2854,10 +2812,12 @@
     "height": 1080,
     "fps": 40.98204302411147,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645463324_808376.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Koishi-Komeiji-Touhou-古明地-こいし-東方",
@@ -2867,10 +2827,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1673477412_371749.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-NieR-Automata-Wallpaper-Engine",
@@ -2880,10 +2842,12 @@
     "height": 1080,
     "fps": 60.00762265109768,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654431333_191135.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Desktop-Honkai3-Delta-1080p-Live-Wallpaper",
@@ -2893,10 +2857,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655034805_483702.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Shenhe-Anime-Genshin-Impact-Game-Live-Wallpaper",
@@ -2906,10 +2872,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1652718548_981710.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Yorha-a2-nier-automata",
@@ -2919,10 +2887,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1672870150_709096.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-nier-metal-gear",
@@ -2932,10 +2902,12 @@
     "height": 2160,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/1723477394.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-wuthering-waves-lucy-live-wallpaper-y7y6",
@@ -2945,10 +2917,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/kEXRNA2yuw-WutheringWavesLucyLiveWallpaper.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "original-audible",
     "soundtrackID": null,
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-summer-mountain-lake-live-wallpaper-qnn1",
@@ -2958,10 +2932,12 @@
     "height": 2304,
     "fps": 30.09933774834437,
     "previewImageURL": "https://www.desktophut.com/images/2I4SYqwuXN-summer-mountain-lake-live-wallpaper.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-autumn-puddle-reflection-live-wallpaper",
@@ -2971,10 +2947,12 @@
     "height": 2160,
     "fps": 30.011159705312643,
     "previewImageURL": "https://www.desktophut.com/images/4883_mpc-hc64_EkTJg0srtx.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-emerald-grove-sanctuary-live-wallpaper",
@@ -2984,10 +2962,12 @@
     "height": 2160,
     "fps": 59.94005994005994,
     "previewImageURL": "https://www.desktophut.com/images/1752238583.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-green-clover-live-wallpaper-9463",
@@ -2997,10 +2977,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/QHfDKz456R-wallpaper.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-tropical-green-leaves-6917",
@@ -3010,10 +2992,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/HRT76jf8hc-GentlyBreezingFernLeaves2Prob4.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-purple-dream-tree-sky-2312",
@@ -3023,10 +3007,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/6i48OrXGSP-Seq7hy444442Prob4.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "our-expanse",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-sunset-over-castle-river-valley-8214",
@@ -3036,10 +3022,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/bclTaIPiuJ-wallpaper.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-giant-sun-falls-5066",
@@ -3049,10 +3037,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/yvqb16cGVp-Wallpaper62Prob4.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "our-expanse",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-stormy-sky-live-wallpaper-2307",
@@ -3062,10 +3052,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/j4i3DUYJmx-wallpaper1.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "blackout",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-crimson-moon-over-fiery-world-4909",
@@ -3075,10 +3067,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/uJL85oHY4F-SectNewserverBg2Prob4.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "blackout",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-celestial-mountain-view-1657",
@@ -3088,10 +3082,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/ExAOs0Soin-Sequence02Tgtg2Prob4.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "our-expanse",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-aurora-lake-campfire-1423",
@@ -3101,10 +3097,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/Ad4itaugXR-Wallpaper52Prob4.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-sakura-light",
@@ -3114,10 +3112,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1743585922.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-diamond-jelly",
@@ -3127,10 +3127,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1741879605.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-moonlight-lake-serene-landscape",
@@ -3140,10 +3142,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1741191388.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "blackout",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-into-the-wild",
@@ -3153,10 +3157,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1727797124.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-under-swaying",
@@ -3166,10 +3172,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1725178971.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-moonlight_hJk",
@@ -3179,10 +3187,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1725020955.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "blackout",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-lotus-lake",
@@ -3192,10 +3202,12 @@
     "height": 2160,
     "fps": 29.775,
     "previewImageURL": "https://www.desktophut.com/images/1721223703.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-lake-landscape",
@@ -3205,10 +3217,12 @@
     "height": 2160,
     "fps": 25.0,
     "previewImageURL": "https://www.desktophut.com/images/1716828260.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-shore-night",
@@ -3218,10 +3232,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1716774489.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "blackout",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-relax-dreamscape",
@@ -3231,10 +3247,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1712764663.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-ambience-sakura",
@@ -3244,10 +3262,12 @@
     "height": 2160,
     "fps": 72.0,
     "previewImageURL": "https://www.desktophut.com/images/1712515508.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Sakura-Dreamscape",
@@ -3257,10 +3277,12 @@
     "height": 2160,
     "fps": 72.0,
     "previewImageURL": "https://www.desktophut.com/images/1712513999.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-summer-ambience",
@@ -3270,10 +3292,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/1712506303.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-aesthetic-dreamscape",
@@ -3283,10 +3307,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1710511965.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-overwatch-2-beach-live-wallpaper",
@@ -3296,10 +3322,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1696060347.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-forest-and-deer-hd-live-wallpaper",
@@ -3309,10 +3337,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/1694935404.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Fog-Dark-Forest-Live-Wallpaper-Free",
@@ -3322,10 +3352,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654789362_299045.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "blackout",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-EDIT-Winter-Forest-Live-Wallpaper-Free",
@@ -3335,10 +3367,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654788904_648840.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-In-he-Early-Morning-Forest-Live-Wallpaper",
@@ -3348,10 +3382,12 @@
     "height": 1080,
     "fps": 29.80715483510341,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645463719_241272.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 8,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Tanjiro-Kamado-in-Forest-Live-Wallpaper-Free",
@@ -3361,10 +3397,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654794097_7920.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Foggy-Snow-Winter-Forest-4K-Live-Wallpaper",
@@ -3374,10 +3412,12 @@
     "height": 2160,
     "fps": 24.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645298653_707161.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "blackout",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Snowfall-In-Forest-Live-Wallpaper",
@@ -3387,10 +3427,12 @@
     "height": 1080,
     "fps": 23.976023976023978,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1668456749_495863.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Mountains-Forest-Windows-Animated-Wallpaper",
@@ -3400,10 +3442,12 @@
     "height": 1080,
     "fps": 23.976036165379742,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1652643497_621352.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Pokemon-Pinwheel-Forest-Live-Wallpaper",
@@ -3413,10 +3457,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1675462265_156826.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-fall-forest-live-wallpaper_C6uN",
@@ -3426,10 +3472,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/Fg8rQ15qG2-FallForestLiveWallpaper.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Lantern-Forest",
@@ -3439,10 +3487,12 @@
     "height": 2160,
     "fps": 59.94008644745536,
     "previewImageURL": "https://www.desktophut.com/images/1710183899.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-4K-Cozy-Little-Place-In-The-Forest-Live-Wallpaper-For-PC",
@@ -3452,10 +3502,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654877457_527901.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Sans-In-The-Snow-Forest-Undertale-4k-Live-Wallpaper",
@@ -3465,10 +3517,12 @@
     "height": 2160,
     "fps": 59.94002790145761,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1647079769_49919.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-4K-Midnight-Forest-Beneath-The-Milky-Way-Live-Wallpaper-For-PC",
@@ -3478,10 +3532,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654877783_27063.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "blackout",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Forest-Clear-Stream-Live-Wallpaper-Free",
@@ -3491,10 +3547,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654798743_658702.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Fantasy-Forest-Rivet-Live-Wallpaper",
@@ -3504,10 +3562,12 @@
     "height": 1080,
     "fps": 29.975243706651412,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645450456_950321.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Dark-Rain-Forest-Road-Live-Wallpaper",
@@ -3517,10 +3577,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1646397542_616432.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "blackout",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-forest-tower",
@@ -3530,10 +3592,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1675010255_118528.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-magic-mushroom-forest-8422",
@@ -3543,10 +3607,12 @@
     "height": 2160,
     "fps": 25.0,
     "previewImageURL": "https://www.desktophut.com/images/rDRe9QyFma-Mu2Prob4.webp",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-blue-forest-waterfalls-live-wallpaper_Ext1",
@@ -3556,10 +3622,12 @@
     "height": 2160,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/zRcsCXlrMN-BlueForestWaterfallsLiveWallpaper.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Ori-And-The-Blind-Forest-Live-Wallpaper",
@@ -3569,10 +3637,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645450760_933334.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Tropical-Forest-Stream-Lively-Wallpaper",
@@ -3582,10 +3652,12 @@
     "height": 1080,
     "fps": 26.515034106412006,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1673028001_978671.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Animals-Jam-Food-Truck-in-Forest-HD-Live-Wallpaper",
@@ -3595,10 +3667,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645465107_405688.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Capsuled-Forest-1920x1080-Live-Wallpaper",
@@ -3608,10 +3682,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1668456384_334576.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Desktop-Magical-Forest-Live-Wallpaper",
@@ -3621,10 +3697,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1655033770_66699.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Forest-Stream-Live-Wallpaper-Free",
@@ -3634,10 +3712,12 @@
     "height": 2160,
     "fps": 24.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654796865_993596.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Hotarubi-no-Mori-Into-the-Forest-of-Fireflies-Light",
@@ -3647,10 +3727,12 @@
     "height": 2160,
     "fps": 59.94005994005994,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1672406586_76045.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Forest-Windows-Animated-Wallpaper",
@@ -3660,10 +3742,12 @@
     "height": 1080,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1652643366_704590.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-The-Forest-Live-Wallpaper",
@@ -3673,10 +3757,12 @@
     "height": 1080,
     "fps": 28.048835504764185,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1675813347_983889.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Enchanted-Forest-1-Live-Wallpaper-Free",
@@ -3686,10 +3772,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654798264_249451.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Forest-Lullaby-Windows-Animated-Wallpaper",
@@ -3699,10 +3787,12 @@
     "height": 1080,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1652643366_127082.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Forest-Drone-Live-Wallpaper",
@@ -3712,10 +3802,12 @@
     "height": 1440,
     "fps": 25.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1675384614_448703.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Aesthetic-Pine-Forest-4K-Animated-Wallpaper",
@@ -3725,10 +3817,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1659615007_882383.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Forest-River-Live-Wallpaper-Free",
@@ -3738,10 +3832,12 @@
     "height": 1080,
     "fps": 29.97002997002997,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654798147_131014.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Red-Leaf-Forest-Live-Wallpaper",
@@ -3751,10 +3847,12 @@
     "height": 1080,
     "fps": 51.415406120239545,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1659085259_969691.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Enchanted-Forest",
@@ -3764,10 +3862,12 @@
     "height": 1080,
     "fps": 27.92645520809216,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1674405267_587007.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Cabin-in-the-Forest-Live-Wallpaper",
@@ -3777,10 +3877,12 @@
     "height": 1080,
     "fps": 50.153727905029115,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1657549187_64208.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Fantasy-Forest-Animated-Background",
@@ -3790,10 +3892,12 @@
     "height": 1080,
     "fps": 29.011752316813915,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1683981641_363101.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Loli-Neko-In-A-Forest-4K-Live-Wallpaper",
@@ -3803,10 +3907,12 @@
     "height": 2160,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1652698612_738725.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Enchanted-Forest-Live-Wallpaper-Free",
@@ -3816,10 +3922,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654788998_292536.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Link-in-a-Forest-Live-Wallpaper-Free",
@@ -3829,10 +3937,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654791078_932541.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Reinhardt-In-The-Forest-Live-Wallpaper",
@@ -3842,10 +3952,12 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645297875_417808.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-stone-bridge-in-forest-desktop",
@@ -3855,10 +3967,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1669732289_47268.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Live-Cabin-in-The-Forest-Wallpaper",
@@ -3868,10 +3982,12 @@
     "height": 1080,
     "fps": 51.074552717515886,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1661857773_295213.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Kelp-Forest-Live-Wallpaper-Free",
@@ -3881,10 +3997,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654796720_70089.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Desktop-Forbidden-Forest-HD-Live-Wallpaper",
@@ -3894,10 +4012,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1652714146_688231.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Elf-Forest-Landscape-Lively-Wallpaper",
@@ -3907,10 +4027,12 @@
     "height": 1080,
     "fps": 29.004497026150492,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1684057649_189657.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Cabin-Forest-Live-Wallpaper-Free",
@@ -3920,10 +4042,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654789896_289224.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Arylin-Forest-HD-LIve-Wallpaper",
@@ -3933,10 +4057,12 @@
     "height": 1080,
     "fps": 60.016682377936725,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645120704_735240.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Summer-Forest-Live-Wallpaper",
@@ -3946,10 +4072,12 @@
     "height": 1080,
     "fps": 23.976023976023978,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1668457428_570229.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Forest-Panda-Live-Wallpaper-Free",
@@ -3959,10 +4087,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654789840_539105.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-Melodic-Forest-by-GUWEIZ-Live-Wallpaper",
@@ -3972,23 +4102,12 @@
     "height": 1080,
     "fps": 52.18433471637158,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1653047151_187132.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
-  },
-  {
-    "id": "desktophut-Torii-Shrine-In-The-Forest-Live-Wallpaper-PC",
-    "sourcePageURL": "https://www.desktophut.com/Torii-Shrine-In-The-Forest-Live-Wallpaper-PC",
-    "originalURL": "https://media.desktophut.com/files/1659422341-1659422341-torii-shrine-in-the-forest-live-wallpaper-pc.mp4",
-    "width": 1920,
-    "height": 1080,
-    "fps": 60.0,
-    "previewImageURL": "https://www.desktophut.com/images/thumb_1659422341_281439.jpg",
-    "sampledFrames": 5,
-    "audio": "paired-verified",
-    "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Forest-Breeze-Live-Wallpaper-Free",
@@ -3998,10 +4117,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654792559_999664.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-DesktopHut.com-Forestlake-Wallpaper-Free",
@@ -4011,10 +4132,12 @@
     "height": 1080,
     "fps": 25.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1645290738_765740.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Sakura-Forest-Live-Wallpaper-Free",
@@ -4024,10 +4147,12 @@
     "height": 1080,
     "fps": 60.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654789435_820106.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
   },
   {
     "id": "desktophut-PC-Light-Beam-Forest-Live-Wallpaper",
@@ -4037,9 +4162,416 @@
     "height": 1080,
     "fps": 30.0,
     "previewImageURL": "https://www.desktophut.com/images/thumb_1654600420_992022.jpg",
-    "sampledFrames": 5,
+    "sampledFrames": 9,
     "audio": "paired-verified",
     "soundtrackID": "cozy-piano",
-    "reviewedAt": "2026-11-15"
+    "reviewedAt": "2026-11-17",
+    "firstFrameReviewed": true,
+    "posterReviewed": true
+  },
+  {
+    "id": "desktophut-Anime-Ocean-View-Lively-Wallpaper",
+    "sourcePageURL": "https://www.desktophut.com/Anime-Ocean-View-Lively-Wallpaper",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1671476714_450092.jpg",
+    "originalURL": "https://media.desktophut.com/files/1671476714-1671476714-anime-ocean-view-lively-wallpaper.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 29.40935760972542,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-Anime-Landscape-Live-Wallpaper",
+    "sourcePageURL": "https://www.desktophut.com/Anime-Landscape-Live-Wallpaper",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1669807356_940985.jpg",
+    "originalURL": "https://media.desktophut.com/files/1669807356-1669807356-anime-landscape-live-wallpaper.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 26.681549585696423,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "our-expanse",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-Anime-landscape-wallpaper",
+    "sourcePageURL": "https://www.desktophut.com/Anime-landscape-wallpaper",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1669221008_688835.jpg",
+    "originalURL": "https://media.desktophut.com/files/1669221008-1669221008-anime-landscape-wallpaper.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 25.623866524771547,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "our-expanse",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-Sunset-Of-Despair-Anime-Live-Wallpaper",
+    "sourcePageURL": "https://www.desktophut.com/Sunset-Of-Despair-Anime-Live-Wallpaper",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1667853569_554711.jpg",
+    "originalURL": "https://media.desktophut.com/files/1667853569-1667853569-sunset-of-despair-anime-live-wallpaper.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 29.95705726555067,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-Violet-Evergarden-Live-Anime-Wallpaper",
+    "sourcePageURL": "https://www.desktophut.com/Violet-Evergarden-Live-Anime-Wallpaper",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1667853569_963715.jpg",
+    "originalURL": "https://media.desktophut.com/files/1667853569-1667853569-violet-evergarden-live-anime-wallpaper.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 29.9566180937631,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-Fragrant-Garden-Anime-Live-Wallpaper-Engine",
+    "sourcePageURL": "https://www.desktophut.com/Fragrant-Garden-Anime-Live-Wallpaper-Engine",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1666894988_529302.jpg",
+    "originalURL": "https://media.desktophut.com/files/1666894988-1666894988-fragrant-garden-anime-live-wallpaper-engine.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-Anime-Totoro-Rain-Live-Wallpaper",
+    "sourcePageURL": "https://www.desktophut.com/Anime-Totoro-Rain-Live-Wallpaper",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1664440594_276642.jpg",
+    "originalURL": "https://media.desktophut.com/files/1664440594-1664440594-anime-totoro-rain-live-wallpaper.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 48.81078994233906,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "blackout",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-Yae-Sakura-Live-Wallpaper-Anime",
+    "sourcePageURL": "https://www.desktophut.com/Yae-Sakura-Live-Wallpaper-Anime",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1658899861_684558.jpg",
+    "originalURL": "https://media.desktophut.com/files/1658899861-1658899861-yae-sakura-live-wallpaper-anime.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 53.823329995085935,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-reze-rainy-window-blue-live-wallpaper",
+    "sourcePageURL": "https://www.desktophut.com/reze-rainy-window-blue-live-wallpaper",
+    "previewImageURL": "https://www.desktophut.com/images/reze-rainy-window-blue-live-wallpaper-1773916705.webp",
+    "originalURL": "https://media.desktophut.com/files/1773916705.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 60.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "blackout",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-jjk-gojo-blue-rain-night",
+    "sourcePageURL": "https://www.desktophut.com/jjk-gojo-blue-rain-night",
+    "previewImageURL": "https://www.desktophut.com/images/jujutsu-kaisen-gojo-satoru-blue-rain-night-live-wallpaper-1770119017.webp",
+    "originalURL": "https://media.desktophut.com/files/1770119017.mp4",
+    "width": 3840,
+    "height": 2152,
+    "fps": 30.019268092560683,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "blackout",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-jjk-gojo-rainy-city-night",
+    "sourcePageURL": "https://www.desktophut.com/jjk-gojo-rainy-city-night",
+    "previewImageURL": "https://www.desktophut.com/images/jujutsu-kaisen-gojo-satoru-rainy-city-night-live-wallpaper-1770118387.webp",
+    "originalURL": "https://media.desktophut.com/files/1770118387.mp4",
+    "width": 3840,
+    "height": 2152,
+    "fps": 30.02848207147791,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "blackout",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-jjk-yuji-itadori-rainy-city",
+    "sourcePageURL": "https://www.desktophut.com/jjk-yuji-itadori-rainy-city",
+    "previewImageURL": "https://www.desktophut.com/images/jujutsu-kaisen-yuji-itadori-rainy-night-city-live-wallpaper-1770118239.webp",
+    "originalURL": "https://media.desktophut.com/files/1770118239.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 30.01048282837686,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "blackout",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-shindou-takeshi-autumn-sunset",
+    "sourcePageURL": "https://www.desktophut.com/shindou-takeshi-autumn-sunset",
+    "previewImageURL": "https://www.desktophut.com/images/shindou-takeshi-autumn-sunset-spiral-sky-live-wallpaper-1770036525.webp",
+    "originalURL": "https://media.desktophut.com/files/1770036525.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 60.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-roronoa-zoro-forest-swordsman-8562",
+    "sourcePageURL": "https://www.desktophut.com/roronoa-zoro-forest-swordsman-8562",
+    "previewImageURL": "https://www.desktophut.com/images/QrkVGxjOMt-wallpaper.webp",
+    "originalURL": "https://media.desktophut.com/files/7dW3ZGPMRE-wallpaper.mp4",
+    "width": 2816,
+    "height": 1536,
+    "fps": 30.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-annie-leonhart-river-scene-7428",
+    "sourcePageURL": "https://www.desktophut.com/annie-leonhart-river-scene-7428",
+    "previewImageURL": "https://www.desktophut.com/images/xKlq3bQVfk-wallpaper.webp",
+    "originalURL": "https://media.desktophut.com/files/d8viwemCNa-wallpaper.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 30.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-up-in-the-clouds-1527",
+    "sourcePageURL": "https://www.desktophut.com/up-in-the-clouds-1527",
+    "previewImageURL": "https://www.desktophut.com/images/ACx0LeTJcj-wallpaper.webp",
+    "originalURL": "https://media.desktophut.com/files/K3Mvl0zmsw-wallpaper.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 30.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "our-expanse",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-rainy-day-at-home",
+    "sourcePageURL": "https://www.desktophut.com/rainy-day-at-home",
+    "previewImageURL": "https://www.desktophut.com/images/1742298628.webp",
+    "originalURL": "https://media.desktophut.com/files/Ve6IUiXMSHHsQpk_Wallpaper%202%20Prob4.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 30.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "blackout",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-silent-itachi-rain-reflection",
+    "sourcePageURL": "https://www.desktophut.com/silent-itachi-rain-reflection",
+    "previewImageURL": "https://www.desktophut.com/images/1733138101.webp",
+    "originalURL": "https://media.desktophut.com/files/AAOR42Sa2vpv6bN_Standing-In-The-Rain-Itachi-4K_3_091304.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 30.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "blackout",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-samurai-on-ocean-waves",
+    "sourcePageURL": "https://www.desktophut.com/samurai-on-ocean-waves",
+    "previewImageURL": "https://www.desktophut.com/images/1728990416.webp",
+    "originalURL": "https://media.desktophut.com/files/UxnJFMgFrG80H6u_Samurai%20Ocean%20Waves%204K_2_124659.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 30.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-alone-rain",
+    "sourcePageURL": "https://www.desktophut.com/alone-rain",
+    "previewImageURL": "https://www.desktophut.com/images/1722944026.webp",
+    "originalURL": "https://media.desktophut.com/files/FSRMdhSEbaXjG9K_Alone%20In%20Rain2_5_141310.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 29.97002997002997,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "blackout",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-Midnight-Rain-Live-Wallpaper-Anime",
+    "sourcePageURL": "https://www.desktophut.com/Midnight-Rain-Live-Wallpaper-Anime",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1655759296_433990.jpg",
+    "originalURL": "https://media.desktophut.com/files/1655759296-1655759296-midnight-rain-live-wallpaper-anime.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 52.534582345495785,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "blackout",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-PC-HD-Torii-Sunset-Live-Anime-Wallpaper",
+    "sourcePageURL": "https://www.desktophut.com/PC-HD-Torii-Sunset-Live-Anime-Wallpaper",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1655025759_75711.jpg",
+    "originalURL": "https://media.desktophut.com/files/1655025759-1655025759-pc-hd-torii-sunset-live-anime-wallpaper.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-PC-Desktop-Sunset-In-The-Field-Anime-Desktop-4k-Live-Wallpaper",
+    "sourcePageURL": "https://www.desktophut.com/PC-Desktop-Sunset-In-The-Field-Anime-Desktop-4k-Live-Wallpaper",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1655033196_40078.jpg",
+    "originalURL": "https://media.desktophut.com/files/1655033196-1655033196-pc-desktop-sunset-in-the-field-anime-desktop-4k-live-wallpaper.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 60.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-PC-HD-Sunset-Classroom-Live-Anime-Wallpaper",
+    "sourcePageURL": "https://www.desktophut.com/PC-HD-Sunset-Classroom-Live-Anime-Wallpaper",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1655025381_405640.jpg",
+    "originalURL": "https://media.desktophut.com/files/1655025381-1655025381-pc-hd-sunset-classroom-live-anime-wallpaper.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-PC-Anime-Ride-Sunset-Live-Wallpaper",
+    "sourcePageURL": "https://www.desktophut.com/PC-Anime-Ride-Sunset-Live-Wallpaper",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1654970909_422427.jpg",
+    "originalURL": "https://media.desktophut.com/files/1654970909-1654970909-pc-anime-ride-sunset-live-wallpaper.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-PC-Anime-Sunset-Live-Wallpaper-Free",
+    "sourcePageURL": "https://www.desktophut.com/PC-Anime-Sunset-Live-Wallpaper-Free",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1654789913_911257.jpg",
+    "originalURL": "https://media.desktophut.com/files/1654789913-1654789913-pc-anime-sunset-live-wallpaper-free.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 60.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "cozy-piano",
+    "reviewedAt": "2026-11-17"
+  },
+  {
+    "id": "desktophut-PC-Anime-Rain-Live-Wallpaper-Free",
+    "sourcePageURL": "https://www.desktophut.com/PC-Anime-Rain-Live-Wallpaper-Free",
+    "previewImageURL": "https://www.desktophut.com/images/thumb_1654789738_229597.jpg",
+    "originalURL": "https://media.desktophut.com/files/1654789738-1654789738-pc-anime-rain-live-wallpaper-free.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 60.0,
+    "sampledFrames": 6,
+    "firstFrameReviewed": true,
+    "posterReviewed": true,
+    "audio": "paired-verified",
+    "soundtrackID": "blackout",
+    "reviewedAt": "2026-11-17"
   }
 ]

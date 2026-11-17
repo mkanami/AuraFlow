@@ -54,6 +54,7 @@ final class CatalogDownloadService: @unchecked Sendable {
         progress: CatalogDownloadProgress.Handler? = nil
     ) async throws -> URL {
         try Task.checkCancellation()
+        try CatalogContentPolicy.validate(wallpaper)
         try FileManager.default.createDirectory(
             at: downloadedWallpapersDirectoryURL,
             withIntermediateDirectories: true
@@ -103,6 +104,7 @@ final class CatalogDownloadService: @unchecked Sendable {
 
     func download(_ wallpaper: CatalogWallpaper, progress: CatalogDownloadProgress.Handler? = nil) async throws -> URL {
         try Task.checkCancellation()
+        try CatalogContentPolicy.validate(wallpaper)
         try FileManager.default.createDirectory(
             at: downloadedWallpapersDirectoryURL,
             withIntermediateDirectories: true

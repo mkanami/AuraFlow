@@ -215,6 +215,25 @@ private actor MusicFixtureSource: WallpaperCatalogProviding, WallpaperCatalogPag
     }
 }
 
+@Test func musicCatalogReviewRequiresBothTheVideoBeginningAndArtworkPoster() throws {
+    let selections = MusicWallpaperCatalogProvider.bundledSelections()
+    let original = try #require(selections.first { $0.soundtrackID == nil })
+    let paired = try #require(selections.first { $0.soundtrackID != nil })
+    for item in [original, paired] {
+        let reviewed = try #require(MusicCatalogReview.bundled()[item.id])
+        #expect(MusicWallpaperCatalogProvider.filterReviewedSelections([item], reviews: [item.id: reviewed]) == [item])
+        #expect(MusicWallpaperCatalogProvider.filterReviewedSelections([item], reviews: [:]).isEmpty)
+        let encoded = try JSONEncoder().encode(reviewed)
+        for missingCheck in ["firstFrameReviewed", "posterReviewed"] {
+            var record = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+            record[missingCheck] = false
+            let data = try JSONSerialization.data(withJSONObject: record)
+            let incomplete = try JSONDecoder().decode(MusicCatalogReview.self, from: data)
+            #expect(MusicWallpaperCatalogProvider.filterReviewedSelections([item], reviews: [item.id: incomplete]).isEmpty)
+        }
+    }
+}
+
 @Test @MainActor func musicTabRevealsVerifiedSelectionsBeyondTheFirstDisplayPage() {
     let model = CatalogViewModel()
     let unrelated = (0..<30).map { musicCard("ordinary-\($0)") }

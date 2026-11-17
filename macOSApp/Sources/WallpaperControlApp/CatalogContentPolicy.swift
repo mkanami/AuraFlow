@@ -1,6 +1,6 @@
 import Foundation
 
-/// Exclude branded media rather than cropping, blurring or painting over it.
+/// Exclude text-bearing media rather than masking it with a different poster.
 /// The registry includes visually reviewed source pages and poster aliases.
 enum CatalogContentPolicy {
     private struct Exclusion: Decodable {
@@ -27,6 +27,7 @@ enum CatalogContentPolicy {
     }()
     private static let watermarkFree = try! NSRegularExpression(pattern: #"\b(?:no|without)[\s-]+watermarks?\b|\bwatermark[\s-]+free\b"#)
     private static let branded = try! NSRegularExpression(pattern: #"[♬♫♪][\s-]*live[\s-]*wallpaper|\bwatermark(?:ed)?\b|\bnightcore\b"#)
+    private static let warningPoster = try! NSRegularExpression(pattern: #"(?:^|[/_.-])nsfw(?:[/_.-]|$)"#)
 
     static func allows(_ wallpaper: CatalogWallpaper) -> Bool {
         allows(id: wallpaper.id, title: wallpaper.title, page: wallpaper.sourcePageURL, poster: wallpaper.previewImageURL)
@@ -46,6 +47,13 @@ enum CatalogContentPolicy {
     }
 
     private static func evaluate(id: String, page: URL?, poster: URL?, fields: [String]) -> Bool {
+        // A warning image is not an approved artwork preview. Catch new IDs
+        // and cache aliases too, rather than hiding the warning behind an
+        // unreviewed frame from the video.
+        if let poster {
+            let path = normalized(poster.path)
+            if warningPoster.firstMatch(in: path, range: NSRange(path.startIndex..., in: path)) != nil { return false }
+        }
         let text = fields.joined(separator: " ")
         let compact = text.filter { $0.isLetter || $0.isNumber }
         if compact.contains("hdsoundi") || compact.contains("wherewordsfailmusicspeaks") { return false }
