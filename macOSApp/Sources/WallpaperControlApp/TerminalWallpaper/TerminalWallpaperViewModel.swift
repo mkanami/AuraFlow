@@ -375,7 +375,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
                     if preset.isValid { self.checkAvailability(preset) }
                 }
             }
-            catch { self.errorMessage = "Could not read the animation library: \(error.localizedDescription)" }
+            catch { self.errorMessage = "Could not read the animation library: \(UserFacingErrorMessage.describe(error))" }
         }
         for preset in TerminalWallpaperPreset.all { checkAvailability(preset) }
     }
@@ -715,7 +715,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 statusMessage = "Homebrew is ready. Choose Install & show in preview to continue."
             } catch is CancellationError { }
             catch {
-                errorMessage = error.localizedDescription
+                errorMessage = UserFacingErrorMessage.describe(error)
                 installHelpURL = URL(string: "https://docs.brew.sh/Installation")
             }
         }
@@ -832,7 +832,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 store.rollbackTemporaryTerminal(operationID: id)
             } catch {
                 store.rollbackTemporaryTerminal(operationID: id)
-                errorMessage = error.localizedDescription
+                errorMessage = UserFacingErrorMessage.describe(error)
             }
         }
     }
@@ -879,7 +879,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
                     guard generation == scaleUpdateGeneration else { continue }
                     scaleMode = confirmedScaleMode
                     updatePreviewScale(confirmedScaleMode)
-                    errorMessage = "Failed to update scale mode: \(error.localizedDescription)"
+                    errorMessage = "Failed to update scale mode: \(UserFacingErrorMessage.describe(error))"
                 }
             }
         }
@@ -1015,7 +1015,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 statusMessage = successMessage
                 succeeded = true
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = UserFacingErrorMessage.describe(error)
             }
         }
     }
@@ -1048,7 +1048,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 terminalWallpaperViewModelLogger.error(
                     "Lock Screen selection failed: \(error.localizedDescription, privacy: .public)"
                 )
-                self?.errorMessage = "Lock Screen: \(error.localizedDescription)"
+                self?.errorMessage = "Lock Screen: \(UserFacingErrorMessage.describe(error))"
             }
         }
     }
@@ -1080,7 +1080,7 @@ final class TerminalWallpaperViewModel: ObservableObject {
                 terminalWallpaperViewModelLogger.error(
                     "Deferred Terminal runtime update failed: \(error.localizedDescription, privacy: .public)"
                 )
-                self?.errorMessage = "Terminal runtime update: \(error.localizedDescription)"
+                self?.errorMessage = "Terminal runtime update: \(UserFacingErrorMessage.describe(error))"
             }
         }
     }

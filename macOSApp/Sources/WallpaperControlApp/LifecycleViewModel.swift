@@ -326,7 +326,7 @@ final class LifecycleViewModel: ObservableObject {
                 }
                 callbacks.recordBridgeFailure(error, context)
                 callbacks.setAlertMessage(
-                    "Failed to \(request.intent.name): \(error.localizedDescription)"
+                    "Failed to \(request.intent.name): \(UserFacingErrorMessage.describe(error))"
                 )
                 lifecycleViewModelLogger.error(
                     "Failed operation=\(request.id, privacy: .public) intent=\(request.intent.name, privacy: .public) error=\(error.localizedDescription, privacy: .public)"

@@ -212,7 +212,7 @@ final class WallpaperEngineViewModel: ObservableObject {
                 }
                 await refreshLocalLibrary()
             }
-        } catch { if generation == locationGeneration { self.error = error.localizedDescription } }
+        } catch { if generation == locationGeneration { self.error = UserFacingErrorMessage.describe(error) } }
     }
     func discover(_ url: URL) {
         guard !isImporting, !isLocatingLibrary else { return }
@@ -227,7 +227,7 @@ final class WallpaperEngineViewModel: ObservableObject {
                 selectedCandidates = Set(found.filter(\.supported).map(\.id))
                 if found.count == 1, found[0].supported { isImporting = false; importSelected(); return }
                 showsProjectPicker = true
-            } catch { if generation == importGeneration { self.error = error.localizedDescription } }
+            } catch { if generation == importGeneration { self.error = UserFacingErrorMessage.describe(error) } }
             if generation == importGeneration { isImporting = false }
         }
     }
@@ -263,7 +263,7 @@ final class WallpaperEngineViewModel: ObservableObject {
                 if editProperties, imported.first?.type == .web { showsProperties = true }
                 message = "Imported \(imported.count) project(s). Preview only; use Start to apply."
             } catch is CancellationError { }
-            catch { if generation == importGeneration { self.error = error.localizedDescription; projects = library.projects() } }
+            catch { if generation == importGeneration { self.error = UserFacingErrorMessage.describe(error); projects = library.projects() } }
             if generation == importGeneration { isImporting = false }
         }
     }
@@ -283,7 +283,7 @@ final class WallpaperEngineViewModel: ObservableObject {
     func setValue(_ value: ProjectValue, for property: WallpaperEngineProperty) {
         guard let project = selectedProject, property.editable else { return }
         values[property.id] = property.validated(value)
-        do { try library.saveValues(values, for: project) } catch { self.error = error.localizedDescription }
+        do { try library.saveValues(values, for: project) } catch { self.error = UserFacingErrorMessage.describe(error) }
         propertyTask?.cancel()
         let newValues = values
         propertyTask = Task {
@@ -291,7 +291,7 @@ final class WallpaperEngineViewModel: ObservableObject {
             guard !Task.isCancelled, let status = WebWallpaperRuntime.status, status.projectID == project.id,
                   var config = WebWallpaperRuntime.read(WebWallpaperConfiguration.self, from: "config.json"), config.generation == status.generation else { return }
             config.values = newValues
-            do { try WebWallpaperRuntime.write(config, to: "config.json") } catch { self.error = error.localizedDescription }
+            do { try WebWallpaperRuntime.write(config, to: "config.json") } catch { self.error = UserFacingErrorMessage.describe(error) }
         }
     }
     func start() {
@@ -301,7 +301,7 @@ final class WallpaperEngineViewModel: ObservableObject {
             do {
                 try await startWallpaper(config)
                 message = "Web wallpaper started. Lock Screen uses a still frame."
-            } catch { self.error = error.localizedDescription }
+            } catch { self.error = UserFacingErrorMessage.describe(error) }
             refreshRuntime(); isBusy = false
         }
     }
@@ -310,7 +310,7 @@ final class WallpaperEngineViewModel: ObservableObject {
         isBusy = true; error = nil
         Task {
             do { try await removeWallpaper() }
-            catch { self.error = error.localizedDescription }
+            catch { self.error = UserFacingErrorMessage.describe(error) }
             refreshRuntime(); isBusy = false
         }
     }

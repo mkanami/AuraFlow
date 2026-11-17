@@ -298,11 +298,14 @@ extension WallpaperControlling {
 
 enum NativeWallpaperControllerError: LocalizedError {
     case unavailable(String)
+    case startRollbackFailed(cause: Error, failures: [String])
 
     var errorDescription: String? {
         switch self {
         case .unavailable(let message):
             return message
+        case .startRollbackFailed(let cause, let failures):
+            return "Start failed: \(cause.localizedDescription); rollback failed: \(failures.joined(separator: "; "))"
         }
     }
 }
@@ -1033,11 +1036,7 @@ final class NativeWallpaperController: WallpaperControlling, @unchecked Sendable
                 previousHealth: previousHealth
             )
             if !rollbackFailures.isEmpty {
-                throw NativeWallpaperControllerError.unavailable(
-                    "Start failed: \(error.localizedDescription); "
-                        + "rollback failed: "
-                        + rollbackFailures.joined(separator: "; ")
-                )
+                throw NativeWallpaperControllerError.startRollbackFailed(cause: error, failures: rollbackFailures)
             }
             throw error
         }
@@ -3506,7 +3505,7 @@ final class AppViewModel: ObservableObject {
                     self.pendingLockScreenProviderFallbackReason = nil
                     self.lockScreenProviderFallbackRetryTask?.cancel()
                     self.lockScreenProviderFallbackRetryTask = nil
-                    self.alertMessage = error.localizedDescription
+                    self.alertMessage = UserFacingErrorMessage.describe(error)
                 }
             }
         }
@@ -3651,7 +3650,7 @@ final class AppViewModel: ObservableObject {
                     posterTitle: wallpaper.title
                 )
             } catch {
-                alertMessage = "Failed to prepare downloaded wallpaper: \(error.localizedDescription)"
+                alertMessage = "Failed to prepare downloaded wallpaper: \(UserFacingErrorMessage.describe(error))"
             }
         }
     }
@@ -3825,7 +3824,7 @@ final class AppViewModel: ObservableObject {
                 return
             } catch {
                 guard !Task.isCancelled else { return }
-                alertMessage = "Failed to download wallpaper: \(error.localizedDescription)"
+                alertMessage = "Failed to download wallpaper: \(UserFacingErrorMessage.describe(error))"
             }
         }
     }
@@ -3853,7 +3852,7 @@ final class AppViewModel: ObservableObject {
         } catch {
             recordBridgeFailure(error, context: "set-video", surface: surfaceErrors)
             if surfaceErrors && bridgeFailureCount < bridgeFailureThreshold {
-                alertMessage = "Failed to set video: \(error.localizedDescription)"
+                alertMessage = "Failed to set video: \(UserFacingErrorMessage.describe(error))"
             }
         }
     }
@@ -3960,7 +3959,7 @@ final class AppViewModel: ObservableObject {
             } catch {
                 recordBridgeFailure(error, context: "set-speed")
                 if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to update speed: \(error.localizedDescription)"
+                    alertMessage = "Failed to update speed: \(UserFacingErrorMessage.describe(error))"
                 }
             }
         }
@@ -4042,7 +4041,7 @@ final class AppViewModel: ObservableObject {
             } catch {
                 guard !Task.isCancelled, let self, generation == self.volumeUpdateGeneration else { return }
                 self.volumeUpdateTask = nil
-                self.alertMessage = "Failed to update volume: \(error.localizedDescription)"
+                self.alertMessage = "Failed to update volume: \(UserFacingErrorMessage.describe(error))"
             }
         }
     }
@@ -4090,7 +4089,7 @@ final class AppViewModel: ObservableObject {
                 autostartEnabled = previous
                 recordBridgeFailure(error, context: "set-autostart")
                 if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to update launch at login: \(error.localizedDescription)"
+                    alertMessage = "Failed to update launch at login: \(UserFacingErrorMessage.describe(error))"
                 }
             }
         }
@@ -4123,7 +4122,7 @@ final class AppViewModel: ObservableObject {
                 if error is CancellationError {
                     statusMessage = "Frame blending cancelled."
                 } else {
-                    alertMessage = "Failed to update interpolation: \(error.localizedDescription)"
+                    alertMessage = "Failed to update interpolation: \(UserFacingErrorMessage.describe(error))"
                 }
             }
         }
@@ -4156,7 +4155,7 @@ final class AppViewModel: ObservableObject {
                 pauseOnFullscreenEnabled = previous
                 recordBridgeFailure(error, context: "set-fullscreen-pause")
                 if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to update fullscreen policy: \(error.localizedDescription)"
+                    alertMessage = "Failed to update fullscreen policy: \(UserFacingErrorMessage.describe(error))"
                 }
             }
         }
@@ -4201,7 +4200,7 @@ final class AppViewModel: ObservableObject {
                         showOnLockScreenEnabled = confirmed
                         recordBridgeFailure(error, context: "set-lock-screen")
                         if bridgeFailureCount < bridgeFailureThreshold {
-                            alertMessage = "Failed to update Lock Screen: \(error.localizedDescription)"
+                            alertMessage = "Failed to update Lock Screen: \(UserFacingErrorMessage.describe(error))"
                         }
                     }
                 }
@@ -4238,7 +4237,7 @@ final class AppViewModel: ObservableObject {
                 }
                 recordBridgeFailure(error, context: "preview-lock-screen")
                 if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Lock Screen preview failed: \(error.localizedDescription)"
+                    alertMessage = "Lock Screen preview failed: \(UserFacingErrorMessage.describe(error))"
                 }
             }
         }
@@ -4307,7 +4306,7 @@ final class AppViewModel: ObservableObject {
                 scaleMode = previous
                 recordBridgeFailure(error, context: "set-scale")
                 if bridgeFailureCount < bridgeFailureThreshold {
-                    alertMessage = "Failed to update scale mode: \(error.localizedDescription)"
+                    alertMessage = "Failed to update scale mode: \(UserFacingErrorMessage.describe(error))"
                 }
             }
         }
@@ -4351,7 +4350,7 @@ final class AppViewModel: ObservableObject {
             try WallpaperEffectsStore(appSupportURL: appSupportDirectoryURL).save(normalized)
             wallpaperEffects = normalized
         } catch {
-            alertMessage = "Could not save wallpaper effects: \(error.localizedDescription)"
+            alertMessage = "Could not save wallpaper effects: \(UserFacingErrorMessage.describe(error))"
         }
     }
 
@@ -4497,7 +4496,7 @@ final class AppViewModel: ObservableObject {
                 statusMessage = "Cache and downloaded wallpapers cleared."
                 alertMessage = nil
             } catch {
-                alertMessage = "Failed to clear cache: \(error.localizedDescription)"
+                alertMessage = "Failed to clear cache: \(UserFacingErrorMessage.describe(error))"
             }
         }
     }
@@ -4897,9 +4896,9 @@ final class AppViewModel: ObservableObject {
             monitoringErrorMessage = nil
         } catch {
             monitoringSnapshot = nil
-            monitoringErrorMessage = error.localizedDescription
+            monitoringErrorMessage = UserFacingErrorMessage.describe(error)
             if surfaceErrors {
-                alertMessage = "Failed to refresh monitoring: \(error.localizedDescription)"
+                alertMessage = "Failed to refresh monitoring: \(UserFacingErrorMessage.describe(error))"
             }
         }
     }
@@ -4993,7 +4992,7 @@ final class AppViewModel: ObservableObject {
                 if catalogWallpapers.isEmpty {
                     selectedCatalogWallpaper = nil
                 }
-                statusMessage = "Wallpaper catalog unavailable: \(error.localizedDescription)"
+                statusMessage = "Wallpaper catalog unavailable: \(UserFacingErrorMessage.describe(error))"
             }
         }
     }
@@ -5055,7 +5054,7 @@ final class AppViewModel: ObservableObject {
                 lastCatalogPaginationTriggerID = nil
                 catalogViewModel.loadMoreFailed = true
                 catalogViewModel.automaticPaginationPaused = true
-                statusMessage = "More wallpapers could not be loaded: \(error.localizedDescription)"
+                statusMessage = "More wallpapers could not be loaded: \(UserFacingErrorMessage.describe(error))"
             }
         }
     }
@@ -5617,7 +5616,7 @@ final class AppViewModel: ObservableObject {
                     try await controller.syncLockScreenSaver()
                 }
             } catch {
-                alertMessage = "Wallpaper started, but Lock Screen sync failed: \(error.localizedDescription)"
+                alertMessage = "Wallpaper started, but Lock Screen sync failed: \(UserFacingErrorMessage.describe(error))"
             }
         }
     }
@@ -5931,7 +5930,7 @@ final class AppViewModel: ObservableObject {
         } catch {
             recordBridgeFailure(error, context: "autostart-start")
             if bridgeFailureCount < bridgeFailureThreshold {
-                alertMessage = "Launch at login error: \(error.localizedDescription)"
+                alertMessage = "Launch at login error: \(UserFacingErrorMessage.describe(error))"
             }
         }
     }
@@ -6040,11 +6039,12 @@ final class AppViewModel: ObservableObject {
         surface: Bool = true
     ) {
         bridgeFailureCount += 1
-        let description = error.localizedDescription
+        let description = UserFacingErrorMessage.describe(error)
+        lockScreenLifecycleLogger.error("Wallpaper action failed context=\(context, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
 
-        if bridgeFailureCount >= bridgeFailureThreshold {
-            alertMessage = "Native wallpaper runtime unstable (\(context)): \(description)"
-            statusMessage = "Bridge health warning."
+        if bridgeFailureCount >= bridgeFailureThreshold || UserFacingErrorMessage.knownProblem(error) != nil {
+            alertMessage = description
+            statusMessage = "Wallpaper action could not be completed."
             return
         }
 

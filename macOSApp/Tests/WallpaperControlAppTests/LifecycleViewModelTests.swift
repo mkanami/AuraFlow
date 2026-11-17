@@ -5,7 +5,8 @@ import Testing
 @MainActor
 private func makeLifecycleViewModel(
     controller: MockNativeWallpaperController,
-    preparationDelay: UInt64 = 0
+    preparationDelay: UInt64 = 0,
+    setAlertMessage: @escaping (String?) -> Void = { _ in }
 ) -> LifecycleViewModel {
     let viewModel = LifecycleViewModel()
     let prepare: @MainActor @Sendable (URL) async throws -> PreparedLifecycleVideo = { url in
@@ -29,10 +30,26 @@ private func makeLifecycleViewModel(
                 viewModel?.isPlaybackPaused = result.status.paused ?? false
                 viewModel?.isLockScreenOnlyActive =
                     result.status.lock_screen_only ?? false
-            }
+            },
+            setAlertMessage: setAlertMessage
         )
     )
     return viewModel
+}
+
+@Test @MainActor
+func lifecycleFailureShowsTheStorageCauseInsteadOfAnInternalRuntimeWarning() async {
+    let controller = MockNativeWallpaperController()
+    controller.resumeError = CocoaError(.fileWriteOutOfSpace)
+    var alert: String?
+    let model = makeLifecycleViewModel(controller: controller, setAlertMessage: { alert = $0 })
+    model.isPlaybackPaused = true
+    model.resume()
+    await waitForLifecycleToBecomeIdle(model)
+    #expect(model.state == .failed)
+    #expect(alert?.contains("Not enough disk space") == true)
+    #expect(alert?.contains("Free up space") == true)
+    #expect(alert?.contains("runtime unstable") == false)
 }
 
 @MainActor
