@@ -6,15 +6,17 @@ public final class LiveScreenSaverStoreCoordinator {
     public enum StoreError: LocalizedError {
         case unavailable
         case malformed
+        case missingOriginalWallpaper
         case changedDuringUpdate
         case wallpaperAgentUnavailable
 
         public var errorDescription: String? {
             switch self {
-            case .unavailable: "The macOS Screen Saver store is unavailable."
-            case .malformed: "The macOS Screen Saver store has an unknown format."
-            case .changedDuringUpdate: "The macOS Screen Saver selection changed; try again."
-            case .wallpaperAgentUnavailable: "macOS could not refresh the Screen Saver selection."
+            case .unavailable: "macOS wallpaper settings are unavailable. Open Wallpaper in System Settings, then try again."
+            case .malformed: "macOS wallpaper settings could not be read. Open Wallpaper in System Settings, then try again."
+            case .missingOriginalWallpaper: "AuraFlow has no complete backup of your previous wallpaper. Choose a wallpaper in System Settings, then try again."
+            case .changedDuringUpdate: "The wallpaper changed while AuraFlow was updating it. Try again."
+            case .wallpaperAgentUnavailable: "AuraFlow could not connect to the macOS wallpaper service. Reopen AuraFlow and try again."
             }
         }
     }
@@ -88,6 +90,12 @@ public final class LiveScreenSaverStoreCoordinator {
     }
 
     public func activate() throws { try activate(includeDesktop: false) }
+
+    func validateActivation(includeDesktop: Bool) throws {
+        try routeRecovery.withExclusiveAccess {
+            _ = try activationPlan(from: readStore(), journal: loadJournal(), includeDesktop: includeDesktop)
+        }
+    }
 
     /// WallpaperAgent does not reload an externally edited Index.plist. Its
     /// cached Desktop can overwrite our secure promotion on a repeated lock.
@@ -178,14 +186,21 @@ public final class LiveScreenSaverStoreCoordinator {
         var saved = journal?.routes ?? []
         let saverMode = try makeSaverMode()
         var changed = false
+        var missingOriginalWallpaper = false
         root = mapContainers(in: root) { path, container in
             var result = container
             guard result["Linked"] != nil || result["Desktop"] != nil || result["Idle"] != nil else {
                 return result
             }
+            let savedIndex = saved.firstIndex(where: { $0.path == path })
             if isSelected(result["Idle"]), result["Linked"] == nil,
-               !includeDesktop || isSelected(result["Desktop"]) { return result }
-            if !saved.contains(where: { $0.path == path }) {
+               !includeDesktop || isSelected(result["Desktop"]) {
+                if includeDesktop, savedIndex.map({ sharedOriginalIsRestorable(saved[$0]) }) != true {
+                    missingOriginalWallpaper = true
+                }
+                return result
+            }
+            if savedIndex == nil {
                 saved.append(SavedRoute(
                     path: path,
                     type: result["Type"] as? String,
@@ -194,8 +209,33 @@ public final class LiveScreenSaverStoreCoordinator {
                     desktop: optionalPlistData(result["Desktop"]),
                     sharedDesktop: includeDesktop ? true : nil
                 ))
-            } else if includeDesktop, let index = saved.firstIndex(where: { $0.path == path }) {
-                saved[index].sharedDesktop = true
+            } else if includeDesktop, let index = savedIndex {
+                let previous = saved[index]
+                let currentDesktop = result["Linked"] ?? result["Desktop"]
+                let previousDesktop = propertyList(previous.desktop ?? previous.linked)
+                if isSelected(currentDesktop)
+                    || (WallpaperDesktopSupport.isPlaceholderWallpaperMode(currentDesktop)
+                        && previousDesktop.map(WallpaperDesktopSupport.isUserWallpaperMode) == true) {
+                    saved[index].sharedDesktop = true
+                } else if isSelected(result["Idle"]), let linked = propertyList(previous.linked),
+                          sameWallpaperSelection(linked, result["Desktop"]) {
+                    // An unchanged split route can return to its original
+                    // Linked structure instead of losing that appearance state.
+                    saved[index].sharedDesktop = true
+                } else {
+                    // Lock-only never owned Desktop. A later Start must save
+                    // the user's current complete choice, not its older backup
+                    // or a placeholder captured during the earlier install.
+                    saved[index] = SavedRoute(path: path, type: result["Type"] as? String,
+                        linked: optionalPlistData(result["Linked"]),
+                        idle: isSelected(result["Idle"]) ? previous.idle ?? previous.linked : optionalPlistData(result["Idle"]),
+                        desktop: optionalPlistData(result["Desktop"]), sharedDesktop: true)
+                }
+            }
+            if includeDesktop, let original = saved.first(where: { $0.path == path }),
+               !sharedOriginalIsRestorable(original) {
+                missingOriginalWallpaper = true
+                return result
             }
             if let linked = result.removeValue(forKey: "Linked") {
                 result["Desktop"] = linked
@@ -206,7 +246,22 @@ public final class LiveScreenSaverStoreCoordinator {
             changed = true
             return result
         }
+        guard !missingOriginalWallpaper else { throw StoreError.missingOriginalWallpaper }
         return changed ? (try encodedPlist(root), Journal(routes: saved)) : nil
+    }
+
+    private func sharedOriginalIsRestorable(_ route: SavedRoute) -> Bool {
+        let modes = [route.linked, route.desktop, route.idle].compactMap { $0 }
+        return !modes.isEmpty && modes.allSatisfy {
+            guard let mode = propertyList($0) else { return false }
+            return WallpaperDesktopSupport.isUserWallpaperMode(mode)
+        }
+    }
+
+    private func sameWallpaperSelection(_ lhs: Any, _ rhs: Any?) -> Bool {
+        guard var left = lhs as? [String: Any], var right = rhs as? [String: Any] else { return false }
+        for key in ["LastSet", "LastUse"] { left.removeValue(forKey: key); right.removeValue(forKey: key) }
+        return NSDictionary(dictionary: left).isEqual(to: right)
     }
 
     private func restorePlan(from original: Data, journal: Journal, preferCurrentDesktop: Bool) throws -> Data? {
@@ -224,6 +279,7 @@ public final class LiveScreenSaverStoreCoordinator {
             guard (ownsIdle || ownsDesktop), container["Linked"] == nil else { return container }
             var result = container
             if let saved = journal.routes.first(where: { $0.path == path }), saved.sharedDesktop == true, ownsDesktop {
+                guard sharedOriginalIsRestorable(saved) else { missingUserSelection = true; return container }
                 if ownsIdle {
                     // Both choices are still ours: restore the complete original
                     // structure, including distinct Idle/Desktop appearances.
@@ -284,7 +340,7 @@ public final class LiveScreenSaverStoreCoordinator {
             changed = true
             return result
         }
-        guard !missingUserSelection else { throw StoreError.malformed }
+        guard !missingUserSelection else { throw StoreError.missingOriginalWallpaper }
         return changed ? try encodedPlist(root) : nil
     }
 

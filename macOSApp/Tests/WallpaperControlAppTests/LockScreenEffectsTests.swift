@@ -351,6 +351,103 @@ func lockEffectsLockOnlyUsesTheOriginalMediaWithoutBakingOrNativePreparation(nam
     #expect(try f.load() == f.original)
 }
 
+@Test(arguments: [false, true], [false, true])
+func lockEffectsLockOnlyToSharedRefreshesTheDesktopBackup(automatic: Bool, legacyPlaceholder: Bool) async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let installer = f.installer()
+    try await installer.installLockScreenOnly(videoURL: f.source)
+    if automatic {
+        #expect(try installer.activateLockScreenForCurrentSession() == false)
+        f.locked = nil
+        #expect(try installer.activateLockScreenForCurrentSession() == false)
+    }
+    f.locked = true
+    _ = try installer.activateLockScreenForCurrentSession()
+    f.locked = false
+    _ = try await installer.restoreDesktopAfterLockScreenSessionAsync()
+    var current = try f.load() as! [String: Any]
+    var route = current["SystemDefault"] as! [String: Any]
+    var chosen = route["Desktop"] as! [String: Any]
+    chosen["Appearance"] = ["mode": "light", "color": [0.8, 0.4, 0.2]]
+    route["Desktop"] = chosen; current["SystemDefault"] = route
+    try PropertyListSerialization.data(fromPropertyList: current, format: .binary, options: 0).write(to: f.storeURL)
+    if legacyPlaceholder {
+        let journalURL = f.root.appendingPathComponent("live-lock-screen-route.json")
+        var journal = try JSONSerialization.jsonObject(with: Data(contentsOf: journalURL)) as! [String: Any]
+        var routes = journal["routes"] as! [[String: Any]]
+        let index = try #require(routes.firstIndex { $0["path"] as? String == "SystemDefault" })
+        routes[index]["desktop"] = try PropertyListSerialization.data(fromPropertyList:
+            ["Content": ["Choices": [["Provider": "default"]]]], format: .binary, options: 0).base64EncodedString()
+        journal["routes"] = routes
+        try JSONSerialization.data(withJSONObject: journal).write(to: journalURL)
+    }
+    try await installer.installForDesktopAgent(videoURL: f.source, playbackSpeed: 1, scaleMode: .fill)
+    f.locked = true
+    #expect(try installer.activateLockScreenForCurrentSession() == false)
+    #expect(try await installer.repair(videoURL: f.source, shouldProceed: { true }) == false)
+    f.locked = false
+    _ = try await installer.restoreDesktopAfterLockScreenSessionAsync()
+    try await installer.uninstallAsync()
+    let restored = try f.load()["SystemDefault"] as! [String: Any]
+    #expect(restored["Desktop"] as? NSDictionary == chosen as NSDictionary)
+    #expect(restored["Idle"] as? NSDictionary == (f.original["SystemDefault"] as! [String: Any])["Idle"] as? NSDictionary)
+}
+
+@Test func lockEffectsSharedStartRejectsAnUnresolvedDesktopWithoutChangingTheSystemStore() async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    var current = try f.load() as! [String: Any]
+    var route = current["SystemDefault"] as! [String: Any]
+    route["Desktop"] = ["Content": ["Choices": [["Provider": "default"]]]]
+    current["SystemDefault"] = route
+    try PropertyListSerialization.data(fromPropertyList: current, format: .binary, options: 0).write(to: f.storeURL)
+    let before = try Data(contentsOf: f.storeURL)
+    let installer = f.installer()
+    await #expect(throws: (any Error).self) {
+        try await installer.installForDesktopAgent(videoURL: f.source, playbackSpeed: 1, scaleMode: .fill)
+    }
+    #expect(try Data(contentsOf: f.storeURL) == before)
+    #expect(f.restarts == 0 && !installer.isInstalled)
+}
+
+@Test(arguments: [false, true])
+func lockEffectsMissingSharedBackupPreservesTheWorkingInstallationAndExplainsRecovery(emptyEntry: Bool) async throws {
+    let f = try EffectsRouteFixture(); defer { f.cleanup() }
+    let installer = f.installer()
+    try await installer.installForDesktopAgent(videoURL: f.source, playbackSpeed: 1, scaleMode: .fill)
+    let journalURL = f.root.appendingPathComponent("live-lock-screen-route.json")
+    let markerURL = f.root.appendingPathComponent("live-lock-screen-effects.json")
+    var journal = try JSONSerialization.jsonObject(with: Data(contentsOf: journalURL)) as! [String: Any]
+    var routes = journal["routes"] as! [[String: Any]]
+    let index = try #require(routes.firstIndex { $0["path"] as? String == "SystemDefault" })
+    if emptyEntry {
+        for key in ["desktop", "idle", "linked"] { routes[index].removeValue(forKey: key) }
+    } else {
+        routes[index]["desktop"] = try PropertyListSerialization.data(fromPropertyList:
+            ["Content": ["Choices": [["Provider": "default"]]]], format: .binary, options: 0).base64EncodedString()
+    }
+    journal["routes"] = routes
+    try JSONSerialization.data(withJSONObject: journal).write(to: journalURL)
+    let before = try Data(contentsOf: f.storeURL)
+    let marker = try Data(contentsOf: markerURL)
+    let savedJournal = try Data(contentsOf: journalURL)
+    let stops = f.restarts
+    await #expect(throws: LiveScreenSaverStoreCoordinator.StoreError.self) {
+        try await installer.installForDesktopAgent(videoURL: f.source, playbackSpeed: 1, scaleMode: .fill)
+    }
+    do {
+        try await installer.uninstallAsync()
+        Issue.record("Missing original wallpaper must not restore a placeholder")
+    } catch {
+        #expect(error.localizedDescription.contains("no complete backup"))
+        #expect(error.localizedDescription.contains("System Settings"))
+        #expect(!error.localizedDescription.contains("unknown format"))
+    }
+    #expect(try Data(contentsOf: f.storeURL) == before)
+    #expect(try Data(contentsOf: markerURL) == marker)
+    #expect(try Data(contentsOf: journalURL) == savedJournal)
+    #expect(f.restarts == stops && installer.isInstalled)
+}
+
 @Test func lockEffectsCanMigrateExistingNativePlaybackAndStayLiveWhenSettingsToggle() async throws {
     let f = try EffectsRouteFixture(); defer { f.cleanup() }
     f.native.isInstalled = true

@@ -102,6 +102,9 @@ public final class LiveEffectsLockScreenInstaller: ModernLockScreenInstalling {
             // recover the exact Desktop descriptor saved by that route.
             try routes.restoreIfOwned()
         }
+        // Reject an unsafe replacement before overwriting the working marker.
+        // The coordinator revalidates again after the system's final flush.
+        try routes.validateActivation(includeDesktop: includeDesktop)
         let generation = (installation?.generation ?? 0) &+ 1
         let next = Installation(path: videoURL.standardizedFileURL.path, signature: signature(videoURL), generation: generation,
             desktopIncluded: includeDesktop)
