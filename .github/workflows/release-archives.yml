@@ -1,0 +1,117 @@
+name: Build release archives
+
+# The existing Release workflow remains the Developer ID / notarized path.
+# This explicitly dispatched job builds the established manual ad-hoc archives;
+# it never publishes a release or changes Latest automatically.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-archives-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  archives:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      BUILD_UNIVERSAL: "1"
+      REQUIRE_UNIVERSAL: "1"
+      BUILD_NATIVE_BRIDGE: "1"
+      REQUIRE_NATIVE_BRIDGE: "1"
+      REQUIRE_CODESIGN: "0"
+      CODESIGN_IDENTITY: ""
+      FFMPEG_RUNTIME_BUNDLING: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          selected_app="$(ls -td /Applications/Xcode*.app 2>/dev/null | head -n 1)"
+          test -d "$selected_app/Contents/Developer"
+          echo "DEVELOPER_DIR=$selected_app/Contents/Developer" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$selected_app/Contents/Developer" xcodebuild -version
+
+      - name: Ensure Rosetta is available
+        shell: bash
+        run: |
+          if [[ "$(uname -m)" == "arm64" ]]; then
+            sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+          fi
+
+      - name: Build universal ad-hoc archives
+        run: ./build_app.sh
+
+      - name: Verify bundle, versions, and architectures
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import plistlib
+          import re
+          import subprocess
+
+          source = Path('script/build_and_run.sh').read_text()
+          version = re.search(r'^APP_VERSION="([0-9]+\.[0-9]+\.[0-9]+)"$', source, re.M).group(1)
+          build = re.search(r'^APP_BUILD="([0-9]+)"$', source, re.M).group(1)
+          app = Path('dist/AuraFlow.app')
+          for bundle in [app, app / 'Contents/Helpers/AuraTerminalWallpaperAgent.app',
+                         app / 'Contents/PlugIns/AuraFlowLockScreen.saver']:
+              info = plistlib.loads((bundle / 'Contents/Info.plist').read_bytes())
+              assert info['CFBundleShortVersionString'] == version, bundle
+              assert info['CFBundleVersion'] == build, bundle
+          for path in app.rglob('*'):
+              if path.is_file() and 'Mach-O' in subprocess.check_output(['file', '-b', str(path)], text=True):
+                  subprocess.run(['lipo', str(path), '-verify_arch', 'arm64', 'x86_64'], check=True)
+          subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+          Path('dist/BUILD-METADATA.txt').write_text(
+              f'Commit: {subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()}\n'
+              f'Version: {version}\nBuild: {build}\nArchitectures: arm64 x86_64\n'
+              'Signing: ad-hoc; not Apple-notarized\n')
+          PY
+          (cd dist && shasum -a 256 AuraFlow.dmg AuraFlow.zip > SHA256SUMS)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-archives
+          path: |
+            dist/AuraFlow.zip
+            dist/AuraFlow.dmg
+            dist/SHA256SUMS
+            dist/BUILD-METADATA.txt
+          if-no-files-found: error
+
+  smoke-test:
+    needs: archives
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15-intel]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-archives
+          path: dist
+
+      - name: Verify downloaded ZIP and DMG
+        shell: bash
+        run: |
+          (cd dist && shasum -a 256 -c SHA256SUMS)
+          mkdir -p "$RUNNER_TEMP/auraflow-zip" "$RUNNER_TEMP/auraflow-dmg"
+          ditto -x -k dist/AuraFlow.zip "$RUNNER_TEMP/auraflow-zip"
+          codesign --verify --deep --strict "$RUNNER_TEMP/auraflow-zip/AuraFlow.app"
+          hdiutil verify dist/AuraFlow.dmg
+          mount_path="$RUNNER_TEMP/auraflow-dmg"
+          trap 'hdiutil detach "$mount_path" >/dev/null 2>&1 || true' EXIT
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount_path" dist/AuraFlow.dmg
+          codesign --verify --deep --strict "$mount_path/AuraFlow.app"
+          test -L "$mount_path/Applications"
+          lipo "$mount_path/AuraFlow.app/Contents/MacOS/WallpaperControlApp" -verify_arch arm64 x86_64
+          cmp "$RUNNER_TEMP/auraflow-zip/AuraFlow.app/Contents/Info.plist" "$mount_path/AuraFlow.app/Contents/Info.plist"
+          cat dist/BUILD-METADATA.txt

@@ -8,6 +8,15 @@
 
 The optional **Release** workflow is started manually on a version tag once Developer ID credentials are configured. It repeats CI, signs and notarizes the universal app, validates stapled tickets, checks Intel and Apple Silicon artifacts, and publishes DMG/ZIP/SHA256SUMS. Its signing requirements do not apply to the explicitly selected manual ad-hoc distribution path.
 
+When local disk space is limited, manually dispatch **Build release archives** on
+the intended branch or tag. It builds universal ad-hoc archives without signing
+secrets, checks nested versions and architectures, and verifies ZIP/DMG copies on
+Apple Silicon and Intel runners. Download its `release-archives` artifact and
+check `BUILD-METADATA.txt` against the exact commit that passed the **Tests**
+workflow. It does not publish anything: only tag and upload those archives after
+both workflows pass for that commit. The separate notarized **Release** workflow
+retains its Developer ID requirements.
+
 The deployment-target job checks macOS 13 compatibility. Hosted smoke checks use currently supported GitHub runner images; they do not substitute for testing on a physical Mac running macOS 13.
 
 ## GitHub Actions secrets
