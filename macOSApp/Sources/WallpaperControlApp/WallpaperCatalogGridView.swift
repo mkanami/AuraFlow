@@ -18,26 +18,31 @@ struct WallpaperCatalogGridView: View {
     var body: some View {
         ScrollViewReader { scrollViewProxy in
             ScrollView {
-                wallpaperCards
-                    .padding(.vertical, 2)
+                // ScrollView's implicit stack derives spacing from its children.
+                // A spinner and a button have different spacing preferences on
+                // older macOS; keep the gap fixed while the footer changes.
+                VStack(spacing: 12) {
+                    wallpaperCards
+                        .padding(.vertical, 2)
 
-                ZStack {
-                    if catalogViewModel.isLoadingMore || (catalogViewModel.showsMusicOnly && catalogViewModel.isRefreshing) {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            if catalogViewModel.showsMusicOnly { Text("Loading music…").font(.caption) }
+                    ZStack {
+                        if catalogViewModel.isLoadingMore || (catalogViewModel.showsMusicOnly && catalogViewModel.isRefreshing) {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                if catalogViewModel.showsMusicOnly { Text("Loading music…").font(.caption) }
+                            }
+                        } else if catalogViewModel.canLoadMore {
+                            Button(action: viewModel.loadMoreCatalogWallpapers) {
+                                Label(catalogViewModel.loadMoreFailed ? "Try again" : "Load more", systemImage: "arrow.down.circle")
+                            }
+                            .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
+                            .disabled(catalogViewModel.isRefreshing)
+                            .accessibilityIdentifier("catalog.loadMore")
+                            .onAppear { requestMoreIfNearEnd() }
                         }
-                    } else if catalogViewModel.canLoadMore {
-                        Button(action: viewModel.loadMoreCatalogWallpapers) {
-                            Label(catalogViewModel.loadMoreFailed ? "Try again" : "Load more", systemImage: "arrow.down.circle")
-                        }
-                        .buttonStyle(AuraGlassButtonStyle(fillWidth: false, compact: true))
-                        .disabled(catalogViewModel.isRefreshing)
-                        .accessibilityIdentifier("catalog.loadMore")
-                        .onAppear { requestMoreIfNearEnd() }
                     }
+                    .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
                 }
-                .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
             }
             .onChange(of: catalogViewModel.scrollRequestGeneration) { _ in
                 guard let targetID = catalogViewModel.scrollTargetID else { return }
