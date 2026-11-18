@@ -42,11 +42,11 @@ supported sessions, and remaining features. The sections below describe macOS.
 <table>
   <tbody>
     <tr><td><strong>Desktop playback</strong></td><td>Loop animated wallpapers behind desktop icons across connected displays.</td></tr>
-    <tr><td><strong>Lock Screen</strong></td><td>Show the active wallpaper on the Lock Screen, with a Lock Screen-only mode for local media.</td></tr>
+    <tr><td><strong>Lock Screen</strong></td><td>Show the active wallpaper on the Lock Screen, with a Lock Screen-only mode for local media and terminal wallpapers.</td></tr>
     <tr><td><strong>Wallpaper Catalog</strong></td><td>Browse, preview, download with progress and cancellation, and reopen wallpapers without leaving the app.</td></tr>
     <tr><td><strong>Local media</strong></td><td>Open videos, GIFs, WebM files, and still images from your Mac.</td></tr>
     <tr><td><strong>Terminal wallpapers</strong></td><td>Run CLI animations, static compositions, and terminal dashboards as wallpapers.</td></tr>
-    <tr><td><strong>Playback controls</strong></td><td>Change speed, pause, resume, and automatically pause for fullscreen apps.</td></tr>
+    <tr><td><strong>Playback controls</strong></td><td>Change speed and volume, mute, pause, resume, and automatically pause for fullscreen apps.</td></tr>
     <tr><td><strong>Scaling</strong></td><td>Use one Fill / Fit / Stretch control for the installed media or terminal wallpaper.</td></tr>
     <tr><td><strong>Wallpaper effects</strong></td><td>Add cursor parallax, glow, lens flare, reflections, bloom, blur, sparkles, and rain with live controls.</td></tr>
     <tr><td><strong>Launch at login</strong></td><td>Restore your selected wallpaper automatically when you sign in.</td></tr>
@@ -54,9 +54,21 @@ supported sessions, and remaining features. The sections below describe macOS.
   </tbody>
 </table>
 
+## Latest release — 1.5.0
+
+- Cursor-reactive parallax, soft light, reflections, bloom, particles, and independently configurable falling rain and rain on glass.
+- **Music** with 305 reviewed anime and nature wallpapers, including separate soundtrack pairings. Sampled reviews cover opening frames, artwork posters, text, watermarks, and quality.
+- Music in the main preview while AuraFlow is in focus, with shared volume and mute controls. Desktop music pauses behind application windows and resumes from the same position.
+- Lighter catalog updates and image loading, clearer glass settings, and preview video and effects that keep moving while scrolling.
+- Lock Screen-only terminal wallpapers, shared live effects, native wallpaper backup fixes, and errors that explain the cause and next step.
+
+See the [release notes](https://github.com/mkanami/AuraFlow/releases/tag/v1.5.0)
+and [changelog](CHANGELOG.md) for details. macOS archives support both Apple Silicon
+and Intel. The Linux port remains a separate source installation.
+
 ## Installation
 
-1. Download the latest [`AuraFlow.dmg`](https://github.com/mkanami/AuraFlow/releases/latest).
+1. Download the latest [`AuraFlow.dmg`](https://github.com/mkanami/AuraFlow/releases/latest/download/AuraFlow.dmg).
 2. Open the disk image and drag **AuraFlow** into **Applications**.
 3. Launch AuraFlow from Applications.
 
@@ -70,7 +82,7 @@ programs can run offline.
    **Wallpaper Catalog**. For CLI animations and dashboards, open **Terminal Wallpaper**.
 2. Check the wallpaper in the main preview.
 3. Select **Start** for Desktop playback. **Play AuraFlow on Lock Screen** in
-   Playback Settings also enables Lock Screen playback. For local media, **Lock**
+   Playback Settings also enables Lock Screen playback. For local media or terminal wallpapers, **Lock**
    starts Lock Screen-only mode.
 4. Use **Remove** to stop AuraFlow and restore the previous wallpaper.
 
@@ -79,7 +91,7 @@ programs can run offline.
 | Control | Action |
 | --- | --- |
 | **Start** | Apply the selected wallpaper to the Desktop, and to the Lock Screen when enabled. |
-| **Lock** | Apply selected local media only to the Lock Screen. |
+| **Lock** | Apply selected local media or terminal wallpaper only to the Lock Screen. |
 | **Stop / Play** | Pause or resume an animated wallpaper. |
 | **Remove** | Stop AuraFlow and restore the previous macOS wallpaper. |
 | **Change Wallpaper…** | Select media stored on this Mac. |
@@ -195,10 +207,12 @@ The unlocked Desktop keeps its own renderer. Hidden system instances pause
 video decoding and effects. Native wallpaper descriptors and appearance settings
 are restored when the installation is removed.
 
-The separate **Lock** action preserves the user's native Desktop and uses the
-native Aerial fallback: a cached, silent effects loop of at most 30 seconds with
-ambient motion. Older macOS versions use the live saver. The Lock Screen never
-plays music.
+The separate **Lock** action preserves the user's native Desktop. With visible
+effects enabled and the bundled effects renderer available, local media uses the
+live saver rather than waiting for a pre-rendered movie. Without live effects,
+macOS 26 can use the native Aerial path; earlier macOS versions use the saver.
+Terminal wallpapers also support **Lock** without starting Desktop playback.
+The Lock Screen never plays music.
 
 The **Music** tab collects videos with confirmed sound from DesktopHut and
 LiveWallpapers4Free. Music and lofi listings are loaded through bundled
@@ -242,8 +256,8 @@ Search is not limited to the presets, so compatibility depends on the selected
 program. Commands requiring files, stdin, authentication, or interactive setup
 may not work as wallpapers. If a command fails, AuraFlow keeps the previous
 preview and asks you to choose another program. Terminal wallpapers are visual
-only and do not play audio. Lock Screen playback follows the shared setting;
-terminal wallpapers do not have a separate Lock Screen-only mode.
+only and do not play audio. **Start** follows the shared Lock Screen setting;
+**Lock** applies the selected terminal wallpaper only to the Lock Screen.
 
 ### Local Wallpaper Engine projects
 
@@ -310,7 +324,7 @@ AuraFlow is a Swift Package split into small runtime components:
 Media playback uses AVFoundation; terminal programs run through a PTY and render
 with CoreText and Metal. AppKit bridges are limited to macOS window and wallpaper
 behavior that SwiftUI does not expose directly. Normal playback does not require
-FFmpeg. The v1.3.4 download uses locally installed FFmpeg tools for optional video
+FFmpeg. The v1.5.0 download uses locally installed FFmpeg tools for optional video
 preprocessing, including Blend Interpolation and conversions that require FFmpeg.
 Video Optimization settings apply to newly imported local videos, not terminal
 programs or an already installed wallpaper.

@@ -1,10 +1,10 @@
 # Releasing AuraFlow
 
-1. Commit the complete source and tests, update the version in both build scripts, and update `CHANGELOG.md`.
+1. Commit the complete source and tests, update the version and build number in `script/build_and_run.sh`, `scripts/build_release.sh`, and `scripts/build_screensaver.sh`, and update `README.md` and `CHANGELOG.md`.
 2. Push the branch and open a pull request against `main`. All required CI jobs must pass on the final commit.
 3. Build universal archives with `BUILD_UNIVERSAL=1 REQUIRE_UNIVERSAL=1 REQUIRE_CODESIGN=0 CODESIGN_IDENTITY='' FFMPEG_RUNTIME_BUNDLING=0 ./build_app.sh`. Supply standalone FFmpeg tools instead if bundling them.
-4. Verify nested signatures with `codesign --verify --deep --strict dist/AuraFlow.app`, both architectures with `lipo -archs`, and disk image integrity with `hdiutil verify dist/AuraFlow.dmg`. These ad-hoc signatures do not provide Apple notarization.
-5. Merge the reviewed pull request, create and push an annotated `vMAJOR.MINOR.PATCH` tag on that commit, then publish release notes. The owner uploads the checked DMG and ZIP manually.
+4. Verify nested signatures with `codesign --verify --deep --strict dist/AuraFlow.app`, both architectures with `lipo -archs` for the app and every bundled helper, effects library and screen saver, the bundle version, and disk image integrity with `hdiutil verify dist/AuraFlow.dmg`. Unpack the ZIP and mount the DMG read-only to check their copies too. Generate `SHA256SUMS` for both archives. These ad-hoc signatures do not provide Apple notarization.
+5. Merge the reviewed pull request (or push directly when explicitly requested by the owner), create and push a new annotated `vMAJOR.MINOR.PATCH` tag on the checked commit, then publish release notes with the checked DMG, ZIP, and checksums. Mark the release as **Latest** and verify `releases/latest` resolves to the new tag. Do not move an existing version tag.
 
 The optional **Release** workflow is started manually on a version tag once Developer ID credentials are configured. It repeats CI, signs and notarizes the universal app, validates stapled tickets, checks Intel and Apple Silicon artifacts, and publishes DMG/ZIP/SHA256SUMS. Its signing requirements do not apply to the explicitly selected manual ad-hoc distribution path.
 

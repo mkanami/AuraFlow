@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.5.0 — 2026-11-18
+
+- Add configurable cursor-reactive parallax, soft glow, reflections, lens flare, bloom, blur, and particles across wallpaper previews and installed surfaces.
+- Add independent Falling Rain and Rain on Glass effects: three rain depth layers, gusts, selectable colors, wallpaper lighting, refraction, irregular beads, sliding drop deformation, coalescence, and connected water trails.
+- Add wallpaper audio detection, volume and mute controls, Audio badges, and a Music catalog with 305 reviewed anime and nature wallpapers. Support both original audio and separate instrumental soundtracks. Exclude identified text, watermark, warning-poster, off-topic, and low-quality entries; reviews sample clips rather than certifying every frame.
+- Play main-preview music only while AuraFlow is active and the preview is visible. Keep Desktop and preview audio ownership separate, pause Desktop music behind application windows, and retain playback position through pauses.
+- Expand catalog sources with learned api-anything operations; repair Music pagination and retries, prioritize foreground downloads, cache catalog presentation data, and deduplicate/downsample posters.
+- Reduce preview and glass rendering work during app updates. Keep preview video, effects, and music moving during scrolling; retain the temporary frame hold while dragging or resizing the window.
+- Improve glass control and audio badge styling, settings text and slider legibility, and the catalog icon.
+- Support terminal wallpapers in Lock Screen-only mode. Use the live effects renderer for effects-enabled media instead of waiting for an effects movie, and improve provider recovery across repeated secure sessions while preserving native Desktop descriptors and appearance settings.
+- Report storage, permissions, missing-file, and network failures with a concrete cause and useful next step. Fix native wallpaper backup promotion and restoration.
+- Include the separate Linux source port and its own setup and CI; macOS release archives remain universal Apple Silicon + Intel builds.
+
+The macOS archives use ad-hoc signatures and are not Apple-notarized. Optional video preprocessing uses locally installed FFmpeg; normal playback does not require it.
+
 ## 1.3.4
 
 - Keep wallpapers auto-paused while a visible fullscreen or maximized window covers the desktop behind the focused app. Check all visible regular applications instead of only the frontmost one, and release the pause when the covering window is hidden, minimized, moved off the current desktop or resized.
