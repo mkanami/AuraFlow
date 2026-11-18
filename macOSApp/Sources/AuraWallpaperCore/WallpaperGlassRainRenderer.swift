@@ -132,9 +132,10 @@ final class WallpaperGlassRainRenderer {
         let gate = gate
         command.addCompletedHandler { [weak self] buffer in
             gate.release()
+            let completed = buffer.status == .completed
             DispatchQueue.main.async {
                 guard let self else { return }
-                if buffer.status == .completed { self.completedFrames &+= 1 }
+                if completed { self.completedFrames &+= 1 }
                 else { self.layer.isHidden = true }
             }
         }

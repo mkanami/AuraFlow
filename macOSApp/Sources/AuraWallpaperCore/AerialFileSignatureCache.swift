@@ -7,7 +7,8 @@ public enum AerialFileSignatureValidation {
     @TaskLocal public static var allowsCachedRead = false
 }
 
-final class AerialFileSignatureCache {
+// Entries are protected by lock; the immutable clock can be called from any executor.
+final class AerialFileSignatureCache: @unchecked Sendable {
     private struct Metadata: Equatable {
         let device: Int32
         let inode: UInt64
@@ -36,9 +37,9 @@ final class AerialFileSignatureCache {
     }
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
-    private let clock: () -> TimeInterval
+    private let clock: @Sendable () -> TimeInterval
 
-    init(clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+    init(clock: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.clock = clock
     }
 

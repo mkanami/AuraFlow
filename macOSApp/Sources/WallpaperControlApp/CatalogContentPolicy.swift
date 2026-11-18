@@ -19,12 +19,21 @@ enum CatalogContentPolicy {
     // Rules and the bundled registry are immutable for the life of the app.
     // Include all inspected metadata, so changing a title/page/poster cannot
     // reuse an old approval. NSCache bounds memory and supports provider tasks.
-    private static let decisions: NSCache<NSString, NSNumber> = {
-        let cache = NSCache<NSString, NSNumber>()
-        cache.countLimit = 2048
-        cache.totalCostLimit = 4 * 1024 * 1024
-        return cache
-    }()
+    private static let decisions = DecisionCache()
+
+    // NSCache synchronizes lookups and insertion. Keep it private and exchange
+    // immutable String/Bool values rather than sharing SDK objects with callers.
+    private final class DecisionCache: @unchecked Sendable {
+        private let cache = NSCache<NSString, NSNumber>()
+        init() {
+            cache.countLimit = 2048
+            cache.totalCostLimit = 4 * 1024 * 1024
+        }
+        func value(forKey key: String) -> Bool? { cache.object(forKey: key as NSString)?.boolValue }
+        func store(_ value: Bool, forKey key: String) {
+            cache.setObject(NSNumber(value: value), forKey: key as NSString, cost: key.utf16.count * 2)
+        }
+    }
     private static let watermarkFree = try! NSRegularExpression(pattern: #"\b(?:no|without)[\s-]+watermarks?\b|\bwatermark[\s-]+free\b"#)
     private static let branded = try! NSRegularExpression(pattern: #"[♬♫♪][\s-]*live[\s-]*wallpaper|\bwatermark(?:ed)?\b|\bnightcore\b"#)
     private static let warningPoster = try! NSRegularExpression(pattern: #"(?:^|[/_.-])nsfw(?:[/_.-]|$)"#)
@@ -39,10 +48,10 @@ enum CatalogContentPolicy {
 
     private static func allows(id: String, title: String, page: URL?, poster: URL?) -> Bool {
         let raw = [id, title, page?.absoluteString ?? "", poster?.absoluteString ?? ""]
-        let key = raw.joined(separator: "\u{0}") as NSString
-        if let decision = decisions.object(forKey: key) { return decision.boolValue }
+        let key = raw.joined(separator: "\u{0}")
+        if let decision = decisions.value(forKey: key) { return decision }
         let allowed = evaluate(id: id, page: page, poster: poster, fields: raw.map(normalized))
-        decisions.setObject(NSNumber(value: allowed), forKey: key, cost: key.length * 2)
+        decisions.store(allowed, forKey: key)
         return allowed
     }
 

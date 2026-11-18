@@ -75,12 +75,12 @@ public struct WallpaperEffectsSettings: Codable, Equatable, Sendable {
         return result
     }
 
-    private static let numericKeys: [WritableKeyPath<Self, Double>] = [
+    private static var numericKeys: [WritableKeyPath<Self, Double>] { [
         \.smoothing, \.parallaxAmount, \.glowIntensity, \.glowSize,
         \.flareIntensity, \.reflectionIntensity, \.bloomIntensity, \.bloomRadius, \.blurAmount,
         \.sparkleAmount, \.rainAmount, \.rainSpeed, \.rainAngle, \.rainBlur, \.ambientSpeed,
         \.glassRainIntensity, \.glassRainSpeed, \.glassRainWind, \.glassRainBlur, \.glassRainRefraction
-    ]
+    ] }
 
     private enum CodingKeys: String, CodingKey {
         case enabled, reactsToCursor, smoothing, parallaxEnabled, parallaxAmount

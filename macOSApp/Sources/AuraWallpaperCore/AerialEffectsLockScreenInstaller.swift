@@ -68,11 +68,15 @@ public final class AerialEffectsLockScreenInstaller: ModernLockScreenInstalling 
     }
     private func applyLocked(_ url: URL, speed: Double, mode: WallpaperScaleMode, scope: Scope,
         shouldProceed: @escaping () -> Bool) async throws {
+        guard shouldProceed() else { throw CancellationError() }
         let selected = settings
         let effects = selected.enabled && selected.hasVisibleEffects
         let signature = effectsSignature(selected, speed: speed, mode: mode)
+        let settingsRoot = root
+        // The media actor observes only immutable values and file-backed settings.
+        // Caller-owned session approval stays on the installer side of the await.
         let rendered = try await media.prepare(source: url, settings: selected, speed: speed, scaleMode: mode,
-            shouldProceed: { shouldProceed() && self.settings == selected })
+            shouldProceed: { WallpaperEffectsStore(appSupportURL: settingsRoot).load() == selected })
         guard shouldProceed(), settings == selected else { throw CancellationError() }
         if liveInstalled {
             // This companion saved the exact user descriptors; drain it before
@@ -99,8 +103,9 @@ public final class AerialEffectsLockScreenInstaller: ModernLockScreenInstalling 
     }
     public func prepareLockScreenMedia(videoURL: URL, playbackSpeed: Double, scaleMode: WallpaperScaleMode) async throws {
         let selected = settings
+        let settingsRoot = root
         let movie = try await media.prepare(source: videoURL, settings: selected, speed: playbackSpeed,
-            scaleMode: scaleMode, shouldProceed: { self.settings == selected })
+            scaleMode: scaleMode, shouldProceed: { WallpaperEffectsStore(appSupportURL: settingsRoot).load() == selected })
         let effected = selected.enabled && selected.hasVisibleEffects
         try await native.prepareLockScreenMedia(videoURL: movie, playbackSpeed: effected ? 1 : playbackSpeed,
             scaleMode: effected ? .fill : scaleMode)

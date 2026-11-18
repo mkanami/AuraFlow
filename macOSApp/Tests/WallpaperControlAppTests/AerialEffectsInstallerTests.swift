@@ -46,7 +46,7 @@ private final class PreparedEffectsRecorder: NativeEffectsMediaPreparing {
     var beforeReturn: (() throws -> Void)?
     init(_ output: URL) { self.output = output }
     func prepare(source: URL, settings: WallpaperEffectsSettings, speed: Double,
-        scaleMode: WallpaperScaleMode, shouldProceed: @escaping () -> Bool) async throws -> URL {
+        scaleMode: WallpaperScaleMode, shouldProceed: @escaping @Sendable () -> Bool) async throws -> URL {
         if fail { throw CocoaError(.fileWriteOutOfSpace) }
         try beforeReturn?()
         guard shouldProceed() else { throw CancellationError() }
@@ -159,4 +159,23 @@ func nativeEffectsInstallPreservesScopeAndOriginalDesktopPreferences(scope: Stri
     #expect(f.native.calls.allSatisfy { $0.1 == f.rendered })
     #expect(f.native.calls.filter { ["shared", "desktop", "lockOnly"].contains($0.0) }.count == 1)
     #expect(installer.installationConfirmed)
+}
+
+@Test(arguments: [false, true])
+func nativeEffectsLostSessionApprovalCannotApplyACompletedMovie(automatic: Bool) async throws {
+    let f = try NativeEffectsFixture(); defer { f.cleanup() }
+    let installer = f.installer()
+    try await installer.installForDesktopAgent(videoURL: f.original, playbackSpeed: 1.5, scaleMode: .fit)
+    let record = f.root.appendingPathComponent("native-effects-source.json")
+    let before = try Data(contentsOf: record)
+    try WallpaperEffectsStore(appSupportURL: f.root).save(WallpaperEffectsPreset.dreamy.settings)
+    var approved = true
+    f.media.beforeReturn = { approved = false }
+    do {
+        if automatic { _ = try await installer.rearmForNextLock(videoURL: f.original, shouldProceed: { approved }) }
+        else { _ = try await installer.repair(videoURL: f.original, shouldProceed: { approved }) }
+        Issue.record("A completed movie must not be applied after session approval is lost")
+    } catch { #expect(error is CancellationError) }
+    #expect(f.native.calls.count == 1 && f.native.installed == f.rendered)
+    #expect(try Data(contentsOf: record) == before)
 }

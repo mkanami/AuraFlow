@@ -35,10 +35,10 @@ public final class WallpaperEffectsView: NSView {
     private var motion = WallpaperEffectsMotion()
     private var frameClock: WallpaperEffectsFrameClock?
     private(set) var screenSaverVisible = false
-    private var statusTimer: Timer?
+    private var statusTimer: WallpaperEffectsCleanup?
     private var lastFrameTime: CFTimeInterval?
-    private var workspaceObservers: [NSObjectProtocol] = []
-    private var distributedObservers: [NSObjectProtocol] = []
+    private var workspaceObservers: [WallpaperEffectsCleanup] = []
+    private var distributedObservers: [WallpaperEffectsCleanup] = []
     private var suspensionHints = WallpaperEffectsSuspensionHints()
     private var filtersApplied = false
     private var presentationActive = false
@@ -146,7 +146,7 @@ public final class WallpaperEffectsView: NSView {
             }
         }
         timer.tolerance = 0.05
-        statusTimer = timer
+        statusTimer = WallpaperEffectsCleanup { timer.invalidate() }
         RunLoop.main.add(timer, forMode: .common)
         refreshActivity()
     }
@@ -156,33 +156,35 @@ public final class WallpaperEffectsView: NSView {
         for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification,
                      NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification,
                      NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
-            workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+            let observer = workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     let suspending = [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification,
-                                      NSWorkspace.sessionDidResignActiveNotification].contains(note.name)
+                                      NSWorkspace.sessionDidResignActiveNotification].contains(name)
                     // A short hint covers notifications arriving before WindowServer changes state.
                     // Polling authoritative state prevents a missing wake/unlock notification from sticking.
                     if suspending { self.suspensionHints.systemWillSuspend(at: CACurrentMediaTime()) }
                     else { self.suspensionHints.systemDidResume() }
                     self.refreshActivity()
                 }
-            })
+            }
+            workspaceObservers.append(WallpaperEffectsCleanup { workspace.removeObserver(observer) })
         }
         let distributed = DistributedNotificationCenter.default()
         for name in [WallpaperEffectsStore.didChange, Notification.Name("com.apple.screenIsLocked"),
                      Notification.Name("com.apple.screenIsUnlocked"), Notification.Name("com.apple.screensaver.didstart"),
                      Notification.Name("com.apple.screensaver.didstop")] {
-            distributedObservers.append(distributed.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+            let observer = distributed.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    if note.name == WallpaperEffectsStore.didChange, let store = self.store { self.update(settings: store.load()) }
-                    if note.name.rawValue == "com.apple.screensaver.didstart" { self.suspensionHints.saverDidStart(at: CACurrentMediaTime()) }
-                    if note.name.rawValue == "com.apple.screensaver.didstop" { self.suspensionHints.saverDidStop() }
+                    if name == WallpaperEffectsStore.didChange, let store = self.store { self.update(settings: store.load()) }
+                    if name.rawValue == "com.apple.screensaver.didstart" { self.suspensionHints.saverDidStart(at: CACurrentMediaTime()) }
+                    if name.rawValue == "com.apple.screensaver.didstop" { self.suspensionHints.saverDidStop() }
                     // Secure lock state always comes from WindowServer, including delayed notifications.
                     self.refreshActivity()
                 }
-            })
+            }
+            distributedObservers.append(WallpaperEffectsCleanup { distributed.removeObserver(observer) })
         }
     }
 
@@ -365,17 +367,17 @@ public final class WallpaperEffectsView: NSView {
         rainLightingSampler.stop()
         stopGlass()
         stopAnimation()
-        statusTimer?.invalidate()
+        statusTimer?.run()
         statusTimer = nil
-        for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
-        for observer in distributedObservers { DistributedNotificationCenter.default().removeObserver(observer) }
+        for observer in workspaceObservers { observer.run() }
+        for observer in distributedObservers { observer.run() }
         workspaceObservers.removeAll()
         distributedObservers.removeAll()
     }
 
     deinit {
-        statusTimer?.invalidate()
-        for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
-        for observer in distributedObservers { DistributedNotificationCenter.default().removeObserver(observer) }
+        statusTimer?.run()
+        for observer in workspaceObservers { observer.run() }
+        for observer in distributedObservers { observer.run() }
     }
 }

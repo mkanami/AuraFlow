@@ -32,19 +32,49 @@ import Testing
     let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try Data("source".utf8).write(to: file)
     defer { try? FileManager.default.removeItem(at: file) }
-    var time = 0.0, reads = 0
-    let cache = AerialFileSignatureCache(clock: { time })
+    let clock = SignatureTestClock()
+    var reads = 0
+    let cache = AerialFileSignatureCache(clock: { clock.value })
     func read(_ cached: Bool) -> String {
         cache.signature(at: file, allowCached: cached) { reads += 1; return "signature-\(reads)" }
     }
     #expect(read(false) == "signature-1")
     for _ in 0..<100 { #expect(read(true) == "signature-1") }
     #expect(reads == 1)
-    time = 60
+    clock.value = 60
     #expect(read(true) == "signature-2")
     #expect(read(false) == "signature-3")
-    time = 59 // A clock regression cannot prolong the lease.
+    clock.value = 59 // A clock regression cannot prolong the lease.
     #expect(read(true) == "signature-4")
+}
+
+private final class SignatureTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var time = 0.0
+    var value: Double {
+        get { lock.lock(); defer { lock.unlock() }; return time }
+        set { lock.lock(); defer { lock.unlock() }; time = newValue }
+    }
+}
+
+@Test func performanceSignatureCacheSupportsConcurrentHealthChecks() async throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try Data("concurrent-source".utf8).write(to: file)
+    defer { try? FileManager.default.removeItem(at: file) }
+    let cache = AerialFileSignatureCache()
+    let values = await withTaskGroup(of: String?.self, returning: [String?].self) { group in
+        for _ in 0..<100 {
+            group.addTask {
+                try? cache.signature(at: file, allowCached: true) {
+                    try String(contentsOf: file, encoding: .utf8)
+                }
+            }
+        }
+        var results: [String?] = []
+        for await value in group { results.append(value) }
+        return results
+    }
+    #expect(values.count == 100 && values.allSatisfy { $0 == "concurrent-source" })
 }
 
 @Test func performanceSignatureCacheDetectsSameSizeEditsReplacementAndMissingFiles() throws {

@@ -11,6 +11,7 @@
 - Improve glass control and audio badge styling, settings text and slider legibility, and the catalog icon.
 - Support terminal wallpapers in Lock Screen-only mode. Use the live effects renderer for effects-enabled media instead of waiting for an effects movie, and improve provider recovery across repeated secure sessions while preserving native Desktop descriptors and appearance settings.
 - Report storage, permissions, missing-file, and network failures with a concrete cause and useful next step. Fix native wallpaper backup promotion and restoration.
+- Pass Swift 6 strict concurrency checks for the effects renderer and catalog caches, and keep effect resource teardown on the main actor.
 - Include the separate Linux source port and its own setup and CI; macOS release archives remain universal Apple Silicon + Intel builds.
 
 The macOS archives use ad-hoc signatures and are not Apple-notarized. Optional video preprocessing uses locally installed FFmpeg; normal playback does not require it.

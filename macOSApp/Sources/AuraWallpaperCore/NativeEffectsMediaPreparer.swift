@@ -12,7 +12,7 @@ enum WallpaperEffectsRenderRevision { static let current = 3 }
 
 public protocol NativeEffectsMediaPreparing {
     func prepare(source: URL, settings: WallpaperEffectsSettings, speed: Double,
-        scaleMode: WallpaperScaleMode, shouldProceed: @escaping () -> Bool) async throws -> URL
+        scaleMode: WallpaperScaleMode, shouldProceed: @escaping @Sendable () -> Bool) async throws -> URL
 }
 
 /// A bounded, cached movie for Apple's secure Aerial renderer. Desktop keeps
@@ -29,7 +29,7 @@ actor NativeEffectsMediaPreparer: NativeEffectsMediaPreparing {
     }
 
     public func prepare(source: URL, settings: WallpaperEffectsSettings, speed: Double,
-        scaleMode: WallpaperScaleMode, shouldProceed: @escaping () -> Bool) async throws -> URL {
+        scaleMode: WallpaperScaleMode, shouldProceed: @escaping @Sendable () -> Bool) async throws -> URL {
         try Task.checkCancellation()
         guard shouldProceed() else { throw CancellationError() }
         guard settings.enabled && settings.hasVisibleEffects else { return source }
@@ -92,7 +92,7 @@ actor NativeEffectsMediaPreparer: NativeEffectsMediaPreparing {
 
     @MainActor private static func writeMovie(source: URL, settings: WallpaperEffectsSettings, speed: Double,
         scaleMode: WallpaperScaleMode, size: CGSize, maximumDuration: Double, output: URL,
-        shouldProceed: @escaping () -> Bool) async throws {
+        shouldProceed: @escaping @Sendable () -> Bool) async throws {
         let input = try await NativeEffectsFrameReader(url: source)
         let fps: Int32 = 30
         let rate = max(0.1, min(4, speed))

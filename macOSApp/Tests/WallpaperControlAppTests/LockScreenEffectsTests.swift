@@ -507,7 +507,13 @@ func lockEffectsMissingSharedBackupPreservesTheWorkingInstallationAndExplainsRec
 @Test @MainActor func lockEffectsBridgeStopsItsClockWhenTheSaverStopsAndReloadsSettings() throws {
     let f = try EffectsRouteFixture(); defer { f.cleanup() }
     let bridge = ScreenSaverEffectsBridge(content: NSView(frame: CGRect(x: 0, y: 0, width: 640, height: 400)), appSupportURL: f.root, isPreview: true)
+    let effects = try #require(bridge.view as? WallpaperEffectsView)
+    effects.stopMonitoring()
     bridge.setPresenting(true, paused: false, surfaceID: nil, sequence: nil, imageURL: nil, gravity: AVLayerVideoGravity.resizeAspectFill.rawValue)
+    // No protected host is shown in this unit test. Seed its active state
+    // without depending on the runner's Reduce Motion or display sleep setting.
+    var activity = WallpaperEffectsActivity(); activity.screenSaverPresentation = true
+    effects.applyActivity(activity)
     #expect(bridge.diagnostics["active"] as? Bool == true)
     bridge.setPresenting(true, paused: true, surfaceID: nil, sequence: nil, imageURL: nil, gravity: AVLayerVideoGravity.resizeAspectFill.rawValue)
     #expect(bridge.diagnostics["active"] as? Bool == false)
@@ -626,7 +632,7 @@ private final class EffectsBridgeTrace: NativeLockScreenBridging {
 private struct MigratingEffectsMedia: NativeEffectsMediaPreparing {
     let output: URL
     func prepare(source: URL, settings: WallpaperEffectsSettings, speed: Double,
-        scaleMode: WallpaperScaleMode, shouldProceed: @escaping () -> Bool) async throws -> URL {
+        scaleMode: WallpaperScaleMode, shouldProceed: @escaping @Sendable () -> Bool) async throws -> URL {
         guard shouldProceed() else { throw CancellationError() }
         return output
     }
@@ -718,7 +724,10 @@ private struct MigratingEffectsMedia: NativeEffectsMediaPreparing {
     let bridge = ScreenSaverEffectsBridge(content: NSView(frame: CGRect(x: 0, y: 0, width: 960, height: 600)), appSupportURL: f.root)
     let effects = try #require(bridge.view as? WallpaperEffectsView)
     effects.screenSaverPresentationIsVisible = { true }
+    effects.stopMonitoring()
     bridge.setPresenting(true, paused: false, surfaceID: nil, sequence: nil, imageURL: nil, gravity: AVLayerVideoGravity.resizeAspectFill.rawValue)
+    var activity = WallpaperEffectsActivity(); activity.screenSaverPresentation = true
+    effects.applyActivity(activity)
     for index in 0..<120 {
         effects.renderFrame(deltaTime: 1.0/60, cursor: CGPoint(x: index < 60 ? -0.9 : 0.9, y: 0.2))
         bridge.setPresenting(true, paused: false, surfaceID: nil, sequence: nil, imageURL: nil, gravity: AVLayerVideoGravity.resizeAspectFill.rawValue)

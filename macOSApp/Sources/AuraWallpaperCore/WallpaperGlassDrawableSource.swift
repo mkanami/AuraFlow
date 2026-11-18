@@ -23,8 +23,9 @@ final class WallpaperGlassDrawableSource: @unchecked Sendable {
         if !pending {
             pending = true
             let requestedGeneration = generation
-            queue.async { [weak self, weak layer] in
-                guard let self, let layer else { return }
+            let request = DrawableLayerRequest(layer)
+            queue.async { [weak self, request] in
+                guard let self, let layer = request.layer else { return }
                 let drawable = self.acquire(layer)
                 self.lock.lock()
                 if self.generation == requestedGeneration { self.ready = drawable }
@@ -44,4 +45,12 @@ final class WallpaperGlassDrawableSource: @unchecked Sendable {
         // hide/show cycle must not queue an unbounded number of pool waits.
         lock.unlock()
     }
+}
+
+// nextDrawable() is deliberately acquired off the main thread. This immutable
+// weak handoff exposes no layer mutation; configuration remains with the main
+// renderer. Do not declare CAMetalLayer Sendable for unrelated callers.
+private final class DrawableLayerRequest: @unchecked Sendable {
+    private(set) weak var layer: CAMetalLayer?
+    init(_ layer: CAMetalLayer) { self.layer = layer }
 }
