@@ -227,11 +227,14 @@ struct CatalogCardInteractionTests {
     model.catalogViewModel.isLoadingMore = true
     hosting.layoutSubtreeIfNeeded()
     try await Task.sleep(for: .milliseconds(30))
-    #expect(abs((scroll.documentView?.frame.height ?? 0) - height) < 1)
+    let loadingHeight = scroll.documentView?.frame.height ?? 0
+    #expect(abs(loadingHeight - height) < 1, "Loading changed document height from \(height) to \(loadingHeight)")
     #expect(abs(scroll.contentView.bounds.origin.y - offset) < 1)
     model.catalogViewModel.isLoadingMore = false
     hosting.layoutSubtreeIfNeeded()
-    #expect(abs((scroll.documentView?.frame.height ?? 0) - height) < 1)
+    try await Task.sleep(for: .milliseconds(30))
+    let loadedHeight = scroll.documentView?.frame.height ?? 0
+    #expect(abs(loadedHeight - height) < 1, "Finishing loading changed document height from \(height) to \(loadedHeight)")
     // Explicit detail inspection retains the audio-discovery path.
     await model.catalogAudioMetadata.inspect(items[0])
     #expect(await source.resolutions == 1)

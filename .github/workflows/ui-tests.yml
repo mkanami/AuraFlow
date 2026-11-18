@@ -1,0 +1,36 @@
+name: UI regression checks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ui-tests:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode with Swift Testing
+        shell: bash
+        run: |
+          selected_record="$({
+            for candidate in /Applications/Xcode*.app; do
+              developer_dir="$candidate/Contents/Developer"
+              [[ -d "$developer_dir" ]] || continue
+              testing_module="$developer_dir/Platforms/MacOSX.platform/Developer/Library/Frameworks/Testing.framework/Modules/Testing.swiftmodule"
+              if [[ -d "$testing_module" ]]; then
+                version="$(DEVELOPER_DIR="$developer_dir" xcodebuild -version | awk '/^Xcode / { print $2; exit }')"
+                printf '%s\t%s\n' "$version" "$candidate"
+              fi
+            done
+          } | sort -nr | head -n 1)"
+          selected_app="${selected_record#*$'\t'}"
+          test -n "$selected_record"
+          test -d "$selected_app/Contents/Developer"
+          echo "DEVELOPER_DIR=$selected_app/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Run UI suites in an isolated host
+        run: ./scripts/test_macos_app.sh --ui-only

@@ -17,6 +17,10 @@ workflow. It does not publish anything: only tag and upload those archives after
 both workflows pass for that commit. The separate notarized **Release** workflow
 retains its Developer ID requirements.
 
+For focused layout triage on macOS 15, manually dispatch **UI regression checks**.
+It runs the same isolated window suites via `scripts/test_macos_app.sh --ui-only`.
+This diagnostic workflow supplements the complete **Tests** run required for release.
+
 The deployment-target job checks macOS 13 compatibility. Hosted smoke checks use currently supported GitHub runner images; they do not substitute for testing on a physical Mac running macOS 13.
 
 ## GitHub Actions secrets

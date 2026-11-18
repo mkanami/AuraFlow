@@ -19,10 +19,22 @@ mkdir -p "$TASK_LOG_DIR"
 # together run the complete suite; --skip and --filter use the identical set.
 TASK_WINDOW_SUITES='CatalogCardInteractionTests|MainControlPanelTests|PreviewViewportTests|SettingsPopupLayoutTests|AnimationPanelLayoutTests|TerminalPreviewWindowResizeTests|TerminalWallpaperSectionInteractionTests|EngineLibraryHeaderTests'
 
+run_window_tests() {
+  "$TASK_SWIFT" test --package-path "$TASK_ROOT/macOSApp" --sdk "$TASK_SDK" \
+    "$@" --no-parallel --filter "$TASK_WINDOW_SUITES" 2>&1 | tee "$TASK_LOG_DIR/windows.log"
+  grep -Eq 'Test run with [0-9]+ tests.*passed' "$TASK_LOG_DIR/windows.log"
+}
+
+if [[ "${1:-}" == "--ui-only" && $# -eq 1 ]]; then
+  run_window_tests
+  exit 0
+elif [[ $# -ne 0 ]]; then
+  echo "Usage: $0 [--ui-only]" >&2
+  exit 2
+fi
+
 "$TASK_SWIFT" test --package-path "$TASK_ROOT/macOSApp" --sdk "$TASK_SDK" \
   --no-parallel --skip "$TASK_WINDOW_SUITES" 2>&1 | tee "$TASK_LOG_DIR/runtime.log"
 grep -Eq 'Test run with [0-9]+ tests.*passed' "$TASK_LOG_DIR/runtime.log"
 
-"$TASK_SWIFT" test --package-path "$TASK_ROOT/macOSApp" --sdk "$TASK_SDK" \
-  --skip-build --no-parallel --filter "$TASK_WINDOW_SUITES" 2>&1 | tee "$TASK_LOG_DIR/windows.log"
-grep -Eq 'Test run with [0-9]+ tests.*passed' "$TASK_LOG_DIR/windows.log"
+run_window_tests --skip-build

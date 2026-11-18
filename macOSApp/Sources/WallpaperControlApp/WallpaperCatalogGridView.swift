@@ -13,8 +13,6 @@ struct WallpaperCatalogGridView: View {
     @StateObject private var posterPrefetcher = CatalogPosterPrefetcher()
     @StateObject private var viewport = CatalogGridViewport()
 
-    private let columns = [GridItem(.adaptive(minimum: 220), spacing: 12)]
-
     var body: some View {
         ScrollViewReader { scrollViewProxy in
             ScrollView {
@@ -70,30 +68,12 @@ struct WallpaperCatalogGridView: View {
     }
 
     private var wallpaperCards: some View {
-        // Keep glass local to realized cards, rather than grouping the entire
-        // scrollable grid (including offscreen rows) into one glass region.
-        let wallpapers = catalogViewModel.filteredWallpapers
-        return LazyVGrid(columns: columns, spacing: 12) {
-            ForEach(wallpapers) { wallpaper in
-                CatalogWallpaperCard(wallpaper: wallpaper, audioMetadata: viewModel.catalogAudioMetadata,
-                    localURL: viewModel.downloadedCatalogWallpapers.first { $0.wallpaperID == wallpaper.id }?.localURL) {
-                    viewModel.openCatalogWallpaper(wallpaper)
-                }
-                .equatable()
-                .id(wallpaper.id)
-                .onAppear {
-                    viewport.visibleIDs.insert(wallpaper.id)
-                    posterPrefetcher.setVisible(wallpaper.id, true)
-                    requestMoreIfNearEnd()
-                }
-                .onDisappear {
-                    viewport.visibleIDs.remove(wallpaper.id)
-                    posterPrefetcher.setVisible(wallpaper.id, false)
-                }
-            }
+        let localURLs = viewModel.downloadedCatalogWallpapers.reduce(into: [String: URL]()) { result, item in
+            if result[item.wallpaperID] == nil { result[item.wallpaperID] = item.localURL }
         }
-        .onAppear { posterPrefetcher.update(wallpapers: wallpapers) }
-        .onChange(of: wallpapers) { posterPrefetcher.update(wallpapers: $0) }
+        return CatalogWallpaperCards(wallpapers: catalogViewModel.filteredWallpapers,
+            localURLs: localURLs, viewModel: viewModel, posterPrefetcher: posterPrefetcher,
+            viewport: viewport, requestMore: requestMoreIfNearEnd).equatable()
     }
 
     private func requestMoreIfNearEnd() {
@@ -108,6 +88,50 @@ struct WallpaperCatalogGridView: View {
             viewModel.catalogTrailingWallpaperBecameVisible(trailingID)
         }
     }
+}
+
+/// Footer progress must not rebuild the lazy grid and discard its measured row
+/// heights. Only actual card data or model identity changes invalidate this view.
+private struct CatalogWallpaperCards: View, Equatable {
+    let wallpapers: [CatalogWallpaper]
+    let localURLs: [String: URL]
+    let viewModel: AppViewModel
+    let posterPrefetcher: CatalogPosterPrefetcher
+    let viewport: CatalogGridViewport
+    let requestMore: () -> Void
+    private let columns = [GridItem(.adaptive(minimum: 220), spacing: 12)]
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.wallpapers == rhs.wallpapers && lhs.localURLs == rhs.localURLs
+            && lhs.viewModel === rhs.viewModel && lhs.posterPrefetcher === rhs.posterPrefetcher
+            && lhs.viewport === rhs.viewport
+    }
+
+    var body: some View {
+        // Keep glass local to realized cards, including on older macOS.
+        LazyVGrid(columns: columns, spacing: 12) {
+            ForEach(wallpapers) { wallpaper in
+                CatalogWallpaperCard(wallpaper: wallpaper, audioMetadata: viewModel.catalogAudioMetadata,
+                    localURL: localURLs[wallpaper.id]) {
+                    viewModel.openCatalogWallpaper(wallpaper)
+                }
+                .equatable()
+                .id(wallpaper.id)
+                .onAppear {
+                    viewport.visibleIDs.insert(wallpaper.id)
+                    posterPrefetcher.setVisible(wallpaper.id, true)
+                    requestMore()
+                }
+                .onDisappear {
+                    viewport.visibleIDs.remove(wallpaper.id)
+                    posterPrefetcher.setVisible(wallpaper.id, false)
+                }
+            }
+        }
+        .onAppear { posterPrefetcher.update(wallpapers: wallpapers) }
+        .onChange(of: wallpapers) { posterPrefetcher.update(wallpapers: $0) }
+    }
+
 }
 
 struct CatalogWallpaperCard: View, Equatable {
