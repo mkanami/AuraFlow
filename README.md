@@ -54,7 +54,7 @@ supported sessions, and remaining features. The sections below describe macOS.
   </tbody>
 </table>
 
-## Latest release — 1.5.0
+## Latest release — 1.3.5
 
 - Cursor-reactive parallax, soft light, reflections, bloom, particles, and independently configurable falling rain and rain on glass.
 - **Music** with 305 reviewed anime and nature wallpapers, including separate soundtrack pairings. Sampled reviews cover opening frames, artwork posters, text, watermarks, and quality.
@@ -62,7 +62,7 @@ supported sessions, and remaining features. The sections below describe macOS.
 - Lighter catalog updates and image loading, clearer glass settings, and preview video and effects that keep moving while scrolling.
 - Lock Screen-only terminal wallpapers, shared live effects, native wallpaper backup fixes, and errors that explain the cause and next step.
 
-See the [release notes](https://github.com/mkanami/AuraFlow/releases/tag/v1.5.0)
+See the [release notes](https://github.com/mkanami/AuraFlow/releases/tag/v1.3.5)
 and [changelog](CHANGELOG.md) for details. macOS archives support both Apple Silicon
 and Intel. The Linux port remains a separate source installation.
 
@@ -324,7 +324,7 @@ AuraFlow is a Swift Package split into small runtime components:
 Media playback uses AVFoundation; terminal programs run through a PTY and render
 with CoreText and Metal. AppKit bridges are limited to macOS window and wallpaper
 behavior that SwiftUI does not expose directly. Normal playback does not require
-FFmpeg. The v1.5.0 download uses locally installed FFmpeg tools for optional video
+FFmpeg. The v1.3.5 download uses locally installed FFmpeg tools for optional video
 preprocessing, including Blend Interpolation and conversions that require FFmpeg.
 Video Optimization settings apply to newly imported local videos, not terminal
 programs or an already installed wallpaper.

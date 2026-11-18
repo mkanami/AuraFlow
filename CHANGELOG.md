@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.5.0 — 2026-11-18
+## 1.3.5 — 2026-11-18
 
 - Add configurable cursor-reactive parallax, soft glow, reflections, lens flare, bloom, blur, and particles across wallpaper previews and installed surfaces.
 - Add independent Falling Rain and Rain on Glass effects: three rain depth layers, gusts, selectable colors, wallpaper lighting, refraction, irregular beads, sliding drop deformation, coalescence, and connected water trails.
