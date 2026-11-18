@@ -436,16 +436,15 @@ its background. Independently observed terminal/web selections still update.
 Cards retain their individual native glass surfaces; the full lazy grid no
 longer sits inside one glass container spanning the scrollable content.
 
-The main window observes its own wheel events and native live-scroll
-notifications. A single idle timer coalesces scrolling and momentum. Video and
-effects retain their last composed frame during scrolling, then resume without
-restarting the media. Independent scroll and window-drag reasons prevent one
-interaction from resuming another. The gate does not publish application-wide
-view updates, change settings, pause music or affect Desktop/Lock Screen hosts.
-Observers and the passive event monitor are removed when the window detaches.
+Scrolling keeps video, effects and music running. The window-wide scroll monitor
+and scroll suspension reason were removed at the user's request; scrolling does
+not add event interception, a timer or preview suspension. The remaining gate
+holds the composed frame only while dragging or resizing the window. It does not
+publish application-wide view updates, change settings, pause music or affect
+Desktop/Lock Screen hosts. Window observers are removed when the window detaches.
 
 Validation: 49 targeted tests passed, including retained effect transforms,
-ignored gates on Desktop/saver instances, overlap with window dragging, hidden
+ignored gates on Desktop/saver instances, uninterrupted scrolling, hidden
 preview behavior, uninterrupted audio, isolated sleep/lock activity, preview
 viewport rendering, catalog state and music loading. An existing saver-clock
 test now stops real system observation before injecting its own activity;
@@ -453,5 +452,6 @@ otherwise a real status-timer sample could overwrite the simulated sleep state.
 
 The rebuilt app was scrolled to the end of all 305 Music cards and through the
 settings in both directions. The final poster loaded and the glass card style
-was retained. Runtime scroll events recorded suspension and resume pairs. These
+was retained. Scroll regression coverage checks that video time, audio time and
+effect frame counts continue advancing through native scroll notifications. These
 checks do not constitute a measured before/after display-FPS comparison.

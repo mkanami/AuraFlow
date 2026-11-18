@@ -6,7 +6,7 @@ import Testing
 
 @Suite(.serialized)
 struct WallpaperEffectsPerformanceTests {
-    @Test @MainActor func previewScrollFreezesTheComposedFrameWithoutResettingEffects() throws {
+    @Test @MainActor func previewWindowDragFreezesTheComposedFrameWithoutResettingEffects() throws {
         let view = WallpaperEffectsView(content: NSView(frame: CGRect(x: 0, y: 0, width: 800, height: 500)), store: nil, isPreview: true)
         view.update(settings: WallpaperEffectsPreset.cinematic.settings)
         let active = WallpaperEffectsActivity()
@@ -22,14 +22,14 @@ struct WallpaperEffectsPerformanceTests {
         #expect(!view.isAnimating && view.status.pauseReason == "interaction")
         #expect(view.status.renderedFrames == before)
         #expect(view.subviews.first?.layer?.affineTransform() == transform,
-            "Scrolling must hold the current image rather than remove the effect layers")
+            "Window dragging must hold the current image rather than remove the effect layers")
         view.setPreviewInteractionActive(false)
         view.applyActivity(active)
         view.renderFrame(deltaTime: 1.0/60, cursor: .zero)
         #expect(view.isAnimating && view.status.renderedFrames > before)
     }
 
-    @Test @MainActor func previewScrollGateCannotPauseDesktopOrScreenSaverEffects() {
+    @Test @MainActor func previewWindowDragGateCannotPauseDesktopOrScreenSaverEffects() {
         for saver in [false, true] {
             let view = WallpaperEffectsView(content: NSView(frame: CGRect(x: 0, y: 0, width: 800, height: 500)), store: nil, isScreenSaver: saver)
             view.update(settings: WallpaperEffectsPreset.cinematic.settings)

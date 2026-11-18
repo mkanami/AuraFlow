@@ -1,11 +1,11 @@
 import Combine
 import Foundation
 
-/// Transient UI work must not publish changes through the application model.
+/// Window movement must not publish changes through the application model.
 /// Video and effects share this gate; audio keeps its independent clock.
 @MainActor
 final class PreviewRenderingActivity {
-    enum Reason: Hashable { case windowDrag, scrolling }
+    enum Reason: Hashable { case windowDrag }
     private var reasons: Set<Reason> = []
     let changes = PassthroughSubject<Bool, Never>()
     var isSuspended: Bool { !reasons.isEmpty }

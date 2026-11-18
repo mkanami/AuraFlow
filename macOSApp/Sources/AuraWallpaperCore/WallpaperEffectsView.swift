@@ -97,7 +97,7 @@ public final class WallpaperEffectsView: NSView {
 
     public override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    /// Keep the last composed frame while the app scrolls or moves its window.
+    /// Keep the last composed frame while the app moves or resizes its window.
     /// This gate cannot affect Desktop or Lock Screen renderer instances.
     public func setPreviewInteractionActive(_ active: Bool) {
         guard isPreview, previewInteractionActive != active else { return }

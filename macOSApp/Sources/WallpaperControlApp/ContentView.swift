@@ -337,8 +337,7 @@ struct ContentView: View {
             WindowAccessor(
                 window: $window,
                 onInteractionStart: beginWindowDrag,
-                onInteractionEnd: endWindowDrag,
-                onScrollChange: viewModel.setPreviewScrolling
+                onInteractionEnd: endWindowDrag
             )
             .allowsHitTesting(false)
         )
@@ -3162,7 +3161,6 @@ struct WindowAccessor: NSViewRepresentable {
     @Binding var window: NSWindow?
     var onInteractionStart: () -> Void = {}
     var onInteractionEnd: () -> Void = {}
-    var onScrollChange: (Bool) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -3179,8 +3177,7 @@ struct WindowAccessor: NSViewRepresentable {
             context.coordinator.attachIfNeeded(
                 currentWindow,
                 onInteractionStart: onInteractionStart,
-                onInteractionEnd: onInteractionEnd,
-                onScrollChange: onScrollChange
+                onInteractionEnd: onInteractionEnd
             )
             if window !== currentWindow {
                 window = currentWindow
@@ -3196,8 +3193,7 @@ struct WindowAccessor: NSViewRepresentable {
             context.coordinator.attachIfNeeded(
                 currentWindow,
                 onInteractionStart: onInteractionStart,
-                onInteractionEnd: onInteractionEnd,
-                onScrollChange: onScrollChange
+                onInteractionEnd: onInteractionEnd
             )
             if window !== currentWindow {
                 window = currentWindow
@@ -3207,8 +3203,7 @@ struct WindowAccessor: NSViewRepresentable {
             context.coordinator.attachIfNeeded(
                 currentWindow,
                 onInteractionStart: onInteractionStart,
-                onInteractionEnd: onInteractionEnd,
-                onScrollChange: onScrollChange
+                onInteractionEnd: onInteractionEnd
             )
             if window !== currentWindow {
                 window = currentWindow
@@ -3220,24 +3215,19 @@ struct WindowAccessor: NSViewRepresentable {
         private weak var configuredWindow: NSWindow?
         private var observers: [NotificationObserverLifetime] = []
         private let interaction = WindowInteractionActivity()
-        private var scrollMonitor: PreviewScrollMonitor?
 
         @MainActor
         func attachIfNeeded(
             _ window: NSWindow,
             onInteractionStart: @escaping () -> Void,
-            onInteractionEnd: @escaping () -> Void,
-            onScrollChange: @escaping (Bool) -> Void
+            onInteractionEnd: @escaping () -> Void
         ) {
             interaction.onStart = onInteractionStart
             interaction.onEnd = onInteractionEnd
-            scrollMonitor?.onChange = onScrollChange
             if configuredWindow !== window {
                 interaction.end()
-                scrollMonitor?.cancel()
                 detachObservers()
                 configuredWindow = window
-                scrollMonitor = PreviewScrollMonitor(window: window, onChange: onScrollChange)
                 let center = NotificationCenter.default
                 let names: [Notification.Name] = [
                     NSWindow.didBecomeKeyNotification,
@@ -3284,8 +3274,6 @@ struct WindowAccessor: NSViewRepresentable {
 
         func detach() {
             interaction.end()
-            scrollMonitor?.cancel()
-            scrollMonitor = nil
             detachObservers()
             configuredWindow = nil
         }

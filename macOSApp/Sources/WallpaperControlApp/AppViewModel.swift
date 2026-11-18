@@ -5915,10 +5915,6 @@ final class AppViewModel: ObservableObject {
         previewRenderingActivity.set(.windowDrag, active: false)
     }
 
-    func setPreviewScrolling(_ active: Bool) {
-        previewRenderingActivity.set(.scrolling, active: active)
-    }
-
     private func startFromAutostartIfNeeded(using status: ControlStatus) async {
         guard !isShuttingDown else { return }
         guard let controller else { return }
