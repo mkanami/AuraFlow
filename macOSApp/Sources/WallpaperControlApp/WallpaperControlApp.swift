@@ -135,7 +135,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct WallpaperControlApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var viewModel = AuraFlowApplication.shared.viewModel
+    @StateObject private var viewModel: AppViewModel
+
+    init() {
+        let verifyResources = CommandLine.arguments.contains("--verify-resources")
+        do {
+            let bundle = try AppResources.validate()
+            if verifyResources {
+                // Exit before constructing controllers: archive checks must not
+                // change wallpaper, login registration, or user preferences.
+                #if arch(x86_64)
+                let architecture = "x86_64"
+                #else
+                let architecture = "arm64"
+                #endif
+                let report = [
+                    "architecture": architecture,
+                    "resourceBundlePath": bundle.bundleURL.path,
+                ]
+                let data = try JSONEncoder().encode(report)
+                print(String(decoding: data, as: UTF8.self))
+                exit(EXIT_SUCCESS)
+            }
+        } catch {
+            if verifyResources {
+                FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "AuraFlow could not open"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
+            exit(EXIT_FAILURE)
+        }
+        _viewModel = StateObject(wrappedValue: AuraFlowApplication.shared.viewModel)
+    }
 
     var body: some Scene {
         MenuBarExtra {

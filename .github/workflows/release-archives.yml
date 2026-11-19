@@ -94,6 +94,8 @@ jobs:
       matrix:
         os: [macos-26, macos-15-intel]
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: release-archives
@@ -115,3 +117,17 @@ jobs:
           lipo "$mount_path/AuraFlow.app/Contents/MacOS/WallpaperControlApp" -verify_arch arm64 x86_64
           cmp "$RUNNER_TEMP/auraflow-zip/AuraFlow.app/Contents/Info.plist" "$mount_path/AuraFlow.app/Contents/Info.plist"
           cat dist/BUILD-METADATA.txt
+
+      - name: Launch installed ZIP and DMG copies and verify resources
+        shell: bash
+        run: |
+          smoke_args=(--arch x86_64 --launch)
+          if [[ "$(uname -m)" == "arm64" ]]; then
+            sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+            smoke_args+=(--arch arm64)
+          fi
+          python3 scripts/packaged_app_smoke.py "$RUNNER_TEMP/auraflow-zip/AuraFlow.app" "${smoke_args[@]}"
+          mount_path="$RUNNER_TEMP/auraflow-dmg"
+          trap 'hdiutil detach "$mount_path" >/dev/null 2>&1 || true' EXIT
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount_path" dist/AuraFlow.dmg
+          python3 scripts/packaged_app_smoke.py "$mount_path/AuraFlow.app" "${smoke_args[@]}"

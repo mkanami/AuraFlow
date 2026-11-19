@@ -17,7 +17,7 @@ struct MusicCatalogReview: Codable, Sendable {
     let soundtrackID: String?
 
     static func bundled() -> [String: Self] {
-        guard let url = Bundle.module.url(forResource: "music-catalog-review", withExtension: "json"),
+        guard let url = AppResources.bundle?.url(forResource: "music-catalog-review", withExtension: "json"),
               let data = try? Data(contentsOf: url), let records = try? JSONDecoder().decode([Self].self, from: data)
         else { return [:] }
         return Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })

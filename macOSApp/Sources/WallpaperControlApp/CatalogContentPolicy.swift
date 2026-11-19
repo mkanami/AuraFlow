@@ -9,7 +9,7 @@ enum CatalogContentPolicy {
         let previewImageURL: URL?
     }
     private static let exclusions: [Exclusion] = {
-        guard let url = Bundle.module.url(forResource: "catalog-content-exclusions", withExtension: "json"),
+        guard let url = AppResources.bundle?.url(forResource: "catalog-content-exclusions", withExtension: "json"),
               let data = try? Data(contentsOf: url) else { return [] }
         return (try? JSONDecoder().decode([Exclusion].self, from: data)) ?? []
     }()

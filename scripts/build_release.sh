@@ -11,8 +11,8 @@ NATIVE_BRIDGE_TARGET="AuraWallpaperNativeBridge"
 TERMINAL_HELPER_TARGET="AuraTerminalWallpaperAgent"
 WEB_HELPER_TARGET="AuraWebWallpaperAgent"
 APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-AuraFlow}"
-APP_VERSION="${AURAFLOW_VERSION:-1.3.5}"
-APP_BUILD="${AURAFLOW_BUILD:-15}"
+APP_VERSION="${AURAFLOW_VERSION:-1.3.6}"
+APP_BUILD="${AURAFLOW_BUILD:-16}"
 MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 export MACOSX_DEPLOYMENT_TARGET
 STAGING_DIR=""
@@ -501,9 +501,11 @@ build_swift_app() {
 </plist>
 EOF
 
-  if [[ -d "$resources_bundle" ]]; then
-    cp -R "$resources_bundle" "$APP_BUNDLE/Contents/Resources/$(basename "$resources_bundle")"
+  if [[ ! -d "$resources_bundle" ]]; then
+    log "Application resource bundle is missing: $resources_bundle. Rebuild ${APP_TARGET} before packaging."
+    exit 1
   fi
+  cp -R "$resources_bundle" "$APP_BUNDLE/Contents/Resources/$(basename "$resources_bundle")"
 
   cat > "$APP_BUNDLE/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>

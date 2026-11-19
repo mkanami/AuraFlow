@@ -21,6 +21,20 @@ For focused layout triage on macOS 15, manually dispatch **UI regression checks*
 It runs the same isolated window suites via `scripts/test_macos_app.sh --ui-only`.
 This diagnostic workflow supplements the complete **Tests** run required for release.
 
+Both archive workflows now launch relocated ZIP and DMG copies on Intel and
+Apple Silicon runners. Apple Silicon also runs the Intel slice through Rosetta 2.
+The checks verify the loaded resource bundle is inside `Contents/Resources`,
+reject missing or damaged resources with a useful reinstall message, and confirm
+the GUI survives startup. Local equivalent after building universal archives:
+
+```sh
+python3 scripts/packaged_app_smoke.py dist/AuraFlow.app --arch arm64 --arch x86_64 --launch
+```
+
+`--launch` opens and closes only a temporary test copy; use a dedicated session
+when running it unattended. Without that flag, validation exits before creating
+wallpaper controllers and does not change playback or preferences.
+
 The deployment-target job checks macOS 13 compatibility. Hosted smoke checks use currently supported GitHub runner images; they do not substitute for testing on a physical Mac running macOS 13.
 
 ## GitHub Actions secrets
