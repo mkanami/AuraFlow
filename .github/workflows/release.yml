@@ -223,6 +223,7 @@ jobs:
           path: |
             dist/AuraFlow.zip
             dist/AuraFlow.dmg
+            dist/SHA256SUMS
           if-no-files-found: error
 
   smoke-test:
@@ -236,6 +237,8 @@ jobs:
           - macos-26
           - macos-15-intel
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
@@ -263,6 +266,21 @@ jobs:
           spctl -a -vv -t open dist/AuraFlow.dmg
           ls -lah "$APP_PATH/Contents/Resources" || true
           ls -lah "$APP_PATH/Contents/Resources/BundledTools" || true
+
+      - name: Launch installed ZIP and DMG copies and verify resources
+        shell: bash
+        run: |
+          smoke_args=(--arch x86_64 --launch)
+          if [[ "$(uname -m)" == "arm64" ]]; then
+            sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+            smoke_args+=(--arch arm64)
+          fi
+          python3 scripts/packaged_app_smoke.py "$PWD/smoke/AuraFlow.app" "${smoke_args[@]}"
+          mount_path="$RUNNER_TEMP/auraflow-dmg"
+          mkdir -p "$mount_path"
+          trap 'hdiutil detach "$mount_path" >/dev/null 2>&1 || true' EXIT
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount_path" dist/AuraFlow.dmg
+          python3 scripts/packaged_app_smoke.py "$mount_path/AuraFlow.app" "${smoke_args[@]}"
 
   publish-release:
     needs:

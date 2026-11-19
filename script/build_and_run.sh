@@ -62,9 +62,11 @@ cp "$BUILD_DIR/$TERMINAL_HELPER_NAME" "$TERMINAL_HELPER_MACOS/$TERMINAL_HELPER_N
 chmod +x "$APP_BINARY" "$APP_MACOS/$HELPER_NAME" "$APP_MACOS/$NATIVE_BRIDGE_NAME" "$TERMINAL_HELPER_MACOS/$TERMINAL_HELPER_NAME"
 
 RESOURCE_BUNDLE="$BUILD_DIR/${PROCESS_NAME}_${PROCESS_NAME}.bundle"
-if [[ -d "$RESOURCE_BUNDLE" ]]; then
-  cp -R "$RESOURCE_BUNDLE" "$APP_RESOURCES/$(basename "$RESOURCE_BUNDLE")"
+if [[ ! -d "$RESOURCE_BUNDLE" ]]; then
+  echo "Application resource bundle is missing: $RESOURCE_BUNDLE. Rebuild $PROCESS_NAME before packaging." >&2
+  exit 1
 fi
+cp -R "$RESOURCE_BUNDLE" "$APP_RESOURCES/$(basename "$RESOURCE_BUNDLE")"
 if [[ -f "$ROOT_DIR/Resources/AppIcon.icns" ]]; then
   cp "$ROOT_DIR/Resources/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
 fi

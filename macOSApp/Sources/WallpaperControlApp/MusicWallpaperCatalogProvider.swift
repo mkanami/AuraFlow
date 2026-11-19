@@ -52,7 +52,7 @@ actor MusicWallpaperCatalogProvider: WallpaperCatalogProviding, WallpaperCatalog
     }
 
     static func bundledSelections() -> [CatalogWallpaper] {
-        let candidates = Bundle.module.url(forResource: "music-catalog-seeds", withExtension: "json")
+        let candidates = AppResources.bundle?.url(forResource: "music-catalog-seeds", withExtension: "json")
             .flatMap { try? Data(contentsOf: $0) }
             .flatMap { try? JSONDecoder().decode([CatalogWallpaper].self, from: $0) } ?? []
         return filterReviewedSelections(candidates, reviews: MusicCatalogReview.bundled())

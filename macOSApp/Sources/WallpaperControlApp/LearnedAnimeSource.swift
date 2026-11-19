@@ -54,7 +54,7 @@ struct LearnedCatalogAPI: Decodable, Sendable {
     let operations: [Operation]
 
     static func load(_ site: LearnedAnimeSite) throws -> Self {
-        guard let url = Bundle.module.url(forResource: "\(site.rawValue)-api", withExtension: "json") else {
+        guard let url = AppResources.bundle?.url(forResource: "\(site.rawValue)-api", withExtension: "json") else {
             throw LearnedCatalogError.unavailable("Missing \(site.title) catalog operations.")
         }
         return try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))

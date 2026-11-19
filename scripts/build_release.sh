@@ -501,9 +501,11 @@ build_swift_app() {
 </plist>
 EOF
 
-  if [[ -d "$resources_bundle" ]]; then
-    cp -R "$resources_bundle" "$APP_BUNDLE/Contents/Resources/$(basename "$resources_bundle")"
+  if [[ ! -d "$resources_bundle" ]]; then
+    log "Application resource bundle is missing: $resources_bundle. Rebuild ${APP_TARGET} before packaging."
+    exit 1
   fi
+  cp -R "$resources_bundle" "$APP_BUNDLE/Contents/Resources/$(basename "$resources_bundle")"
 
   cat > "$APP_BUNDLE/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>

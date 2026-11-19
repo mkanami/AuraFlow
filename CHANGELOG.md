@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fix startup crashes in packaged apps on Intel Macs by resolving catalog resources from `Contents/Resources`, without depending on paths from the build machine.
+- Verify relocated ZIP and DMG app startup on Intel, Apple Silicon, and Rosetta 2; report missing or damaged resources with reinstall instructions.
+
 ## 1.3.5 — 2026-11-18
 
 - Add configurable cursor-reactive parallax, soft glow, reflections, lens flare, bloom, blur, and particles across wallpaper previews and installed surfaces.

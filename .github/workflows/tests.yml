@@ -113,6 +113,7 @@ jobs:
           mkdir -p "$bundle_path/Contents/MacOS" "$bundle_path/Contents/Resources"
           cp "$AURAFLOW_RELEASE_BIN/WallpaperControlApp" "$bundle_path/Contents/MacOS/WallpaperControlApp"
           cp "$AURAFLOW_RELEASE_BIN/AuraWallpaperAgent" "$bundle_path/Contents/MacOS/AuraWallpaperAgent"
+          cp -R "$AURAFLOW_RELEASE_BIN/WallpaperControlApp_WallpaperControlApp.bundle" "$bundle_path/Contents/Resources/"
           if [[ -x "$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge" ]]; then
             cp "$AURAFLOW_RELEASE_BIN/AuraWallpaperNativeBridge" "$bundle_path/Contents/MacOS/AuraWallpaperNativeBridge"
           fi
@@ -140,6 +141,9 @@ jobs:
           find "$bundle_path/Contents/MacOS" -type f -perm -111 -exec codesign --force --sign - {} \;
           codesign --force --sign - "$bundle_path"
           codesign --verify --deep --strict "$bundle_path"
+
+      - name: Launch relocated release app and verify bundled resources
+        run: python3 scripts/packaged_app_smoke.py "$RUNNER_TEMP/AuraFlow.app" --launch
 
 
   deployment-target-macos13:
