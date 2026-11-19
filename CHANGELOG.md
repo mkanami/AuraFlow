@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.3.6 — 2026-11-19
 
-- Fix startup crashes in packaged apps on Intel Macs by resolving catalog resources from `Contents/Resources`, without depending on paths from the build machine.
+- Fix the startup crash reported in [#17](https://github.com/mkanami/AuraFlow/issues/17) on Intel Macs running macOS Sequoia. Resolve catalog resources from `Contents/Resources`, without depending on paths from the build machine.
 - Verify relocated ZIP and DMG app startup on Intel, Apple Silicon, and Rosetta 2; report missing or damaged resources with reinstall instructions.
 
 ## 1.3.5 — 2026-11-18

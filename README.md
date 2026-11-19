@@ -54,15 +54,13 @@ supported sessions, and remaining features. The sections below describe macOS.
   </tbody>
 </table>
 
-## Latest release — 1.3.5
+## Latest release — 1.3.6
 
-- Cursor-reactive parallax, soft light, reflections, bloom, particles, and independently configurable falling rain and rain on glass.
-- **Music** with 305 reviewed anime and nature wallpapers, including separate soundtrack pairings. Sampled reviews cover opening frames, artwork posters, text, watermarks, and quality.
-- Music in the main preview while AuraFlow is in focus, with shared volume and mute controls. Desktop music pauses behind application windows and resumes from the same position.
-- Lighter catalog updates and image loading, clearer glass settings, and preview video and effects that keep moving while scrolling.
-- Lock Screen-only terminal wallpapers, shared live effects, native wallpaper backup fixes, and errors that explain the cause and next step.
+- Fix the immediate launch crash reported on Intel Macs with macOS Sequoia ([#17](https://github.com/mkanami/AuraFlow/issues/17)). The app now finds its bundled catalog resources inside `Contents/Resources`.
+- Show clear reinstall instructions if application resources are missing or damaged.
+- Check startup of installed ZIP and DMG copies on Intel, Apple Silicon, and Rosetta 2.
 
-See the [release notes](https://github.com/mkanami/AuraFlow/releases/tag/v1.3.5)
+See the [release notes](https://github.com/mkanami/AuraFlow/releases/tag/v1.3.6)
 and [changelog](CHANGELOG.md) for details. macOS archives support both Apple Silicon
 and Intel. The Linux port remains a separate source installation.
 
