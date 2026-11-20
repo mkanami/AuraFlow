@@ -56,6 +56,7 @@ supported sessions, and remaining features. The sections below describe macOS.
 
 ## Latest release — 1.3.6
 
+- Refreshed downloads (build 17) restore video wallpaper after lid sleep, missed wake/display notifications, and detached or hidden Desktop surfaces. Preserve Stop, fullscreen pause, effects, and music position during recovery.
 - Fix the immediate launch crash reported on Intel Macs with macOS Sequoia ([#17](https://github.com/mkanami/AuraFlow/issues/17)). The app now finds its bundled catalog resources inside `Contents/Resources`.
 - Show clear reinstall instructions if application resources are missing or damaged.
 - Check startup of installed ZIP and DMG copies on Intel, Apple Silicon, and Rosetta 2.

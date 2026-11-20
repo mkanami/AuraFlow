@@ -21,6 +21,17 @@ For focused layout triage on macOS 15, manually dispatch **UI regression checks*
 It runs the same isolated window suites via `scripts/test_macos_app.sh --ui-only`.
 This diagnostic workflow supplements the complete **Tests** run required for release.
 
+When the owner explicitly requests replacing files in an existing release, keep
+the marketing version, release ID, download filenames, and version tag unchanged.
+Increment only the build number in all three build scripts, describe the refresh
+in README/changelog and the release notes, and run both workflows on the exact
+new source commit. Back up the existing assets before replacing all four files
+with `gh release upload --clobber`. Verify the release API digests against the
+downloaded archives and confirm that Latest still resolves to the same release.
+Link the refreshed archives' exact source commit and validation runs in the
+release notes and `BUILD-METADATA.txt`: GitHub's automatic source archives still
+refer to the original version tag.
+
 Both archive workflows now launch relocated ZIP and DMG copies on Intel and
 Apple Silicon runners. Apple Silicon also runs the Intel slice through Rosetta 2.
 The checks verify the loaded resource bundle is inside `Contents/Resources`,
