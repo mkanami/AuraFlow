@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Recover video wallpaper after lost wake notifications, detached layers, hidden Desktop windows, or missed display changes. Preserve decoded frames through lid/display transitions and fullscreen or manual pauses, and verify video-surface readiness as well as playback progress.
+
 ## 1.3.6 — 2026-11-19
 
 - Fix the startup crash reported in [#17](https://github.com/mkanami/AuraFlow/issues/17) on Intel Macs running macOS Sequoia. Resolve catalog resources from `Contents/Resources`, without depending on paths from the build machine.

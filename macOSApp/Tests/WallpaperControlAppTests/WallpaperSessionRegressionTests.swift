@@ -16,13 +16,19 @@ private final class WallpaperSessionFixture {
     let presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)?
     let screensProvider: () -> [NSScreen]
     let fullscreenApplicationIsActive: @MainActor () -> Bool
+    let displaysAreAsleep: @MainActor () -> Bool?
+    let uptime: () -> TimeInterval
 
     init(presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)? = nil,
          screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens },
-         fullscreenApplicationIsActive: @escaping @MainActor () -> Bool = { false }) throws {
+         fullscreenApplicationIsActive: @escaping @MainActor () -> Bool = { false },
+         displaysAreAsleep: @escaping @MainActor () -> Bool? = { false },
+         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) throws {
         self.presentWindow = presentWindow
         self.screensProvider = screensProvider
         self.fullscreenApplicationIsActive = fullscreenApplicationIsActive
+        self.displaysAreAsleep = displaysAreAsleep
+        self.uptime = uptime
         _ = NSApplication.shared
         root = FileManager.default.temporaryDirectory.appendingPathComponent("AuraSessionRegression-\(UUID())")
         let calls = SessionLaunchctlCalls()
@@ -48,6 +54,7 @@ private final class WallpaperSessionFixture {
         let agent = WallpaperAgentDelegate(store: store, lockScreenPlatform: UnsupportedAdapter(),
             presentWindow: presentWindow,
             screensProvider: screensProvider,
+            displaysAreAsleep: displaysAreAsleep, uptime: uptime,
             observesSystemEvents: false, sessionIsLocked: { [weak self] in self?.locked },
             fullscreenApplicationIsActive: fullscreenApplicationIsActive)
         self.agent = agent
@@ -158,6 +165,209 @@ struct HiddenLoginPlaybackTests {
 }
 
 private final class SessionLaunchctlCalls { var values: [[String]] = [] }
+
+@Suite(.serialized)
+struct WallpaperWakeRecoveryTests {
+    @Test @MainActor
+    func newlyAvailableDisplayGetsADecodedFrameWhileManuallyStopped() async throws {
+        var displaysAvailable = false
+        let fixture = try WallpaperSessionFixture(presentWindow: { _, _ in },
+            screensProvider: { displaysAvailable ? NSScreen.screens : [] })
+        defer { fixture.cleanup() }
+        let agent = try await fixture.start()
+        let player = try #require(agent.player)
+        let deadline = Date().addingTimeInterval(4)
+        while player.currentItem?.status != .readyToPlay || player.currentTime().seconds < 0.2 {
+            try #require(Date() < deadline)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        fixture.store.markPaused(true)
+        try fixture.store.saveCommand(.init(action: .pause, config: fixture.store.loadConfig()))
+        agent.pollCommand()
+        let position = player.currentTime().seconds
+        displaysAvailable = true
+        agent.samplePlaybackHealth()
+        while !agent.playerLayers.allSatisfy(\.isReadyForDisplay) {
+            try #require(Date() < deadline, "A new display needs a frame even while Stop remains active")
+            pumpSessionRegressionAppKit()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!agent.playerLayers.isEmpty && agent.player === player)
+        #expect(player.rate == 0 && fixture.store.isPaused())
+        #expect(abs(player.currentTime().seconds - position) < 0.1)
+        #expect(agent.windows.allSatisfy { !$0.isVisible })
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func displayChangesKeepTheDecodedSurfaceWhileStoppedOrCovered(manualStop: Bool) async throws {
+        var covering = false
+        var displaysAvailable = true
+        let fixture = try WallpaperSessionFixture(presentWindow: { _, _ in },
+            screensProvider: { displaysAvailable ? NSScreen.screens : [] },
+            fullscreenApplicationIsActive: { covering })
+        defer { fixture.cleanup() }
+        let agent = try await fixture.start(pauseOnFullscreen: true)
+        try await requireAdvancingWallpaper(agent)
+        let player = try #require(agent.player)
+        let windows = agent.windows
+        let layers = agent.playerLayers
+        if manualStop {
+            fixture.store.markPaused(true)
+            try fixture.store.saveCommand(.init(action: .pause, config: fixture.store.loadConfig()))
+            agent.pollCommand()
+        } else {
+            covering = true
+            agent.startFullscreenMonitoring()
+            let deadline = Date().addingTimeInterval(3)
+            while player.rate > 0 {
+                try #require(Date() < deadline)
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        for _ in 0..<3 {
+            displaysAvailable = false
+            agent.screensChanged()
+            displaysAvailable = true
+            agent.screensChanged()
+            agent.samplePlaybackHealth()
+            #expect(agent.player === player && player.rate == 0)
+            #expect(agent.windows.elementsEqual(windows, by: { $0 === $1 }))
+            #expect(agent.playerLayers.elementsEqual(layers, by: { $0 === $1 }))
+            #expect(layers.allSatisfy { $0.isReadyForDisplay }, "A paused wallpaper must retain its decoded frame across lid/display changes")
+            #expect(fixture.store.isPaused() == manualStop)
+        }
+        #expect(agent.windows.allSatisfy { !$0.isVisible })
+    }
+
+    @Test @MainActor
+    func watchdogRepairsLostWindowGeometryAndLayerAttachmentWithoutRestartingVideo() async throws {
+        var presentations = 0
+        let fixture = try WallpaperSessionFixture(presentWindow: { _, mode in
+            #expect(mode == .desktop)
+            presentations += 1
+        })
+        defer { fixture.cleanup() }
+        let agent = try await fixture.start()
+        try await requireAdvancingWallpaper(agent)
+        let player = agent.player
+        let window = try #require(agent.windows.first)
+        let layer = try #require(agent.playerLayers.first)
+        let originalFrame = window.frame
+        window.setFrame(NSRect(x: originalFrame.minX, y: originalFrame.minY, width: 40, height: 30), display: false)
+        layer.removeFromSuperlayer()
+        layer.player = nil
+        let previousPresentations = presentations
+        // No display, Space or wake notification is delivered.
+        agent.samplePlaybackHealth()
+        #expect(agent.player === player && agent.windows.first === window && agent.playerLayers.first === layer)
+        #expect(window.frame == originalFrame)
+        #expect(layer.superlayer === (window.contentView as? WallpaperEffectsView)?.wallpaperContent.layer)
+        #expect(layer.player === player)
+        try await requireAdvancingWallpaper(agent)
+        #expect(presentations > previousPresentations)
+        #expect(fixture.store.loadHealth()?.recovery_events == 0)
+        #expect(agent.windows.allSatisfy { !$0.isVisible })
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func missingWakeNotificationCannotLeaveDesktopPermanentlyAsleep(displaySleep: Bool) async throws {
+        var now: TimeInterval = 100
+        var asleep: Bool? = false
+        let fixture = try WallpaperSessionFixture(presentWindow: { _, _ in },
+            displaysAreAsleep: { asleep }, uptime: { now })
+        defer { fixture.cleanup() }
+        let agent = try await fixture.start()
+        try await requireAdvancingWallpaper(agent)
+        let player = try #require(agent.player)
+        if displaySleep { agent.screensWillSleep() } else { agent.systemWillSleep() }
+        #expect(player.rate == 0)
+        now += 1
+        agent.samplePlaybackHealth()
+        #expect(player.rate == 0, "willSleep arrives before the display actually sleeps")
+        now += 2
+        asleep = true
+        agent.samplePlaybackHealth()
+        #expect(player.rate == 0)
+        asleep = nil
+        agent.samplePlaybackHealth()
+        #expect(player.rate == 0, "A missing display list is not proof of wake")
+        asleep = false
+        agent.samplePlaybackHealth()
+        try await requireAdvancingWallpaper(agent)
+        #expect(agent.player === player && fixture.store.loadHealth()?.recovery_events == 0)
+        #expect(agent.windows.allSatisfy { !$0.isVisible })
+    }
+
+    @Test @MainActor
+    func missingSleepAndWakeNotificationsUseActualDisplayStateWithoutChangingTheSelection() async throws {
+        var now: TimeInterval = 100
+        var asleep = false
+        let fixture = try WallpaperSessionFixture(presentWindow: { _, _ in },
+            displaysAreAsleep: { asleep }, uptime: { now })
+        defer { fixture.cleanup() }
+        let agent = try await fixture.start()
+        try await requireAdvancingWallpaper(agent)
+        let player = try #require(agent.player)
+        let config = fixture.store.loadConfig()
+        asleep = true
+        agent.samplePlaybackHealth()
+        #expect(player.rate == 0 && fixture.store.loadHealth()?.reason == "sleeping")
+        now += 30
+        agent.samplePlaybackHealth()
+        #expect(agent.player === player && fixture.store.loadHealth()?.recovery_events == 0)
+        asleep = false
+        agent.samplePlaybackHealth()
+        try await requireAdvancingWallpaper(agent)
+        #expect(agent.player === player && fixture.store.loadConfig() == config)
+        #expect(!fixture.store.isPaused() && agent.windows.allSatisfy { !$0.isVisible })
+    }
+
+    @Test(arguments: [false, true], [false, true]) @MainActor
+    func wakeSharesManualAndAutomaticLockRecoveryWithoutPromotingDesktopWindows(automatic: Bool, manualStop: Bool) async throws {
+        var presentations = 0
+        let fixture = try WallpaperSessionFixture(presentWindow: { _, mode in
+            #expect(mode == .desktop, "Desktop windows must never be raised over the secure surface")
+            presentations += 1
+        })
+        defer { fixture.cleanup() }
+        let agent = try await fixture.start()
+        try await requireAdvancingWallpaper(agent)
+        let player = try #require(agent.player)
+        let layers = agent.playerLayers
+        if manualStop {
+            fixture.store.markPaused(true)
+            try fixture.store.saveCommand(.init(action: .pause, config: fixture.store.loadConfig()))
+            agent.pollCommand()
+        }
+        for _ in 0..<2 {
+            // Idle saver/shield before password lock must not imply lock.
+            agent.lockShieldDidRaise(.init(name: .init("com.apple.shieldWindowRaised")))
+            agent.systemWillSleep()
+            let pausedPosition = player.currentTime().seconds
+            if automatic { fixture.locked = true } // Both distributed events are missing.
+            else { fixture.setLocked(true) }
+            let beforeWake = presentations
+            agent.screensChanged()
+            agent.systemDidWake()
+            agent.screensDidWake() // Duplicate late notification.
+            agent.samplePlaybackHealth()
+            #expect(presentations == beforeWake)
+            #expect(agent.player === player && agent.playerLayers.elementsEqual(layers, by: { $0 === $1 }))
+            #expect(fixture.store.loadHealth()?.recovery_events == 0)
+            if automatic {
+                fixture.locked = false
+                agent.samplePlaybackHealth() // Unlock notification is missing too.
+                agent.handleSessionNotification(expectedLocked: true) // Delayed stale lock event.
+            } else { fixture.setLocked(false) }
+            if manualStop {
+                #expect(player.rate == 0 && fixture.store.isPaused())
+                #expect(abs(player.currentTime().seconds - pausedPosition) < 0.1)
+            }
+            else { try await requireAdvancingWallpaper(agent) }
+        }
+        #expect(agent.windows.allSatisfy { !$0.isVisible })
+    }
+}
 
 @Suite(.serialized)
 struct FullscreenResumeRegressionTests {

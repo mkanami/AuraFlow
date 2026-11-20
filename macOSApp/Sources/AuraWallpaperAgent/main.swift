@@ -11,6 +11,11 @@ private let wallpaperAgentLifecycleLogger = Logger(
     category: "LockScreenLifecycle"
 )
 
+private let wallpaperPlaybackLogger = Logger(
+    subsystem: "com.andrijvergeles.auraflow",
+    category: "WallpaperPlayback"
+)
+
 private final class WallpaperLayerView: NSView {
     override var isOpaque: Bool { true }
 
@@ -316,6 +321,8 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private let nativeLockScreenBridge: NativeLockScreenBridging
     private let presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)?
     private let screensProvider: () -> [NSScreen]
+    private let displaysAreAsleep: @MainActor () -> Bool?
+    private let uptime: () -> TimeInterval
     private let lockScreenRepairGate = LockScreenRepairGate()
     private let lockScreenPlatformExecutor: LockScreenPlatformExecutor
     private let rearmGuard: WallpaperAgentRearmGuard
@@ -323,7 +330,8 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var config: ControlConfig
     private(set) var windows: [NSWindow] = []
     private(set) var playerLayers: [AVPlayerLayer] = []
-    private var firstFrameObservers: [NSKeyValueObservation] = []
+    private var firstFrameObservers: [ObjectIdentifier: NSKeyValueObservation] = [:]
+    private var windowDisplayIDs: [ObjectIdentifier: UInt32] = [:]
     private var audioScreenSaverActive = false
     private var audioDisplaySleeping = false
     private var applicationWindowState = DesktopApplicationWindows.State.unknown
@@ -347,6 +355,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var lastCommandOperationID: UInt64?
     private var manualPaused = false
     private var sleeping = false
+    private var lastSleepSignalUptime = -Double.infinity
     private var displaySleepRestorePending = false
     private var displaySleepLockObserved = false
     private var sessionInactive = false
@@ -366,6 +375,8 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
     private var lockTransitionCount = 0
     private var lastLockTransitionMilliseconds: Double?
     private var lastPlaybackProgressUptime: TimeInterval?
+    private var lastObservedPlaybackTime: CMTime?
+    private var waitingForVideoSurfaceSince: TimeInterval?
     private var consecutiveStallPolls = 0
     private var stallEvents = 0
     private var recoveryEvents = 0
@@ -397,6 +408,13 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         nativeLockScreenBridge: NativeLockScreenBridging? = nil,
         presentWindow: ((NSWindow, WallpaperPresentationMode) -> Void)? = nil,
         screensProvider: @escaping () -> [NSScreen] = { NSScreen.screens },
+        displaysAreAsleep: @escaping @MainActor () -> Bool? = {
+            let ids = NSScreen.screens.compactMap {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            }
+            return ids.isEmpty ? nil : ids.allSatisfy { CGDisplayIsAsleep($0) != 0 }
+        },
+        uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         observesSystemEvents: Bool = true,
         lockScreenOnlyMode: Bool = CommandLine.arguments.contains("--lock-screen-only"),
         sessionIsLocked: @escaping () -> Bool? = { agentSystemSessionIsLocked() },
@@ -412,6 +430,8 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         self.applicationWindows = applicationWindows
         self.presentWindow = presentWindow
         self.screensProvider = screensProvider
+        self.displaysAreAsleep = displaysAreAsleep
+        self.uptime = uptime
         let nativeBridgeURL = Self.nativeBridgeURLFromArguments()
         let platform = lockScreenPlatform ?? LockScreenPlatformFactory.makeAgentPlatform(
             nativeBridgeURL: nativeBridgeURL
@@ -759,10 +779,12 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         applyFullscreenPolicy()
     }
 
-    @objc private func screensChanged() {
+    @objc func screensChanged() {
         guard !isTerminating else { return }
+        reconcileSystemSessionState()
         if !lockScreenOnlyMode {
             rebuildWindows()
+            showWindows(forceOrder: true)
         }
         writeHealth(reason: "screen-change")
     }
@@ -1232,8 +1254,9 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func systemWillSleep() {
+    @objc func systemWillSleep() {
         guard !isTerminating, !sleeping else { return }
+        lastSleepSignalUptime = uptime()
         if lockScreenOnlyMode {
             // On a display-sleep lock, macOS sends willSleep before it raises
             // the secure Lock Screen. Keep the prewarmed player running so
@@ -1259,9 +1282,12 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         writeHealth(reason: "sleeping")
     }
 
-    @objc private func screensWillSleep() {
+    @objc func screensWillSleep() {
+        guard !isTerminating else { return }
+        lastSleepSignalUptime = uptime()
         audioDisplaySleeping = true
         applyAudioSettings()
+        if !lockScreenOnlyMode { systemWillSleep() }
         guard !isTerminating, lockScreenOnlyMode else { return }
         displaySleepRestorePending = true
         let lockConfirmed = isConfirmedLockScreenSession()
@@ -1277,18 +1303,22 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func systemDidWake() {
+    @objc func systemDidWake() {
         recoverAfterWake(reason: "wake")
     }
 
-    @objc private func screensDidWake() {
+    @objc func screensDidWake() {
         recoverAfterWake(reason: "screens-wake")
     }
 
     private func recoverAfterWake(reason: String) {
         guard !isTerminating else { return }
+        let wasSuspended = sleeping || audioDisplaySleeping
         sleeping = false
         audioDisplaySleeping = false
+        lastPlaybackProgressUptime = nil
+        lastObservedPlaybackTime = nil
+        waitingForVideoSurfaceSince = nil
         // Sleep may swallow both distributed lock notifications. Establish
         // the current session intent before .wake can enqueue an idle repair
         // and hide the prepared secure surface.
@@ -1311,11 +1341,37 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             scheduleDesktopRestoreAfterDisplayWake()
             requestLockScreenLifecycle(.wake, reason: reason)
         } else {
+            reconcileDesktopWindows()
+            // WindowServer may discard the displayed video buffer during
+            // sleep even though AVFoundation still reports the layer ready.
+            // Request the current frame again without resetting position or
+            // the separate music player. Duplicate wake events do not seek.
+            if wasSuspended, let player, player.currentItem?.status == .readyToPlay {
+                let time = player.currentTime()
+                if time.isNumeric { player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) }
+            }
             showWindows(forceOrder: true)
             applyPlaybackRate()
         }
         applyFullscreenPolicy()
         writeHealth(reason: reason)
+    }
+
+    private func reconcileDisplaySleepState() {
+        let displayState = displaysAreAsleep()
+        if displayState == true, !sleeping, !audioDisplaySleeping {
+            // The sleep notification can be lost too. Use the same suspend
+            // path, including music, when every connected display is asleep.
+            screensWillSleep()
+        }
+        // Lid transitions can lose didWake/screensDidWake. A stale local flag
+        // must not suppress playback and its watchdog for the entire session.
+        // Keep a short grace period because willSleep precedes display sleep.
+        guard sleeping || audioDisplaySleeping,
+              uptime() - lastSleepSignalUptime >= 2,
+              displayState == false else { return }
+        wallpaperPlaybackLogger.notice("Display is awake without a wake notification; resuming the existing wallpaper")
+        recoverAfterWake(reason: "wake-notification-missed")
     }
 
     private func scheduleDesktopRestoreAfterDisplayWake() {
@@ -1361,6 +1417,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+
         guard let command = store.loadCommand(), command.id != lastCommandID else { return }
         if let operationID = command.operationID,
            let lastCommandOperationID,
@@ -2084,14 +2141,16 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         looper = AVPlayerLooper(player: player, templateItem: item)
         self.player = player
         applyAudioSettings()
-        lastPlaybackProgressUptime = ProcessInfo.processInfo.systemUptime
+        lastPlaybackProgressUptime = uptime()
         playbackTimeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
             queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.lastPlaybackProgressUptime =
-                    ProcessInfo.processInfo.systemUptime
+        ) { [weak self, weak player] time in
+            Task { @MainActor [weak self, weak player] in
+                guard let self, let player, self.player === player,
+                      time.isNumeric, self.lastObservedPlaybackTime != time else { return }
+                self.lastObservedPlaybackTime = time
+                self.lastPlaybackProgressUptime = self.uptime()
             }
         }
         rebuildWindows()
@@ -2107,14 +2166,14 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         let screens = screensProvider()
         guard !screens.isEmpty else { return }
         let existingPlayer = player
-        for window in windows {
-            window.orderOut(nil)
-        }
-        windows.removeAll()
-        playerLayers.removeAll()
-        firstFrameObservers.removeAll()
-
         guard existingPlayer != nil || fallbackImage != nil else { return }
+        var remainingWindows = windows
+        let oldLayers = Dictionary(uniqueKeysWithValues: zip(windows, playerLayers).map {
+            (ObjectIdentifier($0.0), $0.1)
+        })
+        windows = []
+        playerLayers = []
+        var addedVideoLayer = false
         let behavior: NSWindow.CollectionBehavior = [
             .canJoinAllSpaces,
             .stationary,
@@ -2123,6 +2182,27 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         ]
 
         for screen in screens {
+            let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            if let index = remainingWindows.firstIndex(where: {
+                if let displayID { return windowDisplayIDs[ObjectIdentifier($0)] == displayID }
+                return $0.frame == screen.frame
+            }) {
+                // Keep the already decoded frame while AppKit rebuilds its
+                // screen objects after lid/dock/scale changes. Replacing this
+                // layer while paused can leave its replacement empty forever.
+                let window = remainingWindows.remove(at: index)
+                if window.frame != screen.frame { window.setFrame(screen.frame, display: true) }
+                windows.append(window)
+                if let layer = oldLayers[ObjectIdentifier(window)] {
+                    playerLayers.append(layer)
+                    if let content = (window.contentView as? WallpaperEffectsView)?.wallpaperContent,
+                       layer.superlayer !== content.layer {
+                        content.layer?.addSublayer(layer)
+                    }
+                    if layer.player !== existingPlayer { layer.player = existingPlayer }
+                }
+                continue
+            }
             let window = NSWindow(
                 contentRect: screen.frame,
                 styleMask: [.borderless],
@@ -2157,14 +2237,15 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
                 playerLayer.videoGravity = videoGravity(for: config.scale_mode)
                 content.layer?.addSublayer(playerLayer)
                 playerLayers.append(playerLayer)
-                firstFrameObservers.append(playerLayer.observe(\.isReadyForDisplay, options: [.new]) { [weak self, weak window] layer, _ in
+                addedVideoLayer = true
+                firstFrameObservers[ObjectIdentifier(window)] = playerLayer.observe(\.isReadyForDisplay, options: [.new]) { [weak self, weak window] layer, _ in
                     guard layer.isReadyForDisplay else { return }
                     Task { @MainActor [weak self, weak window] in
                         guard let self, let window, !self.isTerminating,
                               self.windows.contains(where: { $0 === window }) else { return }
                         self.present(window, as: self.lockScreenState.presentationMode)
                     }
-                })
+                }
             }
             let effects = WallpaperEffectsView(content: content, store: WallpaperEffectsStore(appSupportURL: store.appSupportURL))
             effects.playbackIsPaused = { [weak self] in
@@ -2174,9 +2255,20 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             window.contentView = effects
 
             windows.append(window)
-            if !manualPaused {
-                present(window, as: lockScreenState.presentationMode)
-            }
+            if let displayID { windowDisplayIDs[ObjectIdentifier(window)] = displayID }
+            present(window, as: lockScreenState.presentationMode)
+        }
+        for window in remainingWindows {
+            window.orderOut(nil)
+            firstFrameObservers.removeValue(forKey: ObjectIdentifier(window))
+            windowDisplayIDs.removeValue(forKey: ObjectIdentifier(window))
+        }
+        if addedVideoLayer, let existingPlayer, existingPlayer.rate == 0 {
+            // A newly connected display also needs a decoded frame during
+            // Stop/fullscreen pause. Seeking the current position primes it
+            // without playing, changing the saved pause, or restarting music.
+            let time = existingPlayer.currentTime()
+            if time.isNumeric { existingPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) }
         }
     }
 
@@ -2194,8 +2286,11 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         windows.removeAll()
         playerLayers.removeAll()
         firstFrameObservers.removeAll()
+        windowDisplayIDs.removeAll()
         player = nil
         lastPlaybackProgressUptime = nil
+        lastObservedPlaybackTime = nil
+        waitingForVideoSurfaceSince = nil
         consecutiveStallPolls = 0
     }
 
@@ -2208,12 +2303,15 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func reconcileDesktopWindows() {
         guard !isTerminating, !lockScreenOnlyMode, !sleeping,
-              windows.isEmpty, !screensProvider().isEmpty,
+              !screensProvider().isEmpty,
               player != nil || fallbackImage != nil else { return }
         // Login can start the decoder before AppKit has a display list. A
         // missed display notification must not leave a healthy, advancing
         // player invisible for the rest of the session.
         rebuildWindows()
+        // An advancing player does not imply a visible window. WindowServer
+        // can order a Desktop surface out without changing the display list.
+        if systemSessionIsLocked() == false { showWindows() }
     }
 
     private func handleLockScreenEvent(
@@ -2277,6 +2375,9 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
            playerLayers.indices.contains(index), !playerLayers[index].isReadyForDisplay {
             return
         }
+        // Display/KVO callbacks can precede the distributed lock event.
+        // Preserve the existing Desktop level until the real session is known.
+        if lockScreenState.sessionState == .unlocked, systemSessionIsLocked() != false { return }
         // macOS renders the secure surface through its Aerial/legacy route.
         // In shared Start, leave the already-visible Aura Desktop window at
         // its existing desktop level underneath that surface. Ordering it out
@@ -2341,7 +2442,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
     private func applyPlaybackRate() {
         applyAudioSettings()
-        guard !manualPaused && !sleeping else { return }
+        guard !manualPaused && !sleeping && !store.isPaused() else { return }
         if lockScreenState.presentationMode != .lockScreen {
             guard !autoPausedForFullscreen else { return }
         }
@@ -2553,6 +2654,8 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        reconcileDisplaySleepState()
+
         if lockScreenOnlyMode {
             // Stop is a manual pause for the native Lock Screen route too.
             // Do not let the periodic generation health-check repair/rearm
@@ -2578,8 +2681,18 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         if manualPaused || store.isPaused() {
             manualPaused = true
             lastPlaybackProgressUptime = nil
+            waitingForVideoSurfaceSince = nil
             consecutiveStallPolls = 0
             writeHealth(reason: "paused")
+            return
+        }
+
+        guard !sleeping else {
+            lastPlaybackProgressUptime = nil
+            lastObservedPlaybackTime = nil
+            waitingForVideoSurfaceSince = nil
+            consecutiveStallPolls = 0
+            writeHealth(reason: "sleeping")
             return
         }
 
@@ -2598,18 +2711,20 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
         guard !manualPaused,
               !sleeping,
               !sessionInactive,
-              !autoPausedForFullscreen
+              !autoPausedForFullscreen,
+              !screensProvider().isEmpty
         else {
             // macOS can suspend decoding for Desktop layers hidden behind
             // the secure Lock Screen. That is not a stalled visible player;
             // keep it intact and resume/check progress after unlock.
             lastPlaybackProgressUptime = nil
             consecutiveStallPolls = 0
+            waitingForVideoSurfaceSince = nil
             writeHealth(reason: "ok")
             return
         }
 
-        let uptime = ProcessInfo.processInfo.systemUptime
+        let uptime = uptime()
         var failureReason = "playback-stall"
         if let player {
             let itemStatus = player.currentItem?.status
@@ -2621,7 +2736,23 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
             } else if itemStatus != .readyToPlay {
                 failureReason = "playback-item-not-ready"
             }
-            if itemStatus == .readyToPlay,
+            let surfaceReady = !playerLayers.isEmpty && playerLayers.count == windows.count && zip(windows, playerLayers).allSatisfy { window, layer in
+                if let id = windowDisplayIDs[ObjectIdentifier(window)], CGDisplayIsAsleep(id) != 0 { return true }
+                return layer.player === player && layer.superlayer != nil && layer.isReadyForDisplay
+            }
+            if surfaceReady {
+                waitingForVideoSurfaceSince = nil
+            } else if !screensProvider().isEmpty {
+                if waitingForVideoSurfaceSince == nil { waitingForVideoSurfaceSince = uptime }
+                if itemStatus == .readyToPlay,
+                   uptime - (waitingForVideoSurfaceSince ?? uptime) < 8 {
+                    consecutiveStallPolls = 0
+                    writeHealth(reason: "waiting-for-video-surface")
+                    return
+                }
+                failureReason = "playback-surface-not-ready"
+            }
+            if itemStatus == .readyToPlay, surfaceReady,
                player.rate > 0,
                let lastProgress = lastPlaybackProgressUptime,
                uptime - lastProgress < 3.5 {
@@ -2645,6 +2776,7 @@ final class WallpaperAgentDelegate: NSObject, NSApplicationDelegate {
 
         stallEvents += 1
         recoveryEvents += 1
+        wallpaperPlaybackLogger.warning("Rebuilding stalled wallpaper cause=\(failureReason, privacy: .public) ready_layers=\(self.playerLayers.filter(\.isReadyForDisplay).count, privacy: .public)/\(self.playerLayers.count, privacy: .public)")
         consecutiveStallPolls = 0
         lastPlaybackProgressUptime = nil
         rebuildPlayback(from: config, keepPaused: false)
